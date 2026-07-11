@@ -21,8 +21,8 @@ avant toute évolution fonctionnelle.
 | `db/seed.sql` | 43 sections pré-définies + 27 catégories POI + 3 plans — idempotent, testé |
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
 | `backend/enrich/` | Pipeline d'enrichissement complet — testé (2 tests d'intégration verts) |
-| API FastAPI | **À construire** (prochaine étape) |
-| Frontend (back-office + guide PWA) | **À construire** |
+| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, guide public `GET /g/{token}` — testé (9 tests d'intégration verts) |
+| Frontend (back-office + guide PWA) | **À construire** (prochaine étape) |
 
 ## Stack et conventions
 
@@ -63,14 +63,27 @@ export CASAGUIDE_DB=postgresql://localhost/casaguide
 export ANTHROPIC_API_KEY=sk-ant-...
 python -m pytest tests/ -v                     # tests (aucun réseau requis)
 python -m enrich.pipeline --property-id <uuid> # enrichissement réel
+
+# API FastAPI (back-office + guide public)
+export CASAGUIDE_JWT_SECRET=$(openssl rand -hex 32)   # signature des jetons
+export CASAGUIDE_SECRET_KEY=$(openssl rand -hex 32)   # AES-256 des secrets (§8)
+uvicorn api.main:app --reload                  # docs interactives sur /docs
 ```
+
+Variables d'environnement de l'API (aucun secret en dur) : `CASAGUIDE_JWT_SECRET`
+(clé HS256 ; éphémère par processus si absente), `CASAGUIDE_SECRET_KEY` (clé
+AES-256 hex/base64 des colonnes `property_secrets` ; les endpoints de secrets
+répondent 503 si absente), `CASAGUIDE_JWT_EXPIRE_MIN`, `CASAGUIDE_CORS_ORIGINS`.
 
 ## Prochaines étapes (ordre recommandé, cf. §12 du CdC)
 
-1. **API FastAPI** : auth propriétaires (JWT), CRUD logements, endpoints de
-   déclenchement du pipeline (tâche de fond), validation/rejet des POI
-   suggérés, endpoint public du guide (`/g/{guide_token}`) servant sections +
-   POI approuvés + area_facts, avec cache.
+1. ✅ **API FastAPI** (`backend/api/`) : auth propriétaires (JWT), CRUD logements,
+   déclenchement du pipeline (tâche de fond via `BackgroundTasks`, suivi par
+   `/jobs`), validation/rejet/édition des POI suggérés, endpoint public
+   `GET /g/{guide_token}` servant sections visibles + POI approuvés/édités +
+   area_facts (jamais les secrets), avec entêtes `noindex` et cache. Restent à
+   ajouter selon les besoins : upload media (S3), OAuth Google, rate-limiting,
+   pool de connexions (`psycopg_pool`), traductions.
 2. **Back-office** : formulaire dynamique généré depuis
    `section_templates.field_schema` (types text/textarea/time/bool/number/
    select/url + groupes `repeat`), indicateur de complétude, écran de

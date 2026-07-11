@@ -26,14 +26,22 @@ from .settings import settings
 
 def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         only_categories: set[str] | None = None,
+        job_id: str | None = None,
         http_client: httpx.Client | None = None,
         anthropic_client: anthropic.Anthropic | None = None) -> dict:
-    """Exécute le pipeline pour un logement. Retourne un résumé."""
+    """Exécute le pipeline pour un logement. Retourne un résumé.
+
+    Si `job_id` est fourni (job 'pending' pré-créé par l'API pour renvoyer un
+    identifiant immédiat), il est réutilisé ; sinon un nouveau job est créé.
+    """
     summary: dict = {"pois": 0, "categories": {}, "area_facts": False, "cost_cts": 0.0}
 
     with db.connect() as conn:
         prop = db.load_property(conn, property_id)
-        job_id = db.job_start(conn, property_id, trigger)
+        if job_id is None:
+            job_id = db.job_start(conn, property_id, trigger)
+        else:
+            db.job_mark_running(conn, job_id)
         conn.commit()
 
         try:

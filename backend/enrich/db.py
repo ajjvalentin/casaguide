@@ -134,6 +134,15 @@ def job_start(conn, property_id: str, trigger: str) -> str:
     return str(row["id"])
 
 
+def job_mark_running(conn, job_id: str) -> None:
+    """Passe un job pré-créé (status 'pending' par l'API) en 'running'."""
+    conn.execute(
+        "UPDATE enrichment_jobs SET status = 'running', started_at = now() "
+        "WHERE id = %s",
+        (job_id,),
+    )
+
+
 def job_step(conn, job_id: str, step: str, state: dict) -> None:
     conn.execute(
         "UPDATE enrichment_jobs SET steps = steps || %s WHERE id = %s",
