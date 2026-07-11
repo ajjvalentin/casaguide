@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Secrets et configuration locale
+.env
+*.local
+
+# macOS
+.DS_Store
+
+# Frontend (à venir)
+node_modules/
+dist/
+
+# Archives de travail
+files/
+files.zip
