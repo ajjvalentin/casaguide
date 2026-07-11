@@ -47,9 +47,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         try:
             # ── 1. Géocodage ────────────────────────────────────────────────
             if prop["lat"] is None:
-                address = ", ".join(filter(None, [
-                    prop["address_line1"], prop["postal_code"], prop["city"]]))
-                geo = geocode.geocode(address, prop["country_code"], client=http_client)
+                geo = geocode.geocode(
+                    country_code=prop["country_code"], client=http_client,
+                    street=prop["address_line1"], postalcode=prop["postal_code"],
+                    city=prop["city"])
                 db.save_geocode(conn, property_id, geo["lat"], geo["lon"],
                                 geo["source"], geo["accuracy"])
                 prop["lat"], prop["lon"] = geo["lat"], geo["lon"]
@@ -57,23 +58,31 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             {"ok": True, "accuracy": geo["accuracy"]})
             else:
                 db.job_step(conn, job_id, "geocode", {"ok": True, "skipped": True})
+            conn.commit()  # progression visible en temps réel
             origin = (prop["lat"], prop["lon"])
 
             # ── 2 + 3. POI Overpass puis distances ─────────────────────────
             categories = db.load_categories(conn)
             all_editorial: list[dict] = []
+            failed_categories: dict[str, str] = {}
             for cat in categories:
                 code = cat["code"]
                 if only_categories and code not in only_categories:
                     continue
                 if code in overpass.CLAUDE_ONLY_CATEGORIES:
                     continue  # traité en V1.1 par Claude + web search (§5)
-                pois = overpass.fetch_category(
-                    code, origin[0], origin[1], cat["default_radius_m"],
-                    client=http_client)
-                if not pois:
+                try:
+                    pois = overpass.fetch_category(
+                        code, origin[0], origin[1], cat["default_radius_m"],
+                        client=http_client)
+                    if not pois:
+                        continue
+                    distance.compute_distances(origin, pois, client=http_client)
+                except Exception as exc:
+                    # Une catégorie en échec ne doit pas faire échouer le guide :
+                    # on la trace et on continue (ré-enrichissable plus tard).
+                    failed_categories[code] = f"{type(exc).__name__}: {exc}"[:120]
                     continue
-                distance.compute_distances(origin, pois, client=http_client)
                 for p in pois:
                     p["category"] = code
                 if code in settings.describe_categories:
@@ -81,9 +90,18 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 n = db.upsert_pois(conn, property_id, code, pois)
                 summary["categories"][code] = n
                 summary["pois"] += n
+                conn.commit()  # les POI de cette catégorie sont acquis
+                db.job_step(conn, job_id, "overpass",
+                            {"ok": False, "in_progress": code,
+                             "pois": summary["pois"], "failed": failed_categories})
+                conn.commit()
+            summary["failed_categories"] = failed_categories
             db.job_step(conn, job_id, "overpass",
-                        {"ok": True, "pois": summary["pois"]})
+                        {"ok": not failed_categories or summary["pois"] > 0,
+                         "pois": summary["pois"],
+                         "failed": failed_categories})
             db.job_step(conn, job_id, "distances", {"ok": True})
+            conn.commit()
 
             # ── 4. Enrichissement Claude ────────────────────────────────────
             if use_claude:

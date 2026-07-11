@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Annotated, Callable
 
 import jwt
-from fastapi import Depends, Header, HTTPException, Path, status
+from fastapi import Depends, HTTPException, Path, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from enrich import db, pipeline
 
@@ -29,19 +30,27 @@ Conn = Annotated[object, Depends(get_conn)]
 
 # ── Propriétaire authentifié (JWT Bearer) ────────────────────────────────────
 
+# Schéma de sécurité déclaré à OpenAPI -> Swagger affiche le bouton « Authorize »
+# et transmet automatiquement l'entête Authorization. auto_error=False pour
+# conserver nos réponses 401 (HTTPBearer renverrait 403 sur jeton absent).
+_bearer = HTTPBearer(
+    auto_error=False,
+    description="Jeton JWT obtenu via /api/auth/login ou /api/auth/register.",
+)
+
+
 def get_current_owner(
     conn: Conn,
-    authorization: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
 ) -> dict:
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Jeton d'authentification manquant",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = authorization.split(" ", 1)[1].strip()
     try:
-        owner_id = security.decode_token(token)
+        owner_id = security.decode_token(credentials.credentials)
     except jwt.PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -106,22 +106,31 @@ def _parse_elements(elements: list[dict], lat0: float, lon0: float) -> list[dict
 
 def fetch_category(category: str, lat: float, lon: float, radius_m: int,
                    client: httpx.Client | None = None) -> list[dict]:
-    """POI d'une catégorie, triés par distance, limités à max_pois_per_category."""
+    """POI d'une catégorie, triés par distance, limités à max_pois_per_category.
+
+    Bascule automatiquement sur les miroirs Overpass en cas d'erreur HTTP
+    (le serveur principal renvoie des 406 aux clients automatisés depuis 2026).
+    """
     selectors = CATEGORY_SELECTORS.get(category)
     if not selectors:
         return []
     own_client = client is None
     client = client or httpx.Client(timeout=settings.overpass_timeout_s + 5)
+    query = _build_query(selectors, lat, lon, radius_m)
+    headers = {"User-Agent": settings.user_agent, "Accept": "application/json"}
     try:
-        resp = client.post(
-            settings.overpass_url,
-            data={"data": _build_query(selectors, lat, lon, radius_m)},
-            headers={"User-Agent": settings.user_agent},
-        )
-        resp.raise_for_status()
-        pois = _parse_elements(resp.json().get("elements", []), lat, lon)
-        return pois[: settings.max_pois_per_category]
+        last_error: Exception | None = None
+        for url in (settings.overpass_url, *settings.overpass_mirrors):
+            try:
+                resp = client.post(url, data={"data": query}, headers=headers)
+                resp.raise_for_status()
+                pois = _parse_elements(resp.json().get("elements", []), lat, lon)
+                return pois[: settings.max_pois_per_category]
+            except httpx.HTTPError as exc:
+                last_error = exc
+                continue  # miroir suivant
+        raise last_error or RuntimeError("Aucun serveur Overpass joignable")
     finally:
         if own_client:
             client.close()
-        time.sleep(settings.politeness_delay_s)  # politesse envers le serveur public
+        time.sleep(settings.politeness_delay_s)  # politesse envers les serveurs publics

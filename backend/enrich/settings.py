@@ -10,16 +10,25 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Settings:
-    # Base de données
-    db_dsn: str = os.getenv("CASAGUIDE_DB", "postgresql://postgres@localhost/casaguide")
+    # Base de données — sans utilisateur explicite : psycopg prend l'utilisateur
+    # système (comportement standard sur macOS/Homebrew où le rôle 'postgres'
+    # n'existe pas par défaut).
+    db_dsn: str = os.getenv("CASAGUIDE_DB", "postgresql://localhost/casaguide")
 
     # Géocodage — Nominatim (OSM). Politique d'usage : 1 req/s max, User-Agent requis.
     nominatim_url: str = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org/search")
     user_agent: str = os.getenv("CASAGUIDE_UA", "CasaGuide/0.1 (contact@casaguide.example)")
 
-    # POI — Overpass API (OSM)
-    overpass_url: str = os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter")
-    overpass_timeout_s: int = 30
+    # POI — Overpass API (OSM). Le serveur principal overpass-api.de renvoie des
+    # 406 aux clients automatisés depuis avril 2026 : on privilégie les miroirs,
+    # avec bascule automatique (voir overpass.py).
+    overpass_url: str = os.getenv("OVERPASS_URL", "https://overpass.kumi.systems/api/interpreter")
+    overpass_mirrors: tuple = (
+        "https://overpass.private.coffee/api/interpreter",
+        "https://z.overpass-api.de/api/interpreter",
+        "https://overpass-api.de/api/interpreter",
+    )
+    overpass_timeout_s: int = 15
     politeness_delay_s: float = float(os.getenv("CASAGUIDE_DELAY", "1.0"))
     max_pois_per_category: int = int(os.getenv("CASAGUIDE_MAX_POIS", "8"))
 

@@ -104,3 +104,30 @@ répondent 503 si absente), `CASAGUIDE_JWT_EXPIRE_MIN`, `CASAGUIDE_CORS_ORIGINS`
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer
   `property_secrets` sur l'endpoint public (déchiffrement à la demande,
   sections sensibles selon `access_mode`).
+
+## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
+
+Correctifs déjà appliqués pendant le test : échelle de repli du géocodage
+(rooftop→street→city), miroirs Overpass avec bascule automatique (le serveur
+principal renvoie 406 aux clients automatisés depuis 2026), disjoncteur OSRM,
+tolérance aux échecs par catégorie, commits de progression en temps réel.
+
+À faire (par priorité) :
+1. Filtres qualité POI : exclure aeroway militaires/aéroclubs (garder les
+   aéroports IATA), vérifier la cohérence catégorie/tags (agence immobilière
+   taggée marketplace, vétérinaire en doctor), dédoublonner santé.
+2. Prompt descriptions : interdire toute affirmation géographique/factuelle
+   non fournie dans les données (hallucination observée : musée situé dans la
+   mauvaise ville).
+3. Les jobs `failed` ne doivent pas décompter du quota d'enrichissement.
+4. Jobs orphelins : au démarrage de l'API, requalifier les jobs `running` en
+   `failed` (les BackgroundTasks ne survivent pas aux redémarrages) ; à terme,
+   file de jobs persistante.
+5. UI : masquer walk_min au-delà de ~30 min (n'afficher que la voiture) ;
+   éditeur de position du logement sur carte quand geocode_accuracy != rooftop.
+6. Performance : ~40 s/catégorie Overpass → grouper les requêtes par rayon,
+   ou fournisseur Overpass géré ; vérifier pourquoi supermarket/taxi/
+   train_station manquent au guide de test.
+7. Vérifier un possible problème d'encodage UTF-8 dans 2 descriptions stockées.
+8. Console Anthropic : le rechargement automatique du crédit doit être activé
+   pour que l'API accepte les requêtes (constaté empiriquement).
