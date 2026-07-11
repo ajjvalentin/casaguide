@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CasaGuide — Project Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{--sand:#FAF7F2;--shell:#FFF;--ink:#1E2A32;--muted:#6B7A84;--sea:#0E5A73;
+        --line:#E7E0D4;--ok:#2E7D32;--prog:#EF6C00;--todo:#90A4AE;--block:#C62828;--lock:#5E35B1}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--sand);color:var(--ink);
+       font-family:"Instrument Sans",system-ui,sans-serif;font-variant-numeric:tabular-nums}
+  .wrap{max-width:900px;margin:0 auto;padding:0 20px 80px}
+  header{padding:32px 0 8px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:Fraunces,serif;font-size:32px;margin:.1em 0}
+  .rule{font-size:13px;background:#FFF6E5;border:1px solid #F0E2C0;border-radius:10px;
+        padding:10px 14px;color:#7A5A12;margin:14px 0}
+  .global{background:var(--shell);border:1px solid var(--line);border-radius:14px;
+          padding:18px 20px;margin:18px 0;display:flex;gap:26px;align-items:center;flex-wrap:wrap}
+  .pct{font-family:Fraunces,serif;font-size:44px;font-weight:700;color:var(--sea)}
+  .bar{flex:1;min-width:220px;height:12px;background:#EEE8DC;border-radius:6px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--sea);border-radius:6px}
+  .counts{display:flex;gap:8px;flex-wrap:wrap;font-size:12.5px}
+  .counts button{border:1px solid var(--line);background:var(--shell);border-radius:999px;
+        padding:5px 12px;cursor:pointer;font-weight:500}
+  .counts button.on{outline:2px solid var(--sea)}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+  h2{font-family:Fraunces,serif;font-size:21px;margin:34px 0 4px}
+  .phead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  .pbar{height:7px;background:#EEE8DC;border-radius:4px;overflow:hidden;margin:6px 0 12px}
+  .pbar i{display:block;height:100%;background:var(--ok)}
+  .ppct{font-size:13px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;background:var(--shell);border:1px solid var(--line);
+        border-radius:12px;overflow:hidden;font-size:13.5px}
+  th{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+     text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);background:#FCFAF6}
+  td{padding:9px 12px;border-bottom:1px solid #F1ECE2;vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td.id{color:var(--muted);white-space:nowrap;font-size:12px}
+  .badge{display:inline-block;border-radius:6px;padding:2px 9px;font-size:11.5px;
+         font-weight:600;color:#fff;white-space:nowrap}
+  td.date{white-space:nowrap;color:var(--muted);font-size:12.5px}
+  td.proof{font-size:12px;color:var(--muted)}
+  td.proof code{background:#F4F0E7;border-radius:4px;padding:1px 5px;font-size:11.5px}
+  footer{margin-top:44px;font-size:12px;color:var(--muted);text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">CasaGuide · Point de situation</div>
+    <h1>Project Tracker</h1>
+    <div class="rule"><b>Règle absolue</b> — une tâche n'est <b>DONE</b> que si : statut DONE
+      + date renseignée + preuve concrète référencée (fichier, commit, résultat de test).
+      Ce document est le seul état d'avancement reconnu du projet.</div>
+  </header>
+
+  <div class="global">
+    <div><div class="pct" id="gpct">–</div><div class="ppct">du MVP réalisé</div></div>
+    <div class="bar"><i id="gbar" style="width:0%"></i></div>
+    <div class="counts" id="counts"></div>
+  </div>
+
+  <main id="phases"></main>
+  <footer id="meta"></footer>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   ÉTAT DU PROJET — SOURCE DE VÉRITÉ, À METTRE À JOUR À CHAQUE SESSION
+   Statuts : TODO | IN_PROGRESS | BLOCKED (raison en preuve) | DONE | LOCKED
+   DONE exige date + preuve. Le % global ne compte que les phases 0 et 1 (MVP).
+   ════════════════════════════════════════════════════════════════════════ */
+const PROJECT = {
+  updated: "2026-07-11",
+  phases: [
+    { id:"P0", title:"Phase 0 — Fondations", mvp:true, items:[
+      {id:"F-01", item:"Cahier des charges v1.0 (14 sections, checklist §4 complète)",
+       status:"DONE", date:"2026-07-11", proof:"docs/cahier_des_charges.md"},
+      {id:"F-02", item:"Schéma PostgreSQL 15+/PostGIS (multi-tenant, secrets chiffrés)",
+       status:"DONE", date:"2026-07-11", proof:"db/schema.sql — exécuté sans erreur sur PG16+PostGIS, requête distance validée"},
+      {id:"F-03", item:"Seed : 43 sections pré-définies, 27 catégories POI, 3 plans",
+       status:"DONE", date:"2026-07-11", proof:"db/seed.sql — idempotence testée (double exécution), cohérence JSONB vérifiée"},
+      {id:"F-04", item:"Pipeline d'enrichissement (géocodage→Overpass→OSRM→Claude→DB)",
+       status:"DONE", date:"2026-07-11", proof:"backend/enrich/ — 2 tests d'intégration verts (test_pipeline.py)"},
+      {id:"F-05", item:"Dépôt structuré + CLAUDE.md + Git initialisé",
+       status:"DONE", date:"2026-07-11", proof:"~/Projects/casaguide, commits sur main"},
+      {id:"F-06", item:"API FastAPI : auth JWT, CRUD logements, enrichissement en tâche de fond, validation POI, guide public",
+       status:"DONE", date:"2026-07-11", proof:"backend/api/ (17 endpoints) — commit c5537b4, 11 tests verts"},
+      {id:"F-07", item:"Test réel de bout en bout (durcissement : repli géocodage, miroirs Overpass, disjoncteur OSRM, tolérance par catégorie)",
+       status:"DONE", date:"2026-07-11", proof:"125 POI réels Orihuela Costa, coût IA 3,45 ct — guide_result.json"},
+      {id:"F-08", item:"Prototype visuel du guide voyageur (carte Leaflet, filtres, urgences)",
+       status:"DONE", date:"2026-07-11", proof:"guide_preview.html sur données réelles"},
+    ]},
+    { id:"P1", title:"Phase 1 — MVP (CdC §12.1)", mvp:true, items:[
+      {id:"M-01", item:"Correctifs qualité post-test : filtres POI (militaires, incohérences catégorie), prompt anti-hallucination, quota hors jobs failed, requalification jobs orphelins, perf Overpass, encodage UTF-8",
+       status:"TODO", date:"", proof:"Liste détaillée : CLAUDE.md §Enseignements"},
+      {id:"M-02", item:"Config production : JWT persistant, chargement .env, secrets documentés",
+       status:"TODO", date:"", proof:""},
+      {id:"M-03", item:"Back-office : formulaire dynamique des 43 sections (généré depuis field_schema) + indicateur de complétude",
+       status:"TODO", date:"", proof:""},
+      {id:"M-04", item:"Back-office : écran de validation/rejet/édition des POI suggérés",
+       status:"TODO", date:"", proof:""},
+      {id:"M-05", item:"Back-office : éditeur de position du logement sur carte (si précision ≠ rooftop)",
+       status:"TODO", date:"", proof:""},
+      {id:"M-06", item:"Back-office : saisie des secrets chiffrés (wifi, boîte à clés) + QR wifi auto",
+       status:"TODO", date:"", proof:""},
+      {id:"M-07", item:"Publication du guide + QR code PDF imprimable",
+       status:"TODO", date:"", proof:""},
+      {id:"M-08", item:"Guide voyageur PWA branché sur l'API (remplace le prototype) : sections + POI + carte + contacts cliquables",
+       status:"TODO", date:"", proof:"Base visuelle : guide_preview.html"},
+      {id:"M-09", item:"Multilingue FR/EN/ES : traductions stockées, flag is_stale, sélecteur de langue",
+       status:"TODO", date:"", proof:""},
+      {id:"M-10", item:"Mode hors-ligne PWA (service worker, cache guide + tuiles zone)",
+       status:"TODO", date:"", proof:""},
+      {id:"M-11", item:"Déploiement production UE (HTTPS, sauvegardes, monitoring)",
+       status:"TODO", date:"", proof:""},
+    ]},
+    { id:"P2", title:"Phase 2 — Post-MVP (CdC §12.2)", mvp:false, items:[
+      {id:"V2-01", item:"Accès au guide par code PIN / dates de séjour", status:"TODO", date:"", proof:""},
+      {id:"V2-02", item:"Statistiques de consultation pour le propriétaire", status:"TODO", date:"", proof:""},
+      {id:"V2-03", item:"Signalement d'information obsolète par le voyageur", status:"TODO", date:"", proof:""},
+      {id:"V2-04", item:"Duplication de guide entre logements", status:"TODO", date:"", proof:""},
+      {id:"V2-05", item:"Facturation Stripe complète (abonnements §10)", status:"TODO", date:"", proof:""},
+      {id:"V2-06", item:"Langues étendues DE/NL + relecture des traductions", status:"TODO", date:"", proof:""},
+      {id:"V2-07", item:"Enrichissement Claude + web search : food_delivery, babysitter", status:"TODO", date:"", proof:"CLAUDE_ONLY_CATEGORIES dans overpass.py"},
+    ]},
+    { id:"P3", title:"Phase 3 — Extension (CdC §12.3)", mvp:false, items:[
+      {id:"V3-01", item:"Applications stores (Capacitor)", status:"TODO", date:"", proof:""},
+      {id:"V3-02", item:"Marque blanche conciergeries", status:"TODO", date:"", proof:""},
+      {id:"V3-03", item:"Intégration calendriers iCal (Airbnb/Booking) pour l'accès au séjour", status:"TODO", date:"", proof:""},
+      {id:"V3-04", item:"Google Places en option qualité", status:"TODO", date:"", proof:""},
+    ]},
+  ]
+};
+/* ═══════════════════ FIN DE L'ÉTAT — ne rien modifier dessous ═══════════ */
+
+const COLORS = {DONE:"var(--ok)", IN_PROGRESS:"var(--prog)", TODO:"var(--todo)",
+                BLOCKED:"var(--block)", LOCKED:"var(--lock)"};
+let activeFilter = null;
+
+function render(){
+  const all = PROJECT.phases.flatMap(p=>p.items);
+  const mvp = PROJECT.phases.filter(p=>p.mvp).flatMap(p=>p.items);
+  const done = s=>s.filter(i=>i.status==="DONE"||i.status==="LOCKED").length;
+  const pct = Math.round(100*done(mvp)/mvp.length);
+  document.getElementById("gpct").textContent = pct+" %";
+  document.getElementById("gbar").style.width = pct+"%";
+
+  const counts = document.getElementById("counts"); counts.innerHTML="";
+  for (const st of ["DONE","IN_PROGRESS","TODO","BLOCKED","LOCKED"]){
+    const n = all.filter(i=>i.status===st).length; if(!n && st!=="IN_PROGRESS") continue;
+    const b = document.createElement("button");
+    b.innerHTML = `<span class="dot" style="background:${COLORS[st]}"></span>${st} · ${n}`;
+    if (activeFilter===st) b.classList.add("on");
+    b.onclick = ()=>{ activeFilter = activeFilter===st ? null : st; render(); };
+    counts.appendChild(b);
+  }
+
+  const main = document.getElementById("phases"); main.innerHTML="";
+  for (const ph of PROJECT.phases){
+    const d = done(ph.items), t = ph.items.length, p = Math.round(100*d/t);
+    const sec = document.createElement("section");
+    sec.innerHTML = `<div class="phead"><h2>${ph.title}</h2>
+        <span class="ppct">${d}/${t} · ${p} %</span></div>
+      <div class="pbar"><i style="width:${p}%"></i></div>`;
+    const rows = ph.items.filter(i=>!activeFilter||i.status===activeFilter);
+    if (rows.length){
+      const tb = document.createElement("table");
+      tb.innerHTML = `<tr><th>ID</th><th>Tâche</th><th>Statut</th><th>Date</th><th>Preuve</th></tr>` +
+        rows.map(i=>`<tr>
+          <td class="id">${i.id}</td><td>${i.item}</td>
+          <td><span class="badge" style="background:${COLORS[i.status]}">${i.status}</span></td>
+          <td class="date">${i.date||"—"}</td>
+          <td class="proof">${i.proof?`<code>${i.proof}</code>`:"—"}</td></tr>`).join("");
+      sec.appendChild(tb);
+    }
+    main.appendChild(sec);
+  }
+  document.getElementById("meta").textContent =
+    `Dernière mise à jour : ${PROJECT.updated} · Source de vérité unique du projet CasaGuide`;
+}
+render();
+</script>
+</body>
+</html>

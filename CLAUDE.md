@@ -15,6 +15,12 @@ avant toute évolution fonctionnelle.
 
 ## État actuel (juillet 2026)
 
+**Source de vérité de l'avancement : `project_tracker.html`** (double-cliquer pour
+l'ouvrir). À la fin de chaque session de travail, mettre à jour le bloc
+`const PROJECT` de ce fichier : statuts TODO / IN_PROGRESS / BLOCKED / DONE /
+LOCKED — une tâche n'est DONE qu'avec **date + preuve concrète** (fichier,
+commit, résultat de test). Mettre aussi à jour le champ `updated`.
+
 | Composant | État |
 |---|---|
 | `db/schema.sql` | Schéma PostgreSQL 15+ / PostGIS — testé, validé |

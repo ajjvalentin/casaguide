@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Guide du logement — prototype CasaGuide</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --sand:#FAF7F2; --shell:#FFFFFF; --ink:#1E2A32; --muted:#6B7A84;
+    --sea:#0E5A73; --line:#E7E0D4; --alert:#C62828;
+    font-variant-numeric: tabular-nums;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--sand);color:var(--ink);
+       font-family:"Instrument Sans",system-ui,sans-serif;line-height:1.45}
+  .wrap{max-width:680px;margin:0 auto;padding:0 16px 64px}
+  header{padding:28px 0 10px}
+  .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:Fraunces,serif;font-weight:700;font-size:34px;margin:.1em 0 .05em}
+  .city{color:var(--muted);font-size:15px}
+  .warn{margin-top:12px;font-size:13px;background:#FFF6E5;border:1px solid #F0E2C0;
+        border-radius:10px;padding:8px 12px;color:#7A5A12}
+
+  .sos{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 6px}
+  .sos a{flex:1 1 100px;min-width:100px;text-decoration:none;background:var(--shell);
+         border:1px solid var(--line);border-left:4px solid var(--alert);
+         border-radius:10px;padding:10px 12px;color:var(--ink)}
+  .sos .num{font-family:Fraunces,serif;font-size:22px;font-weight:700;color:var(--alert)}
+  .sos .lbl{font-size:12px;color:var(--muted)}
+
+  #map{height:320px;border-radius:14px;border:1px solid var(--line);margin:14px 0 6px}
+  .chips{display:flex;gap:8px;overflow-x:auto;padding:10px 0 4px;position:sticky;top:0;
+         background:linear-gradient(var(--sand) 85%,transparent);z-index:500}
+  .chip{border:1px solid var(--line);background:var(--shell);border-radius:999px;
+        padding:6px 14px;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap}
+  .chip.on{background:var(--sea);border-color:var(--sea);color:#fff}
+
+  h2{font-family:Fraunces,serif;font-size:22px;margin:34px 0 2px}
+  .chapline{height:3px;width:44px;border-radius:2px;margin:0 0 14px}
+  h3{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+     margin:22px 0 8px;font-weight:600}
+
+  .card{display:flex;gap:14px;background:var(--shell);border:1px solid var(--line);
+        border-radius:12px;padding:12px 14px;margin-bottom:8px;align-items:flex-start}
+  .dist{min-width:64px;text-align:center;border-right:1px solid var(--line);padding-right:12px}
+  .dist b{font-family:Fraunces,serif;font-size:24px;font-weight:700;display:block;line-height:1}
+  .dist span{font-size:11px;color:var(--muted)}
+  .card h4{margin:0;font-size:15.5px;font-weight:600}
+  .card p{margin:4px 0 0;font-size:13.5px;color:#3C4A52}
+  .meta{margin-top:6px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap}
+  .meta a{color:var(--sea);text-decoration:none;font-weight:500}
+  .hours{font-size:12px;color:var(--muted);margin-top:4px}
+
+  .facts{background:var(--shell);border:1px solid var(--line);border-radius:12px;
+         padding:16px 18px;margin-bottom:10px;font-size:14px}
+  .facts b.tt{font-family:Fraunces,serif;font-size:17px}
+  .facts ul{margin:8px 0 0;padding-left:18px}
+  .facts li{margin:3px 0}
+  .quiet{display:inline-block;background:#EAF3F6;color:var(--sea);border-radius:8px;
+         padding:2px 10px;font-weight:600;margin-top:6px}
+  footer{margin-top:40px;font-size:12px;color:var(--muted);text-align:center}
+  #err{display:none;background:#FDECEC;border:1px solid #F2C4C4;border-radius:10px;
+       padding:14px;margin:20px 0;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Votre guide de séjour</div>
+    <h1 id="pname">Chargement…</h1>
+    <div class="city" id="pcity"></div>
+    <div class="warn" id="geo-warn" style="display:none">📍 Position approximative (centre de la zone) —
+      le propriétaire affinera le point exact sur la carte.</div>
+  </header>
+
+  <div id="err">Impossible de charger <code>guide_result.json</code>.<br>
+    Lancer d'abord, depuis le dossier du projet : <code>python3 -m http.server 8090</code>
+    puis ouvrir <code>http://localhost:8090/guide_preview.html</code>.</div>
+
+  <div class="sos" id="sos"></div>
+  <div id="map"></div>
+  <div class="chips" id="chips"></div>
+  <main id="content"></main>
+  <footer>Prototype CasaGuide — données OpenStreetMap &amp; IA, à valider par le propriétaire.</footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const CHAPTERS = {C:"Vie pratique", D:"Urgences & santé", E:"Services",
+                  F:"Restaurants & sorties", G:"Activités & tourisme", H:"Transports",
+                  A:"Arrivée", B:"Le logement", I:"Informations"};
+const ORDER = ["D","C","F","G","E","H","A","B","I"];
+
+function fmtDist(p){
+  if (p.walk_min != null && p.walk_min <= 30)
+    return {n:p.walk_min, u:"min à pied"};
+  if (p.drive_min != null) return {n:p.drive_min, u:"min en voiture"};
+  return {n:"–", u:""};
+}
+
+fetch("guide_result.json").then(r=>{
+  if(!r.ok) throw new Error(r.status); return r.json();
+}).then(g=>{
+  const P = g.property;
+  document.getElementById("pname").textContent = P.name || "Votre logement";
+  document.getElementById("pcity").textContent = `${P.city}, ${P.country_code}`;
+  document.getElementById("geo-warn").style.display = "block"; // accuracy 'city' sur ce test
+
+  // ── Urgences en accès direct ────────────────────────────────────────────
+  const sos = document.getElementById("sos");
+  const nums = (g.area_facts?.emergency_numbers?.items || []).slice(0,4);
+  for (const it of nums){
+    const a = document.createElement("a");
+    a.href = "tel:" + it.number.replace(/\s/g,"");
+    a.innerHTML = `<span class="num">${it.number}</span><span class="lbl">${it.label}</span>`;
+    sos.appendChild(a);
+  }
+
+  // ── Carte ───────────────────────────────────────────────────────────────
+  const map = L.map("map").setView([P.lat, P.lon], 14);
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    {attribution:"© OpenStreetMap"}).addTo(map);
+  L.marker([P.lat, P.lon], {icon: L.divIcon({className:"",
+    html:'<div style="font-size:26px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))">🏠</div>',
+    iconAnchor:[13,13]})}).addTo(map).bindPopup("<b>Votre logement</b>");
+
+  const markers = [];
+  for (const p of g.pois){
+    const d = fmtDist(p);
+    const m = L.circleMarker([p.lat, p.lon], {radius:7, weight:2, color:"#fff",
+      fillColor:p.map_color||"#0E5A73", fillOpacity:.95});
+    m.bindPopup(`<b>${p.name}</b><br>${p.category_name?.fr||""} · ${d.n} ${d.u}` +
+      (p.phone?`<br>📞 <a href="tel:${p.phone}">${p.phone}</a>`:""));
+    m.chapter = p.chapter; m.addTo(map); markers.push(m);
+  }
+
+  // ── Filtres par chapitre ────────────────────────────────────────────────
+  const chapters = [...new Set(g.pois.map(p=>p.chapter))]
+                   .sort((a,b)=>ORDER.indexOf(a)-ORDER.indexOf(b));
+  const chips = document.getElementById("chips");
+  const mkChip = (label,val)=>{ const c=document.createElement("button");
+    c.className="chip"+(val===null?" on":""); c.textContent=label;
+    c.onclick=()=>{ [...chips.children].forEach(x=>x.classList.remove("on"));
+      c.classList.add("on"); filter(val); }; chips.appendChild(c); };
+  mkChip("Tout", null);
+  chapters.forEach(ch=>mkChip(CHAPTERS[ch]||ch, ch));
+
+  function filter(ch){
+    markers.forEach(m=>{ (ch===null||m.chapter===ch) ? m.addTo(map) : map.removeLayer(m); });
+    document.querySelectorAll("[data-chapter]").forEach(s=>{
+      s.style.display = (ch===null || s.dataset.chapter===ch) ? "" : "none"; });
+  }
+
+  // ── Listes par chapitre puis catégorie, triées par distance ────────────
+  const content = document.getElementById("content");
+  for (const ch of chapters){
+    const sec = document.createElement("section");
+    sec.dataset.chapter = ch;
+    const color = g.pois.find(p=>p.chapter===ch)?.map_color || "#0E5A73";
+    sec.innerHTML = `<h2>${CHAPTERS[ch]||ch}</h2><div class="chapline" style="background:${color}"></div>`;
+    const byCat = {};
+    g.pois.filter(p=>p.chapter===ch).forEach(p=>{
+      (byCat[p.category_code] ||= []).push(p); });
+    for (const cat of Object.keys(byCat)){
+      const list = byCat[cat].sort((a,b)=>(a.dist_walk_m??9e9)-(b.dist_walk_m??9e9));
+      const h = document.createElement("h3");
+      h.textContent = `${list[0].category_name?.fr || cat} · ${list.length}`;
+      sec.appendChild(h);
+      for (const p of list.slice(0,6)){
+        const d = fmtDist(p);
+        const card = document.createElement("div"); card.className="card";
+        card.style.borderLeft = `4px solid ${p.map_color||"#0E5A73"}`;
+        card.innerHTML = `
+          <div class="dist"><b>${d.n}</b><span>${d.u}</span></div>
+          <div>
+            <h4>${p.name}</h4>
+            ${p.description_md?`<p>${p.description_md}</p>`:""}
+            ${p.opening_hours?`<div class="hours">🕐 ${p.opening_hours}</div>`:""}
+            <div class="meta">
+              ${p.phone?`<a href="tel:${p.phone}">Appeler</a>`:""}
+              ${p.website?`<a href="${p.website}" target="_blank" rel="noopener">Site web</a>`:""}
+              <a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}"
+                 target="_blank" rel="noopener">Itinéraire</a>
+            </div>
+          </div>`;
+        sec.appendChild(card);
+      }
+    }
+    content.appendChild(sec);
+  }
+
+  // ── Vie pratique locale (area_facts) ────────────────────────────────────
+  const af = g.area_facts || {};
+  const local = document.createElement("section");
+  local.innerHTML = `<h2>Bon à savoir sur place</h2><div class="chapline" style="background:#0E5A73"></div>`;
+  if (af.waste_rules){
+    const w = document.createElement("div"); w.className="facts";
+    w.innerHTML = `<b class="tt">Poubelles &amp; tri</b><p>${af.waste_rules.summary||""}</p>
+      <ul>${(af.waste_rules.containers||[]).map(c=>`<li><b>${c.color_or_type}</b> — ${c.accepts}</li>`).join("")}</ul>`;
+    local.appendChild(w);
+  }
+  if (af.noise_rules){
+    const n = document.createElement("div"); n.className="facts";
+    n.innerHTML = `<b class="tt">Tranquillité du voisinage</b><p>${af.noise_rules.summary||""}</p>
+      <span class="quiet">🌙 ${af.noise_rules.quiet_hours||""}</span>`;
+    local.appendChild(n);
+  }
+  if (af.emergency_numbers){
+    const e = document.createElement("div"); e.className="facts";
+    e.innerHTML = `<b class="tt">Tous les numéros utiles</b>
+      <ul>${af.emergency_numbers.items.map(i=>`<li><b>${i.number}</b> — ${i.label}</li>`).join("")}</ul>
+      <p style="color:var(--muted);font-size:13px">${af.emergency_numbers.notes||""}</p>`;
+    local.appendChild(e);
+  }
+  content.appendChild(local);
+}).catch(()=>{ document.getElementById("err").style.display="block"; });
+</script>
+</body>
+</html>
