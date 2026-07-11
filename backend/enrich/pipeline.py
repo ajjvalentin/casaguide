@@ -62,24 +62,25 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             origin = (prop["lat"], prop["lon"])
 
             # ── 2 + 3. POI Overpass puis distances ─────────────────────────
+            # Overpass : une requête par palier de rayon (union de sélecteurs),
+            # résultats re-ventilés par catégorie via leurs tags (perf, M-01).
             categories = db.load_categories(conn)
+            wanted = [c for c in categories
+                      if (not only_categories or c["code"] in only_categories)
+                      and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
+            grouped, failed_categories = overpass.fetch_grouped(
+                wanted, origin[0], origin[1], client=http_client)
+
             all_editorial: list[dict] = []
-            failed_categories: dict[str, str] = {}
-            for cat in categories:
+            for cat in wanted:
                 code = cat["code"]
-                if only_categories and code not in only_categories:
+                pois = grouped.get(code) or []
+                if not pois:
                     continue
-                if code in overpass.CLAUDE_ONLY_CATEGORIES:
-                    continue  # traité en V1.1 par Claude + web search (§5)
                 try:
-                    pois = overpass.fetch_category(
-                        code, origin[0], origin[1], cat["default_radius_m"],
-                        client=http_client)
-                    if not pois:
-                        continue
                     distance.compute_distances(origin, pois, client=http_client)
                 except Exception as exc:
-                    # Une catégorie en échec ne doit pas faire échouer le guide :
+                    # Un échec de distances ne doit pas faire perdre la catégorie :
                     # on la trace et on continue (ré-enrichissable plus tard).
                     failed_categories[code] = f"{type(exc).__name__}: {exc}"[:120]
                     continue

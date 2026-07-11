@@ -283,6 +283,11 @@ def create_pending_job(conn, property_id: str, trigger: str) -> str:
 
 
 def count_jobs_current_month(conn, property_id: str) -> int:
+    """Enrichissements décomptés du quota mensuel (§5.2).
+
+    Les jobs en échec ne comptent pas (`status <> 'failed'`) : une tentative
+    qui n'a rien produit — clé IA invalide, serveurs OSM indisponibles… — ne
+    doit pas consommer le quota du propriétaire (M-01)."""
     return conn.execute(
         """SELECT count(*) AS n FROM enrichment_jobs
            WHERE property_id = %s
@@ -290,6 +295,20 @@ def count_jobs_current_month(conn, property_id: str) -> int:
              AND status <> 'failed'""",
         (property_id,),
     ).fetchone()["n"]
+
+
+def fail_orphan_running_jobs(conn) -> int:
+    """Requalifie en 'failed' les jobs restés 'running' : leur BackgroundTask ne
+    survit pas à un redémarrage d'uvicorn (M-01). Appelé au démarrage de l'API.
+    Retourne le nombre de jobs requalifiés."""
+    rows = conn.execute(
+        """UPDATE enrichment_jobs
+           SET status = 'failed', error = 'interrompu par redémarrage',
+               finished_at = now()
+           WHERE status = 'running'
+           RETURNING id""",
+    ).fetchall()
+    return len(rows)
 
 
 def list_jobs(conn, property_id: str) -> list[dict]:

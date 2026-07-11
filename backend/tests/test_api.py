@@ -37,7 +37,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # racine backend/
 
-from api import crypto  # noqa: E402
+from api import crypto, repo  # noqa: E402
 from api.deps import get_enrichment_runner  # noqa: E402
 from api.main import app  # noqa: E402
 from enrich import pipeline  # noqa: E402
@@ -73,12 +73,14 @@ OVERPASS_BY_CATEGORY = {
 
 
 def _overpass_payload(query: str) -> dict:
+    # Requêtes groupées par palier de rayon : union des catégories présentes.
+    elements: list[dict] = []
     for cat, sel in {"hospital": '"amenity"="hospital"',
                      "supermarket": '"shop"="supermarket"',
                      "restaurant": '"amenity"="restaurant"'}.items():
         if sel in query:
-            return {"elements": OVERPASS_BY_CATEGORY[cat]}
-    return {"elements": []}
+            elements.extend(OVERPASS_BY_CATEGORY[cat])
+    return {"elements": elements}
 
 
 def _osrm_payload(url: str) -> dict:
@@ -431,3 +433,74 @@ def test_public_guide(client):
     # area_facts locaux présents (urgences, tri, bruit)
     assert set(data["area_facts"]) == {"emergency_numbers", "waste_rules", "noise_rules"}
     assert data["area_facts"]["emergency_numbers"]["items"][0]["number"] == "112"
+
+
+# ── Quota : les jobs en échec ne comptent pas (M-01, tâche 3) ────────────────
+
+def test_quota_excludes_failed_jobs(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("INSERT INTO enrichment_jobs (property_id, trigger, status) "
+                     "VALUES (%s, 'manual', 'failed')", (pid,))
+        conn.execute("INSERT INTO enrichment_jobs (property_id, trigger, status) "
+                     "VALUES (%s, 'manual', 'failed')", (pid,))
+        conn.execute("INSERT INTO enrichment_jobs (property_id, trigger, status) "
+                     "VALUES (%s, 'manual', 'done')", (pid,))
+        conn.commit()
+    # Seul le job 'done' est décompté ; les deux 'failed' sont ignorés
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        assert repo.count_jobs_current_month(conn, pid) == 1
+
+
+# ── Requalification des jobs orphelins au démarrage (M-01, tâche 4) ──────────
+
+def test_startup_requeues_orphan_running_jobs(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    with psycopg.connect(settings.db_dsn) as conn:
+        row = conn.execute(
+            "INSERT INTO enrichment_jobs (property_id, trigger, status, started_at) "
+            "VALUES (%s, 'manual', 'running', now()) RETURNING id", (pid,)).fetchone()
+        conn.commit()
+    job_id = str(row[0])
+
+    # Entrer dans le context manager déclenche l'événement de démarrage (lifespan)
+    with TestClient(app):
+        pass
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        job = conn.execute("SELECT status, error FROM enrichment_jobs WHERE id = %s",
+                           (job_id,)).fetchone()
+    assert job["status"] == "failed"
+    assert job["error"] == "interrompu par redémarrage"
+
+
+# ── Encodage : le guide public préserve l'UTF-8 (M-01, tâche 7) ──────────────
+
+def test_public_guide_preserves_utf8(client):
+    """Le stockage est en UTF-8 (vérifié en base) ; on garde une garde de
+    non-régression sur le chemin d'export (l'endpoint public sert le JSON)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom,
+                                 description_md, source, status)
+               VALUES (%s, 'beach', 'Playa Cala Bosque',
+                       ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                       'Petite plage de sable encadrée de rochers, idéale pour la baignade.',
+                       'owner', 'approved')""",
+            (pid, PROP_LON, PROP_LAT))
+        conn.commit()
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    g = client.get(f"/g/{token}")
+    assert g.status_code == 200
+    assert "�" not in g.text            # aucun caractère de remplacement
+    desc = g.json()["pois"][0]["description_md"]
+    assert "encadrée" in desc and "�" not in desc

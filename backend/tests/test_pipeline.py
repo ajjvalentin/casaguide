@@ -55,12 +55,15 @@ OVERPASS_BY_CATEGORY = {
 
 
 def _overpass_payload(query: str) -> dict:
+    # Requêtes groupées par palier de rayon : la réponse est l'UNION des
+    # catégories dont un sélecteur figure dans la requête (re-ventilées par tags).
+    elements: list[dict] = []
     for cat, sel in {"hospital": '"amenity"="hospital"',
                      "supermarket": '"shop"="supermarket"',
                      "restaurant": '"amenity"="restaurant"'}.items():
         if sel in query:
-            return {"elements": OVERPASS_BY_CATEGORY[cat]}
-    return {"elements": []}
+            elements.extend(OVERPASS_BY_CATEGORY[cat])
+    return {"elements": elements}
 
 
 def _osrm_payload(url: str) -> dict:
@@ -119,6 +122,10 @@ class FakeAnthropic:
 def property_id():
     pid, oid = str(uuid.uuid4()), str(uuid.uuid4())
     with psycopg.connect(settings.db_dsn) as conn:
+        # Isolation : repartir d'une zone ES vierge. Les area_facts sont
+        # mutualisés par (pays, commune) ; d'éventuels vestiges (ex. données
+        # d'un test réel) fausseraient le décompte des coûts (area_facts sauté).
+        conn.execute("DELETE FROM area_facts WHERE country_code = 'ES'")
         conn.execute("INSERT INTO owners (id, email, full_name) VALUES (%s, %s, 'Test')",
                      (oid, f"{oid}@test.local"))
         conn.execute(

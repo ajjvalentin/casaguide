@@ -75,7 +75,7 @@
    DONE exige date + preuve. Le % global ne compte que les phases 0 et 1 (MVP).
    ════════════════════════════════════════════════════════════════════════ */
 const PROJECT = {
-  updated: "2026-07-11",
+  updated: "2026-07-12",
   phases: [
     { id:"P0", title:"Phase 0 — Fondations", mvp:true, items:[
       {id:"F-01", item:"Cahier des charges v1.0 (14 sections, checklist §4 complète)",
@@ -97,7 +97,7 @@ const PROJECT = {
     ]},
     { id:"P1", title:"Phase 1 — MVP (CdC §12.1)", mvp:true, items:[
       {id:"M-01", item:"Correctifs qualité post-test : filtres POI (militaires, incohérences catégorie), prompt anti-hallucination, quota hors jobs failed, requalification jobs orphelins, perf Overpass, encodage UTF-8",
-       status:"TODO", date:"", proof:"Liste détaillée : CLAUDE.md §Enseignements"},
+       status:"DONE", date:"2026-07-12", proof:"overpass.py (filtres cohérence + aéroports publics + dédoublonnage santé + fetch_grouped ~5 requêtes), claude_enrich.py (_POI_PROMPT anti-hallucination), api/repo.py (quota hors failed), api/main.py (lifespan requalifie jobs orphelins) — 20 tests verts (test_overpass_quality.py + test_api.py). Diagnostic job 6c450f9e : supermarket/taxi = échecs Overpass 406 transitoires (corrigés par regroupement), train_station = absence de gare dans le rayon (donnée réelle). Encodage : base propre (0 U+FFFD, « encadrée » intact), mojibake = artefact d'export"},
       {id:"M-02", item:"Config production : JWT persistant, chargement .env, secrets documentés",
        status:"TODO", date:"", proof:""},
       {id:"M-03", item:"Back-office : formulaire dynamique des 43 sections (généré depuis field_schema) + indicateur de complétude",

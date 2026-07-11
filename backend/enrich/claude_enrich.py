@@ -44,9 +44,21 @@ Voici des points d'intérêt proches d'un logement de vacances à {city}
 ({country_code}). Pour chacun, écris une description d'UNE phrase (max 25 mots),
 utile et factuelle, en français, sans superlatifs inventés.
 
+RÈGLES STRICTES (anti-hallucination) — le respect est impératif :
+- N'affirme AUCUN fait qui ne découle pas des données fournies ici (nom,
+  catégorie, ville {city}). En particulier, n'invente jamais de localisation,
+  de commune, de quartier, de distance, d'horaire, de prix, de note ou
+  d'anecdote historique.
+- Ne cite pas d'autre ville que {city}, sauf si elle apparaît explicitement
+  dans le nom du POI.
+- Limite-toi au TYPE d'établissement (déduit de sa catégorie) et à son usage
+  pour un vacancier, formulé de façon générique et prudente.
+- Si tu n'as rien de fiable et de spécifique à écrire, renvoie une chaîne vide
+  ("") pour ce POI plutôt que d'inventer.
+
 Réponds UNIQUEMENT avec un objet JSON valide : {{"<ref>": "description", ...}}
 
-Points d'intérêt :
+Points d'intérêt (ref, nom, catégorie) :
 {poi_list}
 """
 

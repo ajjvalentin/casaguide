@@ -110,6 +110,21 @@ répondent 503 si absente), `CASAGUIDE_JWT_EXPIRE_MIN`, `CASAGUIDE_CORS_ORIGINS`
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer
   `property_secrets` sur l'endpoint public (déchiffrement à la demande,
   sections sensibles selon `access_mode`).
+- Cohérence catégorie/tags OSM (M-01) : `overpass.category_matches` rejette les
+  POI incohérents (agence/minimarket taggés `marketplace`, `office=*`,
+  vétérinaire hors catégorie `veterinary`) ; aéroports limités aux aérodromes
+  publics/IATA (pas de bases militaires ni d'aéroclubs). Toute nouvelle
+  catégorie doit être ajoutée à `CATEGORY_TAGS` (les sélecteurs en dérivent).
+- Perf Overpass : `overpass.fetch_grouped` regroupe les catégories par palier de
+  rayon (`_RADIUS_BUCKETS`) en ~5 requêtes au lieu de ~25, puis re-filtre chaque
+  catégorie à son rayon exact du seed. Un échec de palier marque toutes ses
+  catégories `failed` (ré-enrichissables) sans casser le guide.
+- Jobs orphelins : les `BackgroundTasks` ne survivent pas à un redémarrage
+  d'uvicorn → le `lifespan` de l'API requalifie au démarrage les jobs `running`
+  en `failed` (`repo.fail_orphan_running_jobs`). À terme : file persistante.
+- Encodage : le stockage est en UTF-8 correct (psycopg) ; tout mojibake `U+FFFD`
+  provient d'un **export/affichage** mal encodé, pas de la base — déclarer
+  `charset=utf-8` et écrire les fichiers avec `encoding="utf-8"`.
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 
@@ -118,22 +133,23 @@ Correctifs déjà appliqués pendant le test : échelle de repli du géocodage
 principal renvoie 406 aux clients automatisés depuis 2026), disjoncteur OSRM,
 tolérance aux échecs par catégorie, commits de progression en temps réel.
 
-À faire (par priorité) :
-1. Filtres qualité POI : exclure aeroway militaires/aéroclubs (garder les
-   aéroports IATA), vérifier la cohérence catégorie/tags (agence immobilière
-   taggée marketplace, vétérinaire en doctor), dédoublonner santé.
-2. Prompt descriptions : interdire toute affirmation géographique/factuelle
-   non fournie dans les données (hallucination observée : musée situé dans la
-   mauvaise ville).
-3. Les jobs `failed` ne doivent pas décompter du quota d'enrichissement.
-4. Jobs orphelins : au démarrage de l'API, requalifier les jobs `running` en
-   `failed` (les BackgroundTasks ne survivent pas aux redémarrages) ; à terme,
-   file de jobs persistante.
-5. UI : masquer walk_min au-delà de ~30 min (n'afficher que la voiture) ;
-   éditeur de position du logement sur carte quand geocode_accuracy != rooftop.
-6. Performance : ~40 s/catégorie Overpass → grouper les requêtes par rayon,
-   ou fournisseur Overpass géré ; vérifier pourquoi supermarket/taxi/
-   train_station manquent au guide de test.
-7. Vérifier un possible problème d'encodage UTF-8 dans 2 descriptions stockées.
-8. Console Anthropic : le rechargement automatique du crédit doit être activé
-   pour que l'API accepte les requêtes (constaté empiriquement).
+Traité par **M-01** (12/07/2026, commit dédié — voir `project_tracker.html`) :
+1. ✅ Filtres qualité POI (aéroports publics/IATA, cohérence catégorie/tags,
+   dédoublonnage santé) — `overpass.category_matches` + `_dedup_health_categories`.
+2. ✅ Prompt descriptions anti-hallucination — `claude_enrich._POI_PROMPT`.
+3. ✅ Jobs `failed` hors quota — `repo.count_jobs_current_month`.
+4. ✅ Requalification des jobs orphelins au démarrage — `api/main.py` (lifespan).
+6. ✅ Perf Overpass : regroupement par palier de rayon (~5 requêtes) —
+   `overpass.fetch_grouped`. Diagnostic du guide de test : `supermarket`/`taxi`
+   manquaient à cause d'**échecs Overpass 406 transitoires** (trop de requêtes
+   séquentielles → corrigé par le regroupement + repli miroirs) ; `train_station`
+   manquait car **aucune gare dans le rayon** (absence de donnée réelle).
+7. ✅ Encodage : **aucun** `U+FFFD` en base (stockage UTF-8 correct) ; le mojibake
+   observé était un artefact d'export/affichage (voir Pièges connus).
+
+Restant :
+5. UI (back-office/PWA, cf. M-03/M-05) : masquer `walk_min` au-delà de ~30 min
+   (n'afficher que la voiture) ; éditeur de position du logement sur carte quand
+   `geocode_accuracy != rooftop`.
+8. Ops — Console Anthropic : activer le rechargement automatique du crédit pour
+   que l'API accepte les requêtes (constaté empiriquement ; cf. M-02).
