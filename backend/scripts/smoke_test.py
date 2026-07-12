@@ -129,12 +129,12 @@ def main() -> None:
                   f" {'' if walk is None else str(walk)+' min à pied'}"
                   f"{'' if drive is None else ' / ' + str(drive) + ' min en voiture'}")
 
-        facts = guide.get("area_facts", [])
+        facts = guide.get("area_facts") or {}
+        if isinstance(facts, list):  # tolérance aux deux formats
+            facts = {f.get("fact_type", "?"): f.get("content", {}) for f in facts}
         if facts:
             print(f"\nDonnées locales (area_facts) : {len(facts)}")
-            for f in facts:
-                ft = f.get("fact_type", "?")
-                content = f.get("content", {})
+            for ft, content in facts.items():
                 if ft == "emergency_numbers":
                     nums = ", ".join(f"{i.get('label')}: {i.get('number')}"
                                      for i in content.get("items", [])[:4])
