@@ -75,7 +75,7 @@
    DONE exige date + preuve. Le % global ne compte que les phases 0 et 1 (MVP).
    ════════════════════════════════════════════════════════════════════════ */
 const PROJECT = {
-  updated: "2026-07-12",
+  updated: "2026-07-13",
   phases: [
     { id:"P0", title:"Phase 0 — Fondations", mvp:true, items:[
       {id:"F-01", item:"Cahier des charges v1.0 (14 sections, checklist §4 complète)",
@@ -101,11 +101,11 @@ const PROJECT = {
       {id:"M-02", item:"Config production : JWT persistant, chargement .env, secrets documentés",
        status:"TODO", date:"", proof:""},
       {id:"M-03", item:"Back-office : formulaire dynamique des 43 sections (généré depuis field_schema) + indicateur de complétude",
-       status:"TODO", date:"", proof:""},
+       status:"DONE", date:"2026-07-13", proof:"frontend/ SPA statique servie par FastAPI (api/main.py monte /). Éditeur : frontend/js/views/editor.js + components/dynform.js (types text/textarea/time/bool/number/select/url/phone + groupes repeat + secrets chiffrés + encarts IA), navigation par chapitres A→I avec complétude, sauvegarde par section (bouton + Cmd/Ctrl+S). Vérifié en navigateur headless (login/liste/éditeur/secret/repeat, 0 erreur JS) ; identité guide_preview.html"},
       {id:"M-04", item:"Back-office : écran de validation/rejet/édition des POI suggérés",
-       status:"TODO", date:"", proof:""},
+       status:"DONE", date:"2026-07-13", proof:"frontend/js/views/pois.js : liste par catégorie + carte Leaflet synchronisée (survol liste↔carte), Approuver/Rejeter/Modifier (nom, tél, site, description, coup de cœur), « tout approuver » par catégorie, filtres suggérés/retenus/rejetés. list_pois enrichi (catégorie/icône/couleur) — api/repo.py. Rendu navigateur vérifié"},
       {id:"M-05", item:"Back-office : éditeur de position du logement sur carte (si précision ≠ rooftop)",
-       status:"TODO", date:"", proof:""},
+       status:"DONE", date:"2026-07-13", proof:"editor.js : bandeau d'alerte si geocode_accuracy≠rooftop + mini-carte à marqueur déplaçable → PATCH lat/lon (geocode_source='manual') puis proposition de recalcul. Nouvel endpoint POST /recompute-distances (api/routers/properties.py, injectable pour tests) + GET /stats — 4 tests d'intégration verts (test_api.py, 24 au total)"},
       {id:"M-06", item:"Back-office : saisie des secrets chiffrés (wifi, boîte à clés) + QR wifi auto",
        status:"TODO", date:"", proof:""},
       {id:"M-07", item:"Publication du guide + QR code PDF imprimable",

@@ -27,8 +27,33 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | `db/seed.sql` | 43 sections pré-définies + 27 catégories POI + 3 plans — idempotent, testé |
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
 | `backend/enrich/` | Pipeline d'enrichissement complet — testé (2 tests d'intégration verts) |
-| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, guide public `GET /g/{token}` — testé (9 tests d'intégration verts) |
-| Frontend (back-office + guide PWA) | **À construire** (prochaine étape) |
+| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, `/stats`, `/recompute-distances`, guide public `GET /g/{token}` — testé (24 tests d'intégration verts) |
+| `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
+| Guide voyageur PWA | **À construire** (M-08, base visuelle `guide_preview.html`) |
+
+## Architecture frontend (`frontend/`, M-03/M-04/M-05)
+
+- **SPA sans build** : HTML + modules ES natifs, servie en statique par FastAPI
+  (`api/main.py` monte `frontend/` sur `/` **en dernier** — les routes `/api`,
+  `/g`, `/health`, `/docs` sont déclarées avant et priment ; routage par ancre,
+  le serveur ne sert jamais que `index.html` + assets). Aucun framework lourd.
+- **Leaflet** (tuiles OSM) et **Lucide** (icônes) chargés par CDN ; l'app reste
+  fonctionnelle si le CDN d'icônes tombe (libellés textuels toujours présents).
+- **Identité** : tokens visuels de `guide_preview.html` (sable `#FAF7F2`, encre
+  `#1E2A32`, mer `#0E5A73`, Fraunces titres / Instrument Sans texte, couleurs de
+  chapitre du seed) — centralisés dans `frontend/css/app.css`.
+- **Organisation** : `js/api.js` (client + 401→déconnexion), `js/store.js`
+  (jeton en sessionStorage), `js/ui.js` (DOM/toasts/modales), `js/nav.js`
+  (routage par ancre), `js/app.js` (ossature), `js/views/*` (login, properties,
+  editor, pois), `js/components/dynform.js` (formulaire généré depuis
+  `field_schema`). **Tout passe par l'API existante** (même origine, pas de CORS).
+- **Secrets** (§8) : les champs chiffrés (wifi_pass, keybox_code) sont saisis dans
+  l'éditeur mais envoyés à `PUT /secrets` (jamais dans le contenu de section). Le
+  `PUT /secrets` **remplace** l'objet complet → l'éditeur conserve l'état des
+  autres secrets et renvoie l'objet entier à chaque sauvegarde.
+- **Test navigateur** : Chrome headless (`--dump-dom`, `--screenshot`) contre un
+  harnais à `fetch` simulé (créé puis supprimé — ne jamais laisser de fichier de
+  test dans `frontend/`, qui est servi publiquement en statique).
 
 ## Stack et conventions
 
@@ -90,11 +115,12 @@ répondent 503 si absente), `CASAGUIDE_JWT_EXPIRE_MIN`, `CASAGUIDE_CORS_ORIGINS`
    area_facts (jamais les secrets), avec entêtes `noindex` et cache. Restent à
    ajouter selon les besoins : upload media (S3), OAuth Google, rate-limiting,
    pool de connexions (`psycopg_pool`), traductions.
-2. **Back-office** : formulaire dynamique généré depuis
-   `section_templates.field_schema` (types text/textarea/time/bool/number/
-   select/url + groupes `repeat`), indicateur de complétude, écran de
-   validation des suggestions.
-3. **Guide voyageur PWA** : mobile-first, carte Leaflet + tuiles OSM, POI par
+2. ✅ **Back-office** (`frontend/`, M-03/M-04/M-05) : formulaire dynamique généré
+   depuis `section_templates.field_schema` (text/textarea/time/bool/number/
+   select/url/phone + groupes `repeat` + secrets chiffrés), complétude par
+   chapitre, validation des POI (carte Leaflet synchronisée, actions groupées),
+   éditeur de position sur carte. Restent : upload media (S3), traductions UI.
+3. **Guide voyageur PWA** (M-08) : mobile-first, carte Leaflet + tuiles OSM, POI par
    catégorie (icône/couleur du seed), hors-ligne, sélecteur de langue.
 4. **Traductions stockées** (`section_translations`, `poi_translations`,
    flag `is_stale`) puis Stripe, statistiques, accès par dates de séjour (V2).

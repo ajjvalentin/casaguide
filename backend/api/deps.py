@@ -7,7 +7,7 @@ import jwt
 from fastapi import Depends, HTTPException, Path, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from enrich import db, pipeline
+from enrich import db, distance, pipeline
 
 from . import repo, security
 
@@ -98,3 +98,21 @@ def get_enrichment_runner() -> EnrichmentRunner:
     """Surchargée dans les tests par un exécuteur sans réseau
     (app.dependency_overrides[get_enrichment_runner])."""
     return _default_runner
+
+
+# ── Calcul de distances (recalcul après repositionnement manuel, M-05) ───────
+
+# (origin lat/lon, liste de POI mutés en place avec dist_*_m / *_min)
+DistanceComputer = Callable[[tuple[float, float], list[dict]], None]
+
+
+def _default_distance_computer(origin: tuple[float, float],
+                               pois: list[dict]) -> None:
+    """Recalcul réel via OSRM (repli haversine intégré à compute_distances)."""
+    distance.compute_distances(origin, pois)
+
+
+def get_distance_computer() -> DistanceComputer:
+    """Surchargée dans les tests par un calcul sans réseau
+    (app.dependency_overrides[get_distance_computer])."""
+    return _default_distance_computer

@@ -38,9 +38,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # racine backend/
 
 from api import crypto, repo  # noqa: E402
-from api.deps import get_enrichment_runner  # noqa: E402
+from api.deps import get_distance_computer, get_enrichment_runner  # noqa: E402
 from api.main import app  # noqa: E402
 from enrich import pipeline  # noqa: E402
+from enrich.overpass import haversine_m  # noqa: E402
 from enrich.settings import settings  # noqa: E402
 
 PROP_LAT, PROP_LON = 37.9280, -0.7482  # Orihuela Costa
@@ -129,6 +130,16 @@ class FakeAnthropic:
     messages = FakeMessages()
 
 
+def _test_distance_computer(origin, pois) -> None:
+    """Recalcul de distances sans réseau (haversine × détour), pour M-05."""
+    for p in pois:
+        m = round(haversine_m(origin[0], origin[1], p["lat"], p["lon"]) * 1.3)
+        p["dist_walk_m"] = m
+        p["walk_min"] = max(1, round(m / 1000 / 4.8 * 60))
+        p["dist_drive_m"] = m
+        p["drive_min"] = max(1, round(m / 1000 / 40 * 60))
+
+
 def _test_runner(property_id: str, trigger: str, job_id: str) -> None:
     """Exécuteur d'enrichissement sans réseau, injecté à la place du vrai pipeline."""
     settings.politeness_delay_s = 0
@@ -143,6 +154,7 @@ def _test_runner(property_id: str, trigger: str, job_id: str) -> None:
 @pytest.fixture()
 def client():
     app.dependency_overrides[get_enrichment_runner] = lambda: _test_runner
+    app.dependency_overrides[get_distance_computer] = lambda: _test_distance_computer
     emails: list[str] = []
     c = TestClient(app)
     c.created_emails = emails  # type: ignore[attr-defined]
@@ -504,3 +516,92 @@ def test_public_guide_preserves_utf8(client):
     assert "�" not in g.text            # aucun caractère de remplacement
     desc = g.json()["pois"][0]["description_md"]
     assert "encadrée" in desc and "�" not in desc
+
+
+# ── Indicateurs de complétude et de POI (back-office M-03/M-04) ───────────────
+
+def test_property_stats(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+
+    # Logement vierge : aucune section complétée, aucun POI
+    s0 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"])
+    assert s0.status_code == 200
+    assert s0.json()["completion_pct"] == 0
+    assert s0.json()["sections_total"] == 43  # catalogue complet du seed
+    assert s0.json()["pois_total"] == 0
+
+    # Deux sections complétées puis enrichissement (4 POI suggérés)
+    client.put(f"/api/properties/{pid}/sections/A_checkin", headers=owner["headers"],
+               json={"content": {"checkin_from": "16:00"}, "completed": True})
+    client.put(f"/api/properties/{pid}/sections/B_wifi", headers=owner["headers"],
+               json={"content": {"router_location": "Salon"}, "completed": True})
+    _enrich_and_wait(client, owner["headers"], pid)
+
+    s1 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
+    assert s1["sections_done"] == 2
+    assert s1["completion_pct"] == round(2 / 43 * 100)
+    assert s1["pois_total"] == 4 and s1["pois_suggested"] == 4
+
+    # Un autre propriétaire n'accède pas aux indicateurs (isolation)
+    intruder = register(client)
+    assert client.get(f"/api/properties/{pid}/stats",
+                      headers=intruder["headers"]).status_code == 404
+
+
+def test_list_pois_carries_category_metadata(client):
+    """L'écran de validation reçoit libellé, icône et couleur de chaque POI."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    _enrich_and_wait(client, owner["headers"], pid)
+
+    pois = client.get(f"/api/properties/{pid}/pois", headers=owner["headers"]).json()
+    hosp = next(p for p in pois if p["category_code"] == "hospital")
+    assert hosp["map_color"] == "#C62828"
+    assert hosp["chapter"] == "D"
+    assert hosp["category_name"]["fr"] == "Hôpital"
+    assert hosp["category_icon"] == "cross"
+
+
+# ── Recalcul des distances après repositionnement manuel (M-05) ──────────────
+
+def test_recompute_distances_after_manual_move(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    _enrich_and_wait(client, owner["headers"], pid)
+
+    # Le propriétaire déplace le point du logement (placement manuel)
+    moved_lat, moved_lon = PROP_LAT + 0.05, PROP_LON + 0.05
+    patch = client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                         json={"lat": moved_lat, "lon": moved_lon})
+    assert patch.status_code == 200
+    assert patch.json()["geocode_source"] == "manual"
+
+    # Recalcul des distances de tous les POI depuis la nouvelle position
+    rc = client.post(f"/api/properties/{pid}/recompute-distances",
+                     headers=owner["headers"])
+    assert rc.status_code == 200
+    assert rc.json()["updated"] == 4  # les 4 POI suggérés
+
+    # Les distances reflètent la nouvelle origine (recalcul hermétique haversine)
+    pois = client.get(f"/api/properties/{pid}/pois", headers=owner["headers"]).json()
+    hosp = next(p for p in pois if p["category_code"] == "hospital")
+    expected = round(haversine_m(moved_lat, moved_lon, hosp["lat"], hosp["lon"]) * 1.3)
+    assert hosp["dist_walk_m"] == expected
+
+    # Sans position, le recalcul est refusé proprement ; isolation respectée
+    intruder = register(client)
+    assert client.post(f"/api/properties/{pid}/recompute-distances",
+                       headers=intruder["headers"]).status_code == 404
+
+
+def test_recompute_distances_without_position(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]  # jamais géocodé -> pas de geom
+    rc = client.post(f"/api/properties/{pid}/recompute-distances",
+                     headers=owner["headers"])
+    assert rc.status_code == 409

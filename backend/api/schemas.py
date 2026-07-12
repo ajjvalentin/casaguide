@@ -147,6 +147,24 @@ class PoiEditIn(BaseModel):
     owner_comment: str | None = None
 
 
+# ── Indicateurs (« Mes logements » et éditeur) ───────────────────────────────
+
+class PropertyStatsOut(BaseModel):
+    sections_total: int
+    sections_done: int
+    sections_visible: int
+    completion_pct: int
+    pois_total: int
+    pois_suggested: int
+    pois_approved: int
+    pois_edited: int
+    pois_rejected: int
+
+
+class RecomputeOut(BaseModel):
+    updated: int
+
+
 # ── Enrichissement ───────────────────────────────────────────────────────────
 
 class EnrichIn(BaseModel):

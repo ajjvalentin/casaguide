@@ -1,13 +1,17 @@
 """CRUD des logements, données sensibles chiffrées et sections du guide (§3.1)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from .. import crypto, repo
-from ..deps import Conn, CurrentOwner, OwnedProperty
+from ..deps import (
+    Conn, CurrentOwner, DistanceComputer, OwnedProperty, get_distance_computer,
+)
 from ..schemas import (
-    PropertyIn, PropertyOut, PropertyUpdate, SecretsIn, SecretsOut,
-    SectionUpsertIn,
+    PropertyIn, PropertyOut, PropertyStatsOut, PropertyUpdate, RecomputeOut,
+    SecretsIn, SecretsOut, SectionUpsertIn,
 )
 
 router = APIRouter(prefix="/api/properties", tags=["properties"])
@@ -53,6 +57,41 @@ def update_property(payload: PropertyUpdate, conn: Conn, owner: CurrentOwner,
 def delete_property(conn: Conn, owner: CurrentOwner, prop: OwnedProperty):
     repo.delete_property(conn, str(owner["id"]), str(prop["id"]))
     return None
+
+
+@router.get("/{property_id}/stats", response_model=PropertyStatsOut)
+def property_stats(conn: Conn, prop: OwnedProperty):
+    """Complétude des sections + décompte des POI par statut (tableau de bord)."""
+    return repo.property_stats(conn, str(prop["id"]))
+
+
+# ── Repositionnement du logement : recalcul des distances (§5.1, M-05) ───────
+
+@router.post("/{property_id}/recompute-distances", response_model=RecomputeOut)
+def recompute_distances(
+    conn: Conn, prop: OwnedProperty,
+    computer: Annotated[DistanceComputer, Depends(get_distance_computer)],
+):
+    """Recalcule les distances/temps de tous les POI depuis la position courante
+    du logement. Appelé après un placement manuel du point sur la carte : les
+    distances pré-calculées deviennent cohérentes avec la nouvelle position.
+
+    N'altère que les colonnes de distance (jamais le statut ni le contenu
+    arbitré par le propriétaire — invariant 1)."""
+    if prop["lat"] is None or prop["lon"] is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Le logement n'a pas encore de position géographique")
+    pois = repo.list_poi_positions(conn, str(prop["id"]))
+    if not pois:
+        return RecomputeOut(updated=0)
+    computer((prop["lat"], prop["lon"]), pois)
+    for p in pois:
+        repo.update_poi_distances(
+            conn, str(p["id"]),
+            dist_walk_m=p.get("dist_walk_m"), walk_min=p.get("walk_min"),
+            dist_drive_m=p.get("dist_drive_m"), drive_min=p.get("drive_min"))
+    return RecomputeOut(updated=len(pois))
 
 
 # ── Données sensibles (chiffrées AES-GCM, invariant 5) ───────────────────────

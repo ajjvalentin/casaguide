@@ -222,16 +222,81 @@ def section_template_exists(conn, template_code: str) -> bool:
 # ── POI ──────────────────────────────────────────────────────────────────────
 
 def list_pois(conn, property_id: str, status: str | None) -> list[dict]:
-    q = ("SELECT id, category_code, name, ST_Y(geom) AS lat, ST_X(geom) AS lon, "
-         "address, phone, website, opening_hours, description_md, owner_comment, "
-         "dist_walk_m, walk_min, dist_drive_m, drive_min, source, source_ref, "
-         "status, fetched_at FROM pois WHERE property_id = %s")
+    """POI du logement pour l'écran de validation (§5.1 étape 5).
+
+    Jointure sur `poi_categories` pour porter le libellé, l'icône et la couleur
+    de chapitre du seed : l'écran de validation regroupe et colore les POI comme
+    le guide voyageur, sans second appel. Données owner-side (aucun secret)."""
+    q = ("SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name, "
+         "c.icon AS category_icon, c.map_color, "
+         "p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon, "
+         "p.address, p.phone, p.website, p.opening_hours, p.description_md, "
+         "p.owner_comment, p.price_level, "
+         "p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min, "
+         "p.source, p.source_ref, p.status, p.fetched_at "
+         "FROM pois p JOIN poi_categories c ON c.code = p.category_code "
+         "WHERE p.property_id = %s")
     params: list[Any] = [property_id]
     if status:
-        q += " AND status = %s"
+        q += " AND p.status = %s"
         params.append(status)
-    q += " ORDER BY category_code, dist_walk_m NULLS LAST, name"
+    q += " ORDER BY p.category_code, p.dist_walk_m NULLS LAST, p.name"
     return conn.execute(q, params).fetchall()
+
+
+def property_stats(conn, property_id: str) -> dict:
+    """Indicateurs affichés dans « Mes logements » et l'éditeur : complétude des
+    sections (sur le catalogue complet) et décompte des POI par statut.
+
+    La complétude rapporte les sections marquées « complétées » par le
+    propriétaire au nombre total de sections pré-définies (§4)."""
+    sec = conn.execute(
+        """SELECT (SELECT count(*) FROM section_templates) AS total,
+                  count(*) FILTER (WHERE ps.completed) AS done,
+                  count(*) FILTER (WHERE ps.is_visible) AS visible
+           FROM property_sections ps WHERE ps.property_id = %s""",
+        (property_id,),
+    ).fetchone()
+    rows = conn.execute(
+        "SELECT status, count(*) AS n FROM pois WHERE property_id = %s "
+        "GROUP BY status",
+        (property_id,),
+    ).fetchall()
+    by_status = {r["status"]: r["n"] for r in rows}
+    total = sec["total"] or 0
+    done = sec["done"] or 0
+    return {
+        "sections_total": total,
+        "sections_done": done,
+        "sections_visible": sec["visible"] or 0,
+        "completion_pct": round(done / total * 100) if total else 0,
+        "pois_total": sum(by_status.values()),
+        "pois_suggested": by_status.get("suggested", 0),
+        "pois_approved": by_status.get("approved", 0),
+        "pois_edited": by_status.get("edited", 0),
+        "pois_rejected": by_status.get("rejected", 0),
+    }
+
+
+def list_poi_positions(conn, property_id: str) -> list[dict]:
+    """Coordonnées des POI (hors géométrie nulle) pour recalcul des distances (§5.1)."""
+    return conn.execute(
+        "SELECT id, ST_Y(geom) AS lat, ST_X(geom) AS lon FROM pois "
+        "WHERE property_id = %s AND geom IS NOT NULL",
+        (property_id,),
+    ).fetchall()
+
+
+def update_poi_distances(conn, poi_id: str, *, dist_walk_m: int | None,
+                         walk_min: int | None, dist_drive_m: int | None,
+                         drive_min: int | None) -> None:
+    """Met à jour uniquement les distances/temps d'un POI (jamais son statut ni
+    son contenu arbitré par le propriétaire)."""
+    conn.execute(
+        "UPDATE pois SET dist_walk_m = %s, walk_min = %s, dist_drive_m = %s, "
+        "drive_min = %s WHERE id = %s",
+        (dist_walk_m, walk_min, dist_drive_m, drive_min, poi_id),
+    )
 
 
 def get_poi(conn, property_id: str, poi_id: str) -> dict | None:

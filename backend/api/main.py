@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from enrich import db as enrich_db
 
@@ -58,3 +60,15 @@ app.include_router(guide.router)
 @app.get("/health", tags=["meta"])
 def health():
     return {"status": "ok"}
+
+
+# ── Back-office propriétaire (SPA statique, M-03/M-04/M-05) ───────────────────
+# Servi en dernier : les routes API (/api, /g, /health, /docs) sont déclarées
+# avant et ont donc priorité ; le montage racine ne capte que le reste (SPA à
+# routage par ancre, le serveur ne sert jamais que index.html + les assets).
+_FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+if _FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
+else:  # pragma: no cover - dépend du déploiement
+    log.warning("Dossier frontend introuvable (%s) : back-office non servi.",
+                _FRONTEND_DIR)
