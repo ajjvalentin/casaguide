@@ -46,6 +46,24 @@ class ApiSettings:
     guide_cache_seconds: int = int(os.getenv("CASAGUIDE_GUIDE_CACHE_S", "300"))
     # Plan attribué à l'inscription
     default_plan: str = os.getenv("CASAGUIDE_DEFAULT_PLAN", "free")
+    # Stockage des médias (photos/PDF des sections, M-12). Chemin local par défaut,
+    # relatif à backend/ ; exclu de git. Architecture prête pour un backend S3.
+    media_root: str = os.getenv("MEDIA_ROOT", "var/media")
+    max_upload_bytes: int = int(os.getenv("CASAGUIDE_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 
 
 settings = ApiSettings()
+
+
+def missing_production_config() -> list[str]:
+    """Variables de sécurité indispensables en production, absentes de l'env.
+
+    Utilisé au démarrage pour avertir clairement le déployeur (M-02) : sans
+    CASAGUIDE_JWT_SECRET les jetons sont invalidés à chaque redémarrage ; sans
+    CASAGUIDE_SECRET_KEY les endpoints de secrets répondent 503."""
+    missing = []
+    if not os.getenv("CASAGUIDE_JWT_SECRET"):
+        missing.append("CASAGUIDE_JWT_SECRET")
+    if not os.getenv("CASAGUIDE_SECRET_KEY"):
+        missing.append("CASAGUIDE_SECRET_KEY")
+    return missing

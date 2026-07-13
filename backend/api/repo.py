@@ -219,6 +219,124 @@ def section_template_exists(conn, template_code: str) -> bool:
     ).fetchone() is not None
 
 
+def get_section_id(conn, property_id: str, template_code: str) -> str | None:
+    """Identifiant de la section instanciée pour ce logement (None si non créée)."""
+    row = conn.execute(
+        "SELECT id FROM property_sections WHERE property_id = %s AND template_code = %s",
+        (property_id, template_code),
+    ).fetchone()
+    return str(row["id"]) if row else None
+
+
+def ensure_section(conn, property_id: str, template_code: str) -> str:
+    """Renvoie l'id de la section, en la créant (vide) au besoin — nécessaire pour
+    y rattacher un média avant toute saisie de contenu."""
+    existing = get_section_id(conn, property_id, template_code)
+    if existing:
+        return existing
+    row = conn.execute(
+        """INSERT INTO property_sections (property_id, template_code)
+           VALUES (%s, %s) RETURNING id""",
+        (property_id, template_code),
+    ).fetchone()
+    return str(row["id"])
+
+
+# ── Médias (photos / PDF par section, M-12) ──────────────────────────────────
+
+# Vue commune : le média + le code de section (NULL si rattaché au logement).
+_MEDIA_COLS = """
+    m.id, m.section_id, t.code AS section_code, m.kind, m.storage_key,
+    m.caption, m.sort_order, m.created_at
+"""
+
+
+def create_media(conn, property_id: str, section_id: str | None, kind: str,
+                 storage_key: str, caption: str | None) -> dict:
+    """Insère un média en fin de liste (sort_order = max+1 dans son groupe)."""
+    return conn.execute(
+        f"""INSERT INTO media (property_id, section_id, kind, storage_key,
+                               caption, sort_order)
+            VALUES (%s, %s, %s, %s, %s,
+                COALESCE((SELECT max(sort_order) + 1 FROM media
+                          WHERE property_id = %s
+                            AND section_id IS NOT DISTINCT FROM %s), 0))
+            RETURNING id, section_id, kind, storage_key, caption, sort_order,
+                      created_at""",
+        (property_id, section_id, kind, storage_key, caption,
+         property_id, section_id),
+    ).fetchone()
+
+
+def list_media(conn, property_id: str, section_id: str | None = None,
+               all_sections: bool = True) -> list[dict]:
+    """Médias d'un logement (côté propriétaire), triés par section puis ordre.
+
+    `all_sections=True` : tous les médias. Sinon, uniquement ceux du groupe
+    `section_id` donné (None = médias rattachés au logement, sans section)."""
+    q = (f"SELECT {_MEDIA_COLS} FROM media m "
+         "LEFT JOIN property_sections ps ON ps.id = m.section_id "
+         "LEFT JOIN section_templates t ON t.code = ps.template_code "
+         "WHERE m.property_id = %s")
+    params: list[Any] = [property_id]
+    if not all_sections:
+        q += " AND m.section_id IS NOT DISTINCT FROM %s"
+        params.append(section_id)
+    q += " ORDER BY t.sort_order NULLS FIRST, m.sort_order, m.created_at"
+    return conn.execute(q, params).fetchall()
+
+
+def get_media_full(conn, property_id: str, media_id: str) -> dict | None:
+    """Média complet (avec section_code) pour ce logement, ou None."""
+    return conn.execute(
+        f"SELECT {_MEDIA_COLS} FROM media m "
+        "LEFT JOIN property_sections ps ON ps.id = m.section_id "
+        "LEFT JOIN section_templates t ON t.code = ps.template_code "
+        "WHERE m.id = %s AND m.property_id = %s",
+        (media_id, property_id),
+    ).fetchone()
+
+
+def get_media(conn, property_id: str, media_id: str) -> dict | None:
+    """Métadonnées minimales (clé de stockage) pour servir/supprimer un média."""
+    return conn.execute(
+        "SELECT id, kind, storage_key FROM media WHERE id = %s AND property_id = %s",
+        (media_id, property_id),
+    ).fetchone()
+
+
+def update_media_caption(conn, property_id: str, media_id: str,
+                         caption: str | None) -> dict | None:
+    return conn.execute(
+        "UPDATE media SET caption = %s WHERE id = %s AND property_id = %s "
+        "RETURNING id",
+        (caption, media_id, property_id),
+    ).fetchone()
+
+
+def delete_media(conn, property_id: str, media_id: str) -> dict | None:
+    """Supprime la ligne et renvoie la clé de stockage (pour effacer le fichier)."""
+    return conn.execute(
+        "DELETE FROM media WHERE id = %s AND property_id = %s "
+        "RETURNING id, storage_key",
+        (media_id, property_id),
+    ).fetchone()
+
+
+def reorder_media(conn, property_id: str, ordered_ids: list[str]) -> int:
+    """Réordonne les médias selon la liste d'identifiants (isolation par logement)."""
+    n = 0
+    for i, mid in enumerate(ordered_ids):
+        row = conn.execute(
+            "UPDATE media SET sort_order = %s WHERE id = %s AND property_id = %s "
+            "RETURNING id",
+            (i, mid, property_id),
+        ).fetchone()
+        if row:
+            n += 1
+    return n
+
+
 # ── POI ──────────────────────────────────────────────────────────────────────
 
 def list_pois(conn, property_id: str, status: str | None) -> list[dict]:
@@ -442,6 +560,37 @@ def guide_pois(conn, property_id: str) -> list[dict]:
            ORDER BY p.category_code, p.dist_walk_m NULLS LAST, p.name""",
         (property_id,),
     ).fetchall()
+
+
+def guide_media(conn, property_id: str) -> list[dict]:
+    """Médias servis dans le guide public (M-12) : uniquement ceux d'une section
+    **visible**, plus ceux rattachés au logement (section_id NULL). Un média
+    d'une section masquée n'est jamais listé (invariant de visibilité)."""
+    return conn.execute(
+        """SELECT m.id, m.kind, m.caption, m.sort_order, t.code AS section_code
+           FROM media m
+           LEFT JOIN property_sections ps ON ps.id = m.section_id
+           LEFT JOIN section_templates t ON t.code = ps.template_code
+           WHERE m.property_id = %s
+             AND (m.section_id IS NULL OR ps.is_visible = TRUE)
+           ORDER BY t.sort_order NULLS FIRST, m.sort_order, m.created_at""",
+        (property_id,),
+    ).fetchall()
+
+
+def get_public_media(conn, token: str, media_id: str) -> dict | None:
+    """Média d'un guide **publié**, servi seulement si sa section est visible (ou
+    s'il est rattaché au logement). None sinon : token inconnu, guide non publié,
+    ou section masquée — on ne révèle rien (invariants 4/5, §8)."""
+    return conn.execute(
+        """SELECT m.kind, m.storage_key
+           FROM media m
+           JOIN properties pr ON pr.id = m.property_id
+           LEFT JOIN property_sections ps ON ps.id = m.section_id
+           WHERE m.id = %s AND pr.guide_token = %s AND pr.status = 'published'
+             AND (m.section_id IS NULL OR ps.is_visible = TRUE)""",
+        (media_id, token),
+    ).fetchone()
 
 
 def guide_area_facts(conn, country_code: str, city: str | None) -> dict:

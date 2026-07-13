@@ -8,4 +8,10 @@ Trois surfaces :
     et n'expose jamais les données sensibles (§invariant 5) ;
   * multi-tenant : chaque requête sur les données d'un logement filtre par
     propriétaire (`owner_id`).
+
+Le fichier `backend/.env` est chargé dès l'import du paquet (avant que
+`api/config.py` et `api/crypto.py` ne lisent l'environnement), M-02.
 """
+from enrich.envfile import load_env  # noqa: E402
+
+load_env()

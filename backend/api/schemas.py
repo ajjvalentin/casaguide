@@ -147,6 +147,26 @@ class PoiEditIn(BaseModel):
     owner_comment: str | None = None
 
 
+# ── Médias (photos / PDF par section, M-12) ──────────────────────────────────
+
+class MediaOut(BaseModel):
+    id: UUID
+    section_code: str | None = None
+    kind: str
+    caption: str | None = None
+    sort_order: int
+    url: str                       # endpoint de service (propriétaire authentifié)
+    created_at: datetime
+
+
+class MediaCaptionIn(BaseModel):
+    caption: str | None = Field(default=None, max_length=500)
+
+
+class MediaReorderIn(BaseModel):
+    ids: list[UUID]
+
+
 # ── Indicateurs (« Mes logements » et éditeur) ───────────────────────────────
 
 class PropertyStatsOut(BaseModel):

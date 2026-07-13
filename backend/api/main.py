@@ -15,8 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from enrich import db as enrich_db
 
 from . import repo
-from .config import settings
-from .routers import auth, enrich, guide, pois, properties
+from .config import missing_production_config, settings
+from .routers import auth, enrich, guide, media, pois, properties
 
 log = logging.getLogger("casaguide.api")
 
@@ -27,6 +27,17 @@ async def lifespan(app: FastAPI):
 
     Les BackgroundTasks ne survivent pas à un redémarrage d'uvicorn : tout job
     resté 'running' est en réalité interrompu et doit passer 'failed' (M-01)."""
+    # Avertissement de configuration production (M-02) : lister exactement ce
+    # qu'il manque dans backend/.env plutôt qu'échouer silencieusement.
+    missing = missing_production_config()
+    if missing:
+        log.warning(
+            "Configuration incomplète : %s absente(s). Créez backend/.env "
+            "(cf. backend/.env.example) avec, au minimum :\n%s",
+            ", ".join(missing),
+            "\n".join(f"  {name}=$(openssl rand -hex 32)" for name in missing),
+        )
+
     with enrich_db.connect() as conn:
         n = repo.fail_orphan_running_jobs(conn)
         conn.commit()
@@ -53,6 +64,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(properties.router)
 app.include_router(pois.router)
+app.include_router(media.router)
 app.include_router(enrich.router)
 app.include_router(guide.router)
 

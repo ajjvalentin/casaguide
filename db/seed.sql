@@ -141,10 +141,18 @@ VALUES
   ],"secrets":["wifi_pass"]}', FALSE, TRUE),
 
 ('B_appliances', 'B', 120, 'washing-machine',
- '{"fr":"Équipements & modes d’emploi","en":"Appliances & how-tos","es":"Equipamiento e instrucciones"}',
+ '{"fr":"Équipements intérieurs","en":"Indoor appliances","es":"Equipamiento interior"}',
  '{"fr":"Climatisation, chauffage, lave-linge, lave-vaisselle, TV, four, cafetière… Une fiche par équipement, avec photos ou notice PDF."}',
  '{"repeat":{"key":"appliances","fields":[
     {"key":"name","type":"text","label":{"fr":"Équipement","en":"Appliance","es":"Equipo"}},
+    {"key":"instructions","type":"textarea","label":{"fr":"Mode d’emploi","en":"Instructions","es":"Instrucciones"}}
+  ]}}', FALSE, FALSE),
+
+('B_appliances_out', 'B', 125, 'sun',
+ '{"fr":"Équipements extérieurs","en":"Outdoor equipment","es":"Equipamiento exterior"}',
+ '{"fr":"Plancha, barbecue, stores électriques, éclairage et équipements de la piscine, arrosage, mobilier de jardin… Une fiche par équipement, avec photos (télécommandes, boutons…)."}',
+ '{"repeat":{"key":"appliances","fields":[
+    {"key":"name","type":"text","label":{"fr":"Équipement","en":"Equipment","es":"Equipo"}},
     {"key":"instructions","type":"textarea","label":{"fr":"Mode d’emploi","en":"Instructions","es":"Instrucciones"}}
   ]}}', FALSE, FALSE),
 

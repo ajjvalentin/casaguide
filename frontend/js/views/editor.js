@@ -13,6 +13,7 @@ import {
 import { navigate } from "../nav.js";
 import { CHAPTER_ORDER, chapterMeta } from "../constants.js";
 import { buildSectionForm } from "../components/dynform.js";
+import { buildMediaPanel } from "../components/media.js";
 import { runEnrichment } from "./properties.js";
 
 const ACCURACY_LABEL = { rooftop: "précise", street: "au niveau de la rue", city: "au centre de la commune" };
@@ -157,6 +158,7 @@ export async function renderEditor(view, pid) {
       el("p", { class: "sp-desc" }, t(sec.description_i18n, "")),
       secretUnavailable,
       form.node,
+      buildMediaPanel({ propertyId: pid, sectionCode: sec.code }).node,
       el("div", { class: "sp-toolbar" },
         el("label", { class: "switch" }, visibleSwitch, el("span", { class: "track" }), el("span", {}, "Visible dans le guide")),
         el("label", { class: "switch" }, completedSwitch, el("span", { class: "track" }), el("span", {}, "Section complétée")),

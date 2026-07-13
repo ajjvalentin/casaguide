@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -29,6 +30,9 @@ os.environ.setdefault(
     "CASAGUIDE_SECRET_KEY",
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")  # 32 o (hex)
 os.environ.setdefault("CASAGUIDE_PBKDF2_ITER", "10000")  # tests plus rapides
+# Racine des médias isolée pour les tests (M-12)
+os.environ.setdefault("MEDIA_ROOT",
+                      os.path.join(tempfile.gettempdir(), "casaguide-test-media"))
 
 import httpx  # noqa: E402
 import psycopg  # noqa: E402
@@ -529,7 +533,7 @@ def test_property_stats(client):
     s0 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"])
     assert s0.status_code == 200
     assert s0.json()["completion_pct"] == 0
-    assert s0.json()["sections_total"] == 43  # catalogue complet du seed
+    assert s0.json()["sections_total"] == 44  # catalogue complet du seed
     assert s0.json()["pois_total"] == 0
 
     # Deux sections complétées puis enrichissement (4 POI suggérés)
@@ -541,7 +545,7 @@ def test_property_stats(client):
 
     s1 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
     assert s1["sections_done"] == 2
-    assert s1["completion_pct"] == round(2 / 43 * 100)
+    assert s1["completion_pct"] == round(2 / 44 * 100)
     assert s1["pois_total"] == 4 and s1["pois_suggested"] == 4
 
     # Un autre propriétaire n'accède pas aux indicateurs (isolation)
@@ -605,3 +609,169 @@ def test_recompute_distances_without_position(client):
     rc = client.post(f"/api/properties/{pid}/recompute-distances",
                      headers=owner["headers"])
     assert rc.status_code == 409
+
+
+# ── Médias par section : upload, service, isolation, visibilité (M-12) ────────
+
+def _png_bytes(color=(200, 60, 60), size=(12, 12)) -> bytes:
+    """Petit PNG valide (magic bytes corrects), généré via Pillow."""
+    from io import BytesIO
+
+    from PIL import Image
+    buf = BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _upload(client, headers, pid, *, data=None, filename="photo.png",
+            content_type="image/png", section_code=None, caption=None):
+    files = {"file": (filename, data if data is not None else _png_bytes(), content_type)}
+    form = {}
+    if section_code is not None:
+        form["section_code"] = section_code
+    if caption is not None:
+        form["caption"] = caption
+    return client.post(f"/api/properties/{pid}/media", headers=headers,
+                       files=files, data=form)
+
+
+def test_media_upload_list_and_serve(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+
+    r = _upload(client, owner["headers"], pid, section_code="A_keybox",
+                caption="Boîte à clés, à gauche de la porte")
+    assert r.status_code == 201, r.text
+    m = r.json()
+    assert m["kind"] == "photo" and m["section_code"] == "A_keybox"
+    assert m["caption"].startswith("Boîte à clés")
+    assert m["sort_order"] == 0
+
+    # Liste filtrée par section
+    lst = client.get(f"/api/properties/{pid}/media?section_code=A_keybox",
+                     headers=owner["headers"]).json()
+    assert len(lst) == 1 and lst[0]["id"] == m["id"]
+    # Section sans média -> liste vide
+    assert client.get(f"/api/properties/{pid}/media?section_code=A_checkin",
+                      headers=owner["headers"]).json() == []
+
+    # Service du fichier au propriétaire (image ré-encodée => toujours un PNG)
+    f = client.get(m["url"], headers=owner["headers"])
+    assert f.status_code == 200
+    assert f.headers["content-type"] == "image/png"
+    assert f.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    # Mise à jour de la légende
+    upd = client.patch(f"/api/properties/{pid}/media/{m['id']}",
+                       headers=owner["headers"], json={"caption": "Nouvelle légende"})
+    assert upd.status_code == 200 and upd.json()["caption"] == "Nouvelle légende"
+
+    # Suppression
+    assert client.delete(f"/api/properties/{pid}/media/{m['id']}",
+                         headers=owner["headers"]).status_code == 204
+    assert client.get(f"/api/properties/{pid}/media",
+                      headers=owner["headers"]).json() == []
+
+
+def test_media_rejects_bad_type(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    r = _upload(client, owner["headers"], pid, data=b"ceci n'est pas une image",
+                filename="notes.txt", content_type="text/plain")
+    assert r.status_code == 415, r.text
+    # Un Content-Type mensonger ne suffit pas : le type réel est sniffé
+    r2 = _upload(client, owner["headers"], pid, data=b"pas un vrai PNG",
+                 filename="fake.png", content_type="image/png")
+    assert r2.status_code == 415
+
+
+def test_media_rejects_too_large(client, monkeypatch):
+    from api.config import settings as api_settings
+    monkeypatch.setattr(api_settings, "max_upload_bytes", 512)
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    big = _png_bytes(size=(200, 200))
+    assert len(big) > 512
+    r = _upload(client, owner["headers"], pid, data=big)
+    assert r.status_code == 413, r.text
+
+
+def test_media_isolation(client):
+    alice = register(client)
+    bob = register(client)
+    prop = make_property(client, alice["headers"])
+    pid = prop["id"]
+    up = _upload(client, alice["headers"], pid, section_code="A_keybox")
+    assert up.status_code == 201
+    mid = up.json()["id"]
+
+    # Bob n'atteint ni la liste, ni l'upload, ni le fichier, ni la suppression
+    assert client.get(f"/api/properties/{pid}/media",
+                      headers=bob["headers"]).status_code == 404
+    assert _upload(client, bob["headers"], pid).status_code == 404
+    assert client.get(f"/api/properties/{pid}/media/{mid}/file",
+                      headers=bob["headers"]).status_code == 404
+    assert client.delete(f"/api/properties/{pid}/media/{mid}",
+                         headers=bob["headers"]).status_code == 404
+    # Le média d'Alice est intact
+    assert len(client.get(f"/api/properties/{pid}/media",
+                          headers=alice["headers"]).json()) == 1
+
+
+def test_media_reorder(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    ids = [_upload(client, owner["headers"], pid, section_code="A_keybox").json()["id"]
+           for _ in range(3)]
+    reordered = list(reversed(ids))
+    r = client.post(f"/api/properties/{pid}/media/reorder", headers=owner["headers"],
+                    json={"ids": reordered})
+    assert r.status_code == 200
+    order = {m["id"]: m["sort_order"] for m in r.json()}
+    assert order[reordered[0]] == 0 and order[reordered[2]] == 2
+
+
+def test_media_public_guide_visibility(client):
+    """Un média n'apparaît dans le guide public que si le logement est publié et
+    sa section visible ; jamais pour une section masquée."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+
+    # Média sur une section visible, une masquée, et un média au niveau logement
+    vis = _upload(client, owner["headers"], pid, section_code="A_checkin",
+                  caption="Façade").json()
+    hid = _upload(client, owner["headers"], pid, section_code="A_keybox").json()
+    gen = _upload(client, owner["headers"], pid).json()  # sans section
+
+    client.put(f"/api/properties/{pid}/sections/A_checkin", headers=owner["headers"],
+               json={"content": {"checkin_from": "16:00"}, "is_visible": True,
+                     "completed": True})
+    client.put(f"/api/properties/{pid}/sections/A_keybox", headers=owner["headers"],
+               json={"content": {"location": "Sous le pot"}, "is_visible": False})
+
+    # Avant publication : le média public n'est pas servi
+    assert client.get(f"/g/{token}/media/{vis['id']}").status_code == 404
+
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    g = client.get(f"/g/{token}")
+    assert g.status_code == 200
+    data = g.json()
+    # La section visible porte son média ; la masquée est absente des sections
+    sec = {s["code"]: s for s in data["sections"]}
+    assert "A_checkin" in sec and "A_keybox" not in sec
+    assert [m["id"] for m in sec["A_checkin"]["media"]] == [vis["id"]]
+    # Le média au niveau logement est exposé
+    assert [m["id"] for m in data["media"]] == [gen["id"]]
+
+    # Service public : visible OK, masqué 404 (on ne révèle rien)
+    fv = client.get(f"/g/{token}/media/{vis['id']}")
+    assert fv.status_code == 200 and fv.headers["content-type"] == "image/png"
+    assert fv.headers["X-Robots-Tag"].startswith("noindex")
+    assert client.get(f"/g/{token}/media/{hid['id']}").status_code == 404

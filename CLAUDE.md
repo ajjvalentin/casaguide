@@ -27,8 +27,10 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | `db/seed.sql` | 43 sections pré-définies + 27 catégories POI + 3 plans — idempotent, testé |
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
 | `backend/enrich/` | Pipeline d'enrichissement complet — testé (2 tests d'intégration verts) |
-| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, `/stats`, `/recompute-distances`, guide public `GET /g/{token}` — testé (24 tests d'intégration verts) |
-| `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
+| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, guide public `GET /g/{token}` (+ `/g/{token}/media/{id}`) — testé (30 tests d'intégration verts) |
+| `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section**), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
+| Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
+| Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
 | Guide voyageur PWA | **À construire** (M-08, base visuelle `guide_preview.html`) |
 
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
@@ -51,6 +53,12 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
   l'éditeur mais envoyés à `PUT /secrets` (jamais dans le contenu de section). Le
   `PUT /secrets` **remplace** l'objet complet → l'éditeur conserve l'état des
   autres secrets et renvoie l'objet entier à chaque sauvegarde.
+- **Médias** (M-12) : `js/components/media.js` — zone « Photos & documents » par
+  section, montée par l'éditeur. Upload multipart via `api.uploadMedia` (le client
+  ne fixe pas Content-Type) ; les vignettes protégées sont chargées avec le jeton
+  (`api.mediaBlobUrl` → `URL.createObjectURL`, révoquées au re-rendu). Gros JPEG/WebP
+  réduits côté client (canvas) avant envoi ; PNG laissés tels quels (le serveur
+  ré-encode et retire l'EXIF de toute façon).
 - **Test navigateur** : Chrome headless (`--dump-dom`, `--screenshot`) contre un
   harnais à `fetch` simulé (créé puis supprimé — ne jamais laisser de fichier de
   test dans `frontend/`, qui est servi publiquement en statique).
@@ -96,15 +104,23 @@ python -m pytest tests/ -v                     # tests (aucun réseau requis)
 python -m enrich.pipeline --property-id <uuid> # enrichissement réel
 
 # API FastAPI (back-office + guide public)
-export CASAGUIDE_JWT_SECRET=$(openssl rand -hex 32)   # signature des jetons
-export CASAGUIDE_SECRET_KEY=$(openssl rand -hex 32)   # AES-256 des secrets (§8)
+cp .env.example .env   # M-02 : chargé automatiquement au démarrage (aucun export requis)
 uvicorn api.main:app --reload                  # docs interactives sur /docs
 ```
+
+Configuration (M-02) : `backend/.env` est chargé automatiquement au démarrage
+(`enrich/envfile.py`, appelé par `api/__init__.py` et `enrich/__init__.py`,
+`override=False` → n'écrase jamais l'environnement exporté ni les valeurs des
+tests). Modèle documenté dans `backend/.env.example` ; `.env` est dans
+`.gitignore`. Si `CASAGUIDE_JWT_SECRET` ou `CASAGUIDE_SECRET_KEY` manquent, le
+`lifespan` journalise un avertissement listant exactement quoi mettre dans `.env`.
 
 Variables d'environnement de l'API (aucun secret en dur) : `CASAGUIDE_JWT_SECRET`
 (clé HS256 ; éphémère par processus si absente), `CASAGUIDE_SECRET_KEY` (clé
 AES-256 hex/base64 des colonnes `property_secrets` ; les endpoints de secrets
-répondent 503 si absente), `CASAGUIDE_JWT_EXPIRE_MIN`, `CASAGUIDE_CORS_ORIGINS`.
+répondent 503 si absente), `MEDIA_ROOT` (répertoire de stockage des médias,
+défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE_MIN`,
+`CASAGUIDE_CORS_ORIGINS`, `CASAGUIDE_MAX_UPLOAD_BYTES` (10 Mo par défaut).
 
 ## Prochaines étapes (ordre recommandé, cf. §12 du CdC)
 
@@ -151,6 +167,13 @@ répondent 503 si absente), `CASAGUIDE_JWT_EXPIRE_MIN`, `CASAGUIDE_CORS_ORIGINS`
 - Encodage : le stockage est en UTF-8 correct (psycopg) ; tout mojibake `U+FFFD`
   provient d'un **export/affichage** mal encodé, pas de la base — déclarer
   `charset=utf-8` et écrire les fichiers avec `encoding="utf-8"`.
+- Médias (M-12) : le type est validé par les **magic bytes** (`media_files.sniff`),
+  jamais par le nom ni le Content-Type déclaré ; un média n'apparaît dans le guide
+  public que si le logement est **publié** et sa section **visible** (`repo.guide_media`
+  / `get_public_media`) — ne jamais servir un média de section masquée. Les clés de
+  stockage sont non devinables et confinées sous `MEDIA_ROOT` (`storage.LocalStorage`
+  rejette tout path traversal). Rattacher un média à une section la crée si besoin
+  (`repo.ensure_section`) → une section « photo seule » peut exister sans contenu.
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Response, status
 
-from .. import repo
+from .. import media_files, repo, storage
 from ..config import settings
 from ..deps import Conn
 
@@ -34,6 +34,21 @@ def public_guide(guide_token: str, conn: Conn, response: Response):
     sections = repo.guide_sections(conn, pid)
     pois = repo.guide_pois(conn, pid)
     area_facts = repo.guide_area_facts(conn, prop["country_code"], prop["city"])
+
+    # Médias (M-12) : seulement ceux des sections visibles + ceux du logement.
+    # Chaque média porte l'URL de son endpoint public (re-vérifié à la lecture).
+    media_by_section: dict[str, list] = {}
+    property_media: list = []
+    for m in repo.guide_media(conn, pid):
+        item = {"id": str(m["id"]), "kind": m["kind"], "caption": m["caption"],
+                "sort_order": m["sort_order"],
+                "url": f"/g/{guide_token}/media/{m['id']}"}
+        if m["section_code"]:
+            media_by_section.setdefault(m["section_code"], []).append(item)
+        else:
+            property_media.append(item)
+    for s in sections:
+        s["media"] = media_by_section.get(s["code"], [])
 
     # Entêtes : pas d'indexation, cache court (le contenu ne change qu'à publication)
     response.headers["X-Robots-Tag"] = "noindex, nofollow"
@@ -61,4 +76,26 @@ def public_guide(guide_token: str, conn: Conn, response: Response):
         "sections": sections,
         "pois": pois,
         "area_facts": area_facts,
+        "media": property_media,
     }
+
+
+@router.get("/g/{guide_token}/media/{media_id}")
+def public_media(guide_token: str, media_id: str, conn: Conn, response: Response):
+    """Sert un fichier média d'un guide publié — uniquement si sa section est
+    visible (ou s'il est rattaché au logement). 404 sinon, sans rien révéler."""
+    row = repo.get_public_media(conn, guide_token, media_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Média introuvable")
+    try:
+        data = storage.get_storage().read(row["storage_key"])
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Fichier introuvable")
+    return Response(
+        content=data,
+        media_type=media_files.content_type_for_key(row["storage_key"]),
+        headers={"X-Robots-Tag": "noindex, nofollow",
+                 "Cache-Control": f"public, max-age={settings.guide_cache_seconds}"},
+    )

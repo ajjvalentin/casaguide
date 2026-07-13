@@ -19,24 +19,16 @@ export class ApiError extends Error {
   }
 }
 
-async function request(method, path, { body, auth = true } = {}) {
-  const headers = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
+function authHeaders(extra = {}, auth = true) {
+  const headers = { ...extra };
   if (auth) {
     const t = getToken();
     if (t) headers["Authorization"] = "Bearer " + t;
   }
+  return headers;
+}
 
-  let resp;
-  try {
-    resp = await fetch(path, {
-      method, headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-  } catch (e) {
-    throw new ApiError(0, "Connexion au serveur impossible. Vérifiez votre réseau.");
-  }
-
+async function handleResponse(resp, auth) {
   if (resp.status === 401 && auth) {
     if (_onUnauthorized) _onUnauthorized();
     throw new ApiError(401, "Votre session a expiré. Reconnectez-vous.");
@@ -53,6 +45,41 @@ async function request(method, path, { body, auth = true } = {}) {
     throw new ApiError(resp.status, msg, detail);
   }
   return data;
+}
+
+async function request(method, path, { body, auth = true } = {}) {
+  const headers = authHeaders(body !== undefined ? { "Content-Type": "application/json" } : {}, auth);
+  let resp;
+  try {
+    resp = await fetch(path, {
+      method, headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (e) {
+    throw new ApiError(0, "Connexion au serveur impossible. Vérifiez votre réseau.");
+  }
+  return handleResponse(resp, auth);
+}
+
+/* Téléversement multipart : ne PAS fixer Content-Type (le navigateur ajoute la
+   frontière). Le jeton est joint comme pour les requêtes JSON. */
+async function upload(path, formData) {
+  let resp;
+  try {
+    resp = await fetch(path, { method: "POST", headers: authHeaders(), body: formData });
+  } catch (e) {
+    throw new ApiError(0, "Connexion au serveur impossible. Vérifiez votre réseau.");
+  }
+  return handleResponse(resp, true);
+}
+
+/* Récupère un fichier protégé (média) avec le jeton et renvoie une URL objet
+   utilisable comme src d'une image. À révoquer par l'appelant (URL.revokeObjectURL). */
+async function fetchBlobUrl(path) {
+  const resp = await fetch(path, { headers: authHeaders() });
+  if (resp.status === 401) { if (_onUnauthorized) _onUnauthorized(); throw new ApiError(401, "Session expirée."); }
+  if (!resp.ok) throw new ApiError(resp.status, "Média indisponible.");
+  return URL.createObjectURL(await resp.blob());
 }
 
 export const api = {
@@ -89,4 +116,14 @@ export const api = {
   enrich:   (id, trigger) => request("POST", `/api/properties/${id}/enrich`, { body: { trigger } }),
   listJobs: (id) => request("GET", `/api/properties/${id}/jobs`),
   getJob:   (id, job) => request("GET", `/api/properties/${id}/jobs/${job}`),
+
+  // Médias par section (M-12)
+  listMedia:  (id, code) =>
+    request("GET", `/api/properties/${id}/media` + (code ? `?section_code=${encodeURIComponent(code)}` : "")),
+  uploadMedia: (id, formData) => upload(`/api/properties/${id}/media`, formData),
+  updateMediaCaption: (id, mid, caption) =>
+    request("PATCH", `/api/properties/${id}/media/${mid}`, { body: { caption } }),
+  deleteMedia: (id, mid) => request("DELETE", `/api/properties/${id}/media/${mid}`),
+  reorderMedia: (id, ids) => request("POST", `/api/properties/${id}/media/reorder`, { body: { ids } }),
+  mediaBlobUrl: (id, mid) => fetchBlobUrl(`/api/properties/${id}/media/${mid}/file`),
 };

@@ -17,30 +17,35 @@ backend/    Pipeline d'enrichissement (enrich/) + API FastAPI (api/) + tests
 frontend/   Back-office propriétaire — SPA statique (HTML + modules ES, sans build)
 ```
 
-## Démarrage rapide
+## Installation (une fois)
 
 ```bash
-# 1. Base de données
+# Base de données
 createdb casaguide
 psql -d casaguide -f db/schema.sql
 psql -d casaguide -f db/seed.sql
 psql -d casaguide -f db/migrations/001_pois_unique_source.sql
 
-# 2. Backend
+# Dépendances backend
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+```
 
-# 3. Tests (aucun accès réseau requis — APIs simulées)
-export CASAGUIDE_DB=postgresql://localhost/casaguide
-python -m pytest tests/ -v
+## Démarrage
 
-# 4. API + back-office (l'API sert le frontend/ en statique)
-export CASAGUIDE_JWT_SECRET=$(openssl rand -hex 32)   # signature des jetons
-export CASAGUIDE_SECRET_KEY=$(openssl rand -hex 32)   # AES-256 des secrets (§8)
-export ANTHROPIC_API_KEY=sk-ant-...                   # requis pour l'enrichissement
+```bash
+cd backend
+cp .env.example .env      # puis renseigner les clés (openssl rand -hex 32)
 uvicorn api.main:app --reload
-# Back-office : http://localhost:8000/   ·   API docs : http://localhost:8000/docs
+```
+
+`backend/.env` est chargé automatiquement au démarrage (voir `.env.example`
+pour chaque variable). Back-office : http://localhost:8000/ · API docs : `/docs`.
+
+```bash
+# Tests d'intégration (aucun accès réseau requis — APIs simulées ; PostgreSQL requis)
+cd backend && python -m pytest tests/ -v
 
 # (alternative) Enrichissement réel en ligne de commande
 python -m enrich.pipeline --property-id <uuid> --trigger initial
@@ -61,10 +66,11 @@ validé, coûts IA comptabilisés par logement dans `api_costs`.
 SPA légère servie en statique par FastAPI (aucune étape de build) : HTML +
 modules ES natifs, Leaflet pour les cartes, identité visuelle de
 `guide_preview.html`. Écrans : connexion/inscription, « Mes logements »,
-éditeur de guide (formulaire dynamique des 43 sections généré depuis
-`section_templates.field_schema`, secrets chiffrés, complétude), validation des
-POI suggérés (carte synchronisée, approuver/rejeter/éditer), éditeur de position
-du logement sur carte.
+éditeur de guide (formulaire dynamique des sections généré depuis
+`section_templates.field_schema`, secrets chiffrés, complétude, **photos &
+documents par section** : ajout glisser-déposer, légendes, réordonnancement),
+validation des POI suggérés (carte synchronisée, approuver/rejeter/éditer),
+éditeur de position du logement sur carte.
 
 ### Scénario de bout en bout (démo)
 

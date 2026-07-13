@@ -208,6 +208,38 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 kbd{font-family:inherit;background:#F1ECE2;border-radius:5px;padding:1px 6px;font-size:11.5px;
     border:1px solid var(--line)}
 
+/* ── Photos & documents par section (M-12) ────────────────────────────────── */
+.media-panel{border-top:1px solid var(--line-soft);margin-top:18px;padding-top:16px}
+.media-head{display:flex;align-items:center;gap:9px}
+.media-head h3{font-size:16px}
+.media-head .media-count{margin-left:auto;font-size:12px;color:var(--muted);
+                         background:#F1ECE2;border-radius:999px;padding:1px 9px;min-width:22px;text-align:center}
+.media-head .media-count:empty{display:none}
+.media-desc{color:var(--muted);font-size:13px;margin:5px 0 12px}
+.media-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-bottom:12px}
+.media-grid:empty{display:none}
+.media-item{border:1px solid var(--line);border-radius:12px;background:var(--shell);
+            padding:8px;display:flex;flex-direction:column;gap:7px}
+.media-item.dragging{opacity:.5}
+.media-thumb{position:relative;aspect-ratio:4/3;border-radius:8px;overflow:hidden;
+             background:#F4F0E7;display:grid;place-items:center;color:var(--muted)}
+.media-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.media-thumb.is-pdf{flex-direction:column;gap:2px;color:var(--sea-dark);font-size:11px;font-weight:600}
+.media-thumb.is-pdf [data-lucide]{width:26px;height:26px}
+.media-thumb.broken{color:var(--alert)}
+.media-item input[type=text]{width:100%;border:1px solid var(--line);border-radius:8px;
+                             padding:6px 8px;font-size:12.5px}
+.media-item input[type=text]:focus{outline:none;border-color:var(--sea)}
+.media-actions{display:flex;align-items:center;gap:2px}
+.media-actions .btn-sm{padding:4px 6px}
+.media-drop{width:100%;border:1.5px dashed var(--line);background:#FCFAF6;border-radius:12px;
+            padding:16px;display:flex;flex-direction:column;align-items:center;gap:4px;
+            color:var(--muted);font-weight:600;font-size:13.5px;transition:.12s}
+.media-drop:hover{border-color:var(--sea);color:var(--sea-dark)}
+.media-drop.over{border-color:var(--sea);background:#EAF3F6;color:var(--sea-dark)}
+.media-drop [data-lucide]{width:20px;height:20px}
+.media-drop .hint{font-weight:400;font-size:11.5px;color:var(--muted)}
+
 /* ── Validation des POI (M-04) ────────────────────────────────────────────── */
 .pois-layout{display:grid;grid-template-columns:1fr 420px;gap:20px;align-items:start}
 @media(max-width:900px){.pois-layout{grid-template-columns:1fr}}
