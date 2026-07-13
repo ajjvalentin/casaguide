@@ -27,11 +27,11 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | `db/seed.sql` | 43 sections pré-définies + 27 catégories POI + 3 plans — idempotent, testé |
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
 | `backend/enrich/` | Pipeline d'enrichissement complet — testé (2 tests d'intégration verts) |
-| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, guide public `GET /g/{token}` (+ `/g/{token}/media/{id}`) — testé (30 tests d'intégration verts) |
+| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, **guide voyageur (M-08)** : `GET /g/{token}` sert une **page HTML** (rendu serveur `api/guide_page.py`), `GET /g/{token}/data` le JSON (`charset=utf-8`), `GET /g/{token}/secrets` (wifi/boîte à clés, mode 'link'), `/g/{token}/media/{id}`, `/g/{token}/manifest.webmanifest`, `/guide/sw.js` — testé (34 tests d'intégration verts) |
 | `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section**), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
-| Guide voyageur PWA | **À construire** (M-08, base visuelle `guide_preview.html`) |
+| Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) et tuiles hors-ligne (M-10) restent à faire |
 
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
 
@@ -136,8 +136,12 @@ défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE
    select/url/phone + groupes `repeat` + secrets chiffrés), complétude par
    chapitre, validation des POI (carte Leaflet synchronisée, actions groupées),
    éditeur de position sur carte. Restent : upload media (S3), traductions UI.
-3. **Guide voyageur PWA** (M-08) : mobile-first, carte Leaflet + tuiles OSM, POI par
-   catégorie (icône/couleur du seed), hors-ligne, sélecteur de langue.
+3. ✅ **Guide voyageur PWA** (M-08) : `GET /g/{token}` sert une page HTML mobile-first
+   (rendu serveur, `api/guide_page.py`) reprenant `guide_preview.html` ; app shell
+   `frontend/guide/` (carte Leaflet, filtres par chapitre, visionneuse, QR wifi,
+   service worker hors-ligne, manifest par guide). JSON sur `/g/{token}/data`,
+   secrets à la demande sur `/g/{token}/secrets` (mode 'link'). Restent : sélecteur
+   de langue actif (M-09), cache des tuiles (M-10).
 4. **Traductions stockées** (`section_translations`, `poi_translations`,
    flag `is_stale`) puis Stripe, statistiques, accès par dates de séjour (V2).
 
@@ -174,6 +178,19 @@ défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE
   stockage sont non devinables et confinées sous `MEDIA_ROOT` (`storage.LocalStorage`
   rejette tout path traversal). Rattacher un média à une section la crée si besoin
   (`repo.ensure_section`) → une section « photo seule » peut exister sans contenu.
+- Guide voyageur (M-08) : la page HTML `/g/{token}` est **rendue côté serveur**
+  (`api/guide_page.py`, contenu propriétaire échappé via `html.escape` puis Markdown
+  minimal) et **enrichie** par `frontend/guide/app.js` (carte, filtres, visionneuse,
+  secrets) — sans JS elle reste lisible ; les sections **masquées** ne sont pas dans
+  le HTML (test). Le JSON public passe par `_json()` (JSONResponse +
+  `jsonable_encoder`, `application/json; charset=utf-8` — ne jamais renvoyer un dict
+  brut qui perdrait le charset). Les **secrets** ne sont ni dans le HTML ni dans
+  `/data` : seulement sur `/g/{token}/secrets`, et **uniquement** si `access_mode =
+  'link'` (`repo.get_published_secrets_by_token`). Le service worker doit être servi
+  par la route `/guide/sw.js` (entête `Service-Worker-Allowed: /`) sinon sa portée se
+  limite à `/guide/` et n'intercepte pas `/g/…` ; il ne met **pas** en cache les
+  tuiles OSM (M-10). Le générateur QR (`qr.js`) est autonome (mode octet, niveau M,
+  versions 1-6) — toute modification doit rester scannable (vérif : décodage OpenCV).
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 

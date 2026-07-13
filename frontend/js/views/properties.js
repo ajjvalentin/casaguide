@@ -70,6 +70,14 @@ export async function renderProperties(view) {
           icon("pencil-line", 16), "Compléter"),
         el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${p.id}/pois`) },
           icon("map-pin-check", 16), "Suggestions"),
+        p.status === "published"
+          ? el("a", { class: "btn btn-sm", href: `/g/${p.guide_token}`, target: "_blank", rel: "noopener" },
+            icon("external-link", 16), "Voir le guide")
+          : null,
+        p.status === "published"
+          ? el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Copier le lien du guide", title: "Copier le lien du guide",
+            onClick: () => copyGuideLink(p) }, icon("link", 16))
+          : null,
         el("span", { style: { flex: "1" } }),
         el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Supprimer", onClick: () => removeProperty(p) },
           icon("trash-2", 16))));
@@ -88,6 +96,13 @@ export async function renderProperties(view) {
         s.pois_approved || s.pois_edited
           ? el("span", { class: "badge badge-approved" }, (s.pois_approved + s.pois_edited) + " retenus") : null,
         !s.pois_total ? el("span", { class: "muted", style: { fontSize: "12px" } }, "Pas encore enrichi") : null));
+  }
+
+  async function copyGuideLink(p) {
+    try {
+      await navigator.clipboard.writeText(location.origin + `/g/${p.guide_token}`);
+      toast("Lien du guide copié.", "ok");
+    } catch (_) { toast("Copie impossible — ouvrez le guide pour récupérer le lien.", "err"); }
   }
 
   async function removeProperty(p) {

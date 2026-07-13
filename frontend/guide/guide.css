@@ -1,0 +1,165 @@
+/* Guide voyageur CasaGuide (M-08) — mobile-first.
+   Identité reprise du prototype validé guide_preview.html : sable/mer,
+   Fraunces (titres) + Instrument Sans (texte), cartes « distance d'abord »
+   avec liseré de couleur de chapitre, barre d'urgences, chips de filtrage. */
+
+:root{
+  --sand:#FAF7F2; --shell:#FFFFFF; --ink:#1E2A32; --muted:#6B7A84;
+  --sea:#0E5A73; --sea-dark:#0A4658; --line:#E7E0D4; --line-soft:#F1ECE2;
+  --alert:#C62828; --ok:#2E7D32;
+  font-variant-numeric:tabular-nums;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--sand);color:var(--ink);
+     font-family:"Instrument Sans",system-ui,sans-serif;line-height:1.45;
+     -webkit-font-smoothing:antialiased}
+img{max-width:100%;display:block}
+a{color:var(--sea);text-decoration:none}
+
+.wrap{max-width:680px;margin:0 auto;padding:0 16px calc(56px + env(safe-area-inset-bottom))}
+
+/* ── En-tête ─────────────────────────────────────────────────────────────── */
+.guide-head{padding:26px 0 8px}
+.hrow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+h1{font-family:Fraunces,serif;font-weight:700;font-size:clamp(28px,7vw,36px);margin:.12em 0 .05em}
+.city{color:var(--muted);font-size:15px}
+
+.langs{display:flex;gap:6px;flex:none}
+.lang{border:1px solid var(--line);background:var(--shell);border-radius:999px;
+      padding:5px 11px;font:inherit;font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer}
+.lang.on{background:var(--sea);border-color:var(--sea);color:#fff;cursor:default}
+.lang[disabled]{opacity:.5;cursor:not-allowed}
+
+/* ── Barre d'urgences ────────────────────────────────────────────────────── */
+.sos{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 4px}
+.sos-item{flex:1 1 100px;min-width:96px;background:var(--shell);
+          border:1px solid var(--line);border-left:4px solid var(--alert);
+          border-radius:10px;padding:9px 12px;color:var(--ink)}
+.sos-item .num{font-family:Fraunces,serif;font-size:22px;font-weight:700;color:var(--alert);display:block;line-height:1.1}
+.sos-item .lbl{font-size:12px;color:var(--muted)}
+
+/* ── Carte ───────────────────────────────────────────────────────────────── */
+#map{height:320px;border-radius:14px;border:1px solid var(--line);margin:14px 0 4px;background:#E9EEF0}
+.home-pin{font-size:26px;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}
+.leaflet-popup-content{font-family:inherit;font-size:13.5px;margin:10px 12px}
+.leaflet-popup-content b{font-weight:600}
+
+/* ── Chips de filtrage (collantes) ───────────────────────────────────────── */
+.chips{display:flex;gap:8px;overflow-x:auto;padding:10px 0 6px;position:sticky;top:0;z-index:600;
+       background:linear-gradient(var(--sand) 82%,transparent);-webkit-overflow-scrolling:touch}
+.chip{border:1px solid var(--line);background:var(--shell);border-radius:999px;
+      padding:6px 14px;font:inherit;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;flex:none}
+.chip.on{background:var(--sea);border-color:var(--sea);color:#fff}
+
+/* ── Chapitres & sections ────────────────────────────────────────────────── */
+.chapter{scroll-margin-top:56px}
+h2{font-family:Fraunces,serif;font-size:23px;margin:32px 0 2px}
+.chapline{height:3px;width:44px;border-radius:2px;margin:0 0 14px}
+h3{font-size:16px;font-weight:600;margin:0 0 6px}
+
+.sec-card{background:var(--shell);border:1px solid var(--line);border-radius:12px;
+          padding:14px 16px;margin-bottom:10px}
+.sec-card h3{font-family:Fraunces,serif;font-size:17px}
+
+.fields{margin:6px 0 0;display:grid;gap:8px}
+.frow{display:grid;grid-template-columns:minmax(90px,34%) 1fr;gap:6px 12px;align-items:baseline}
+.frow dt{margin:0;font-size:12.5px;color:var(--muted);font-weight:600}
+.frow dd{margin:0;font-size:14px}
+.repeat{grid-column:1/-1;display:grid;gap:8px;margin-top:2px}
+.repeat-card{border:1px solid var(--line-soft);border-radius:10px;padding:10px 12px;background:#FCFAF6}
+.repeat-card dl{margin:0;display:grid;gap:6px}
+
+.prose{font-size:14px;color:#3C4A52}
+.prose p{margin:.4em 0}
+.prose ul{margin:.4em 0;padding-left:18px}
+.prose li{margin:2px 0}
+.prose strong{font-weight:600;color:var(--ink)}
+
+.license{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;margin:6px 0 0}
+.lic-lbl{font-size:12.5px;color:var(--muted);font-weight:600}
+.lic-val{font-family:Fraunces,serif;font-size:16px}
+
+/* ── Contacts ────────────────────────────────────────────────────────────── */
+.contact-card{margin-top:8px}
+.contact-who{margin:0 0 8px;font-weight:600}
+.cbtns{display:flex;gap:8px;flex-wrap:wrap}
+.cbtn{flex:1 1 130px;display:flex;flex-direction:column;gap:1px;padding:9px 13px;border-radius:10px;
+      border:1px solid var(--line);background:var(--shell);color:var(--ink)}
+.cbtn b{font-size:14px}
+.cbtn span{font-size:12px;color:var(--muted)}
+.cbtn.call{border-left:4px solid var(--sea)}
+.cbtn.wa{border-left:4px solid #25D366}
+.cbtn.mail{border-left:4px solid var(--muted)}
+
+/* ── Secrets (wifi / boîte à clés) ───────────────────────────────────────── */
+.secret-slot[hidden]{display:none}
+.secret-card{margin-top:10px;border:1px solid #CFE4EA;background:#EAF3F6;border-radius:12px;padding:12px 14px}
+.secret-card .sc-title{font-weight:600;font-size:14px;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.sc-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0}
+.sc-row .k{font-size:12.5px;color:var(--muted);min-width:78px}
+.sc-row .v{font-family:Fraunces,serif;font-size:19px;font-weight:600;letter-spacing:.02em;word-break:break-all;flex:1}
+.copy-btn{border:1px solid var(--sea);background:var(--shell);color:var(--sea);border-radius:8px;
+          padding:5px 12px;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+.copy-btn.done{background:var(--sea);color:#fff}
+.qr-wrap{margin-top:10px;display:flex;gap:12px;align-items:center}
+.qr-wrap canvas{width:132px;height:132px;image-rendering:pixelated;background:#fff;
+                border:1px solid var(--line);border-radius:8px;padding:6px}
+.qr-wrap .qr-cap{font-size:12.5px;color:var(--muted)}
+.sc-notes{font-size:13px;color:#3C4A52;margin:6px 0 0}
+
+/* ── Galeries média ──────────────────────────────────────────────────────── */
+.gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-top:12px}
+.gphoto{margin:0;position:relative;cursor:zoom-in;border-radius:10px;overflow:hidden;
+        border:1px solid var(--line);background:var(--line-soft)}
+.gphoto img{width:100%;height:96px;object-fit:cover}
+.gphoto figcaption{position:absolute;left:0;right:0;bottom:0;font-size:11px;color:#fff;
+                   padding:14px 6px 4px;background:linear-gradient(transparent,rgba(0,0,0,.55));
+                   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpdf{display:flex;align-items:center;gap:8px;padding:12px;border:1px solid var(--line);
+      border-radius:10px;background:var(--shell);font-size:13px;color:var(--ink)}
+.gpdf .ic{font-family:Fraunces,serif;font-weight:700;font-size:12px;color:#fff;background:var(--alert);
+          border-radius:6px;padding:3px 7px}
+
+/* ── POI (cartes « distance d'abord ») ───────────────────────────────────── */
+.cat-title{font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+           font-weight:600;margin:20px 0 8px}
+.poi-card{display:flex;gap:14px;background:var(--shell);border:1px solid var(--line);
+          border-left:4px solid var(--sea);border-radius:12px;padding:12px 14px;margin-bottom:8px;align-items:flex-start}
+.poi-card .dist{min-width:60px;text-align:center;border-right:1px solid var(--line);padding-right:12px;flex:none}
+.poi-card .dist b{font-family:Fraunces,serif;font-size:23px;font-weight:700;display:block;line-height:1}
+.poi-card .dist span{font-size:11px;color:var(--muted)}
+.poi-body{min-width:0}
+.poi-body h4{margin:0;font-size:15.5px;font-weight:600}
+.fav{margin:4px 0 0;font-size:13.5px;color:var(--sea-dark);font-weight:500}
+.hours{font-size:12px;color:var(--muted);margin-top:4px}
+.meta{margin-top:6px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap}
+.meta a{color:var(--sea);font-weight:500}
+
+/* ── area_facts ──────────────────────────────────────────────────────────── */
+.facts{background:var(--shell);border:1px solid var(--line);border-radius:12px;padding:15px 17px;margin-bottom:9px;font-size:14px}
+.facts .tt{font-family:Fraunces,serif;font-size:17px;font-weight:600}
+.facts p{margin:6px 0 0}
+.facts ul{margin:8px 0 0;padding-left:18px}
+.facts li{margin:3px 0}
+.fnote{color:var(--muted);font-size:13px}
+.quiet{display:inline-block;background:#EAF3F6;color:var(--sea);border-radius:8px;padding:2px 10px;font-weight:600;margin-top:8px}
+
+footer{margin-top:38px;font-size:12px;color:var(--muted);text-align:center}
+
+/* ── Visionneuse plein écran (lightbox) ──────────────────────────────────── */
+.lightbox{position:fixed;inset:0;z-index:2000;background:rgba(16,20,22,.94);
+          display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px}
+.lightbox img{max-width:100%;max-height:82vh;border-radius:8px;object-fit:contain}
+.lightbox .lb-cap{color:#fff;font-size:14px;margin-top:14px;text-align:center;max-width:40ch}
+.lightbox .lb-close{position:absolute;top:14px;right:16px;width:40px;height:40px;border-radius:50%;
+                    border:none;background:rgba(255,255,255,.15);color:#fff;font-size:22px;cursor:pointer}
+
+/* ── Page 404 ────────────────────────────────────────────────────────────── */
+.notfound{min-height:100vh;display:flex;align-items:center;justify-content:center}
+.nf-card{text-align:center;background:var(--shell);border:1px solid var(--line);border-radius:16px;
+         padding:40px 28px;max-width:420px}
+.nf-emoji{font-size:44px}
+.nf-card h1{font-size:26px;margin:10px 0 8px}
+.nf-card p{color:var(--muted);font-size:14.5px;margin:0}

@@ -593,6 +593,23 @@ def get_public_media(conn, token: str, media_id: str) -> dict | None:
     ).fetchone()
 
 
+def get_published_secrets_by_token(conn, token: str) -> dict | None:
+    """Secrets chiffrés d'un guide **publié** en mode d'accès 'link' (MVP, §8).
+
+    Le lien secret (token ≥ 128 bits) tenant lieu de clé d'accès, le voyageur qui
+    le possède peut voir le wifi et le code de la boîte à clés. Renvoie None si le
+    token est inconnu, le guide non publié, ou le mode d'accès n'est pas 'link'
+    (les modes 'pin'/'stay_dates' de la V2 exigeront la saisie d'un code)."""
+    return conn.execute(
+        """SELECT s.wifi_ssid, s.wifi_pass_enc, s.keybox_code_enc, s.keybox_notes
+           FROM properties pr
+           JOIN property_secrets s ON s.property_id = pr.id
+           WHERE pr.guide_token = %s AND pr.status = 'published'
+             AND pr.access_mode = 'link'""",
+        (token,),
+    ).fetchone()
+
+
 def guide_area_facts(conn, country_code: str, city: str | None) -> dict:
     """Faits locaux (urgences, tri, bruit). Priorité à la commune, repli national."""
     rows = conn.execute(

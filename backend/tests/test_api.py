@@ -388,8 +388,12 @@ def test_public_guide(client):
     prop = make_property(client, owner["headers"])
     pid, token = prop["id"], prop["guide_token"]
 
-    # Un guide non publié n'est pas servi (on ne révèle pas son existence)
-    assert client.get(f"/g/{token}").status_code == 404
+    # Un guide non publié n'est pas servi (on ne révèle pas son existence).
+    # La page HTML répond 404 « propre » (pas d'erreur JSON) ; /data aussi.
+    draft = client.get(f"/g/{token}")
+    assert draft.status_code == 404
+    assert "text/html" in draft.headers["content-type"]
+    assert client.get(f"/g/{token}/data").status_code == 404
 
     _enrich_and_wait(client, owner["headers"], pid)
     pois = client.get(f"/api/properties/{pid}/pois", headers=owner["headers"]).json()
@@ -420,11 +424,23 @@ def test_public_guide(client):
                        json={"status": "published"})
     assert pub.status_code == 200
 
-    # Guide public
-    g = client.get(f"/g/{token}")
+    # ── Page HTML voyageur (M-08) ─────────────────────────────────────────────
+    page = client.get(f"/g/{token}")
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    assert page.headers["X-Robots-Tag"].startswith("noindex")
+    assert "max-age" in page.headers.get("Cache-Control", "")
+    assert "Villa Mar Azul" in page.text                 # nom du logement rendu
+    assert "Check-in" in page.text                       # section visible rendue (SSR)
+    assert "Sous le pot" not in page.text                # section A_keybox masquée : absente du HTML
+    # Aucun secret dans la page HTML (déchiffrement réservé à /secrets)
+    assert "MotDePasseUltraSecret" not in page.text
+
+    # ── Guide JSON (/data) : charset explicite, sans secret ──────────────────
+    g = client.get(f"/g/{token}/data")
     assert g.status_code == 200
+    assert g.headers["content-type"] == "application/json; charset=utf-8"
     assert g.headers["X-Robots-Tag"].startswith("noindex")
-    assert "max-age" in g.headers.get("Cache-Control", "")
     data = g.json()
 
     # Infos logement, sans secret
@@ -449,6 +465,15 @@ def test_public_guide(client):
     # area_facts locaux présents (urgences, tri, bruit)
     assert set(data["area_facts"]) == {"emergency_numbers", "waste_rules", "noise_rules"}
     assert data["area_facts"]["emergency_numbers"]["items"][0]["number"] == "112"
+
+    # ── Secrets (mode 'link') servis à la demande, jamais dans /data ni le HTML ─
+    s = client.get(f"/g/{token}/secrets")
+    assert s.status_code == 200
+    assert s.headers["content-type"] == "application/json; charset=utf-8"
+    assert "no-store" in s.headers.get("Cache-Control", "")   # jamais mis en cache HTTP partagé
+    secrets = s.json()
+    assert secrets["wifi_ssid"] == "VillaMarAzul"
+    assert secrets["wifi_pass"] == "MotDePasseUltraSecret"
 
 
 # ── Quota : les jobs en échec ne comptent pas (M-01, tâche 3) ────────────────
@@ -515,8 +540,16 @@ def test_public_guide_preserves_utf8(client):
     client.patch(f"/api/properties/{pid}", headers=owner["headers"],
                  json={"status": "published"})
 
-    g = client.get(f"/g/{token}")
+    # Page HTML : UTF-8 préservé, charset déclaré
+    page = client.get(f"/g/{token}")
+    assert page.status_code == 200
+    assert "charset=utf-8" in page.headers["content-type"]
+    assert "encadrée" in page.text and "�" not in page.text
+
+    # JSON public : charset explicite (mojibake Safari) et contenu intact
+    g = client.get(f"/g/{token}/data")
     assert g.status_code == 200
+    assert g.headers["content-type"] == "application/json; charset=utf-8"
     assert "�" not in g.text            # aucun caractère de remplacement
     desc = g.json()["pois"][0]["description_md"]
     assert "encadrée" in desc and "�" not in desc
@@ -760,7 +793,7 @@ def test_media_public_guide_visibility(client):
     client.patch(f"/api/properties/{pid}", headers=owner["headers"],
                  json={"status": "published"})
 
-    g = client.get(f"/g/{token}")
+    g = client.get(f"/g/{token}/data")
     assert g.status_code == 200
     data = g.json()
     # La section visible porte son média ; la masquée est absente des sections
@@ -775,3 +808,72 @@ def test_media_public_guide_visibility(client):
     assert fv.status_code == 200 and fv.headers["content-type"] == "image/png"
     assert fv.headers["X-Robots-Tag"].startswith("noindex")
     assert client.get(f"/g/{token}/media/{hid['id']}").status_code == 404
+
+
+# ── Guide voyageur PWA (M-08) ────────────────────────────────────────────────
+
+def test_guide_page_404_is_clean_html(client):
+    """Token inconnu → page 404 HTML propre (jamais une trace JSON brute)."""
+    r = client.get("/g/tokeninexistant0000")
+    assert r.status_code == 404
+    assert "text/html" in r.headers["content-type"]
+    assert r.headers["X-Robots-Tag"].startswith("noindex")
+    assert "Guide introuvable" in r.text
+
+
+def test_guide_secrets_only_link_mode(client):
+    """Les secrets ne sont servis qu'en mode d'accès 'link' (MVP). En mode 'pin'
+    (V2), l'endpoint renvoie un objet vide sans rien divulguer."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
+               json={"wifi_ssid": "Reseau", "wifi_pass": "secret-wifi-xyz",
+                     "keybox_code": "4321"})
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    # Mode 'link' : secrets déchiffrés
+    s = client.get(f"/g/{token}/secrets").json()
+    assert s["wifi_pass"] == "secret-wifi-xyz" and s["keybox_code"] == "4321"
+
+    # Bascule en mode 'pin' → plus aucun secret exposé publiquement
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"access_mode": "pin"})
+    s2 = client.get(f"/g/{token}/secrets")
+    assert s2.status_code == 200
+    body = s2.json()
+    assert body == {"wifi_ssid": None, "wifi_pass": None, "keybox_code": None,
+                    "keybox_notes": None}
+    assert "secret-wifi-xyz" not in s2.text
+
+    # Guide non publié : 404 même en mode 'link'
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"access_mode": "link", "status": "draft"})
+    # (le token reste valide mais le guide n'est plus publié)
+    assert client.get(f"/g/{token}/secrets").json()["wifi_pass"] is None
+
+
+def test_guide_manifest_is_per_guide(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"], name="Casa Bonita")
+    pid, token = prop["id"], prop["guide_token"]
+    assert client.get(f"/g/{token}/manifest.webmanifest").status_code == 404  # brouillon
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+    m = client.get(f"/g/{token}/manifest.webmanifest")
+    assert m.status_code == 200
+    assert "application/manifest+json" in m.headers["content-type"]
+    man = m.json()
+    assert man["start_url"] == f"/g/{token}" and man["scope"] == f"/g/{token}"
+    assert "Casa Bonita" in man["name"]
+    assert any(ic["src"].startswith("/guide/icon") for ic in man["icons"])
+
+
+def test_service_worker_scope_header(client):
+    """Le service worker est servi avec Service-Worker-Allowed: / (portée '/g/…')."""
+    r = client.get("/guide/sw.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"]
+    assert r.headers.get("Service-Worker-Allowed") == "/"
+    assert "addEventListener" in r.text

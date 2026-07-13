@@ -211,12 +211,21 @@ export async function renderEditor(view, pid) {
       headerRight.append(
         el("a", { class: "btn btn-sm", href: `/g/${property.guide_token}`, target: "_blank", rel: "noopener" },
           icon("external-link", 16), "Voir le guide"),
+        el("button", { class: "btn btn-sm", onClick: () => copyGuideLink() },
+          icon("link", 16), "Copier le lien"),
         el("button", { class: "btn btn-sm", onClick: () => setStatus("draft") }, "Dépublier"));
     } else {
       headerRight.append(
         el("button", { class: "btn btn-sm btn-primary", onClick: () => publish() }, icon("globe", 16), "Publier le guide"));
     }
     refreshIcons();
+  }
+
+  function guideLink() { return location.origin + `/g/${property.guide_token}`; }
+
+  async function copyGuideLink() {
+    try { await navigator.clipboard.writeText(guideLink()); toast("Lien du guide copié.", "ok"); }
+    catch (_) { toast("Copie impossible — copiez le lien manuellement.", "err"); }
   }
 
   async function publish() {

@@ -9,6 +9,10 @@ venv/
 .env
 *.local
 
+# Stockage des médias (MEDIA_ROOT par défaut, hors dépôt — M-12)
+backend/var/
+var/media/
+
 # macOS
 .DS_Store
 
