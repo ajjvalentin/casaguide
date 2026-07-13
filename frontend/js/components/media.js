@@ -14,6 +14,17 @@ const MAX_MB = 10;
 const CLIENT_COMPRESS_ABOVE = 4 * 1024 * 1024; // ne recompresse que les gros fichiers
 const CLIENT_MAX_DIM = 2000;
 
+/* Garde globale : sans elle, un fichier déposé hors des zones prévues fait
+   naviguer le navigateur vers l'image (« photo en grand ») et quitte la SPA. */
+let dropGuardInstalled = false;
+function installDropGuard() {
+  if (dropGuardInstalled) return;
+  dropGuardInstalled = true;
+  const block = (e) => { if (e.dataTransfer?.types?.includes("Files")) e.preventDefault(); };
+  window.addEventListener("dragover", block);
+  window.addEventListener("drop", block);
+}
+
 /* Réduit une image trop grande via canvas (JPEG/WebP uniquement, pour préserver
    la transparence des PNG). Retourne le fichier d'origine si inutile ou en cas
    d'échec — le serveur ré-encode et retire l'EXIF de toute façon. */
@@ -37,6 +48,7 @@ async function maybeCompress(file) {
 }
 
 export function buildMediaPanel({ propertyId, sectionCode }) {
+  installDropGuard();
   let items = [];
   const objectUrls = [];
   const grid = el("div", { class: "media-grid" });
@@ -56,7 +68,7 @@ export function buildMediaPanel({ propertyId, sectionCode }) {
   }));
   ["dragleave", "dragend"].forEach((ev) => dropzone.addEventListener(ev, () => dropzone.classList.remove("over")));
   dropzone.addEventListener("drop", (e) => {
-    e.preventDefault(); dropzone.classList.remove("over");
+    e.preventDefault(); e.stopPropagation(); dropzone.classList.remove("over");
     if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
   });
 
@@ -68,6 +80,14 @@ export function buildMediaPanel({ propertyId, sectionCode }) {
       "Illustrez cette section : télécommandes, boîte à clés, plan des poubelles, façade…"),
     grid, dropzone, fileInput);
   const countEl = node.querySelector(".media-count");
+
+  // Un fichier déposé n'importe où dans le panneau (vignettes comprises) est ajouté
+  node.addEventListener("dragover", (e) => {
+    if (e.dataTransfer?.types?.includes("Files")) e.preventDefault();
+  });
+  node.addEventListener("drop", (e) => {
+    if (e.dataTransfer?.files?.length) { e.preventDefault(); addFiles(e.dataTransfer.files); }
+  });
 
   load();
   return { node };
@@ -124,7 +144,8 @@ export function buildMediaPanel({ propertyId, sectionCode }) {
     card.addEventListener("dragend", () => card.classList.remove("dragging"));
     card.addEventListener("dragover", (e) => e.preventDefault());
     card.addEventListener("drop", (e) => {
-      e.preventDefault();
+      e.preventDefault(); e.stopPropagation();
+      if (e.dataTransfer?.files?.length) { addFiles(e.dataTransfer.files); return; }
       const from = Number(e.dataTransfer.getData("text/plain"));
       if (Number.isInteger(from) && from !== index) reorder(from, index);
     });
