@@ -73,6 +73,10 @@ CREATE TABLE properties (
     -- Publication
     guide_token      TEXT NOT NULL UNIQUE
                      DEFAULT encode(gen_random_bytes(16), 'hex'), -- lien secret 128 bits
+    -- Second lien secret, distinct du lien voyageur : cahier de préparation de
+    -- l'équipe d'entretien (§M-13). Même mécanique que guide_token (128 bits).
+    staff_token      TEXT NOT NULL UNIQUE
+                     DEFAULT encode(gen_random_bytes(16), 'hex'),
     access_mode      TEXT NOT NULL DEFAULT 'link',
                      -- 'link' (MVP) | 'pin' | 'stay_dates' (V2)
     access_pin_hash  TEXT,                         -- si access_mode = 'pin'
@@ -128,7 +132,11 @@ CREATE TABLE section_templates (
     description_i18n JSONB NOT NULL DEFAULT '{}',  -- aide à la saisie pour le propriétaire
     field_schema JSONB NOT NULL DEFAULT '{}',      -- schéma des champs structurés attendus
     ai_enrichable BOOLEAN NOT NULL DEFAULT FALSE,  -- section pré-remplissable par l'IA
-    is_sensitive  BOOLEAN NOT NULL DEFAULT FALSE   -- masquée tant que non authentifié (V2)
+    is_sensitive  BOOLEAN NOT NULL DEFAULT FALSE,  -- masquée tant que non authentifié (V2)
+    -- Public cible de la section (M-13) : le guide voyageur ('guest') ou le
+    -- cahier de préparation de l'équipe d'entretien ('staff'). Une section 'staff'
+    -- ne sort JAMAIS sur /g ; une section 'guest' ne sort JAMAIS sur /s.
+    audience      TEXT NOT NULL DEFAULT 'guest'    -- 'guest' | 'staff'
 );
 
 -- Instance d'une section pour un logement donné

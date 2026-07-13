@@ -7,7 +7,7 @@
    Aucune dépendance lourde : Leaflet est fourni par la page, le QR est généré
    localement (qr.js). Tout échoue proprement — sans JS, la page reste lisible. */
 
-import { qrMatrix } from "./qr.js";
+import { qrCanvas, wifiPayload } from "./qr.js";
 
 const token = document.body.dataset.token || location.pathname.split("/")[2] || "";
 let GUIDE = { property: {}, pois: [] };
@@ -125,10 +125,10 @@ function fillWifi(slot, sec) {
   if (sec.wifi_ssid) card.appendChild(secretRow("Réseau", sec.wifi_ssid));
   if (sec.wifi_pass) card.appendChild(secretRow("Mot de passe", sec.wifi_pass, { mono: true }));
 
-  // QR de connexion automatique (norme WIFI:…)
+  // QR de connexion automatique (norme WIFI:…), généré via le module mutualisé
   if (sec.wifi_ssid && sec.wifi_pass) {
-    const payload = `WIFI:T:WPA;S:${wifiEscape(sec.wifi_ssid)};P:${wifiEscape(sec.wifi_pass)};;`;
-    const canvas = renderQr(payload);
+    const canvas = qrCanvas(wifiPayload(sec.wifi_ssid, sec.wifi_pass),
+      { label: "QR code de connexion Wifi" });
     if (canvas) {
       card.appendChild(el("div", { class: "qr-wrap" }, canvas,
         el("div", { class: "qr-cap" }, "Scannez pour vous connecter automatiquement au Wifi.")));
@@ -160,23 +160,6 @@ function secretRow(label, value, { mono } = {}) {
     el("span", { class: "k" }, label),
     el("span", { class: "v", style: mono ? "font-family:ui-monospace,monospace" : "" }, value),
     btn);
-}
-
-/* Échappement des caractères spéciaux pour la charge utile WIFI: (\ ; , : "). */
-function wifiEscape(s) { return String(s).replace(/([\\;,:"])/g, "\\$1"); }
-
-function renderQr(text) {
-  const matrix = qrMatrix(text);
-  if (!matrix) return null;
-  const n = matrix.length, quiet = 4, scale = 4, dim = (n + quiet * 2) * scale;
-  const canvas = el("canvas", { width: dim, height: dim, "aria-label": "QR code de connexion Wifi" });
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, dim, dim);
-  ctx.fillStyle = "#1E2A32";
-  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-    if (matrix[y][x]) ctx.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
-  }
-  return canvas;
 }
 
 // ── Service worker (hors-ligne + PWA) ────────────────────────────────────────

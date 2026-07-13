@@ -392,6 +392,65 @@ ON CONFLICT (code) DO UPDATE SET
   field_schema = EXCLUDED.field_schema, ai_enrichable = EXCLUDED.ai_enrichable,
   is_sensitive = EXCLUDED.is_sensitive;
 
+-- ============================================================================
+-- 3bis. CAHIER DE PRÉPARATION — sections de l'ÉQUIPE D'ENTRETIEN (§M-13)
+--    Chapitre « S », audience = 'staff' : ces sections ne sortent JAMAIS sur le
+--    guide voyageur (/g) — elles alimentent uniquement le cahier /s/{staff_token}.
+--    Bloc séparé (audience explicite) : le bloc guest ci-dessus garde son défaut
+--    'guest' sans devoir répéter la colonne sur chaque ligne.
+-- ============================================================================
+
+INSERT INTO section_templates
+  (code, chapter, sort_order, icon, name_i18n, description_i18n, field_schema,
+   ai_enrichable, is_sensitive, audience)
+VALUES
+
+('S_checklist', 'S', 910, 'list-checks',
+ '{"fr":"Check-list de préparation","en":"Preparation checklist","es":"Lista de preparación"}',
+ '{"fr":"La liste des tâches à réaliser entre deux séjours : ménage, vérifications, mise en place. Une fiche par tâche, avec précisions."}',
+ '{"repeat":{"key":"tasks","fields":[
+    {"key":"task","type":"text","label":{"fr":"Tâche","en":"Task","es":"Tarea"}},
+    {"key":"details","type":"textarea","label":{"fr":"Précisions","en":"Details","es":"Detalles"}}
+  ]}}', FALSE, FALSE, 'staff'),
+
+('S_welcome_pack', 'S', 920, 'gift',
+ '{"fr":"Panier de bienvenue","en":"Welcome pack","es":"Pack de bienvenida"}',
+ '{"fr":"Ce qu''il faut disposer pour accueillir les voyageurs (café, eau, petit mot, produits d''accueil). Ajoutez des photos de la mise en place idéale."}',
+ '{"fields":[
+    {"key":"contents","type":"textarea","label":{"fr":"Composition et disposition","en":"Contents and layout","es":"Contenido y disposición"}}
+  ]}', FALSE, FALSE, 'staff'),
+
+('S_linen', 'S', 930, 'bed-double',
+ '{"fr":"Dotation en linge","en":"Linen provision","es":"Dotación de ropa de casa"}',
+ '{"fr":"Le linge à préparer, dimensionné au nombre de voyageurs : parures de lit, serviettes de bain et de plage, plus toute précision utile."}',
+ '{"fields":[
+    {"key":"bed_sets","type":"text","label":{"fr":"Parures de lit (par lit)","en":"Bed sets (per bed)","es":"Juegos de cama (por cama)"}},
+    {"key":"bath_towels","type":"number","label":{"fr":"Serviettes de bain (par voyageur)","en":"Bath towels (per guest)","es":"Toallas de baño (por huésped)"}},
+    {"key":"beach_towels","type":"number","label":{"fr":"Serviettes de plage (par voyageur)","en":"Beach towels (per guest)","es":"Toallas de playa (por huésped)"}},
+    {"key":"notes","type":"textarea","label":{"fr":"Précisions (emplacement, rotation, blanchisserie…)","en":"Notes (location, rotation, laundry…)","es":"Notas (ubicación, rotación, lavandería…)"}}
+  ]}', FALSE, FALSE, 'staff'),
+
+('S_supplies', 'S', 940, 'package-check',
+ '{"fr":"Consommables à vérifier","en":"Supplies to check","es":"Consumibles a comprobar"}',
+ '{"fr":"Les consommables à recompléter à chaque préparation : papier toilette, produits d''entretien, sacs poubelle, capsules de café… Indiquez la quantité cible."}',
+ '{"repeat":{"key":"items","fields":[
+    {"key":"item","type":"text","label":{"fr":"Consommable","en":"Supply","es":"Consumible"}},
+    {"key":"target","type":"text","label":{"fr":"Quantité cible","en":"Target quantity","es":"Cantidad objetivo"}}
+  ]}}', FALSE, FALSE, 'staff'),
+
+('S_special', 'S', 950, 'sparkles',
+ '{"fr":"Souhaits particuliers du propriétaire","en":"Owner''s special requests","es":"Peticiones especiales del propietario"}',
+ '{"fr":"Toute consigne spécifique : orientation des meubles, objets fragiles, plantes à arroser, points de vigilance récurrents."}',
+ '{"fields":[
+    {"key":"wishes","type":"textarea","label":{"fr":"Consignes particulières","en":"Special instructions","es":"Instrucciones especiales"}}
+  ]}', FALSE, FALSE, 'staff')
+
+ON CONFLICT (code) DO UPDATE SET
+  chapter = EXCLUDED.chapter, sort_order = EXCLUDED.sort_order, icon = EXCLUDED.icon,
+  name_i18n = EXCLUDED.name_i18n, description_i18n = EXCLUDED.description_i18n,
+  field_schema = EXCLUDED.field_schema, ai_enrichable = EXCLUDED.ai_enrichable,
+  is_sensitive = EXCLUDED.is_sensitive, audience = EXCLUDED.audience;
+
 COMMIT;
 
 -- Vérification rapide :

@@ -156,6 +156,24 @@ footer{margin-top:38px;font-size:12px;color:var(--muted);text-align:center}
 .lightbox .lb-close{position:absolute;top:14px;right:16px;width:40px;height:40px;border-radius:50%;
                     border:none;background:rgba(255,255,255,.15);color:#fff;font-size:22px;cursor:pointer}
 
+/* ── Cahier « équipe d'entretien » (/s/{staff_token}, M-13) ──────────────────
+   Variante sobre : accent ardoise (au lieu du bleu mer), mise en page check-list.
+   Réutilise .wrap / .sec-card / .fields / .prose / .gallery du guide voyageur. */
+.staff-page{--sea:#334049}                 /* neutralise l'accent mer sur cette page */
+.staff-page .wrap{max-width:640px}
+.staff-head{padding:26px 0 6px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.staff-head h1{font-size:clamp(24px,6.5vw,32px)}
+.staff-draft{margin-top:12px;background:#FFF6E5;border:1px solid #F0E2C0;color:#7A5A12;
+             border-radius:10px;padding:9px 13px;font-size:13px}
+.staff-card{margin-top:12px}
+.staff-card h3{color:var(--ink)}
+/* Fiches répétables en lignes « à cocher » (visuel seul — cases par séjour = V2) */
+.staff-card .repeat-card{position:relative;padding-left:38px}
+.staff-card .repeat-card::before{content:"";position:absolute;left:12px;top:12px;
+             width:16px;height:16px;border:2px solid #B9C4CB;border-radius:4px;background:#fff}
+.staff-empty{background:var(--shell);border:1px solid var(--line);border-radius:12px;
+             padding:22px 18px;color:var(--muted);font-size:14.5px;text-align:center;margin-top:16px}
+
 /* ── Page 404 ────────────────────────────────────────────────────────────── */
 .notfound{min-height:100vh;display:flex;align-items:center;justify-content:center}
 .nf-card{text-align:center;background:var(--shell);border:1px solid var(--line);border-radius:16px;

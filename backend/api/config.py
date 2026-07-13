@@ -50,6 +50,9 @@ class ApiSettings:
     # relatif à backend/ ; exclu de git. Architecture prête pour un backend S3.
     media_root: str = os.getenv("MEDIA_ROOT", "var/media")
     max_upload_bytes: int = int(os.getenv("CASAGUIDE_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+    # Origine publique servant à construire les liens absolus (QR imprimable M-07).
+    # À défaut, on retombe sur l'origine de la requête (request.base_url).
+    public_base_url: str | None = os.getenv("CASAGUIDE_PUBLIC_BASE_URL") or None
 
 
 settings = ApiSettings()

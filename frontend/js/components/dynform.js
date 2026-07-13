@@ -12,6 +12,7 @@
 
 import { el, icon, t, refreshIcons } from "../ui.js";
 import { OPTION_LABELS } from "../constants.js";
+import { buildWifiQrPanel } from "./wifiqr.js";
 
 // Regroupements de champs sensibles (le field_schema ne liste que la clé
 // chiffrée ; on y adjoint les champs en clair associés — SSID, notes).
@@ -165,13 +166,26 @@ export function buildSectionForm(section, { secrets = {}, propertyId } = {}) {
     const block = SECRET_BLOCKS[sk];
     if (!block) continue;
     const box = el("div", { class: "secret-field" }, el("div", { class: "field-label" }, block.title));
+    const controls = {};
     for (const sf of block.fields) {
       const { node, get } = fieldNode({ label: { fr: sf.label }, type: sf.type, key: sf.key }, secrets[sf.key]);
       box.append(node);
       secretGetters.push([sf.key, get]);
+      controls[sf.key] = node.querySelector("input, textarea, select");
     }
     box.append(el("div", { class: "secret-note" }, icon("lock", 13),
       "Chiffré côté serveur, jamais visible par le voyageur."));
+    // Aperçu du QR de connexion Wifi (M-06) — généré localement, mot de passe
+    // jamais transmis ailleurs que par l'endpoint /secrets déjà utilisé.
+    if (sk === "wifi_pass") {
+      const qr = buildWifiQrPanel({
+        getSsid: () => controls.wifi_ssid && controls.wifi_ssid.value,
+        getPass: () => controls.wifi_pass && controls.wifi_pass.value,
+      });
+      box.append(qr.node);
+      controls.wifi_ssid && controls.wifi_ssid.addEventListener("input", qr.refresh);
+      controls.wifi_pass && controls.wifi_pass.addEventListener("input", qr.refresh);
+    }
     form.append(box);
   }
 

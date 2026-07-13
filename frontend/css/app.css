@@ -135,6 +135,17 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .secret-note{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--lock);
              font-weight:600;margin-top:7px}
 
+/* Aperçu du QR Wifi (M-06) */
+.wifiqr{margin-top:12px}
+.wifiqr .field-label{display:flex;align-items:center;gap:6px}
+.wifiqr-canvas{margin:8px 0}
+.wifiqr-canvas canvas{width:150px;height:150px;image-rendering:pixelated;
+             background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px}
+.wifiqr-empty{font-size:12.5px;color:var(--muted);background:#fff;border:1px dashed var(--line);
+             border-radius:8px;padding:14px 12px}
+.wifiqr-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between}
+.wifiqr-foot .help{flex:1;min-width:160px}
+
 /* Groupe répétable */
 .repeat-item{border:1px solid var(--line);border-radius:12px;padding:14px;
              margin-bottom:10px;background:#FCFAF6;position:relative}

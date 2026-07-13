@@ -466,6 +466,80 @@ def build_manifest(prop: dict, token: str) -> dict:
     }
 
 
+# ── Cahier de préparation « équipe d'entretien » (/s/{staff_token}, M-13) ─────
+# Variante sobre du moteur de rendu M-08 : réutilise `_render_fields`,
+# `_md_to_html`, `_render_media` mais SANS carte, SANS POI, SANS secrets, SANS
+# area_facts (invariant 7). Mise en page « check-list » mobile. La page est
+# servie même quand le logement est en brouillon (l'équipe prépare avant
+# publication) : voir routers/guide.py.
+
+def _render_staff_section(sec: dict) -> str:
+    """Une section 'staff' rendue en fiche sobre (mêmes briques que le guide)."""
+    schema = sec.get("field_schema") or {}
+    content = sec.get("content") or {}
+    title = _esc(_fr(sec.get("name_i18n"), sec.get("code", "")))
+    parts: list[str] = [f"<h3>{title}</h3>"]
+    fields_html = _render_fields(schema, content)
+    if fields_html:
+        parts.append(fields_html)
+    body_html = _md_to_html(sec.get("body_md"))
+    if body_html:
+        parts.append(f'<div class="prose">{body_html}</div>')
+    parts.append(_render_media(sec.get("media") or []))
+    body = "".join(p for p in parts if p)
+    return f'<article class="sec-card staff-card">{body}</article>'
+
+
+def render_staff(prop: dict, sections: list[dict], token: str) -> str:
+    """Cahier de préparation mobile de l'équipe d'entretien (§M-13).
+
+    Jamais indexé, jamais de secrets ni de POI. Reste lisible sans JS (rendu
+    côté serveur). Affiche un état vide explicite si aucune consigne n'est
+    encore saisie (le cahier peut être ouvert dès la création du logement)."""
+    name = _esc(prop.get("name") or "Votre logement")
+    place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
+    draft = prop.get("status") != "published"
+
+    if sections:
+        body = "".join(_render_staff_section(s) for s in sections)
+    else:
+        body = ('<div class="staff-empty"><p>Aucune consigne de préparation '
+                "n'a encore été saisie pour ce logement. Revenez après que le "
+                "propriétaire l'aura complété.</p></div>")
+
+    draft_note = ('<div class="staff-draft">Logement en préparation — ce cahier '
+                  'peut être consulté avant la mise en ligne du guide voyageur.</div>'
+                  if draft else '')
+
+    return f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#334049">
+<title>{name} — Préparation du logement</title>
+<link rel="icon" href="/guide/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/guide/guide.css">
+</head>
+<body class="staff-page">
+<div class="wrap">
+  <header class="staff-head">
+    <div class="eyebrow">Cahier de préparation · Équipe d'entretien</div>
+    <h1>{name}</h1>
+    {f'<div class="city">{_esc(place)}</div>' if place else ''}
+    {draft_note}
+  </header>
+  <main id="content">{body}</main>
+  <footer>Cahier interne CasaGuide — réservé à l'équipe de préparation.</footer>
+</div>
+</body>
+</html>"""
+
+
 def render_not_found() -> str:
     """Page 404 propre : token inconnu ou logement non publié (on ne révèle rien)."""
     return """<!DOCTYPE html>

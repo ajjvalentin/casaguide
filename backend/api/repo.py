@@ -17,7 +17,7 @@ from typing import Any
 _PROP_COLS = """
     id, name, address_line1, address_line2, postal_code, city, region,
     country_code, ST_Y(geom) AS lat, ST_X(geom) AS lon,
-    geocode_source, geocode_accuracy, guide_token, access_mode, status,
+    geocode_source, geocode_accuracy, guide_token, staff_token, access_mode, status,
     default_lang, published_langs, contact_name, contact_phone,
     contact_whatsapp, contact_email, contact_backup, tourism_license,
     created_at, updated_at
@@ -186,6 +186,7 @@ def list_sections_with_templates(conn, property_id: str) -> list[dict]:
     return conn.execute(
         """SELECT t.code, t.chapter, t.sort_order, t.icon, t.name_i18n,
                   t.description_i18n, t.field_schema, t.ai_enrichable, t.is_sensitive,
+                  t.audience,
                   ps.id AS section_id, ps.content, ps.body_md, ps.is_visible,
                   ps.completed
            FROM section_templates t
@@ -367,12 +368,16 @@ def property_stats(conn, property_id: str) -> dict:
     sections (sur le catalogue complet) et décompte des POI par statut.
 
     La complétude rapporte les sections marquées « complétées » par le
-    propriétaire au nombre total de sections pré-définies (§4)."""
+    propriétaire au nombre total de sections pré-définies (§4). Elle ne concerne
+    que le **guide voyageur** (audience='guest') : le cahier de l'équipe
+    d'entretien (M-13) a son propre indicateur et ne dilue pas ce pourcentage."""
     sec = conn.execute(
-        """SELECT (SELECT count(*) FROM section_templates) AS total,
-                  count(*) FILTER (WHERE ps.completed) AS done,
-                  count(*) FILTER (WHERE ps.is_visible) AS visible
-           FROM property_sections ps WHERE ps.property_id = %s""",
+        """SELECT (SELECT count(*) FROM section_templates WHERE audience = 'guest') AS total,
+                  count(*) FILTER (WHERE ps.completed AND COALESCE(t.audience, 'guest') = 'guest') AS done,
+                  count(*) FILTER (WHERE ps.is_visible AND COALESCE(t.audience, 'guest') = 'guest') AS visible
+           FROM property_sections ps
+           LEFT JOIN section_templates t ON t.code = ps.template_code
+           WHERE ps.property_id = %s""",
         (property_id,),
     ).fetchone()
     rows = conn.execute(
@@ -531,13 +536,16 @@ def get_published_property_by_token(conn, token: str) -> dict | None:
 
 
 def guide_sections(conn, property_id: str) -> list[dict]:
-    """Sections visibles d'un guide, avec les métadonnées de leur template."""
+    """Sections **voyageur** visibles d'un guide (audience='guest'), avec les
+    métadonnées de leur template. Les sections 'staff' (cahier de l'équipe
+    d'entretien, M-13) ne sortent JAMAIS ici (invariant 7)."""
     return conn.execute(
         """SELECT t.code, t.chapter, t.sort_order, t.icon, t.name_i18n,
                   t.field_schema, t.is_sensitive, ps.content, ps.body_md
            FROM property_sections ps
            JOIN section_templates t ON t.code = ps.template_code
            WHERE ps.property_id = %s AND ps.is_visible = TRUE
+             AND t.audience = 'guest'
            ORDER BY t.sort_order""",
         (property_id,),
     ).fetchall()
@@ -565,14 +573,16 @@ def guide_pois(conn, property_id: str) -> list[dict]:
 def guide_media(conn, property_id: str) -> list[dict]:
     """Médias servis dans le guide public (M-12) : uniquement ceux d'une section
     **visible**, plus ceux rattachés au logement (section_id NULL). Un média
-    d'une section masquée n'est jamais listé (invariant de visibilité)."""
+    d'une section masquée n'est jamais listé (invariant de visibilité). Un média
+    d'une section 'staff' (M-13) n'est jamais listé côté voyageur (invariant 7)."""
     return conn.execute(
         """SELECT m.id, m.kind, m.caption, m.sort_order, t.code AS section_code
            FROM media m
            LEFT JOIN property_sections ps ON ps.id = m.section_id
            LEFT JOIN section_templates t ON t.code = ps.template_code
            WHERE m.property_id = %s
-             AND (m.section_id IS NULL OR ps.is_visible = TRUE)
+             AND (m.section_id IS NULL
+                  OR (ps.is_visible = TRUE AND t.audience = 'guest'))
            ORDER BY t.sort_order NULLS FIRST, m.sort_order, m.created_at""",
         (property_id,),
     ).fetchall()
@@ -581,14 +591,17 @@ def guide_media(conn, property_id: str) -> list[dict]:
 def get_public_media(conn, token: str, media_id: str) -> dict | None:
     """Média d'un guide **publié**, servi seulement si sa section est visible (ou
     s'il est rattaché au logement). None sinon : token inconnu, guide non publié,
-    ou section masquée — on ne révèle rien (invariants 4/5, §8)."""
+    ou section masquée — on ne révèle rien (invariants 4/5, §8). Un média de
+    section 'staff' (M-13) n'est jamais servi sur /g (invariant 7)."""
     return conn.execute(
         """SELECT m.kind, m.storage_key
            FROM media m
            JOIN properties pr ON pr.id = m.property_id
            LEFT JOIN property_sections ps ON ps.id = m.section_id
+           LEFT JOIN section_templates t ON t.code = ps.template_code
            WHERE m.id = %s AND pr.guide_token = %s AND pr.status = 'published'
-             AND (m.section_id IS NULL OR ps.is_visible = TRUE)""",
+             AND (m.section_id IS NULL
+                  OR (ps.is_visible = TRUE AND t.audience = 'guest'))""",
         (media_id, token),
     ).fetchone()
 
@@ -623,3 +636,67 @@ def guide_area_facts(conn, country_code: str, city: str | None) -> dict:
     for r in sorted(rows, key=lambda r: r["admin_area"] is not None):
         facts[r["fact_type"]] = r["content"]
     return facts
+
+
+# ── Cahier de préparation « équipe d'entretien » (/s/{staff_token}, M-13) ─────
+# Ce cahier est **volontairement accessible même en brouillon** : l'équipe
+# d'entretien prépare le logement AVANT la publication du guide voyageur. Le
+# staff_token (≥ 128 bits, distinct du guide_token) tient lieu de clé d'accès.
+# Aucune de ces requêtes ne remonte jamais les secrets, les POI ni les sections
+# 'guest' (invariant 7).
+
+def get_property_by_staff_token(conn, token: str) -> dict | None:
+    """Logement désigné par son staff_token (tout statut, y compris 'draft').
+    None si le token est inconnu — on ne révèle pas l'existence d'un logement."""
+    return conn.execute(
+        """SELECT id, name, city, region, country_code, status
+           FROM properties
+           WHERE staff_token = %s""",
+        (token,),
+    ).fetchone()
+
+
+def staff_sections(conn, property_id: str) -> list[dict]:
+    """Sections **équipe d'entretien** visibles (audience='staff'). Jamais les
+    sections 'guest' (invariant 7)."""
+    return conn.execute(
+        """SELECT t.code, t.chapter, t.sort_order, t.icon, t.name_i18n,
+                  t.field_schema, t.is_sensitive, ps.content, ps.body_md
+           FROM property_sections ps
+           JOIN section_templates t ON t.code = ps.template_code
+           WHERE ps.property_id = %s AND ps.is_visible = TRUE
+             AND t.audience = 'staff'
+           ORDER BY t.sort_order""",
+        (property_id,),
+    ).fetchall()
+
+
+def staff_media(conn, property_id: str) -> list[dict]:
+    """Médias des sections 'staff' visibles (panier de bienvenue illustré…).
+    N'inclut jamais les médias 'guest' ni ceux au niveau logement."""
+    return conn.execute(
+        """SELECT m.id, m.kind, m.caption, m.sort_order, t.code AS section_code
+           FROM media m
+           JOIN property_sections ps ON ps.id = m.section_id
+           JOIN section_templates t ON t.code = ps.template_code
+           WHERE m.property_id = %s AND ps.is_visible = TRUE
+             AND t.audience = 'staff'
+           ORDER BY t.sort_order, m.sort_order, m.created_at""",
+        (property_id,),
+    ).fetchall()
+
+
+def get_staff_media(conn, token: str, media_id: str) -> dict | None:
+    """Média d'un cahier 'staff' servi via /s/{staff_token} (tout statut). Servi
+    seulement si sa section est 'staff' et visible ; None sinon (on ne révèle
+    rien : token inconnu, média 'guest', section masquée)."""
+    return conn.execute(
+        """SELECT m.kind, m.storage_key
+           FROM media m
+           JOIN properties pr ON pr.id = m.property_id
+           JOIN property_sections ps ON ps.id = m.section_id
+           JOIN section_templates t ON t.code = ps.template_code
+           WHERE m.id = %s AND pr.staff_token = %s
+             AND ps.is_visible = TRUE AND t.audience = 'staff'""",
+        (media_id, token),
+    ).fetchone()

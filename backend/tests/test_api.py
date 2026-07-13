@@ -877,3 +877,196 @@ def test_service_worker_scope_header(client):
     assert "javascript" in r.headers["content-type"]
     assert r.headers.get("Service-Worker-Allowed") == "/"
     assert "addEventListener" in r.text
+
+
+# ── Cahier « équipe d'entretien » + étanchéité guest/staff (M-13) ─────────────
+
+def test_staff_and_guest_are_watertight_both_ways(client):
+    """INVARIANT 7 : les sections 'staff' ne sortent JAMAIS sur /g ni /g/data ;
+    les sections 'guest' ne sortent JAMAIS sur /s. Testé dans les deux sens."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, gtoken, staff_token = prop["id"], prop["guide_token"], prop["staff_token"]
+    # Le staff_token est un second lien secret, distinct du lien voyageur
+    assert len(staff_token) >= 32 and staff_token != gtoken
+
+    # Contenu voyageur (guest) et contenu équipe d'entretien (staff)
+    client.put(f"/api/properties/{pid}/sections/A_checkin", headers=owner["headers"],
+               json={"content": {"checkin_from": "16:00"}, "body_md": "Arrivée GUESTMARK",
+                     "is_visible": True, "completed": True})
+    client.put(f"/api/properties/{pid}/sections/S_checklist", headers=owner["headers"],
+               json={"content": {"tasks": [{"task": "Nettoyer STAFFMARK", "details": "robot piscine"}]},
+                     "is_visible": True, "completed": True})
+    client.put(f"/api/properties/{pid}/sections/S_special", headers=owner["headers"],
+               json={"content": {"wishes": "Arroser les plantes WISHMARK"}, "is_visible": True})
+
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    # ── Sens 1 : /g et /g/data ne contiennent QUE du 'guest' ─────────────────
+    page = client.get(f"/g/{gtoken}")
+    assert page.status_code == 200
+    assert "GUESTMARK" in page.text
+    assert "STAFFMARK" not in page.text and "WISHMARK" not in page.text
+    data = client.get(f"/g/{gtoken}/data")
+    codes = {s["code"] for s in data.json()["sections"]}
+    assert "A_checkin" in codes
+    assert not any(c.startswith("S_") for c in codes)  # aucune section staff
+    assert "STAFFMARK" not in data.text and "WISHMARK" not in data.text
+
+    # ── Sens 2 : /s ne contient QUE du 'staff' (jamais guest, secrets, POI) ───
+    s = client.get(f"/s/{staff_token}")
+    assert s.status_code == 200
+    assert "text/html" in s.headers["content-type"]
+    assert s.headers["X-Robots-Tag"].startswith("noindex")
+    assert "charset=utf-8" in s.headers["content-type"]
+    assert "STAFFMARK" in s.text and "WISHMARK" in s.text
+    assert "Arroser les plantes" in s.text          # accents/UTF-8 préservés
+    assert "GUESTMARK" not in s.text                # aucune section voyageur
+    assert 'id="map"' not in s.text                 # jamais de carte
+    assert "secret-slot" not in s.text              # jamais d'emplacement secret
+
+
+def test_staff_cahier_accessible_in_draft(client):
+    """Le cahier /s est accessible AVANT publication (l'équipe prépare en amont),
+    alors que le guide voyageur /g reste 404 tant que le logement est en brouillon."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, gtoken, staff_token = prop["id"], prop["guide_token"], prop["staff_token"]
+    assert prop["status"] == "draft"
+
+    client.put(f"/api/properties/{pid}/sections/S_checklist", headers=owner["headers"],
+               json={"content": {"tasks": [{"task": "Tâche DRAFTMARK"}]}, "is_visible": True})
+
+    s = client.get(f"/s/{staff_token}")
+    assert s.status_code == 200 and "DRAFTMARK" in s.text
+    # Le guide voyageur, lui, n'est pas encore servi
+    assert client.get(f"/g/{gtoken}").status_code == 404
+
+    # Token inconnu → 404 HTML propre (on ne révèle rien)
+    nf = client.get("/s/inconnu00000000000000000000")
+    assert nf.status_code == 404
+    assert "text/html" in nf.headers["content-type"]
+    assert "introuvable" in nf.text.lower()
+
+
+def test_staff_cahier_never_exposes_secrets(client):
+    """Même renseignés, wifi et code boîte à clés n'apparaissent jamais sur /s."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, staff_token = prop["id"], prop["staff_token"]
+    client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
+               json={"wifi_ssid": "Reseau", "wifi_pass": "MotDePasseStaffXYZ",
+                     "keybox_code": "9137"})
+    client.put(f"/api/properties/{pid}/sections/S_checklist", headers=owner["headers"],
+               json={"content": {"tasks": [{"task": "x"}]}, "is_visible": True})
+    s = client.get(f"/s/{staff_token}")
+    assert s.status_code == 200
+    assert "MotDePasseStaffXYZ" not in s.text and "9137" not in s.text
+
+
+def test_staff_media_watertight(client):
+    """Un média de section 'staff' est servi sur /s mais JAMAIS sur /g, et
+    n'apparaît pas dans /g/data (invariant 7 étendu aux médias, M-12)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, gtoken, staff_token = prop["id"], prop["guide_token"], prop["staff_token"]
+
+    sm = _upload(client, owner["headers"], pid, section_code="S_welcome_pack",
+                 caption="Panier de bienvenue").json()
+    client.put(f"/api/properties/{pid}/sections/S_welcome_pack", headers=owner["headers"],
+               json={"content": {"contents": "café + eau + petit mot"}, "is_visible": True})
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    # Servi sur le cahier staff
+    fs = client.get(f"/s/{staff_token}/media/{sm['id']}")
+    assert fs.status_code == 200 and fs.headers["content-type"] == "image/png"
+    # Jamais servi sur le guide voyageur (média d'une section staff)
+    assert client.get(f"/g/{gtoken}/media/{sm['id']}").status_code == 404
+    # Absent des données publiques voyageur (ni section staff, ni média logement)
+    data = client.get(f"/g/{gtoken}/data").json()
+    assert not any(c.startswith("S_") for c in {s["code"] for s in data["sections"]})
+    assert data["media"] == []
+
+
+def test_property_stats_excludes_staff_sections(client):
+    """La complétude du guide (dashboard) ne compte QUE les sections voyageur :
+    compléter une section staff ne fait pas bouger le pourcentage voyageur."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    # 44 sections voyageur au catalogue ; les 5 sections staff n'y comptent pas
+    s0 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
+    assert s0["sections_total"] == 44
+
+    # Compléter une section staff ne change ni le total ni le pourcentage voyageur
+    client.put(f"/api/properties/{pid}/sections/S_checklist", headers=owner["headers"],
+               json={"content": {"tasks": [{"task": "x"}]}, "completed": True, "is_visible": True})
+    s1 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
+    assert s1["sections_total"] == 44
+    assert s1["sections_done"] == 0 and s1["completion_pct"] == 0
+
+
+# ── Affiche « QR code à imprimer » (M-07) ────────────────────────────────────
+
+def test_guide_poster_pdf(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"], name="Villa Mar Azul")
+    pid = prop["id"]
+
+    r = client.get(f"/api/properties/{pid}/guide-poster.pdf", headers=owner["headers"])
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert "attachment" in r.headers.get("content-disposition", "")
+    assert r.content[:5] == b"%PDF-"
+
+    # Variante A4
+    r4 = client.get(f"/api/properties/{pid}/guide-poster.pdf?size=a4",
+                    headers=owner["headers"])
+    assert r4.status_code == 200 and r4.content[:5] == b"%PDF-"
+
+    # Taille non prévue → 422 (validation Literal)
+    assert client.get(f"/api/properties/{pid}/guide-poster.pdf?size=a3",
+                      headers=owner["headers"]).status_code == 422
+
+    # Réservé au propriétaire du logement (isolation multi-tenant) + auth requise
+    intruder = register(client)
+    assert client.get(f"/api/properties/{pid}/guide-poster.pdf",
+                      headers=intruder["headers"]).status_code == 404
+    assert client.get(f"/api/properties/{pid}/guide-poster.pdf").status_code == 401
+
+
+def test_guide_poster_qr_encodes_public_guide_link(client, monkeypatch):
+    """Le QR encode le lien PUBLIC du guide (/g/{token}) — jamais un secret."""
+    from api.config import settings as api_settings
+    monkeypatch.setattr(api_settings, "public_base_url", "https://casaguide.example")
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+
+    # Secrets renseignés : ils ne doivent surtout pas finir dans le PDF
+    client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
+               json={"wifi_ssid": "Reseau", "wifi_pass": "Poster-Secret-Wifi"})
+    r = client.get(f"/api/properties/{pid}/guide-poster.pdf", headers=owner["headers"])
+    assert r.status_code == 200
+    assert b"Poster-Secret-Wifi" not in r.content     # aucun secret dans le PDF
+
+    # Le QR décode exactement l'URL publique du guide (vérif OpenCV si dispo)
+    try:
+        import cv2  # noqa: F401
+        import numpy as np
+        from pdf2image import convert_from_bytes  # noqa: F401
+    except Exception:
+        return  # dépendances de vérif d'image absentes : on s'arrête au PDF
+    _assert_pdf_qr_decodes(r.content, f"https://casaguide.example/g/{token}")
+
+
+def _assert_pdf_qr_decodes(pdf_bytes: bytes, expected: str) -> None:  # pragma: no cover
+    import cv2
+    import numpy as np
+    from pdf2image import convert_from_bytes
+    img = convert_from_bytes(pdf_bytes, dpi=200)[0]
+    arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    data, _pts, _ = cv2.QRCodeDetector().detectAndDecode(arr)
+    assert data == expected, f"QR décodé={data!r}"

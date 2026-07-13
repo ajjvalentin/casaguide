@@ -179,6 +179,65 @@ def service_worker():
     )
 
 
+# ── Cahier de préparation « équipe d'entretien » (/s/{staff_token}, M-13) ─────
+# Second espace public, distinct du guide voyageur : il n'expose QUE les sections
+# audience='staff' (jamais les secrets, jamais les POI/carte, jamais les sections
+# 'guest' — invariant 7). Accessible **même en brouillon** : l'équipe prépare le
+# logement AVANT sa mise en ligne (justifie l'absence de filtre sur `status`).
+# 404 propre si le staff_token est inconnu.
+
+def _load_staff(conn, token: str):
+    """Charge un cahier 'staff' par son token : (prop, sections). 404 sinon.
+    Les médias des sections 'staff' visibles sont rattachés à leur section."""
+    prop = repo.get_property_by_staff_token(conn, token)
+    if not prop:
+        return None
+    pid = str(prop["id"])
+    sections = repo.staff_sections(conn, pid)
+    media_by_section: dict[str, list] = {}
+    for m in repo.staff_media(conn, pid):
+        media_by_section.setdefault(m["section_code"], []).append(
+            {"id": str(m["id"]), "kind": m["kind"], "caption": m["caption"],
+             "sort_order": m["sort_order"], "url": f"/s/{token}/media/{m['id']}"})
+    for s in sections:
+        s["media"] = media_by_section.get(s["code"], [])
+    return prop, sections
+
+
+@router.get("/s/{staff_token}", response_class=HTMLResponse)
+def staff_cahier_page(staff_token: str, conn: Conn):
+    """Page HTML du cahier de préparation. 404 propre si le token est inconnu.
+    Servie même en brouillon (l'équipe prépare avant publication) ; jamais mise
+    en cache partagé (`no-store`) car le contenu évolue pendant la préparation."""
+    loaded = _load_staff(conn, staff_token)
+    if not loaded:
+        return HTMLResponse(guide_page.render_not_found(), status_code=404,
+                            headers=_NOINDEX)
+    prop, sections = loaded
+    html = guide_page.render_staff(prop, sections, staff_token)
+    return HTMLResponse(html, headers=_public_headers(no_store=True))
+
+
+@router.get("/s/{staff_token}/media/{media_id}")
+def staff_media_file(staff_token: str, media_id: str, conn: Conn):
+    """Sert un média d'un cahier 'staff' — uniquement une section 'staff' visible.
+    404 sinon, sans rien révéler (jamais un média 'guest' ni de section masquée)."""
+    row = repo.get_staff_media(conn, staff_token, media_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Média introuvable")
+    try:
+        data = storage.get_storage().read(row["storage_key"])
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Fichier introuvable")
+    return Response(
+        content=data,
+        media_type=media_files.content_type_for_key(row["storage_key"]),
+        headers=_public_headers(no_store=True),
+    )
+
+
 def _property_public(prop: dict) -> dict:
     """Vue publique du logement (jamais de secrets — invariant 5)."""
     return {

@@ -18,6 +18,10 @@ import { runEnrichment } from "./properties.js";
 
 const ACCURACY_LABEL = { rooftop: "précise", street: "au niveau de la rue", city: "au centre de la commune" };
 
+// Groupe distinct des sections « équipe d'entretien » (audience='staff', M-13).
+const STAFF_META = { name: "Équipe d'entretien", icon: "clipboard-list", color: "#5B6B75" };
+const isStaff = (s) => s.audience === "staff";
+
 export async function renderEditor(view, pid) {
   mount(view, el("div", { class: "page" }, loadingBlock("Ouverture de l'éditeur…")));
 
@@ -118,12 +122,45 @@ export async function renderEditor(view, pid) {
       }
       sidebar.append(chapNode);
     }
+
+    // Groupe distinct « Équipe d'entretien » (sections staff, M-13) — jamais
+    // visible du voyageur ; son lien /s est affiché dans le panneau de section.
+    const staffSecs = sections.filter(isStaff);
+    if (staffSecs.length) {
+      const done = staffSecs.filter((s) => s.completed).length;
+      const isOpen = expanded.has("S");
+      const head = el("button", { class: "chap-head", onClick: () => { isOpen ? expanded.delete("S") : expanded.add("S"); renderSidebar(); } },
+        el("span", { class: "chap-dot", style: { background: STAFF_META.color } }, icon(STAFF_META.icon, 15)),
+        el("span", { class: "nm" }, STAFF_META.name),
+        el("span", { class: "cnt" }, `${done}/${staffSecs.length}`),
+        icon(isOpen ? "chevron-down" : "chevron-right", 15));
+      const chapNode = el("div", { class: "chap" }, head);
+      if (isOpen) {
+        const listEl = el("div", { class: "sec-list" });
+        for (const s of staffSecs) {
+          const link = el("button", {
+            class: "sec-link" + (s.code === current ? " on" : ""),
+            onClick: () => selectSection(s.code),
+          },
+            el("span", { class: s.is_visible ? "" : "dim" }, t(s.name_i18n, s.code)),
+            icon("circle-check", 15, s.completed));
+          const tick = link.querySelector("[data-lucide]:last-child");
+          if (tick) { tick.classList.add("tick"); if (!s.completed) tick.classList.add("off"); }
+          listEl.append(link);
+        }
+        chapNode.append(listEl);
+      }
+      sidebar.append(chapNode);
+    }
     refreshIcons();
   }
 
   function refreshMeter() {
-    const total = sections.length;
-    const done = sections.filter((s) => s.completed).length;
+    // La complétude affichée est celle du guide VOYAGEUR : le cahier de l'équipe
+    // d'entretien (sections staff) a son propre décompte et ne la dilue pas.
+    const guestSecs = sections.filter((s) => !isStaff(s));
+    const total = guestSecs.length;
+    const done = guestSecs.filter((s) => s.completed).length;
     const pct = total ? Math.round((done / total) * 100) : 0;
     globalMeter.querySelector("i").style.width = pct + "%";
     globalPct.textContent = pct + " %";
@@ -133,7 +170,7 @@ export async function renderEditor(view, pid) {
   function selectSection(code) {
     current = code;
     const sec = byCode.get(code);
-    const meta = chapterMeta(sec.chapter);
+    const meta = isStaff(sec) ? STAFF_META : chapterMeta(sec.chapter);
 
     const form = buildSectionForm(sec, { secrets, propertyId: pid });
 
@@ -156,6 +193,7 @@ export async function renderEditor(view, pid) {
             sec.is_sensitive ? el("span", { class: "badge badge-secret" }, icon("lock", 12), "Sensible") : null,
             sec.ai_enrichable ? el("span", { class: "badge badge-ai" }, icon("sparkles", 12), "Pré-remplissable IA") : null))),
       el("p", { class: "sp-desc" }, t(sec.description_i18n, "")),
+      isStaff(sec) ? staffLinkBanner() : null,
       secretUnavailable,
       form.node,
       buildMediaPanel({ propertyId: pid, sectionCode: sec.code }).node,
@@ -213,6 +251,8 @@ export async function renderEditor(view, pid) {
           icon("external-link", 16), "Voir le guide"),
         el("button", { class: "btn btn-sm", onClick: () => copyGuideLink() },
           icon("link", 16), "Copier le lien"),
+        el("button", { class: "btn btn-sm", onClick: () => downloadPoster() },
+          icon("qr-code", 16), "QR à imprimer"),
         el("button", { class: "btn btn-sm", onClick: () => setStatus("draft") }, "Dépublier"));
     } else {
       headerRight.append(
@@ -222,10 +262,41 @@ export async function renderEditor(view, pid) {
   }
 
   function guideLink() { return location.origin + `/g/${property.guide_token}`; }
+  function staffLink() { return location.origin + `/s/${property.staff_token}`; }
 
   async function copyGuideLink() {
     try { await navigator.clipboard.writeText(guideLink()); toast("Lien du guide copié.", "ok"); }
     catch (_) { toast("Copie impossible — copiez le lien manuellement.", "err"); }
+  }
+
+  // Bandeau du lien /s (cahier équipe d'entretien) affiché sur une section staff.
+  function staffLinkBanner() {
+    const input = el("input", { type: "text", value: staffLink(), readonly: true, onFocus: (e) => e.target.select() });
+    const copy = el("button", { class: "btn btn-sm", type: "button", onClick: async () => {
+      try { await navigator.clipboard.writeText(staffLink()); toast("Lien du cahier copié.", "ok"); }
+      catch (_) { toast("Copie impossible.", "err"); }
+    } }, icon("link", 15), "Copier");
+    return el("div", { class: "notice notice-info", style: { marginBottom: "16px", alignItems: "flex-start" } },
+      icon("clipboard-list", 18),
+      el("div", { style: { flex: "1" } },
+        el("b", {}, "Lien du cahier de préparation"),
+        el("div", { class: "muted", style: { fontSize: "12.5px", margin: "3px 0 8px" } },
+          "À partager avec votre équipe d'entretien uniquement. Accessible même avant publication ; ne contient jamais le wifi, la boîte à clés, ni la carte des lieux."),
+        el("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } }, input, copy,
+          el("a", { class: "btn btn-sm", href: `/s/${property.staff_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 15), "Ouvrir"))));
+  }
+
+  // Téléchargement de l'affiche QR imprimable (M-07). Le PDF est protégé (owner) :
+  // on le récupère avec le jeton puis on déclenche le téléchargement local.
+  async function downloadPoster(size) {
+    try {
+      const blob = await api.posterBlob(pid, size);
+      const url = URL.createObjectURL(blob);
+      const a = el("a", { href: url, download: `casaguide-qr-${property.name || pid}.pdf` });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      toast("Affiche QR téléchargée.", "ok");
+    } catch (err) { toast(err.message || "Génération du PDF impossible.", "err"); }
   }
 
   async function publish() {
@@ -238,7 +309,9 @@ export async function renderEditor(view, pid) {
       body: el("div", {},
         el("p", { class: "muted", style: { marginTop: 0 } }, "Partagez ce lien (ou son QR code) avec vos voyageurs :"),
         el("div", { class: "field" }, el("input", { type: "text", value: link, readonly: true, onFocus: (e) => e.target.select() })),
-        el("a", { class: "btn btn-sm", href: `/g/${property.guide_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 16), "Ouvrir le guide")),
+        el("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } },
+          el("a", { class: "btn btn-sm", href: `/g/${property.guide_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 16), "Ouvrir le guide"),
+          el("button", { class: "btn btn-sm", type: "button", onClick: () => downloadPoster() }, icon("qr-code", 16), "QR code à imprimer"))),
       footer: [el("button", { class: "btn btn-primary", onClick: (e) => { navigator.clipboard?.writeText(link); toast("Lien copié.", "ok"); } }, "Copier le lien")],
     });
   }

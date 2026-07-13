@@ -10,8 +10,13 @@
    de format BCH(15,5). Vérifié par comparaison matricielle exacte avec segno
    (masque forcé) : voir backend/tests / scripts de vérification M-08.
 
-   export qrMatrix(text) → matrice booléenne carrée (true = module noir), SANS
-   zone de silence (l'appelant ajoute la marge au tracé). */
+   Module QR **mutualisé** (M-06) : le générateur de matrice sert à la fois au
+   guide voyageur (frontend/guide/app.js) et au back-office propriétaire
+   (frontend/js/components/wifiqr.js). Exports :
+     · qrMatrix(text)   → matrice booléenne carrée (true = module noir), SANS
+                          zone de silence (l'appelant ajoute la marge au tracé) ;
+     · qrCanvas(text)   → <canvas> prêt à afficher (marge incluse) ;
+     · wifiPayload/wifiEscape → charge utile standard « WIFI:… ». */
 
 // Niveau M ; tables indexées par version (1..6). Index 0 inutilisé.
 const ECC_PER_BLOCK = [0, 10, 16, 26, 18, 24, 16];
@@ -283,4 +288,37 @@ function penalty(modules, size) {
   return result + k * 10;
 }
 
-export { qrMatrix };
+// ── Aides partagées (guide voyageur + back-office) ───────────────────────────
+
+/* Échappement des caractères spéciaux de la charge utile WIFI: (\ ; , : "). */
+function wifiEscape(s) { return String(s).replace(/([\\;,:"])/g, "\\$1"); }
+
+/* Charge utile standard de connexion Wifi automatique (norme « WIFI:… »).
+   Sans mot de passe → réseau ouvert (T:nopass). */
+function wifiPayload(ssid, pass, { auth = "WPA", hidden = false } = {}) {
+  const parts = [`T:${pass ? auth : "nopass"}`, `S:${wifiEscape(ssid || "")}`];
+  if (pass) parts.push(`P:${wifiEscape(pass)}`);
+  if (hidden) parts.push("H:true");
+  return `WIFI:${parts.join(";")};;`;
+}
+
+/* Rend une matrice QR dans un <canvas> (modules foncés sur fond clair), zone de
+   silence comprise. Retourne le canvas, ou null si le texte dépasse la version 6.
+   `scale` en px/module ; couleurs personnalisables (impression). */
+function qrCanvas(text, { scale = 4, quiet = 4, dark = "#1E2A32",
+                          light = "#FFFFFF", label } = {}) {
+  const matrix = qrMatrix(text);
+  if (!matrix) return null;
+  const n = matrix.length, dim = (n + quiet * 2) * scale;
+  const canvas = document.createElement("canvas");
+  canvas.width = dim; canvas.height = dim;
+  if (label) canvas.setAttribute("aria-label", label);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = light; ctx.fillRect(0, 0, dim, dim);
+  ctx.fillStyle = dark;
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++)
+    if (matrix[y][x]) ctx.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
+  return canvas;
+}
+
+export { qrMatrix, qrCanvas, wifiPayload, wifiEscape };

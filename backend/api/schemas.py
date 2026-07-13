@@ -94,6 +94,7 @@ class PropertyOut(BaseModel):
     geocode_source: str | None = None
     geocode_accuracy: str | None = None
     guide_token: str
+    staff_token: str          # lien du cahier équipe d'entretien (/s/…, M-13)
     access_mode: str
     status: str
     default_lang: str

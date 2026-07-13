@@ -76,10 +76,20 @@ async function upload(path, formData) {
 /* Récupère un fichier protégé (média) avec le jeton et renvoie une URL objet
    utilisable comme src d'une image. À révoquer par l'appelant (URL.revokeObjectURL). */
 async function fetchBlobUrl(path) {
-  const resp = await fetch(path, { headers: authHeaders() });
+  return URL.createObjectURL(await fetchBlob(path));
+}
+
+/* Récupère un fichier protégé (média, PDF…) avec le jeton et renvoie le Blob. */
+async function fetchBlob(path) {
+  let resp;
+  try {
+    resp = await fetch(path, { headers: authHeaders() });
+  } catch (e) {
+    throw new ApiError(0, "Connexion au serveur impossible. Vérifiez votre réseau.");
+  }
   if (resp.status === 401) { if (_onUnauthorized) _onUnauthorized(); throw new ApiError(401, "Session expirée."); }
-  if (!resp.ok) throw new ApiError(resp.status, "Média indisponible.");
-  return URL.createObjectURL(await resp.blob());
+  if (!resp.ok) throw new ApiError(resp.status, "Fichier indisponible.");
+  return resp.blob();
 }
 
 export const api = {
@@ -96,6 +106,8 @@ export const api = {
   deleteProperty: (id) => request("DELETE", `/api/properties/${id}`),
   stats:          (id) => request("GET", `/api/properties/${id}/stats`),
   recomputeDistances: (id) => request("POST", `/api/properties/${id}/recompute-distances`),
+  // Affiche QR imprimable (M-07) — PDF protégé récupéré comme Blob (jeton joint)
+  posterBlob: (id, size) => fetchBlob(`/api/properties/${id}/guide-poster.pdf` + (size ? `?size=${size}` : "")),
 
   // Secrets chiffrés
   getSecrets: (id) => request("GET", `/api/properties/${id}/secrets`),

@@ -1,11 +1,14 @@
 """CRUD des logements, données sensibles chiffrées et sections du guide (§3.1)."""
 from __future__ import annotations
 
-from typing import Annotated
+import re
+import unicodedata
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from .. import crypto, repo
+from .. import crypto, poster, repo
+from ..config import settings
 from ..deps import (
     Conn, CurrentOwner, DistanceComputer, OwnedProperty, get_distance_computer,
 )
@@ -15,6 +18,14 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/api/properties", tags=["properties"])
+
+
+def _slug(name: str) -> str:
+    """Nom de fichier ASCII sûr dérivé du nom du logement (pour le PDF)."""
+    ascii_name = (unicodedata.normalize("NFKD", name)
+                  .encode("ascii", "ignore").decode())
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", ascii_name).strip("-").lower()
+    return slug or "guide"
 
 
 # ── CRUD logements ───────────────────────────────────────────────────────────
@@ -92,6 +103,27 @@ def recompute_distances(
             dist_walk_m=p.get("dist_walk_m"), walk_min=p.get("walk_min"),
             dist_drive_m=p.get("dist_drive_m"), drive_min=p.get("drive_min"))
     return RecomputeOut(updated=len(pois))
+
+
+# ── Affiche « QR code à imprimer » du guide (§3.2, M-07) ─────────────────────
+
+@router.get("/{property_id}/guide-poster.pdf")
+def guide_poster(request: Request, prop: OwnedProperty,
+                 size: Literal["a5", "a4"] = "a5"):
+    """PDF imprimable (A5 par défaut, `?size=a4`) : nom du logement + QR du lien
+    du guide + mot d'accueil FR/EN. Réservé au propriétaire du logement (via
+    `OwnedProperty`). N'encode que le lien public `/g/{guide_token}` — jamais un
+    secret. L'origine des liens vient de `CASAGUIDE_PUBLIC_BASE_URL` sinon de la
+    requête."""
+    base = (settings.public_base_url or str(request.base_url)).rstrip("/")
+    guide_url = f"{base}/g/{prop['guide_token']}"
+    pdf = poster.build_guide_poster(
+        property_name=prop["name"], guide_url=guide_url,
+        city=prop.get("city"), size=size)
+    filename = f"casaguide-qr-{_slug(prop['name'])}.pdf"
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # ── Données sensibles (chiffrées AES-GCM, invariant 5) ───────────────────────

@@ -28,7 +28,9 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
 | `backend/enrich/` | Pipeline d'enrichissement complet — testé (2 tests d'intégration verts) |
 | `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, **guide voyageur (M-08)** : `GET /g/{token}` sert une **page HTML** (rendu serveur `api/guide_page.py`), `GET /g/{token}/data` le JSON (`charset=utf-8`), `GET /g/{token}/secrets` (wifi/boîte à clés, mode 'link'), `/g/{token}/media/{id}`, `/g/{token}/manifest.webmanifest`, `/guide/sw.js` — testé (34 tests d'intégration verts) |
-| `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section**), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
+| `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-06/M-07/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section** + **aperçu/QR wifi + téléchargement PNG, M-06** + **groupe « Équipe d'entretien » (sections staff) avec lien `/s`, M-13** + **bouton « QR à imprimer » PDF, M-07**), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
+| Cahier équipe d'entretien (M-13) | Schéma : `audience` (guest\|staff) sur `section_templates`, `staff_token` (128 bits) sur `properties` — schema.sql + `db/migrations/002`. Seed : chapitre « S » (5 sections staff). Page publique `GET /s/{staff_token}` (rendu `guide_page.render_staff`, variante sobre check-list, **accessible même en brouillon**, jamais de secrets/POI). Étanchéité guest↔staff dans les deux sens (invariant 7) |
+| Affiche QR imprimable (M-07) | `api/poster.py` (reportlab) → `GET /api/properties/{id}/guide-poster.pdf` (A5/A4, propriétaire uniquement) : nom du logement, QR du lien du guide, mot d'accueil FR/EN, identité sable/mer |
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
 | Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) et tuiles hors-ligne (M-10) restent à faire |
@@ -86,6 +88,11 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 5. Données sensibles (code boîte à clés, mot de passe wifi) : chiffrement
    applicatif → colonnes `BYTEA` de `property_secrets`, clé hors base.
 6. Chaque appel IA est comptabilisé dans `api_costs` (tokens → centimes).
+7. **Étanchéité guest/staff (M-13)** : une section `audience='staff'` (cahier de
+   l'équipe d'entretien) ne sort **jamais** sur `/g` ni `/g/{token}/data` (ni son
+   média) ; une section `audience='guest'` ne sort **jamais** sur `/s`. Le cahier
+   `/s/{staff_token}` n'expose **jamais** de secrets ni de POI/carte. Chaque sens
+   est couvert par un test dédié (`test_staff_and_guest_are_watertight_both_ways`).
 
 ## Commandes
 
@@ -94,6 +101,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 psql -d casaguide -f db/schema.sql
 psql -d casaguide -f db/seed.sql
 psql -d casaguide -f db/migrations/001_pois_unique_source.sql
+psql -d casaguide -f db/migrations/002_staff_cahier.sql   # audience + staff_token (M-13)
 
 # Backend
 cd backend
@@ -120,7 +128,9 @@ Variables d'environnement de l'API (aucun secret en dur) : `CASAGUIDE_JWT_SECRET
 AES-256 hex/base64 des colonnes `property_secrets` ; les endpoints de secrets
 répondent 503 si absente), `MEDIA_ROOT` (répertoire de stockage des médias,
 défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE_MIN`,
-`CASAGUIDE_CORS_ORIGINS`, `CASAGUIDE_MAX_UPLOAD_BYTES` (10 Mo par défaut).
+`CASAGUIDE_CORS_ORIGINS`, `CASAGUIDE_MAX_UPLOAD_BYTES` (10 Mo par défaut),
+`CASAGUIDE_PUBLIC_BASE_URL` (origine publique des liens du QR imprimable M-07 ;
+à défaut, `request.base_url`).
 
 ## Prochaines étapes (ordre recommandé, cf. §12 du CdC)
 
@@ -190,7 +200,33 @@ défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE
   par la route `/guide/sw.js` (entête `Service-Worker-Allowed: /`) sinon sa portée se
   limite à `/guide/` et n'intercepte pas `/g/…` ; il ne met **pas** en cache les
   tuiles OSM (M-10). Le générateur QR (`qr.js`) est autonome (mode octet, niveau M,
-  versions 1-6) — toute modification doit rester scannable (vérif : décodage OpenCV).
+  versions 1-6) — toute modification doit rester scannable. **Vérif QR** :
+  privilégier **zbar** (pyzbar), le décodeur des vrais scanners de téléphone —
+  le `QRCodeDetector` d'OpenCV est un décodeur **faible** qui échoue sur certains
+  masques pourtant valides (constaté : le masque 6, choisi par pénalité minimale
+  pour certaines charges wifi, est illisible par OpenCV mais lu par zbar et les
+  téléphones). Ne pas « corriger » l'algorithme de qr.js sur la seule foi d'un
+  échec OpenCV.
+- QR wifi back-office (M-06) : `frontend/guide/qr.js` est **mutualisé** (exports
+  `qrMatrix`/`qrCanvas`/`wifiPayload`) entre le guide voyageur et l'éditeur
+  (`js/components/wifiqr.js`). Le QR est généré **dans le navigateur** à partir des
+  identifiants déjà chargés (`GET /secrets`, propriétaire) : le mot de passe ne
+  transite par **aucun** autre canal (ni requête, ni serveur). Le PNG à imprimer
+  est produit par `canvas.toDataURL`.
+- Affiche QR imprimable (M-07) : `api/poster.py` (reportlab, QR natif — pas de
+  dépendance QR supplémentaire) sert un PDF A5/A4 sur
+  `GET /api/properties/{id}/guide-poster.pdf` (réservé au propriétaire via
+  `OwnedProperty`). Le QR encode le lien **public** `/g/{guide_token}` (jamais un
+  secret). Origine des liens : `CASAGUIDE_PUBLIC_BASE_URL` sinon `request.base_url`.
+- Cahier équipe d'entretien (M-13) : sections `audience='staff'` (chapitre « S »
+  du seed), servies sur `/s/{staff_token}` (`repo.staff_sections` / `staff_media`,
+  rendu `guide_page.render_staff`). Ce cahier est **accessible même en brouillon**
+  (l'équipe prépare avant publication → `get_property_by_staff_token` ne filtre
+  pas `status`), contrairement à `/g` qui exige `status='published'`. La
+  complétude du dashboard (`repo.property_stats`) et le compteur de l'éditeur ne
+  comptent **que** les sections `guest` (les staff ont leur propre décompte).
+  Toute requête publique voyageur (`guide_sections`/`guide_media`/`get_public_media`)
+  filtre `audience='guest'` — voir invariant 7.
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 
