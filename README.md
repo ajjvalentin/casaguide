@@ -37,8 +37,15 @@ pip install -r requirements.txt
 ```bash
 cd backend
 cp .env.example .env      # puis renseigner les clés (openssl rand -hex 32)
-uvicorn api.main:app --reload
+uvicorn api.main:app --reload --host 0.0.0.0
 ```
+
+`--host 0.0.0.0` rend le serveur joignable depuis les autres appareils du
+réseau local (test iPhone : `http://<ip-du-mac>:8000/`, IP via
+`ipconfig getifaddr en0`). Sans lui, uvicorn n'écoute que sur le Mac
+(127.0.0.1) — piège classique après un redémarrage. Pour que les QR PDF
+encodent une adresse scannable, définir `CASAGUIDE_PUBLIC_BASE_URL` dans
+`.env` (ex. `http://192.168.18.231:8000`, puis le domaine en production).
 
 `backend/.env` est chargé automatiquement au démarrage (voir `.env.example`
 pour chaque variable). Back-office : http://localhost:8000/ · API docs : `/docs`.

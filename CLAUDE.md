@@ -157,6 +157,12 @@ défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE
 
 ## Pièges connus
 
+- **Service worker du guide (cache-busting)** : les fichiers de `frontend/guide/*`
+  sont servis cache-first par `sw.js`. Toute modification d'un de ces fichiers
+  DOIT s'accompagner de l'incrément de `VERSION` dans `frontend/guide/sw.js`,
+  sinon les visiteurs (et le back-office, qui importe `guide/qr.js`) reçoivent
+  l'ancienne version — symptôme vécu le 14/07 : page blanche du back-office
+  (import ES cassé sur un module périmé).
 - Serveurs OSM publics : 1 req/s max, User-Agent obligatoire → en production,
   prévoir OSRM auto-hébergé et/ou un fournisseur géré.
 - `food_delivery` et `babysitter` : pas de tags OSM fiables → à enrichir via

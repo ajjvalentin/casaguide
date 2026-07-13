@@ -15,7 +15,7 @@
      · tuiles OSM                → réseau seul (cache des tuiles = M-10, exclu)
 */
 
-const VERSION = "casaguide-guide-v1";
+const VERSION = "casaguide-guide-v2"; // ⚠ incrémenter à CHAQUE modification de frontend/guide/*
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 
