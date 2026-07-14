@@ -1,0 +1,15 @@
+# Sauvegarde nocturne CasaGuide (déclenchée par casaguide-backup.timer) — M-11
+# Installation :
+#   sudo cp /opt/casaguide/ops/casaguide-backup.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-backup.timer
+[Unit]
+Description=Sauvegarde CasaGuide (pg_dump + médias)
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=casaguide
+Group=casaguide
+EnvironmentFile=-/opt/casaguide/backend/.env
+ExecStart=/opt/casaguide/ops/casaguide-backup.sh

@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import crypto, guide_page, media_files, repo, storage
+from .. import assets, crypto, guide_page, media_files, repo, storage
 from ..config import settings
 from ..deps import Conn
 
@@ -216,8 +216,12 @@ def service_worker():
     path = _FRONTEND_DIR / "guide" / "sw.js"
     if not path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    # M-11 : injecter le SHA du déploiement dans le nom des caches du SW → chaque
+    # déploiement le réactive et purge les anciens caches (cache-busting auto).
+    body = path.read_text(encoding="utf-8").replace(
+        assets.ASSET_VERSION_PLACEHOLDER, assets.asset_version())
     return Response(
-        content=path.read_text(encoding="utf-8"),
+        content=body,
         media_type="application/javascript; charset=utf-8",
         headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
     )

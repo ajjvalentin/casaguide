@@ -8,13 +8,14 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 
 from enrich import db as enrich_db
 
 from . import repo
+from .assets import RevalidatingStaticFiles, versioned
 from .config import missing_production_config, settings
 from .routers import auth, enrich, guide, media, pois, properties
 
@@ -79,8 +80,30 @@ def health():
 # avant et ont donc priorité ; le montage racine ne capte que le reste (SPA à
 # routage par ancre, le serveur ne sert jamais que index.html + les assets).
 _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    """Sert `index.html` avec `?v=<sha>` injecté sur les assets locaux (M-11).
+
+    Déclaré avant le montage statique pour capter « / » : c'est le seul point
+    d'entrée du back-office (SPA à routage par ancre). Chaque déploiement change
+    le SHA → les balises `css/app.css?v=…` / `js/app.js?v=…` invalident les caches
+    navigateur sans intervention manuelle."""
+    path = _FRONTEND_DIR / "index.html"
+    if not path.is_file():  # pragma: no cover - dépend du déploiement
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    html = path.read_text(encoding="utf-8")
+    html = html.replace('href="css/app.css"', f'href="{versioned("css/app.css")}"')
+    html = html.replace('src="js/app.js"', f'src="{versioned("js/app.js")}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
+
+
 if _FRONTEND_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
+    # `RevalidatingStaticFiles` : Cache-Control no-cache → revalidation ETag de
+    # chaque asset (busting des imports ES relatifs même sans ?v).
+    app.mount("/", RevalidatingStaticFiles(directory=_FRONTEND_DIR, html=True),
+              name="frontend")
 else:  # pragma: no cover - dépend du déploiement
     log.warning("Dossier frontend introuvable (%s) : back-office non servi.",
                 _FRONTEND_DIR)

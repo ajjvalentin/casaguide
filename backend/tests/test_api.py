@@ -905,6 +905,53 @@ def test_service_worker_scope_header(client):
     assert "addEventListener" in r.text
 
 
+# ── Versionnage des assets & cache-busting (M-11) ─────────────────────────────
+
+def test_index_injects_asset_version(client, monkeypatch):
+    """La page d'accueil du back-office porte ?v=<sha> sur ses assets locaux et
+    n'est jamais mise en cache dur (revalidation)."""
+    monkeypatch.setenv("CASAGUIDE_ASSET_VERSION", "abc1234")
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "css/app.css?v=abc1234" in r.text
+    assert "js/app.js?v=abc1234" in r.text
+    assert "no-cache" in r.headers.get("Cache-Control", "")
+
+
+def test_static_assets_revalidate(client):
+    """Les assets statiques du front sont servis en no-cache (revalidation ETag)
+    → un module modifié est toujours re-téléchargé après déploiement."""
+    r = client.get("/css/app.css")
+    assert r.status_code == 200
+    assert "no-cache" in r.headers.get("Cache-Control", "")
+
+
+def test_service_worker_carries_deploy_version(client, monkeypatch):
+    """Le SHA du déploiement est injecté dans le nom des caches du service worker
+    (le placeholder est toujours remplacé → busting auto à chaque déploiement)."""
+    monkeypatch.setenv("CASAGUIDE_ASSET_VERSION", "deadbee")
+    r = client.get("/guide/sw.js")
+    assert r.status_code == 200
+    assert "__ASSET_VERSION__" not in r.text
+    assert "deadbee" in r.text
+
+
+def test_guide_page_versions_local_assets(client):
+    """La page guide voyageur (SSR) porte ?v=<sha> sur guide.css et app.js."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    client.put(f"/api/properties/{pid}/sections/A_checkin", headers=owner["headers"],
+               json={"content": {"checkin_from": "16:00"}, "is_visible": True,
+                     "completed": True})
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+    r = client.get(f"/g/{token}")
+    assert r.status_code == 200
+    assert "/guide/guide.css?v=" in r.text
+    assert "/guide/app.js?v=" in r.text
+
+
 # ── Cahier « équipe d'entretien » + étanchéité guest/staff (M-13) ─────────────
 
 def test_staff_and_guest_are_watertight_both_ways(client):

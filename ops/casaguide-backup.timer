@@ -1,0 +1,10 @@
+# Déclencheur nocturne de la sauvegarde CasaGuide — M-11
+[Unit]
+Description=Sauvegarde nocturne CasaGuide (03:30)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,31 @@
+# Service systemd de l'API CasaGuide (uvicorn) — M-11
+# Installation :
+#   sudo cp /opt/casaguide/ops/casaguide.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide
+[Unit]
+Description=CasaGuide API (uvicorn)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=casaguide
+Group=casaguide
+WorkingDirectory=/opt/casaguide/backend
+# Configuration applicative (secrets) + version d'assets écrite par deploy.sh.
+# Le « - » rend .env.deploy facultatif (absent avant le premier déploiement).
+EnvironmentFile=/opt/casaguide/backend/.env
+EnvironmentFile=-/opt/casaguide/backend/.env.deploy
+ExecStart=/opt/casaguide/.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+# Durcissement (l'app n'écrit que dans var/ — médias)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/casaguide/backend/var
+
+[Install]
+WantedBy=multi-user.target

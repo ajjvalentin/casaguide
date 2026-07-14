@@ -15,7 +15,11 @@
      · tuiles OSM                → réseau seul (cache des tuiles = M-10, exclu)
 */
 
-const VERSION = "casaguide-guide-v3"; // ⚠ incrémenter à CHAQUE modification de frontend/guide/*
+// ⚠ Incrémenter la partie « vN » à CHAQUE modification de frontend/guide/* (dev).
+// `__ASSET_VERSION__` est remplacé à la volée par le SHA git du déploiement
+// (route /guide/sw.js, M-11) : chaque déploiement change le nom des caches → le
+// SW se réactive et purge les anciens, sans bump manuel en production.
+const VERSION = "casaguide-guide-v4-__ASSET_VERSION__";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 

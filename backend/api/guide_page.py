@@ -25,6 +25,8 @@ import json
 import re
 from typing import Any
 
+from .assets import versioned
+
 # ── Couleurs de chapitre (alignées sur frontend/js/constants.js) ─────────────
 _CHAPTER_COLORS: dict[str, str] = {
     "A": "#546E7A", "B": "#0E5A73", "C": "#2E7D32", "D": "#C62828",
@@ -498,7 +500,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/guide/guide.css">
+<link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
 <body data-token="{_esc(token)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}">
 <div class="wrap">
@@ -520,7 +522,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
 </div>
 <script id="guide-data" type="application/json">{data_json}</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script type="module" src="/guide/app.js"></script>
+<script type="module" src="{versioned('/guide/app.js')}"></script>
 </body>
 </html>"""
 
@@ -606,7 +608,7 @@ def render_staff(prop: dict, sections: list[dict], token: str) -> str:
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/guide/guide.css">
+<link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
 <body class="staff-page">
 <div class="wrap">
@@ -632,7 +634,7 @@ def render_not_found() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Guide introuvable</title>
-<link rel="stylesheet" href="/guide/guide.css">
+<link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
 <body>
 <div class="wrap notfound">

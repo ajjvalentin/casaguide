@@ -1,0 +1,63 @@
+# ============================================================================
+# CasaGuide — reverse proxy Caddy (M-11)
+# ----------------------------------------------------------------------------
+# Installation :
+#   sudo cp /opt/casaguide/ops/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# État actuel : accès par IP, sans nom de domaine.
+#   · HTTP (port 80)  → servi tel quel, sans redirection (accès simple, aucun
+#                       avertissement de certificat) ;
+#   · HTTPS (port 443) → certificat AUTO-SIGNÉ (Caddy `tls internal`) : le
+#                       navigateur affichera un avertissement (attendu tant qu'il
+#                       n'y a pas de domaine). NB : un service worker / PWA n'est
+#                       pleinement actif que sur HTTPS de confiance → le mode
+#                       hors-ligne complet arrivera avec le domaine + Let's Encrypt.
+#
+# ─── BASCULE VERS UN NOM DE DOMAINE (Let's Encrypt) ────────────────────────────
+# Le jour où un domaine pointe vers ce serveur (A/AAAA), remplacer le bloc de site
+# ci-dessous par (Caddy obtient et renouvelle le certificat automatiquement) :
+#
+#     guide.mondomaine.fr {
+#         encode zstd gzip
+#         reverse_proxy 127.0.0.1:8000
+#         import securite
+#         header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+#         log { output file /var/log/caddy/access.log ; format json }
+#     }
+#
+# c'est-à-dire : (1) mettre le domaine comme adresse de site, (2) supprimer
+# `tls internal` et l'option globale `auto_https disable_redirects`, (3) décommenter
+# l'en-tête HSTS. Puis `CASAGUIDE_PUBLIC_BASE_URL=https://guide.mondomaine.fr` dans
+# backend/.env et `sudo systemctl reload caddy && sudo systemctl restart casaguide`.
+# ============================================================================
+
+{
+	# Pas de redirection HTTP→HTTPS tant que le certificat est auto-signé
+	# (évite de pousser les visiteurs vers un cert non fiable). À retirer avec le domaine.
+	auto_https disable_redirects
+	# email admin@mondomaine.fr   # requis par Let's Encrypt le jour du domaine
+}
+
+# En-têtes de sécurité mutualisés (HSTS volontairement exclu ici : réservé au
+# HTTPS de confiance, cf. bascule domaine ci-dessus).
+(securite) {
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		# On ne divulgue pas la stack
+		-Server
+	}
+}
+
+http://179.237.85.250, https://179.237.85.250 {
+	tls internal
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8000
+	import securite
+	log {
+		output file /var/log/caddy/access.log
+		format json
+	}
+}
