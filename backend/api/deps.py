@@ -7,7 +7,7 @@ import jwt
 from fastapi import Depends, HTTPException, Path, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from enrich import db, distance, pipeline
+from enrich import db, distance, pipeline, translate
 
 from . import repo, security
 
@@ -98,6 +98,23 @@ def get_enrichment_runner() -> EnrichmentRunner:
     """Surchargée dans les tests par un exécuteur sans réseau
     (app.dependency_overrides[get_enrichment_runner])."""
     return _default_runner
+
+
+# ── Exécuteur de traduction (M-09, injectable pour les tests) ────────────────
+
+# (property_id, job_id) — la tâche de fond (re)traduit le manquant/périmé.
+TranslationRunner = Callable[[str, str], None]
+
+
+def _default_translation_runner(property_id: str, job_id: str) -> None:
+    """Lance la vraie traduction (API Claude) en tâche de fond."""
+    translate.run(property_id, job_id=job_id)
+
+
+def get_translation_runner() -> TranslationRunner:
+    """Surchargée dans les tests par un traducteur sans réseau
+    (app.dependency_overrides[get_translation_runner])."""
+    return _default_translation_runner
 
 
 # ── Calcul de distances (recalcul après repositionnement manuel, M-05) ───────

@@ -200,7 +200,7 @@ def list_sections_with_templates(conn, property_id: str) -> list[dict]:
 def upsert_section(conn, property_id: str, template_code: str, *,
                    content: dict, body_md: str | None, is_visible: bool,
                    completed: bool) -> dict:
-    return conn.execute(
+    row = conn.execute(
         """INSERT INTO property_sections (property_id, template_code, content,
                                           body_md, is_visible, completed, updated_at)
            VALUES (%s, %s, %s, %s, %s, %s, now())
@@ -212,6 +212,18 @@ def upsert_section(conn, property_id: str, template_code: str, *,
         (property_id, template_code, json.dumps(content), body_md, is_visible,
          completed),
     ).fetchone()
+    # Le contenu source a changé → ses traductions deviennent périmées (M-09).
+    # La re-traduction (à la publication ou via le bouton) ne retraitera que
+    # le périmé (ciblage, §9).
+    mark_section_translations_stale(conn, str(row["id"]))
+    return row
+
+
+def mark_section_translations_stale(conn, section_id: str) -> None:
+    conn.execute(
+        "UPDATE section_translations SET is_stale = TRUE WHERE section_id = %s",
+        (section_id,),
+    )
 
 
 def section_template_exists(conn, template_code: str) -> bool:
@@ -449,12 +461,19 @@ def edit_poi(conn, property_id: str, poi_id: str, fields: dict) -> dict | None:
             sets.append(f"{key} = %s")
             params.append(fields[key])
     params.extend([poi_id, property_id])
-    return conn.execute(
+    row = conn.execute(
         f"UPDATE pois SET {', '.join(sets)} "
         "WHERE id = %s AND property_id = %s "
         "RETURNING id, status",
         params,
     ).fetchone()
+    # Le texte éditorial du POI a changé → ses traductions sont périmées (M-09).
+    if row:
+        conn.execute(
+            "UPDATE poi_translations SET is_stale = TRUE WHERE poi_id = %s",
+            (poi_id,),
+        )
+    return row
 
 
 # ── Jobs d'enrichissement ────────────────────────────────────────────────────
@@ -475,12 +494,14 @@ def count_jobs_current_month(conn, property_id: str) -> int:
 
     Les jobs en échec ne comptent pas (`status <> 'failed'`) : une tentative
     qui n'a rien produit — clé IA invalide, serveurs OSM indisponibles… — ne
-    doit pas consommer le quota du propriétaire (M-01)."""
+    doit pas consommer le quota du propriétaire (M-01). Les jobs de traduction
+    (trigger='translate', M-09) ne sont pas des enrichissements : hors quota."""
     return conn.execute(
         """SELECT count(*) AS n FROM enrichment_jobs
            WHERE property_id = %s
              AND created_at >= date_trunc('month', now())
-             AND status <> 'failed'""",
+             AND status <> 'failed'
+             AND trigger <> 'translate'""",
         (property_id,),
     ).fetchone()["n"]
 
@@ -636,6 +657,91 @@ def guide_area_facts(conn, country_code: str, city: str | None) -> dict:
     for r in sorted(rows, key=lambda r: r["admin_area"] is not None):
         facts[r["fact_type"]] = r["content"]
     return facts
+
+
+# ── Traductions servies au voyageur (M-09, §9) ───────────────────────────────
+# Lectures seules, sans secret. Le contenu source (français) reste la source de
+# vérité : ces traductions ne sont overlayées qu'à la demande (?lang=xx). Un
+# repli sur le français est toujours possible (jamais de trou, §9).
+
+def guide_section_translations(conn, property_id: str, lang: str) -> dict:
+    """Traductions **fraîches** des sections voyageur pour `lang`, indexées par
+    code de section. Chaque valeur : {content, body_md}. Uniquement
+    audience='guest'.
+
+    Les traductions périmées (`is_stale`) sont ignorées : la section retombe
+    alors sur le français (repli élégant, jamais d'info traduite obsolète, §9).
+    La re-traduction (publication / bouton) les rafraîchit."""
+    rows = conn.execute(
+        """SELECT t.code, st.content, st.body_md
+           FROM section_translations st
+           JOIN property_sections ps ON ps.id = st.section_id
+           JOIN section_templates t ON t.code = ps.template_code
+           WHERE ps.property_id = %s AND st.lang = %s AND t.audience = 'guest'
+             AND st.is_stale = FALSE""",
+        (property_id, lang),
+    ).fetchall()
+    return {r["code"]: {"content": r["content"], "body_md": r["body_md"]}
+            for r in rows}
+
+
+def guide_poi_translations(conn, property_id: str, lang: str) -> dict:
+    """Traductions **fraîches** des POI retenus pour `lang`, indexées par id de
+    POI. Les traductions périmées sont ignorées (repli sur le français, §9)."""
+    rows = conn.execute(
+        """SELECT pt.poi_id, pt.description_md, pt.owner_comment
+           FROM poi_translations pt
+           JOIN pois p ON p.id = pt.poi_id
+           WHERE p.property_id = %s AND pt.lang = %s
+             AND p.status IN ('approved', 'edited') AND pt.is_stale = FALSE""",
+        (property_id, lang),
+    ).fetchall()
+    return {str(r["poi_id"]): {"description_md": r["description_md"],
+                               "owner_comment": r["owner_comment"]}
+            for r in rows}
+
+
+def translation_status(conn, property_id: str, langs: list[str]) -> dict:
+    """État des traductions pour le bouton « Mettre à jour les traductions » de
+    l'éditeur : par langue, nombre d'éléments (sections + POI) à jour et périmés,
+    et total d'éléments porteurs de texte.
+
+    « Périmé » agrège le manquant (jamais traduit) et le périmé (source modifiée) :
+    ce sont les éléments que la prochaine traduction (re)traitera."""
+    # Éléments source porteurs de texte (sections guest avec contenu, POI retenus).
+    sec_ids = [str(r["section_id"]) for r in conn.execute(
+        """SELECT ps.id AS section_id FROM property_sections ps
+           JOIN section_templates t ON t.code = ps.template_code
+           WHERE ps.property_id = %s AND t.audience = 'guest'
+             AND (ps.body_md IS NOT NULL OR ps.content <> '{}'::jsonb)""",
+        (property_id,)).fetchall()]
+    poi_ids = [str(r["id"]) for r in conn.execute(
+        """SELECT id FROM pois WHERE property_id = %s
+             AND status IN ('approved', 'edited')
+             AND (description_md IS NOT NULL OR owner_comment IS NOT NULL)""",
+        (property_id,)).fetchall()]
+    total = len(sec_ids) + len(poi_ids)
+
+    per_lang: dict[str, dict] = {}
+    for lang in langs:
+        fresh = conn.execute(
+            """SELECT count(*) AS n FROM section_translations st
+               JOIN property_sections ps ON ps.id = st.section_id
+               JOIN section_templates t ON t.code = ps.template_code
+               WHERE ps.property_id = %s AND st.lang = %s
+                 AND t.audience = 'guest' AND st.is_stale = FALSE""",
+            (property_id, lang)).fetchone()["n"]
+        fresh += conn.execute(
+            """SELECT count(*) AS n FROM poi_translations pt
+               JOIN pois p ON p.id = pt.poi_id
+               WHERE p.property_id = %s AND pt.lang = %s
+                 AND p.status IN ('approved', 'edited') AND pt.is_stale = FALSE""",
+            (property_id, lang)).fetchone()["n"]
+        fresh = min(fresh, total)
+        per_lang[lang] = {"fresh": fresh, "stale": total - fresh}
+    outdated = sum(v["stale"] for v in per_lang.values())
+    return {"langs": per_lang, "total": total, "outdated": outdated,
+            "up_to_date": outdated == 0}
 
 
 # ── Cahier de préparation « équipe d'entretien » (/s/{staff_token}, M-13) ─────

@@ -27,7 +27,7 @@ def connect() -> psycopg.Connection:
 def load_property(conn, property_id: str) -> dict:
     row = conn.execute(
         """SELECT id, name, address_line1, address_line2, postal_code, city,
-                  region, country_code,
+                  region, country_code, default_lang,
                   ST_Y(geom) AS lat, ST_X(geom) AS lon, geocode_source
            FROM properties WHERE id = %s""",
         (property_id,),
@@ -165,4 +165,93 @@ def record_cost(conn, property_id: str, job_id: str, provider: str,
                                   units, cost_cts)
            VALUES (%s, %s, %s, %s, %s, %s)""",
         (property_id, job_id, provider, operation, units, cost_cts),
+    )
+
+
+# ── Traductions du guide voyageur (M-09, §9) ─────────────────────────────────
+# Lectures/écritures utilisées par le pipeline de traduction (tâche de fond,
+# connexion propre). Ne concernent QUE les sections voyageur (audience='guest')
+# et les POI retenus (approved/edited) — jamais les secrets ni le cahier staff.
+
+def translatable_sections(conn, property_id: str) -> list[dict]:
+    """Sections voyageur instanciées d'un logement (avec leur field_schema et
+    leur contenu source) candidates à la traduction."""
+    return conn.execute(
+        """SELECT ps.id AS section_id, t.field_schema, ps.content, ps.body_md
+           FROM property_sections ps
+           JOIN section_templates t ON t.code = ps.template_code
+           WHERE ps.property_id = %s AND t.audience = 'guest'
+           ORDER BY t.sort_order""",
+        (property_id,),
+    ).fetchall()
+
+
+def translatable_pois(conn, property_id: str) -> list[dict]:
+    """POI retenus (approved/edited) porteurs de texte éditorial à traduire."""
+    return conn.execute(
+        """SELECT id, description_md, owner_comment FROM pois
+           WHERE property_id = %s AND status IN ('approved', 'edited')""",
+        (property_id,),
+    ).fetchall()
+
+
+def get_section_translation(conn, section_id: str, lang: str) -> dict | None:
+    return conn.execute(
+        "SELECT is_stale FROM section_translations "
+        "WHERE section_id = %s AND lang = %s",
+        (section_id, lang),
+    ).fetchone()
+
+
+def get_poi_translation(conn, poi_id: str, lang: str) -> dict | None:
+    return conn.execute(
+        "SELECT is_stale FROM poi_translations WHERE poi_id = %s AND lang = %s",
+        (poi_id, lang),
+    ).fetchone()
+
+
+def upsert_section_translation(conn, section_id: str, lang: str,
+                               content: dict, body_md: str | None) -> None:
+    """Écrit une traduction de section (is_stale=FALSE : fraîche par définition)."""
+    conn.execute(
+        """INSERT INTO section_translations (section_id, lang, content, body_md,
+                                             is_stale, updated_at)
+           VALUES (%s, %s, %s, %s, FALSE, now())
+           ON CONFLICT (section_id, lang) DO UPDATE SET
+               content = EXCLUDED.content, body_md = EXCLUDED.body_md,
+               is_stale = FALSE, updated_at = now()""",
+        (section_id, lang, json.dumps(content), body_md),
+    )
+
+
+def upsert_poi_translation(conn, poi_id: str, lang: str,
+                           description_md: str | None,
+                           owner_comment: str | None) -> None:
+    conn.execute(
+        """INSERT INTO poi_translations (poi_id, lang, description_md,
+                                         owner_comment, is_stale)
+           VALUES (%s, %s, %s, %s, FALSE)
+           ON CONFLICT (poi_id, lang) DO UPDATE SET
+               description_md = EXCLUDED.description_md,
+               owner_comment = EXCLUDED.owner_comment, is_stale = FALSE""",
+        (poi_id, lang, description_md, owner_comment),
+    )
+
+
+def delete_section_translation(conn, section_id: str, lang: str) -> None:
+    conn.execute("DELETE FROM section_translations "
+                 "WHERE section_id = %s AND lang = %s", (section_id, lang))
+
+
+def delete_poi_translation(conn, poi_id: str, lang: str) -> None:
+    conn.execute("DELETE FROM poi_translations WHERE poi_id = %s AND lang = %s",
+                 (poi_id, lang))
+
+
+def set_published_langs(conn, property_id: str, langs: list[str]) -> None:
+    """Publie la liste des langues traduites disponibles (pilote le sélecteur du
+    guide). N'inclut jamais la langue source (déduite au rendu)."""
+    conn.execute(
+        "UPDATE properties SET published_langs = %s WHERE id = %s",
+        (list(langs), property_id),
     )

@@ -129,6 +129,10 @@ export const api = {
   listJobs: (id) => request("GET", `/api/properties/${id}/jobs`),
   getJob:   (id, job) => request("GET", `/api/properties/${id}/jobs/${job}`),
 
+  // Traductions du guide voyageur (M-09)
+  translationStatus: (id) => request("GET", `/api/properties/${id}/translation-status`),
+  translate:         (id) => request("POST", `/api/properties/${id}/translate`),
+
   // Médias par section (M-12)
   listMedia:  (id, code) =>
     request("GET", `/api/properties/${id}/media` + (code ? `?section_code=${encodeURIComponent(code)}` : "")),

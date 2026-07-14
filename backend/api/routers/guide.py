@@ -49,12 +49,26 @@ def _json(payload: dict, *, no_store: bool = False) -> JSONResponse:
     )
 
 
-def _load_guide(conn, token: str):
-    """Charge un guide publié : (prop, sections, pois, area_facts). 404 sinon.
+def _effective_lang(prop: dict, requested: str | None) -> str:
+    """Langue de rendu : `requested` seulement si c'est une langue publiée et
+    non la langue source ; sinon la langue source (repli, jamais de trou, §9)."""
+    default = prop.get("default_lang") or "fr"
+    if requested and requested != default and requested in (prop.get("published_langs") or []):
+        return requested
+    return default
+
+
+def _load_guide(conn, token: str, lang: str | None = None):
+    """Charge un guide publié : (prop, sections, pois, area_facts, media, lang).
+    404 sinon.
 
     Les médias des sections **visibles** (et ceux du logement) sont rattachés à
     leur section ; chacun porte l'URL de son endpoint public. Un média de section
-    masquée n'est jamais listé (invariant de visibilité, M-12)."""
+    masquée n'est jamais listé (invariant de visibilité, M-12).
+
+    Si une langue traduite est demandée (M-09), le contenu **textuel** des
+    sections et des POI est overlayé depuis les traductions stockées ; tout
+    segment non traduit retombe sur le français (repli élégant, §9)."""
     prop = repo.get_published_property_by_token(conn, token)
     if not prop:
         return None
@@ -62,6 +76,10 @@ def _load_guide(conn, token: str):
     sections = repo.guide_sections(conn, pid)
     pois = repo.guide_pois(conn, pid)
     area_facts = repo.guide_area_facts(conn, prop["country_code"], prop["city"])
+
+    effective = _effective_lang(prop, lang)
+    if effective != (prop.get("default_lang") or "fr"):
+        _overlay_translations(conn, pid, effective, sections, pois)
 
     media_by_section: dict[str, list] = {}
     property_media: list = []
@@ -74,32 +92,58 @@ def _load_guide(conn, token: str):
             property_media.append(item)
     for s in sections:
         s["media"] = media_by_section.get(s["code"], [])
-    return prop, sections, pois, area_facts, property_media
+    return prop, sections, pois, area_facts, property_media, effective
+
+
+def _overlay_translations(conn, pid: str, lang: str, sections: list[dict],
+                          pois: list[dict]) -> None:
+    """Remplace en place le contenu textuel source par sa traduction `lang`.
+    Les champs structurés et les segments non traduits restent inchangés."""
+    sec_tr = repo.guide_section_translations(conn, pid, lang)
+    for s in sections:
+        tr = sec_tr.get(s["code"])
+        if tr:
+            if tr["content"] is not None:
+                s["content"] = tr["content"]
+            if tr["body_md"]:
+                s["body_md"] = tr["body_md"]
+    poi_tr = repo.guide_poi_translations(conn, pid, lang)
+    for p in pois:
+        tr = poi_tr.get(str(p["id"]))
+        if tr:
+            if tr["description_md"]:
+                p["description_md"] = tr["description_md"]
+            if tr["owner_comment"]:
+                p["owner_comment"] = tr["owner_comment"]
 
 
 @router.get("/g/{guide_token}", response_class=HTMLResponse)
-def public_guide_page(guide_token: str, conn: Conn):
-    """Page HTML du guide voyageur. 404 propre si token inconnu / non publié."""
-    loaded = _load_guide(conn, guide_token)
+def public_guide_page(guide_token: str, conn: Conn, lang: str | None = None):
+    """Page HTML du guide voyageur, rendue dans `lang` si c'est une langue
+    publiée (M-09 ; repli sur la langue source sinon). 404 propre si token
+    inconnu / non publié."""
+    loaded = _load_guide(conn, guide_token, lang)
     if not loaded:
         return HTMLResponse(guide_page.render_not_found(), status_code=404,
                             headers=_NOINDEX)
-    prop, sections, pois, area_facts, _property_media = loaded
+    prop, sections, pois, area_facts, _property_media, effective = loaded
     html = guide_page.render_guide(_property_public(prop), sections, pois,
-                                   area_facts, guide_token)
+                                   area_facts, guide_token, lang=effective)
     return HTMLResponse(html, headers=_public_headers())
 
 
 @router.get("/g/{guide_token}/data")
-def public_guide_data(guide_token: str, conn: Conn):
-    """Guide JSON pré-calculé (sans aucun secret) pour l'app / usages tiers."""
-    loaded = _load_guide(conn, guide_token)
+def public_guide_data(guide_token: str, conn: Conn, lang: str | None = None):
+    """Guide JSON pré-calculé (sans aucun secret) pour l'app / usages tiers.
+    Le contenu est renvoyé dans `lang` si c'est une langue publiée (M-09)."""
+    loaded = _load_guide(conn, guide_token, lang)
     if not loaded:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Guide introuvable")
-    prop, sections, pois, area_facts, property_media = loaded
+    prop, sections, pois, area_facts, property_media, effective = loaded
     return _json({
         "property": _property_public(prop),
+        "lang": effective,
         "sections": sections,
         "pois": pois,
         "area_facts": area_facts,

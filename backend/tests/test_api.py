@@ -42,9 +42,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # racine backend/
 
 from api import crypto, repo  # noqa: E402
-from api.deps import get_distance_computer, get_enrichment_runner  # noqa: E402
+from api.deps import (  # noqa: E402
+    get_distance_computer, get_enrichment_runner, get_translation_runner)
 from api.main import app  # noqa: E402
-from enrich import pipeline  # noqa: E402
+from enrich import pipeline, translate  # noqa: E402
 from enrich.overpass import haversine_m  # noqa: E402
 from enrich.settings import settings  # noqa: E402
 
@@ -153,12 +154,37 @@ def _test_runner(property_id: str, trigger: str, job_id: str) -> None:
                      http_client=c, anthropic_client=FakeAnthropic())
 
 
+class FakeTranslator:
+    """Traducteur sans réseau (M-09) : préfixe chaque valeur par sa langue cible,
+    ce qui rend la traduction observable dans les tests. Compte les appels pour
+    vérifier le ciblage (re-traduction du seul périmé)."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def translate(self, texts, *, target_lang, source_lang):
+        self.calls.append(dict(texts))
+        out = {k: f"[{target_lang}] {v}" for k, v in texts.items()}
+        # Méta plausible (comptabilisée dans api_costs, operation='translate')
+        return out, {"units": 10 * len(texts) or 1, "cost_cts": 0.05}
+
+
+# Traducteur partagé par le runner de test (inspectable dans les assertions).
+LAST_TRANSLATOR = FakeTranslator()
+
+
+def _test_translation_runner(property_id: str, job_id: str) -> None:
+    """Exécuteur de traduction sans réseau, injecté à la place du vrai."""
+    translate.run(property_id, job_id=job_id, translator=LAST_TRANSLATOR)
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
 def client():
     app.dependency_overrides[get_enrichment_runner] = lambda: _test_runner
     app.dependency_overrides[get_distance_computer] = lambda: _test_distance_computer
+    app.dependency_overrides[get_translation_runner] = lambda: _test_translation_runner
     emails: list[str] = []
     c = TestClient(app)
     c.created_emails = emails  # type: ignore[attr-defined]
@@ -1070,3 +1096,151 @@ def _assert_pdf_qr_decodes(pdf_bytes: bytes, expected: str) -> None:  # pragma: 
     arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     data, _pts, _ = cv2.QRCodeDetector().detectAndDecode(arr)
     assert data == expected, f"QR décodé={data!r}"
+
+
+# ── Multilingue FR/EN/ES (M-09, §9) ──────────────────────────────────────────
+
+def _publish_guide_with_content(client, headers, pid):
+    """Enrichit, arbitre des POI, saisit une section visible, puis publie.
+    Renvoie une fois la (re)traduction de fond terminée (TestClient synchrone)."""
+    _enrich_and_wait(client, headers, pid)
+    pois = client.get(f"/api/properties/{pid}/pois", headers=headers).json()
+    by_name = {p["name"]: p for p in pois}
+    client.post(f"/api/properties/{pid}/pois/{by_name['Hospital Universitario de Torrevieja']['id']}/approve",
+                headers=headers)
+    # La Marejada : POI 'edited' porteur d'une description IA + d'un coup de cœur
+    client.patch(f"/api/properties/{pid}/pois/{by_name['La Marejada']['id']}",
+                 headers=headers, json={"owner_comment": "Notre coup de cœur"})
+    # Section visible avec texte libre + champ structuré (heure)
+    client.put(f"/api/properties/{pid}/sections/A_checkin", headers=headers,
+               json={"content": {"checkin_from": "16:00"},
+                     "body_md": "Arrivée dès 16h, clés dans la boîte.",
+                     "is_visible": True, "completed": True})
+    pub = client.patch(f"/api/properties/{pid}", headers=headers,
+                       json={"status": "published"})
+    assert pub.status_code == 200
+    return by_name
+
+
+def test_publish_generates_translations_and_serves_es(client):
+    LAST_TRANSLATOR.calls.clear()
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)
+
+    # La publication a rempli published_langs (pilote le sélecteur)
+    p = client.get(f"/api/properties/{pid}", headers=owner["headers"]).json()
+    assert set(p["published_langs"]) == {"en", "es"}
+
+    # ── Page HTML espagnole ───────────────────────────────────────────────────
+    es = client.get(f"/g/{token}?lang=es")
+    assert es.status_code == 200
+    assert 'lang="es"' in es.text
+    assert "Tu guía de estancia" in es.text          # libellé fixe localisé
+    assert "[es] Arrivée dès 16h, clés dans la boîte." in es.text  # body traduit
+    assert "[es] Notre coup de cœur" in es.text       # coup de cœur POI traduit
+    # Champ structuré (heure) inchangé — jamais traduit
+    assert "16:00" in es.text
+    assert "[es] 16:00" not in es.text
+
+    # ── JSON /data espagnol ───────────────────────────────────────────────────
+    data = client.get(f"/g/{token}/data?lang=es").json()
+    assert data["lang"] == "es"
+    checkin = next(s for s in data["sections"] if s["code"] == "A_checkin")
+    assert checkin["body_md"] == "[es] Arrivée dès 16h, clés dans la boîte."
+    assert checkin["content"]["checkin_from"] == "16:00"   # structuré : intact
+    resto = next(x for x in data["pois"] if x["name"] == "La Marejada")
+    assert resto["owner_comment"] == "[es] Notre coup de cœur"
+    assert resto["description_md"].startswith("[es] ")     # description IA traduite
+
+    # ── Repli élégant : langue non publiée / absente → français, jamais de trou ─
+    fr = client.get(f"/g/{token}").text
+    assert "Votre guide de séjour" in fr
+    assert "Arrivée dès 16h, clés dans la boîte." in fr and "[es]" not in fr
+    de = client.get(f"/g/{token}?lang=de").text        # 'de' non publié → fr
+    assert 'lang="fr"' in de and "[es]" not in de
+
+
+def test_translation_cost_recorded_and_no_secret_translated(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    # Secret wifi : ne doit jamais transiter par la traduction ni le guide
+    client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
+               json={"wifi_ssid": "VillaMarAzul", "wifi_pass": "SecretWifi42"})
+    _publish_guide_with_content(client, owner["headers"], pid)
+
+    # Coûts comptabilisés (operation='translate') — invariant 6
+    with psycopg.connect(settings.db_dsn) as conn:
+        rows = conn.execute(
+            "SELECT operation, count(*) AS n FROM api_costs "
+            "WHERE property_id = %s GROUP BY operation", (pid,)).fetchall()
+    ops = {op: n for op, n in rows}
+    assert ops.get("translate", 0) >= 1
+
+    # Aucun secret dans le guide traduit
+    es = client.get(f"/g/{token}?lang=es").text
+    assert "SecretWifi42" not in es
+    # Le secret n'a jamais été soumis au traducteur
+    for batch in LAST_TRANSLATOR.calls:
+        assert not any("SecretWifi42" in v for v in batch.values())
+
+
+def test_translation_is_stale_and_retranslation_is_targeted(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)
+
+    # Après publication : tout est à jour
+    st = client.get(f"/api/properties/{pid}/translation-status",
+                    headers=owner["headers"]).json()
+    assert st["up_to_date"] is True and st["outdated"] == 0
+    assert set(st["langs"]) == {"en", "es"}
+
+    # Édition d'une SEULE section → ses traductions deviennent périmées
+    client.put(f"/api/properties/{pid}/sections/A_checkin", headers=owner["headers"],
+               json={"content": {"checkin_from": "17:00"},
+                     "body_md": "Nouvel horaire : arrivée dès 17h.",
+                     "is_visible": True, "completed": True})
+    st2 = client.get(f"/api/properties/{pid}/translation-status",
+                     headers=owner["headers"]).json()
+    assert st2["outdated"] > 0
+    # La langue es n'est plus totalement à jour (1 section périmée)
+    assert st2["langs"]["es"]["stale"] >= 1
+
+    # Le guide es retombe sur le français pour la section périmée (pas d'info obsolète)
+    es_stale = client.get(f"/g/{token}?lang=es").text
+    assert "Nouvel horaire : arrivée dès 17h." in es_stale   # source fr affichée
+    assert "[es] Nouvel horaire" not in es_stale
+
+    # Re-traduction ciblée : ne retraite QUE le périmé
+    LAST_TRANSLATOR.calls.clear()
+    r = client.post(f"/api/properties/{pid}/translate", headers=owner["headers"])
+    assert r.status_code == 202
+    # Deux appels au plus (en + es), chacun ne portant QUE le segment ré-édité
+    assert len(LAST_TRANSLATOR.calls) <= 2
+    for batch in LAST_TRANSLATOR.calls:
+        assert all("Nouvel horaire" in v for v in batch.values())
+
+    st3 = client.get(f"/api/properties/{pid}/translation-status",
+                     headers=owner["headers"]).json()
+    assert st3["up_to_date"] is True
+    es_fresh = client.get(f"/g/{token}?lang=es").text
+    assert "[es] Nouvel horaire : arrivée dès 17h." in es_fresh
+
+
+def test_translate_excluded_from_enrich_quota(client):
+    """Traduire ne consomme pas le quota d'enrichissement (M-09)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    _enrich_and_wait(client, owner["headers"], pid)          # 1er (et seul) enrichissement du plan free
+    # Plusieurs traductions n'entament pas le quota
+    for _ in range(3):
+        assert client.post(f"/api/properties/{pid}/translate",
+                           headers=owner["headers"]).status_code == 202
+    # Un second enrichissement reste refusé (quota du plan free = 1)
+    assert client.post(f"/api/properties/{pid}/enrich", headers=owner["headers"],
+                       json={"trigger": "refresh"}).status_code == 429

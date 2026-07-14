@@ -27,7 +27,8 @@ h1{font-family:Fraunces,serif;font-weight:700;font-size:clamp(28px,7vw,36px);mar
 .city{color:var(--muted);font-size:15px}
 
 .langs{display:flex;gap:6px;flex:none}
-.lang{border:1px solid var(--line);background:var(--shell);border-radius:999px;
+.lang{display:inline-flex;align-items:center;text-decoration:none;
+      border:1px solid var(--line);background:var(--shell);border-radius:999px;
       padding:5px 11px;font:inherit;font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer}
 .lang.on{background:var(--sea);border-color:var(--sea);color:#fff;cursor:default}
 .lang[disabled]{opacity:.5;cursor:not-allowed}

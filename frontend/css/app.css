@@ -47,6 +47,9 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .btn-ok:hover{filter:brightness(.94)}
 .btn-danger{background:#fff;border-color:#E7C4C4;color:var(--alert)}
 .btn-danger:hover{background:#FDECEC;border-color:var(--alert)}
+/* État « traductions à mettre à jour » (M-09) : contenu modifié depuis la dernière traduction */
+.btn-warn{background:#FFF7E8;border-color:#E8CE93;color:#8A5A00}
+.btn-warn:hover{background:#FCEFD2;border-color:#D9B25E}
 .btn-ghost{background:transparent;border-color:transparent}
 .btn-ghost:hover{background:rgba(30,42,50,.05)}
 .btn-sm{padding:6px 11px;font-size:13px;border-radius:8px}

@@ -52,6 +52,7 @@ export async function renderEditor(view, pid) {
   const globalPct = el("b", {});
   const statusBadge = el("span", { class: "badge badge-" + property.status });
   const headerRight = el("div", { class: "row" });
+  let translationBtn = null;   // bouton « Traductions » (M-09), (re)créé au rendu
   const banner = el("div", {});
   const sidebar = el("nav", { class: "card chapters", style: { padding: "10px" } });
   const panel = el("section", { class: "card section-panel" });
@@ -246,19 +247,69 @@ export async function renderEditor(view, pid) {
     statusBadge.className = "badge badge-" + property.status;
     clear(headerRight);
     if (property.status === "published") {
+      // ── Traductions du guide (M-09) : bouton « Mettre à jour les traductions »
+      // avec état (à jour / X éléments périmés). La (re)traduction est déclenchée
+      // à la publication ; ce bouton rafraîchit après des modifications de contenu.
+      translationBtn = el("button", { class: "btn btn-sm", onClick: () => runTranslate() },
+        icon("languages", 16), el("span", { class: "tr-label" }, "Traductions"));
       headerRight.append(
         el("a", { class: "btn btn-sm", href: `/g/${property.guide_token}`, target: "_blank", rel: "noopener" },
           icon("external-link", 16), "Voir le guide"),
         el("button", { class: "btn btn-sm", onClick: () => copyGuideLink() },
           icon("link", 16), "Copier le lien"),
+        translationBtn,
         el("button", { class: "btn btn-sm", onClick: () => downloadPoster() },
           icon("qr-code", 16), "QR à imprimer"),
         el("button", { class: "btn btn-sm", onClick: () => setStatus("draft") }, "Dépublier"));
+      refreshTranslationState();
     } else {
       headerRight.append(
         el("button", { class: "btn btn-sm btn-primary", onClick: () => publish() }, icon("globe", 16), "Publier le guide"));
     }
     refreshIcons();
+  }
+
+  async function refreshTranslationState() {
+    if (!translationBtn) return;
+    try {
+      const st = await api.translationStatus(pid);
+      const label = translationBtn.querySelector(".tr-label");
+      translationBtn.classList.remove("btn-warn");
+      translationBtn.disabled = false;
+      if (!st.total) {
+        label.textContent = "Traductions";
+        translationBtn.title = "Aucun texte à traduire pour le moment.";
+      } else if (st.up_to_date) {
+        label.textContent = "Traductions à jour";
+        translationBtn.title = "Toutes les langues du guide sont à jour.";
+      } else {
+        label.textContent = `${st.outdated} à traduire`;
+        translationBtn.classList.add("btn-warn");
+        translationBtn.title = "Des contenus ont changé depuis la dernière traduction.";
+      }
+    } catch (_) { /* non bloquant */ }
+  }
+
+  async function runTranslate() {
+    const label = translationBtn.querySelector(".tr-label");
+    translationBtn.disabled = true;
+    label.textContent = "Traduction…";
+    try {
+      await api.translate(pid);
+      // La traduction s'exécute en tâche de fond : on sonde l'état quelques fois.
+      for (let i = 0; i < 8; i++) {
+        await new Promise((r) => setTimeout(r, 1200));
+        const st = await api.translationStatus(pid);
+        if (st.up_to_date) break;
+      }
+      toast("Traductions mises à jour.", "ok");
+    } catch (err) {
+      toast(err.message || "Traduction impossible.", "err");
+    } finally {
+      translationBtn.disabled = false;
+      refreshTranslationState();
+      refreshIcons();
+    }
   }
 
   function guideLink() { return location.origin + `/g/${property.guide_token}`; }

@@ -39,6 +39,16 @@ class Settings:
     # IA — API Claude
     anthropic_model: str = os.getenv("CASAGUIDE_MODEL", "claude-sonnet-4-6")
     anthropic_max_tokens: int = 2000
+    # Traduction du guide (M-09, §9) : modèle dédié, moins cher que Sonnet —
+    # la qualité de Haiku est largement suffisante en traduction FR→EN/ES.
+    translate_model: str = os.getenv("CASAGUIDE_TRANSLATE_MODEL",
+                                     "claude-haiku-4-5-20251001")
+    translate_max_tokens: int = 4000
+    # Langues cibles MVP du guide voyageur (la langue source vient de
+    # properties.default_lang et n'est jamais dans cette liste). DE/NL en V2.
+    translate_langs: tuple = tuple(
+        l.strip() for l in os.getenv("CASAGUIDE_TRANSLATE_LANGS", "en,es").split(",")
+        if l.strip())
     # Tarifs $/MTok (input, output) pour la comptabilité api_costs — à tenir à jour
     model_prices_usd: dict = field(default_factory=lambda: {
         "claude-sonnet-4-6": (3.0, 15.0),

@@ -5,17 +5,20 @@ import re
 import unicodedata
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException, Request,
+                     Response, status)
 
 from .. import crypto, poster, repo
 from ..config import settings
 from ..deps import (
-    Conn, CurrentOwner, DistanceComputer, OwnedProperty, get_distance_computer,
+    Conn, CurrentOwner, DistanceComputer, OwnedProperty, TranslationRunner,
+    get_distance_computer, get_translation_runner,
 )
 from ..schemas import (
     PropertyIn, PropertyOut, PropertyStatsOut, PropertyUpdate, RecomputeOut,
     SecretsIn, SecretsOut, SectionUpsertIn,
 )
+from .enrich import schedule_translation
 
 router = APIRouter(prefix="/api/properties", tags=["properties"])
 
@@ -55,12 +58,19 @@ def get_property(prop: OwnedProperty):
 
 
 @router.patch("/{property_id}", response_model=PropertyOut)
-def update_property(payload: PropertyUpdate, conn: Conn, owner: CurrentOwner,
-                    prop: OwnedProperty):
+def update_property(
+    payload: PropertyUpdate, conn: Conn, owner: CurrentOwner,
+    prop: OwnedProperty, background: BackgroundTasks,
+    runner: Annotated[TranslationRunner, Depends(get_translation_runner)],
+):
     fields = payload.model_dump(exclude_unset=True)
     if "country_code" in fields and fields["country_code"]:
         fields["country_code"] = fields["country_code"].upper()
     updated = repo.update_property(conn, str(owner["id"]), str(prop["id"]), fields)
+    # À la (re)publication : (re)traduire ce qui manque ou est périmé (M-09, §9).
+    # Tâche de fond — n'allonge pas la réponse ; ciblage côté pipeline.
+    if fields.get("status") == "published":
+        schedule_translation(background, conn, updated, runner)
     return updated
 
 

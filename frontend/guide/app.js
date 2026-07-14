@@ -162,6 +162,38 @@ function secretRow(label, value, { mono } = {}) {
     btn);
 }
 
+// ── Langue (M-09) : mémorisation du choix + détection initiale ────────────────
+// Le sélecteur est rendu côté serveur (liens ?lang=xx qui rechargent la page
+// dans la bonne langue). Ici : on mémorise le dernier choix (localStorage) et,
+// au tout premier chargement sans ?lang explicite, on redirige vers la langue
+// préférée (choix mémorisé, sinon navigator.language) si elle est disponible.
+const LANG_KEY = "casaguide:lang";
+function initLang() {
+  const current = document.body.dataset.lang || "fr";
+  const opts = Array.from(document.querySelectorAll(".langs a[data-lang]"));
+  opts.forEach((a) => a.addEventListener("click", () => {
+    try { localStorage.setItem(LANG_KEY, a.dataset.lang); } catch (_) { /* privé */ }
+  }));
+
+  const hasExplicit = new URLSearchParams(location.search).has("lang");
+  if (hasExplicit) {                       // l'URL fixe la langue → on la mémorise
+    try { localStorage.setItem(LANG_KEY, current); } catch (_) { /* privé */ }
+    return;
+  }
+  const available = new Set(opts.map((a) => a.dataset.lang));
+  if (!available.size) return;
+
+  let pref = null;
+  try { pref = localStorage.getItem(LANG_KEY); } catch (_) { /* privé */ }
+  if (!pref) {
+    const nav = (navigator.language || "").slice(0, 2).toLowerCase();
+    if (available.has(nav)) pref = nav;
+  }
+  if (pref && available.has(pref) && pref !== current) {
+    location.replace("?lang=" + encodeURIComponent(pref));  // recharge en SSR
+  }
+}
+
 // ── Service worker (hors-ligne + PWA) ────────────────────────────────────────
 function initPwa() {
   if (!("serviceWorker" in navigator)) return;
@@ -188,6 +220,7 @@ function escapeHtml(s) {
 }
 
 // ── Démarrage ────────────────────────────────────────────────────────────────
+initLang();
 initMap();
 initChips();
 initLightbox();

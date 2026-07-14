@@ -27,8 +27,9 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | `db/seed.sql` | 43 sections pré-définies + 27 catégories POI + 3 plans — idempotent, testé |
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
 | `backend/enrich/` | Pipeline d'enrichissement complet — testé (2 tests d'intégration verts) |
-| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, **guide voyageur (M-08)** : `GET /g/{token}` sert une **page HTML** (rendu serveur `api/guide_page.py`), `GET /g/{token}/data` le JSON (`charset=utf-8`), `GET /g/{token}/secrets` (wifi/boîte à clés, mode 'link'), `/g/{token}/media/{id}`, `/g/{token}/manifest.webmanifest`, `/guide/sw.js` — testé (34 tests d'intégration verts) |
-| `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-06/M-07/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section** + **aperçu/QR wifi + téléchargement PNG, M-06** + **groupe « Équipe d'entretien » (sections staff) avec lien `/s`, M-13** + **bouton « QR à imprimer » PDF, M-07**), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
+| `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, **traductions (M-09)** : `POST /{id}/translate` (tâche de fond, trigger='translate', hors quota) + `GET /{id}/translation-status`, **guide voyageur (M-08/M-09)** : `GET /g/{token}[?lang=]` sert une **page HTML** localisée (rendu serveur `api/guide_page.py`), `GET /g/{token}/data[?lang=]` le JSON (`charset=utf-8`), `GET /g/{token}/secrets` (wifi/boîte à clés, mode 'link'), `/g/{token}/media/{id}`, `/g/{token}/manifest.webmanifest`, `/guide/sw.js` — testé (51 tests d'intégration/unitaires verts) |
+| `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-06/M-07/M-09/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section** + **aperçu/QR wifi + téléchargement PNG, M-06** + **groupe « Équipe d'entretien » (sections staff) avec lien `/s`, M-13** + **bouton « QR à imprimer » PDF, M-07** + **bouton « Traductions » avec état à jour/périmé, M-09**), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
+| Multilingue guide (M-09) | **Fait** — traductions FR→EN/ES **générées et stockées** (`enrich/translate.py`, tables `section_translations`/`poi_translations` + `is_stale`), jamais à la volée (invariant 4). Modèle dédié `CASAGUIDE_TRANSLATE_MODEL` (Haiku). Seuls les champs texte + `body_md` + descriptions/coups de cœur POI sont traduits (jamais heures/booléens/URLs/secrets). (Re)traduction ciblée à la (re)publication et via `/translate`. Guide localisé côté serveur (`?lang=`), repli élégant sur le fr, sélecteur de langue. Coûts dans `api_costs` (operation='translate') |
 | Cahier équipe d'entretien (M-13) | Schéma : `audience` (guest\|staff) sur `section_templates`, `staff_token` (128 bits) sur `properties` — schema.sql + `db/migrations/002`. Seed : chapitre « S » (5 sections staff). Page publique `GET /s/{staff_token}` (rendu `guide_page.render_staff`, variante sobre check-list, **accessible même en brouillon**, jamais de secrets/POI). Étanchéité guest↔staff dans les deux sens (invariant 7) |
 | Affiche QR imprimable (M-07) | `api/poster.py` (reportlab) → `GET /api/properties/{id}/guide-poster.pdf` (A5/A4, propriétaire uniquement) : nom du logement, QR du lien du guide, mot d'accueil FR/EN, identité sable/mer |
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
@@ -152,8 +153,10 @@ défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE
    service worker hors-ligne, manifest par guide). JSON sur `/g/{token}/data`,
    secrets à la demande sur `/g/{token}/secrets` (mode 'link'). Restent : sélecteur
    de langue actif (M-09), cache des tuiles (M-10).
-4. **Traductions stockées** (`section_translations`, `poi_translations`,
-   flag `is_stale`) puis Stripe, statistiques, accès par dates de séjour (V2).
+4. ✅ **Traductions stockées** (M-09 : `section_translations`, `poi_translations`,
+   flag `is_stale`, `enrich/translate.py`, guide `?lang=`). Restent : DE/NL et
+   relecture propriétaire (V2-06), traduction des `area_facts` (restent en fr).
+   Puis Stripe, statistiques, accès par dates de séjour (V2).
 
 ## Pièges connus
 
@@ -224,6 +227,20 @@ défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE
   `GET /api/properties/{id}/guide-poster.pdf` (réservé au propriétaire via
   `OwnedProperty`). Le QR encode le lien **public** `/g/{guide_token}` (jamais un
   secret). Origine des liens : `CASAGUIDE_PUBLIC_BASE_URL` sinon `request.base_url`.
+- Multilingue (M-09) : les traductions sont **stockées**, jamais faites à la volée
+  côté voyageur (invariant 4). Langue source = `properties.default_lang` ; cibles
+  MVP `en`/`es` (`settings.translate_langs`). On ne traduit **que** le texte libre
+  (`text`/`textarea`, `body_md`, descriptions/coups de cœur POI) : jamais un champ
+  structuré (heure, booléen, nombre, URL, téléphone, clé de `select`) ni un secret.
+  Toute sauvegarde de section (`upsert_section`) / édition de POI (`edit_poi`) pose
+  `is_stale=TRUE` ; la (re)traduction (publication ou bouton `/translate`) ne
+  retraite **que** le manquant/périmé (ciblage). Le guide ne sert **que** les
+  traductions **fraîches** (`is_stale=FALSE`) : une traduction périmée retombe sur
+  le français (repli élégant, jamais d'info obsolète — ne pas retirer ce filtre).
+  `properties.published_langs` (rempli à la publication) pilote le sélecteur.
+  Traducteur **injectable** (`translate.run(..., translator=)`) pour tester sans
+  réseau. Le cahier `/s` (M-13) reste **en français** (hors périmètre). NB : les
+  `area_facts` sont générés en français ; seuls leurs intitulés sont localisés.
 - Cahier équipe d'entretien (M-13) : sections `audience='staff'` (chapitre « S »
   du seed), servies sur `/s/{staff_token}` (`repo.staff_sections` / `staff_media`,
   rendu `guide_page.render_staff`). Ce cahier est **accessible même en brouillon**
