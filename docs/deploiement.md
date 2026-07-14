@@ -249,20 +249,25 @@ HTTPS de confiance → le service worker / PWA devient pleinement actif (hors-li
 
 - **Quoi** : `pg_dump -Fc` (base) + `tar` des médias, dans `/opt/casaguide/backups`,
   **rotation 14 jours** (`ops/casaguide-backup.sh`, timer 03:30).
-- **Restauration testée** dans une base témoin (ne touche pas la production) :
+- **Restauration testée** dans une base témoin (ne touche pas la production). Le
+  script s'exécute **avec `sudo`** : postgis n'étant pas une extension « trusted »,
+  seul le superutilisateur `postgres` peut la (re)créer ; la restauration elle-même
+  se fait ensuite en tant que `casaguide` (propriétaire des objets).
 
 ```bash
-sudo -u casaguide /opt/casaguide/ops/casaguide-restore.sh \
+sudo /opt/casaguide/ops/casaguide-restore.sh \
      /opt/casaguide/backups/casaguide-AAAAMMJJ-HHMMSS.dump
 # → recrée la base « casaguide_restore_test », restaure, et affiche les compteurs
-#   (section_templates, poi_categories, properties, owners) pour vérification.
+#   (section_templates, poi_categories, plans, properties, owners) pour vérification.
+# Le seul avertissement attendu (COMMENT ON EXTENSION postgis / spatial_ref_sys)
+# est cosmétique : l'extension pré-créée fournit déjà ces objets.
 ```
 
 - **Restauration en production** (sinistre) — arrêter l'API, restaurer, redémarrer :
 
 ```bash
 sudo systemctl stop casaguide
-sudo -u casaguide /opt/casaguide/ops/casaguide-restore.sh <fichier.dump> casaguide   # demande « OUI »
+sudo /opt/casaguide/ops/casaguide-restore.sh <fichier.dump> casaguide   # demande « OUI »
 # Médias : tar -xzf backups/media-AAAAMMJJ-HHMMSS.tar.gz -C /opt/casaguide/backend/
 sudo systemctl start casaguide
 ```

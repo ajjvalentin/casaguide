@@ -131,7 +131,38 @@ répondent 503 si absente), `MEDIA_ROOT` (répertoire de stockage des médias,
 défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE_MIN`,
 `CASAGUIDE_CORS_ORIGINS`, `CASAGUIDE_MAX_UPLOAD_BYTES` (10 Mo par défaut),
 `CASAGUIDE_PUBLIC_BASE_URL` (origine publique des liens du QR imprimable M-07 ;
-à défaut, `request.base_url`).
+à défaut, `request.base_url`), `CASAGUIDE_ASSET_VERSION` (M-11 : SHA git stampé
+par `deploy.sh` → cache-busting des assets ; défaut `dev`).
+
+## Production (M-11) — **runbook complet : `docs/deploiement.md`**
+
+**EN LIGNE** sur VPS Infomaniak (Ubuntu 24.04, UE) : `http://179.237.85.250`
+(+ `https://` en cert auto-signé). Architecture volontairement **simple, sans
+Docker** : Caddy (frontal :80/:443) → uvicorn `127.0.0.1:8000` (systemd
+`casaguide`) → PostgreSQL 16 + PostGIS **local** (jamais exposé, peer auth).
+
+- **Serveur** : `ssh -i ~/.ssh/casaguide_vps ubuntu@179.237.85.250` (sudo sans mdp).
+- **Utilisateur applicatif** `casaguide` (non-root), code dans `/opt/casaguide`
+  (clone GitHub via **deploy key** ed25519 lecture seule).
+- **Déploiement en UNE commande** : `sudo -u casaguide /opt/casaguide/deploy.sh`
+  (pull, pip si `requirements` changé, migrations+seed idempotents, version
+  d'assets, restart via sudoers restreint, healthcheck). Idempotent.
+- **Config** : `/opt/casaguide/backend/.env` (secrets générés sur place, `600`,
+  hors dépôt) + `.env.deploy` (écrit par `deploy.sh`, `CASAGUIDE_ASSET_VERSION`).
+  `ANTHROPIC_API_KEY` = **placeholder** tant qu'elle n'est pas fournie à la main
+  (seul l'enrichissement IA en dépend).
+- **Sécurité** : ufw (22/80/443), fail2ban (sshd), unattended-upgrades ; uvicorn
+  local uniquement ; systemd durci ; PostgreSQL en socket local.
+- **Cache-busting (dette résolue)** : `api/assets.py` — `?v=<sha>` sur les balises
+  JS/CSS (`index.html` + pages guide/staff via `guide_page.py`), statiques servis
+  en `Cache-Control: no-cache` (`RevalidatingStaticFiles`), SHA injecté dans le
+  nom des caches du service worker (`/guide/sw.js`, placeholder `__ASSET_VERSION__`).
+  Chaque déploiement invalide caches navigateur **et** SW sans intervention.
+- **Sauvegardes** : timer systemd nocturne (`ops/casaguide-backup.*`, `pg_dump -Fc`
+  + médias, rotation 14 j) ; restauration `ops/casaguide-restore.sh` **avec sudo**
+  (postgis non « trusted » → extension recréée par `postgres`), testée en base témoin.
+- **Bascule domaine + Let's Encrypt** : documentée (un bloc du `Caddyfile` +
+  décommenter HSTS + `CASAGUIDE_PUBLIC_BASE_URL`), cf. `ops/Caddyfile` et le runbook.
 
 ## Prochaines étapes (ordre recommandé, cf. §12 du CdC)
 
