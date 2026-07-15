@@ -70,6 +70,8 @@ export async function renderProperties(view) {
           icon("pencil-line", 16), "Compléter"),
         el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${p.id}/pois`) },
           icon("map-pin-check", 16), "Suggestions"),
+        el("button", { class: "btn btn-sm", onClick: () => reEnrich(p) },
+          icon("sparkles", 16), "Enrichir"),
         p.status === "published"
           ? el("a", { class: "btn btn-sm", href: `/g/${p.guide_token}`, target: "_blank", rel: "noopener" },
             icon("external-link", 16), "Voir le guide")
@@ -103,6 +105,13 @@ export async function renderProperties(view) {
       await navigator.clipboard.writeText(location.origin + `/g/${p.guide_token}`);
       toast("Lien du guide copié.", "ok");
     } catch (_) { toast("Copie impossible — ouvrez le guide pour récupérer le lien.", "err"); }
+  }
+
+  async function reEnrich(p) {
+    if (!(await confirmDialog(
+      "Relancer l'enrichissement IA autour de l'adresse ? Les lieux déjà validés ou rejetés ne sont jamais modifiés — seules les catégories manquantes se complètent. L'opération est décomptée du quota mensuel.",
+      { title: "Enrichir l'environnement", okLabel: "Lancer l'enrichissement" }))) return;
+    runEnrichment(p.id, "refresh", { view });
   }
 
   async function removeProperty(p) {
