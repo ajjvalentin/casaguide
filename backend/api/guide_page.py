@@ -73,6 +73,7 @@ _UI: dict[str, dict[str, str]] = {
         "good_to_know": "Bon à savoir sur place", "waste": "Poubelles & tri",
         "noise": "Tranquillité du voisinage", "numbers": "Tous les numéros utiles",
         "filter": "Filtrer par thème", "lang": "Langue",
+        "cuisine_filter": "Filtrer par cuisine",
         "title_suffix": "Guide du logement", "home": "Votre logement",
         "footer": "Guide propulsé par CasaGuide — données OpenStreetMap. Bon séjour !",
     },
@@ -86,6 +87,7 @@ _UI: dict[str, dict[str, str]] = {
         "good_to_know": "Good to know", "waste": "Waste & recycling",
         "noise": "Neighbourhood quiet", "numbers": "All useful numbers",
         "filter": "Filter by theme", "lang": "Language",
+        "cuisine_filter": "Filter by cuisine",
         "title_suffix": "Property guide", "home": "Your accommodation",
         "footer": "Guide powered by CasaGuide — OpenStreetMap data. Enjoy your stay!",
     },
@@ -99,6 +101,7 @@ _UI: dict[str, dict[str, str]] = {
         "good_to_know": "Bueno saber en el lugar", "waste": "Basura y reciclaje",
         "noise": "Tranquilidad del vecindario", "numbers": "Todos los números útiles",
         "filter": "Filtrar por tema", "lang": "Idioma",
+        "cuisine_filter": "Filtrar por cocina",
         "title_suffix": "Guía del alojamiento", "home": "Tu alojamiento",
         "footer": "Guía con tecnología de CasaGuide — datos de OpenStreetMap. ¡Feliz estancia!",
     },
@@ -108,7 +111,54 @@ _UI: dict[str, dict[str, str]] = {
 _LANG_LABELS = {"fr": "Français", "en": "English", "es": "Español",
                 "de": "Deutsch", "nl": "Nederlands"}
 
+# Libellés localisés des types de cuisine courants (M-16). Clés = valeurs OSM
+# normalisées (`overpass._norm_cuisine`). Toute valeur absente retombe sur la
+# valeur brute (embellie). N'a pas vocation à être exhaustif : on couvre les
+# cuisines les plus fréquentes en zone touristique.
+_CUISINE_LABELS: dict[str, dict[str, str]] = {
+    "italian": {"fr": "Italien", "en": "Italian", "es": "Italiano"},
+    "pizza": {"fr": "Pizza", "en": "Pizza", "es": "Pizza"},
+    "spanish": {"fr": "Espagnol", "en": "Spanish", "es": "Español"},
+    "tapas": {"fr": "Tapas", "en": "Tapas", "es": "Tapas"},
+    "seafood": {"fr": "Fruits de mer", "en": "Seafood", "es": "Marisco"},
+    "fish": {"fr": "Poisson", "en": "Fish", "es": "Pescado"},
+    "mediterranean": {"fr": "Méditerranéen", "en": "Mediterranean", "es": "Mediterráneo"},
+    "french": {"fr": "Français", "en": "French", "es": "Francés"},
+    "asian": {"fr": "Asiatique", "en": "Asian", "es": "Asiático"},
+    "chinese": {"fr": "Chinois", "en": "Chinese", "es": "Chino"},
+    "japanese": {"fr": "Japonais", "en": "Japanese", "es": "Japonés"},
+    "sushi": {"fr": "Sushi", "en": "Sushi", "es": "Sushi"},
+    "thai": {"fr": "Thaïlandais", "en": "Thai", "es": "Tailandés"},
+    "indian": {"fr": "Indien", "en": "Indian", "es": "Indio"},
+    "mexican": {"fr": "Mexicain", "en": "Mexican", "es": "Mexicano"},
+    "american": {"fr": "Américain", "en": "American", "es": "Americano"},
+    "burger": {"fr": "Burger", "en": "Burger", "es": "Hamburguesa"},
+    "kebab": {"fr": "Kebab", "en": "Kebab", "es": "Kebab"},
+    "greek": {"fr": "Grec", "en": "Greek", "es": "Griego"},
+    "vegetarian": {"fr": "Végétarien", "en": "Vegetarian", "es": "Vegetariano"},
+    "vegan": {"fr": "Végan", "en": "Vegan", "es": "Vegano"},
+    "steak_house": {"fr": "Grillades", "en": "Steakhouse", "es": "Carnes"},
+    "barbecue": {"fr": "Grillades", "en": "Barbecue", "es": "Barbacoa"},
+    "chicken": {"fr": "Poulet", "en": "Chicken", "es": "Pollo"},
+    "ice_cream": {"fr": "Glaces", "en": "Ice cream", "es": "Helados"},
+    "coffee_shop": {"fr": "Café", "en": "Coffee shop", "es": "Cafetería"},
+    "cafe": {"fr": "Café", "en": "Café", "es": "Cafetería"},
+    "sandwich": {"fr": "Sandwichs", "en": "Sandwich", "es": "Bocadillos"},
+    "breakfast": {"fr": "Petit-déjeuner", "en": "Breakfast", "es": "Desayuno"},
+    "international": {"fr": "International", "en": "International", "es": "Internacional"},
+    "regional": {"fr": "Régional", "en": "Regional", "es": "Regional"},
+}
+
 _esc = html.escape
+
+
+def _cuisine_label(value: str, lang: str = "fr") -> str:
+    """Libellé localisé d'un type de cuisine (M-16), repli sur la valeur brute
+    embellie (underscores → espaces, capitalisée)."""
+    d = _CUISINE_LABELS.get(value)
+    if d:
+        return d.get(lang) or d.get("fr") or value
+    return value.replace("_", " ").strip().capitalize()
 
 
 def _t(lang: str, key: str) -> str:
@@ -334,8 +384,13 @@ def _render_pois(pois: list[dict], lang: str = "fr") -> str:
         by_cat.setdefault(p["category_code"], []).append(p)
     blocks: list[str] = []
     for code, lst in by_cat.items():
-        lst.sort(key=lambda p: (p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
+        # Coups de cœur (owner_comment) en tête de leur catégorie (M-16), puis
+        # tri par distance à pied.
+        lst.sort(key=lambda p: (
+            0 if (p.get("owner_comment") or "").strip() else 1,
+            p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
         cat_name = _esc(_i18n(lst[0].get("category_name"), lang, code))
+        is_resto = code == "restaurant"
         cards: list[str] = []
         for p in lst:
             n, u = _fmt_dist(p, lang)
@@ -345,6 +400,11 @@ def _render_pois(pois: list[dict], lang: str = "fr") -> str:
                        if p.get("owner_comment") else "")
             hours = (f'<div class="hours">{_esc(p["opening_hours"])}</div>'
                      if p.get("opening_hours") else "")
+            # Type de cuisine (M-16) : étiquette localisée + attribut de filtrage.
+            cuisine = (p.get("cuisine") or "").strip().lower()
+            cuisine_attr = f' data-cuisine="{_esc(cuisine)}"' if is_resto else ""
+            cuisine_tag = (f'<span class="cuisine-tag">{_esc(_cuisine_label(cuisine, lang))}</span>'
+                           if is_resto and cuisine else "")
             meta: list[str] = []
             if p.get("phone"):
                 meta.append(f'<a href="tel:{_tel(p["phone"])}">{_t(lang, "call")}</a>')
@@ -355,12 +415,38 @@ def _render_pois(pois: list[dict], lang: str = "fr") -> str:
                             f' target="_blank" rel="noopener">{_t(lang, "route")}</a>')
             meta_html = f'<div class="meta">{"".join(meta)}</div>' if meta else ""
             cards.append(
-                f'<div class="poi-card" style="border-left-color:{color}">'
+                f'<div class="poi-card"{cuisine_attr} style="border-left-color:{color}">'
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
-                f'<div class="poi-body"><h4>{_esc(p["name"])}</h4>{comment}'
+                f'<div class="poi-body"><h4>{_esc(p["name"])}{cuisine_tag}</h4>{comment}'
                 f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}</div></div>')
-        blocks.append(f'<h4 class="cat-title">{cat_name} · {len(lst)}</h4>' + "".join(cards))
+        head = f'<h4 class="cat-title">{cat_name} · {len(lst)}</h4>'
+        if is_resto:
+            # Filtre par cuisine (M-16), généré depuis les valeurs présentes ; le
+            # filtrage lui-même est fait côté client (app.js), sans rechargement.
+            chips = _render_cuisine_chips(lst, lang)
+            blocks.append(head + chips
+                          + f'<div class="poi-group" data-cat="restaurant">{"".join(cards)}</div>')
+        else:
+            blocks.append(head + "".join(cards))
     return "".join(blocks)
+
+
+def _render_cuisine_chips(restaurants: list[dict], lang: str) -> str:
+    """Puces de filtre par cuisine (M-16), dérivées des valeurs réellement
+    présentes. Libellés localisés (dictionnaire) avec repli sur la valeur brute.
+    Aucune puce si moins de deux cuisines distinctes (le filtre n'aurait pas de
+    sens)."""
+    values = sorted({(p.get("cuisine") or "").strip().lower()
+                     for p in restaurants if (p.get("cuisine") or "").strip()},
+                    key=lambda v: _cuisine_label(v, lang).lower())
+    if len(values) < 2:
+        return ""
+    chips = [f'<button class="cchip on" data-cuisine="">{_esc(_t(lang, "all"))}</button>']
+    for v in values:
+        chips.append(f'<button class="cchip" data-cuisine="{_esc(v)}">'
+                     f'{_esc(_cuisine_label(v, lang))}</button>')
+    return (f'<div class="cuisines" data-cat="restaurant" '
+            f'aria-label="{_esc(_t(lang, "cuisine_filter"))}">{"".join(chips)}</div>')
 
 
 # ── Barre d'urgences (numéros prioritaires, tel:) ────────────────────────────

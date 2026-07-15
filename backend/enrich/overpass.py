@@ -200,11 +200,23 @@ def _element_to_poi(el: dict, lat0: float, lon0: float) -> dict | None:
         "phone": tags.get("phone") or tags.get("contact:phone"),
         "website": tags.get("website") or tags.get("contact:website"),
         "opening_hours": tags.get("opening_hours"),
+        "cuisine": _norm_cuisine(tags.get("cuisine")),  # M-16 : type de cuisine
         "source": "osm",
         "source_ref": f'{el.get("type", "node")}/{el.get("id")}',
         "crow_m": haversine_m(lat0, lon0, float(lat), float(lon)),
         "_tags": tags,
     }
+
+
+def _norm_cuisine(raw: str | None) -> str | None:
+    """Normalise le tag OSM `cuisine` (M-16) : premier terme, minuscules.
+
+    Le tag OSM peut être multi-valué (`italian;pizza`) : on ne garde que le
+    premier terme, en minuscules, sans espaces superflus. Renvoie None si vide."""
+    if not raw:
+        return None
+    first = raw.split(";")[0].strip().lower()
+    return first or None
 
 
 def _finalize(pois: list[dict], limit: int) -> list[dict]:

@@ -62,13 +62,13 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
     for p in pois:
         conn.execute(
             """INSERT INTO pois (property_id, category_code, name, geom, address,
-                                 phone, website, opening_hours, description_md,
+                                 phone, website, opening_hours, cuisine, description_md,
                                  dist_walk_m, walk_min, dist_drive_m, drive_min,
                                  source, source_ref, fetched_at, status)
                VALUES (%(pid)s, %(cat)s, %(name)s,
                        ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
                        %(address)s, %(phone)s, %(website)s, %(opening_hours)s,
-                       %(description_md)s,
+                       %(cuisine)s, %(description_md)s,
                        %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
                        %(source)s, %(source_ref)s, now(), 'suggested')
                ON CONFLICT (property_id, source, source_ref)
@@ -77,6 +77,7 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                    name = EXCLUDED.name, geom = EXCLUDED.geom,
                    address = EXCLUDED.address, phone = EXCLUDED.phone,
                    website = EXCLUDED.website, opening_hours = EXCLUDED.opening_hours,
+                   cuisine = COALESCE(EXCLUDED.cuisine, pois.cuisine),
                    description_md = COALESCE(EXCLUDED.description_md, pois.description_md),
                    dist_walk_m = EXCLUDED.dist_walk_m, walk_min = EXCLUDED.walk_min,
                    dist_drive_m = EXCLUDED.dist_drive_m, drive_min = EXCLUDED.drive_min,
@@ -87,6 +88,7 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                 "name": p["name"], "lat": p["lat"], "lon": p["lon"],
                 "address": p.get("address"), "phone": p.get("phone"),
                 "website": p.get("website"), "opening_hours": p.get("opening_hours"),
+                "cuisine": p.get("cuisine"),
                 "description_md": p.get("description_md"),
                 "dist_walk_m": p.get("dist_walk_m"), "walk_min": p.get("walk_min"),
                 "dist_drive_m": p.get("dist_drive_m"), "drive_min": p.get("drive_min"),

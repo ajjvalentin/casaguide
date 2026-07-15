@@ -209,6 +209,7 @@ CREATE TABLE pois (
     website        TEXT,
     opening_hours  TEXT,                           -- format OSM ou texte libre
     price_level    SMALLINT,                       -- 1-4, optionnel
+    cuisine        TEXT,                            -- type de cuisine (tag OSM normalisé, M-16)
     description_md TEXT,                           -- rédigé par l'IA ou le propriétaire
     owner_comment  TEXT,                           -- le "coup de cœur" personnel (§4.F)
     -- Distances pré-calculées (cache — aucun appel API côté voyageur)

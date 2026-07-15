@@ -153,3 +153,29 @@ def test_fetch_grouped_reduces_request_count_on_full_catalogue():
     overpass.fetch_grouped(cats, LAT, LON, client=client)
     client.close()
     assert len(calls) < 10          # objectif M-01 (constaté : 5 paliers)
+
+
+# ── M-16 : récolte et normalisation du tag OSM « cuisine » ───────────────────
+
+def test_norm_cuisine_first_term_lowercased():
+    assert overpass._norm_cuisine("italian") == "italian"
+    assert overpass._norm_cuisine("Italian") == "italian"
+    # Multi-valué -> premier terme seulement
+    assert overpass._norm_cuisine("italian;pizza") == "italian"
+    assert overpass._norm_cuisine("  Seafood ; Spanish ") == "seafood"
+    # Vide / absent -> None
+    assert overpass._norm_cuisine(None) is None
+    assert overpass._norm_cuisine("") is None
+    assert overpass._norm_cuisine("  ;  ") is None
+
+
+def test_element_to_poi_carries_cuisine():
+    el = {"type": "node", "id": 42, "lat": LAT, "lon": LON,
+          "tags": {"name": "Trattoria", "amenity": "restaurant",
+                   "cuisine": "Italian;pizza"}}
+    poi = overpass._element_to_poi(el, LAT, LON)
+    assert poi["cuisine"] == "italian"      # normalisé
+    # Un POI sans tag cuisine porte cuisine=None (jamais de KeyError)
+    el2 = {"type": "node", "id": 43, "lat": LAT, "lon": LON,
+           "tags": {"name": "Bar Central", "amenity": "bar"}}
+    assert overpass._element_to_poi(el2, LAT, LON)["cuisine"] is None

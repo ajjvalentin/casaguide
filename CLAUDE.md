@@ -26,6 +26,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | `db/schema.sql` | Schéma PostgreSQL 15+ / PostGIS — testé, validé |
 | `db/seed.sql` | 43 sections pré-définies + 27 catégories POI + 3 plans — idempotent, testé |
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
+| `db/migrations/003` | Colonne `cuisine` sur `pois` (type de cuisine, M-16) — idempotent |
 | `backend/enrich/` | Pipeline d'enrichissement complet — testé (2 tests d'intégration verts) |
 | `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, **traductions (M-09)** : `POST /{id}/translate` (tâche de fond, trigger='translate', hors quota) + `GET /{id}/translation-status`, **guide voyageur (M-08/M-09)** : `GET /g/{token}[?lang=]` sert une **page HTML** localisée (rendu serveur `api/guide_page.py`), `GET /g/{token}/data[?lang=]` le JSON (`charset=utf-8`), `GET /g/{token}/secrets` (wifi/boîte à clés, mode 'link'), `/g/{token}/media/{id}`, `/g/{token}/manifest.webmanifest`, `/guide/sw.js` — testé (51 tests d'intégration/unitaires verts) |
 | `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-06/M-07/M-09/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section** + **aperçu/QR wifi + téléchargement PNG, M-06** + **groupe « Équipe d'entretien » (sections staff) avec lien `/s`, M-13** + **bouton « QR à imprimer » PDF, M-07** + **bouton « Traductions » avec état à jour/périmé, M-09**), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
@@ -103,6 +104,7 @@ psql -d casaguide -f db/schema.sql
 psql -d casaguide -f db/seed.sql
 psql -d casaguide -f db/migrations/001_pois_unique_source.sql
 psql -d casaguide -f db/migrations/002_staff_cahier.sql   # audience + staff_token (M-13)
+psql -d casaguide -f db/migrations/003_pois_cuisine.sql   # colonne cuisine sur pois (M-16)
 
 # Backend
 cd backend
@@ -291,6 +293,20 @@ Docker** : Caddy (frontal :80/:443) → uvicorn `127.0.0.1:8000` (systemd
   `B_house_rules` sont visibles par défaut au seed. Toute nouvelle association
   fait→section passe par l'ajout d'un renderer à `_FACT_INLINE` **et** de la clé
   dans `field_schema.area_facts` du seed.
+- Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
+  _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
+  en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`
+  (migration 003). Le champ survit à `_finalize` (il n'est pas dans `_tags`) ; il
+  faut le passer explicitement dans `db.upsert_pois` (le COALESCE de l'upsert ne
+  l'efface jamais sur ré-enrichissement). Le guide voyageur génère les puces de
+  filtre par cuisine **depuis les valeurs présentes** (`guide_page.
+  _render_cuisine_chips`, ≥ 2 cuisines distinctes), libellés localisés via
+  `_CUISINE_LABELS` (repli sur la valeur brute embellie) ; le filtrage est **côté
+  client** (`app.js initCuisineFilter`, attribut `data-cuisine`, aucune requête).
+  Les **coups de cœur** (POI avec `owner_comment`) remontent en tête de leur
+  catégorie — au tri SQL (`guide_pois`) **et** au rendu (`_render_pois`) : garder
+  les deux cohérents. Cuisine saisie au back-office : mise en minuscules (filtre
+  cohérent) ; une valeur libre inconnue du dictionnaire s'affiche brute.
 - Régénérer des `area_facts` déjà en base (M-17, prompt resserré) : les faits sont
   **mutualisés** par `(country_code, admin_area)` et sautés par le pipeline tant
   qu'ils sont frais (`db.area_facts_fresh`, < 180 j). Pour forcer une régénération

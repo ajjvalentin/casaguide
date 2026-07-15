@@ -124,6 +124,66 @@ def test_section_without_area_facts_declares_nothing():
     assert '<div class="sec-facts">' not in html
 
 
+# ── M-16 : filtre par cuisine + coups de cœur en tête ────────────────────────
+
+def _resto(name, cuisine=None, walk=None, comment=None):
+    return {"id": name, "category_code": "restaurant", "chapter": "F",
+            "category_name": {"fr": "Restaurants"}, "map_color": "#EF6C00",
+            "name": name, "lat": 37.9, "lon": -0.74, "cuisine": cuisine,
+            "walk_min": walk, "dist_walk_m": (walk or 0) * 70,
+            "drive_min": None, "owner_comment": comment,
+            "description_md": None, "opening_hours": None,
+            "phone": None, "website": None}
+
+
+def test_cuisine_filter_chips_and_tags_localised():
+    pois = [_resto("Trattoria", "italian", 5),
+            _resto("El Puerto", "seafood", 8),
+            _resto("Pizzeria Napoli", "pizza", 10)]
+    html = guide_page._render_pois(pois, "fr")
+    # Barre de filtre par cuisine présente, avec la puce « Tout ».
+    assert '<div class="cuisines" data-cat="restaurant"' in html
+    assert 'data-cuisine=""' in html  # puce Tout
+    # Une puce par cuisine présente, libellés localisés (FR).
+    assert 'data-cuisine="italian"' in html and "Italien" in html
+    assert 'data-cuisine="seafood"' in html and "Fruits de mer" in html
+    assert 'data-cuisine="pizza"' in html and "Pizza" in html
+    # Chaque carte porte son attribut de filtrage + son étiquette.
+    assert '<div class="poi-group" data-cat="restaurant">' in html
+    assert '<div class="poi-card" data-cuisine="italian"' in html
+    assert '<span class="cuisine-tag">' in html
+
+    # Localisation ES : les libellés changent, les clés de filtrage non.
+    html_es = guide_page._render_pois(pois, "es")
+    assert "Marisco" in html_es and 'data-cuisine="seafood"' in html_es
+
+
+def test_cuisine_chips_absent_when_less_than_two_cuisines():
+    pois = [_resto("Trattoria", "italian", 5), _resto("Da Vinci", "italian", 8),
+            _resto("Sin Datos", None, 3)]
+    html = guide_page._render_pois(pois, "fr")
+    assert '<div class="cuisines"' not in html   # une seule cuisine distincte
+
+
+def test_unknown_cuisine_falls_back_to_raw_value():
+    pois = [_resto("Fusion Bar", "peruvian", 5), _resto("Tapas", "spanish", 6)]
+    html = guide_page._render_pois(pois, "fr")
+    assert 'data-cuisine="peruvian"' in html
+    assert "Peruvian" in html            # repli embelli (capitalisé)
+
+
+def test_owner_favourites_lead_their_category():
+    # Le coup de cœur est plus loin (walk=20) qu'un POI sans commentaire (walk=3),
+    # mais doit tout de même remonter en tête de sa catégorie (M-16).
+    pois = [_resto("Proche sans avis", None, 3),
+            _resto("Coup de cœur", "italian", 20, comment="Notre préféré !"),
+            _resto("Autre", "pizza", 8)]
+    html = guide_page._render_pois(pois, "fr")
+    assert html.index("Coup de cœur") < html.index("Proche sans avis")
+    assert html.index("Coup de cœur") < html.index("Autre")
+    assert "❤ Notre préféré !" in html
+
+
 # ── M-17 : le prompt de génération est resserré (on vérifie les CONSIGNES) ───
 
 def test_area_prompt_forbids_administrative_context_and_generalities():

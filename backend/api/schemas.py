@@ -144,6 +144,7 @@ class PoiEditIn(BaseModel):
     phone: str | None = None
     website: str | None = None
     opening_hours: str | None = None
+    cuisine: str | None = None
     description_md: str | None = None
     owner_comment: str | None = None
 

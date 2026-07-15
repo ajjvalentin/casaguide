@@ -184,6 +184,7 @@ export async function renderPois(view, pid) {
           el("h4", {}, p.name),
           el("span", { class: "badge " + badgeCls }, badgeLbl)),
         p.address ? el("div", { class: "sub" }, p.address) : null,
+        p.cuisine ? el("div", { class: "sub" }, "🍽 " + p.cuisine) : null,
         p.description_md ? el("p", {}, p.description_md) : null,
         p.owner_comment ? el("div", { class: "fav" }, icon("heart", 14), el("span", {}, p.owner_comment)) : null,
         el("div", { class: "poi-meta" },
@@ -232,6 +233,12 @@ export async function renderPois(view, pid) {
     const name = f("Nom", "name", p.name);
     const phone = f("Téléphone", "phone", p.phone, "tel");
     const website = f("Site web", "website", p.website, "url");
+    // Type de cuisine (M-16) : pertinent pour les restaurants (récolté depuis OSM,
+    // éditable). Alimente le filtre par cuisine du guide voyageur.
+    const isResto = p.category_code === "restaurant";
+    const cuisine = isResto
+      ? f("Type de cuisine (ex. italien, tapas, poisson)", "cuisine", p.cuisine)
+      : null;
     const desc = f("Description", "description_md", p.description_md, "textarea");
     const fav = f("Coup de cœur (commentaire personnel)", "owner_comment", p.owner_comment, "textarea");
     const save = el("button", { class: "btn btn-primary" }, "Enregistrer");
@@ -240,6 +247,7 @@ export async function renderPois(view, pid) {
       body: el("form", { onSubmit: (e) => e.preventDefault() },
         name.node,
         el("div", { class: "grid-2" }, phone.node, website.node),
+        cuisine ? cuisine.node : null,
         desc.node, fav.node,
         el("div", { class: "notice notice-info" }, icon("info", 18),
           el("div", {}, "Enregistrer classe ce lieu comme « Modifié » : il sera retenu dans le guide."))),
@@ -255,6 +263,7 @@ export async function renderPois(view, pid) {
           description_md: desc.control.value.trim() || null,
           owner_comment: fav.control.value.trim() || null,
         };
+        if (cuisine) body.cuisine = cuisine.control.value.trim().toLowerCase() || null;
         const res = await api.editPoi(pid, p.id, body);
         Object.assign(p, body, { status: res.status });
         modal.close();

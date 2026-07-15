@@ -361,7 +361,7 @@ def list_pois(conn, property_id: str, status: str | None) -> list[dict]:
     q = ("SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name, "
          "c.icon AS category_icon, c.map_color, "
          "p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon, "
-         "p.address, p.phone, p.website, p.opening_hours, p.description_md, "
+         "p.address, p.phone, p.website, p.opening_hours, p.cuisine, p.description_md, "
          "p.owner_comment, p.price_level, "
          "p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min, "
          "p.source, p.source_ref, p.status, p.fetched_at "
@@ -450,7 +450,7 @@ def set_poi_status(conn, property_id: str, poi_id: str, status: str) -> dict | N
 
 
 _POI_EDITABLE = ("name", "address", "phone", "website", "opening_hours",
-                 "description_md", "owner_comment")
+                 "cuisine", "description_md", "owner_comment")
 
 
 def edit_poi(conn, property_id: str, poi_id: str, fields: dict) -> dict | None:
@@ -579,14 +579,16 @@ def guide_pois(conn, property_id: str) -> list[dict]:
         """SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name,
                   c.icon AS category_icon, c.map_color,
                   p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon,
-                  p.address, p.phone, p.website, p.opening_hours,
+                  p.address, p.phone, p.website, p.opening_hours, p.cuisine,
                   p.description_md, p.owner_comment, p.price_level,
                   p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min,
                   p.status
            FROM pois p
            JOIN poi_categories c ON c.code = p.category_code
            WHERE p.property_id = %s AND p.status IN ('approved', 'edited')
-           ORDER BY p.category_code, p.dist_walk_m NULLS LAST, p.name""",
+           ORDER BY p.category_code,
+                    (p.owner_comment IS NOT NULL AND p.owner_comment <> '') DESC,
+                    p.dist_walk_m NULLS LAST, p.name""",
         (property_id,),
     ).fetchall()
 

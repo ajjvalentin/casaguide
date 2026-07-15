@@ -49,7 +49,8 @@ OVERPASS_BY_CATEGORY = {
     "restaurant": [
         {"type": "node", "id": 333, "lat": 37.9290, "lon": -0.7470,
          "tags": {"name": "La Marejada", "amenity": "restaurant",
-                  "website": "https://lamarejada.example"}},
+                  "website": "https://lamarejada.example",
+                  "cuisine": "Seafood;spanish"}},  # M-16 : multi-valué à normaliser
     ],
 }
 
@@ -179,6 +180,8 @@ def test_full_pipeline(property_id, http_client):
         # Description IA appliquée au restaurant uniquement
         resto = next(p for p in pois if p["name"] == "La Marejada")
         assert "arroces" in resto["description_md"]
+        # Cuisine récoltée et normalisée (premier terme, minuscules) — M-16
+        assert resto["cuisine"] == "seafood"
 
         # area_facts : 3 lignes mutualisées ES / Orihuela Costa
         n = conn.execute("""SELECT count(*) n FROM area_facts

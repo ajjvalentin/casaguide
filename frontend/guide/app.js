@@ -78,6 +78,27 @@ function initChips() {
   }));
 }
 
+// ── Filtre par cuisine (restaurants, M-16) ───────────────────────────────────
+// Les puces sont rendues côté serveur depuis les cuisines réellement présentes ;
+// ici on ne fait que masquer/afficher les cartes concernées, sans rechargement.
+function initCuisineFilter() {
+  document.querySelectorAll(".cuisines[data-cat]").forEach((bar) => {
+    const group = bar.nextElementSibling && bar.nextElementSibling.classList.contains("poi-group")
+      ? bar.nextElementSibling
+      : bar.parentElement.querySelector('.poi-group[data-cat="restaurant"]');
+    if (!group) return;
+    const chips = [...bar.querySelectorAll(".cchip")];
+    chips.forEach((chip) => chip.addEventListener("click", () => {
+      chips.forEach((c) => c.classList.remove("on"));
+      chip.classList.add("on");
+      const cui = chip.dataset.cuisine || "";
+      group.querySelectorAll(".poi-card").forEach((card) => {
+        card.style.display = (!cui || card.dataset.cuisine === cui) ? "" : "none";
+      });
+    }));
+  });
+}
+
 // ── Visionneuse plein écran ──────────────────────────────────────────────────
 function initLightbox() {
   const figures = [...document.querySelectorAll(".gphoto")];
@@ -223,6 +244,7 @@ function escapeHtml(s) {
 initLang();
 initMap();
 initChips();
+initCuisineFilter();
 initLightbox();
 initSecrets();
 initPwa();
