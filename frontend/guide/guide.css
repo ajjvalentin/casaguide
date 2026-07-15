@@ -147,6 +147,13 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .fnote{color:var(--muted);font-size:13px}
 .quiet{display:inline-block;background:#EAF3F6;color:var(--sea);border-radius:8px;padding:2px 10px;font-weight:600;margin-top:8px}
 
+/* Encart sobre d'un fait local rendu DANS sa section (M-17) : couleur sable
+   discrète, sans encadré fort, pour rester subordonné aux champs du propriétaire. */
+.sec-facts{margin-top:12px}
+.sec-facts .facts{background:var(--sand);border-color:var(--line);margin-bottom:8px;padding:12px 14px}
+.sec-facts .facts:last-child{margin-bottom:0}
+.sec-facts .facts .tt{font-size:14px;letter-spacing:.02em}
+
 footer{margin-top:38px;font-size:12px;color:var(--muted);text-align:center}
 
 /* ── Visionneuse plein écran (lightbox) ──────────────────────────────────── */

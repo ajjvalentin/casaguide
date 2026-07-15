@@ -285,7 +285,7 @@ def _render_contact(contact: dict, lang: str = "fr") -> str:
 # ── Section complète ─────────────────────────────────────────────────────────
 
 def _render_section(sec: dict, contact: dict, tourism_license: str | None,
-                    lang: str = "fr") -> str:
+                    area_facts: dict | None = None, lang: str = "fr") -> str:
     schema = sec.get("field_schema") or {}
     content = sec.get("content") or {}
     title = _esc(_i18n(sec.get("name_i18n"), lang, sec.get("code", "")))
@@ -298,6 +298,14 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
     body_html = _md_to_html(sec.get("body_md"))
     if body_html:
         parts.append(f'<div class="prose">{body_html}</div>')
+
+    # Faits locaux déclarés par la section (M-17) : tri, bruit… rendus sous les
+    # champs du propriétaire, dans un encart sobre. Les numéros utiles restent
+    # dans le bloc de fin de guide (jamais ici).
+    facts_html = _render_section_facts(schema.get("area_facts"),
+                                       area_facts or {}, lang)
+    if facts_html:
+        parts.append(f'<div class="sec-facts">{facts_html}</div>')
 
     # Coordonnées de contact (section D_contact) et licence (section I_license)
     if schema.get("uses_property_contact"):
@@ -370,41 +378,69 @@ def _render_sos(area_facts: dict) -> str:
     return f'<div class="sos">{"".join(cells)}</div>'
 
 
-# ── Bloc « Bon à savoir sur place » (area_facts) ─────────────────────────────
+# ── Faits locaux (area_facts) rendus à leur place (M-17) ─────────────────────
+# Chaque area_fact est rendu DANS la section qui le déclare (field_schema.
+# area_facts) — waste_rules → C_trash, noise_rules → B_house_rules — sous les
+# champs du propriétaire, dans un encart sobre. Seuls les numéros utiles restent
+# regroupés dans un bloc de fin de guide (ils ne relèvent d'aucune section
+# éditée par le propriétaire). Le contenu est généré en français par le pipeline ;
+# seuls les intitulés de rubrique sont localisés (traduction du contenu : V2).
 
-def _render_area_facts(area_facts: dict, chapter_color: str, lang: str = "fr") -> str:
-    # NB : le contenu d'area_facts est généré en français par le pipeline ; seuls
-    # les intitulés de rubrique sont localisés (traduction du contenu : V2).
-    parts: list[str] = []
-    waste = area_facts.get("waste_rules")
-    if waste:
-        containers = "".join(
-            f'<li><b>{_esc(c.get("color_or_type", ""))}</b> — {_esc(c.get("accepts", ""))}</li>'
-            for c in (waste.get("containers") or []))
-        parts.append(
-            f'<div class="facts"><b class="tt">{_t(lang, "waste")}</b>'
+def _fact_waste(waste: dict, lang: str) -> str:
+    """Encart « tri des déchets » (couleurs de conteneurs) rendu dans C_trash."""
+    if not waste:
+        return ""
+    containers = "".join(
+        f'<li><b>{_esc(c.get("color_or_type", ""))}</b> — {_esc(c.get("accepts", ""))}</li>'
+        for c in (waste.get("containers") or []))
+    return (f'<div class="facts"><b class="tt">{_t(lang, "waste")}</b>'
             f'<p>{_esc(waste.get("summary", ""))}</p>'
             f'{f"<ul>{containers}</ul>" if containers else ""}</div>')
-    noise = area_facts.get("noise_rules")
-    if noise:
-        quiet = noise.get("quiet_hours")
-        parts.append(
-            f'<div class="facts"><b class="tt">{_t(lang, "noise")}</b>'
+
+
+def _fact_noise(noise: dict, lang: str) -> str:
+    """Encart « tranquillité du voisinage » (heures de silence) → B_house_rules."""
+    if not noise:
+        return ""
+    quiet = noise.get("quiet_hours")
+    return (f'<div class="facts"><b class="tt">{_t(lang, "noise")}</b>'
             f'<p>{_esc(noise.get("summary", ""))}</p>'
             f'{f"<span class=quiet>🌙 {_esc(quiet)}</span>" if quiet else ""}</div>')
+
+
+# Renderers d'encart par type de fait, adossés à une section (M-17). Les
+# `emergency_numbers` n'y figurent PAS : ils restent dans le bloc de fin de guide.
+_FACT_INLINE = {"waste_rules": _fact_waste, "noise_rules": _fact_noise}
+
+
+def _render_section_facts(area_facts_declared: list, area_facts: dict,
+                          lang: str) -> str:
+    """Encarts des area_facts déclarés par une section (M-17), dans l'ordre du
+    field_schema. `emergency_numbers` est ignoré ici (bloc de fin de guide)."""
+    out: list[str] = []
+    for key in area_facts_declared or []:
+        render = _FACT_INLINE.get(key)
+        if render:
+            html_ = render(area_facts.get(key) or {}, lang)
+            if html_:
+                out.append(html_)
+    return "".join(out)
+
+
+def _render_numbers(area_facts: dict, chapter_color: str, lang: str = "fr") -> str:
+    """Bloc de fin de guide (M-17) : UNIQUEMENT la liste complète des numéros
+    utiles. Les autres faits (tri, bruit) sont désormais dans leur section."""
     emerg = area_facts.get("emergency_numbers")
-    if emerg and emerg.get("items"):
-        nums = "".join(f'<li><b>{_esc(str(i.get("number", "")))}</b> — {_esc(i.get("label", ""))}</li>'
-                       for i in emerg["items"])
-        notes = emerg.get("notes")
-        parts.append(
-            f'<div class="facts"><b class="tt">{_t(lang, "numbers")}</b>'
-            f'<ul>{nums}</ul>{f"<p class=fnote>{_esc(notes)}</p>" if notes else ""}</div>')
-    if not parts:
+    if not emerg or not emerg.get("items"):
         return ""
+    nums = "".join(f'<li><b>{_esc(str(i.get("number", "")))}</b> — {_esc(i.get("label", ""))}</li>'
+                   for i in emerg["items"])
+    notes = emerg.get("notes")
+    card = (f'<div class="facts"><b class="tt">{_t(lang, "numbers")}</b>'
+            f'<ul>{nums}</ul>{f"<p class=fnote>{_esc(notes)}</p>" if notes else ""}</div>')
     return (f'<section class="chapter"><h2>{_t(lang, "good_to_know")}</h2>'
             f'<div class="chapline" style="background:{chapter_color}"></div>'
-            f'{"".join(parts)}</section>')
+            f'{card}</section>')
 
 
 # ── Sélecteur de langue (M-09) : liens ?lang=xx, rendu côté serveur ──────────
@@ -470,7 +506,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
         ch_color = _CHAPTER_COLORS[ch]
         inner: list[str] = []
         for sec in [s for s in sections if s["chapter"] == ch]:
-            inner.append(_render_section(sec, contact, prop.get("tourism_license"), lang))
+            inner.append(_render_section(sec, contact, prop.get("tourism_license"),
+                                         area_facts, lang))
         inner.append(_render_pois([p for p in pois if p["chapter"] == ch], lang))
         body.append(
             f'<section class="chapter" data-chapter="{ch}">'
@@ -478,7 +515,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
             f'<div class="chapline" style="background:{ch_color}"></div>'
             f'{"".join(x for x in inner if x)}</section>')
 
-    body.append(_render_area_facts(area_facts, _CHAPTER_COLORS["I"], lang))
+    body.append(_render_numbers(area_facts, _CHAPTER_COLORS["I"], lang))
 
     sos = _render_sos(area_facts)
     default_lang = prop.get("default_lang") or "fr"

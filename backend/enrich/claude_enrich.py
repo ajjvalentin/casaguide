@@ -31,12 +31,29 @@ markdown ni commentaire, avec exactement ces clés :
   "noise_rules": {{"summary": "...", "quiet_hours": "..."}}
 }}
 
-Contraintes :
-- Numéros d'urgence RÉELLEMENT en vigueur dans ce pays (112 européen inclus).
-- Règles de tri usuelles de ce pays/région (couleurs de conteneurs locales).
-- Réglementation bruit typique de la commune ou, à défaut, du pays.
-- Textes courts, factuels, en français. Si une information est incertaine,
-  indique-le dans le champ concerné plutôt que d'inventer.
+OBJECTIF : uniquement l'ESSENTIEL ACTIONNABLE pour un vacancier qui arrive et
+doit se débrouiller seul — rien d'autre. Un touriste, pas un administré.
+
+Contraintes de CONTENU :
+- emergency_numbers : numéros RÉELLEMENT en vigueur dans ce pays (112 européen
+  inclus), avec un libellé court. `notes` : une précision utile seulement si elle
+  aide à composer le bon numéro, sinon "".
+- waste_rules : pour CHAQUE conteneur, sa couleur (ou son type) et, en une poignée
+  de mots, CE QU'ON Y MET (« emballages plastique et métal », « verre », « papier
+  et carton », « déchets restants »). `summary` : une phrase pratique maximum
+  (ex. jour de sortie des ordures si typique), sinon "".
+- noise_rules : `quiet_hours` = la plage horaire de silence (ex. « 23h00–08h00 »)
+  et rien d'autre dans ce champ ; `summary` : une phrase pratique maximum.
+
+INTERDICTIONS STRICTES (à ne jamais écrire) :
+- Aucun contexte administratif ni juridique : pas de « la commune applique le
+  système… », pas de nom de loi, d'ordonnance, d'organisme, de dispositif ni de
+  société de collecte.
+- Aucune généralité, mise en garde, considération environnementale ou
+  pédagogique (« il est important de trier », « respectez le voisinage »…).
+- Pas de phrase de remplissage : si tu n'as rien d'actionnable et de fiable pour
+  un champ texte, mets une chaîne vide ("") plutôt que de meubler.
+- Textes courts, factuels, impératifs, en français. N'invente jamais.
 """
 
 _POI_PROMPT = """\

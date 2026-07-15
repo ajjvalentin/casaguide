@@ -281,6 +281,24 @@ Docker** : Caddy (frontal :80/:443) → uvicorn `127.0.0.1:8000` (systemd
   comptent **que** les sections `guest` (les staff ont leur propre décompte).
   Toute requête publique voyageur (`guide_sections`/`guide_media`/`get_public_media`)
   filtre `audience='guest'` — voir invariant 7.
+- Area facts à leur place (M-17) : chaque `area_fact` est rendu **dans la section
+  qui le déclare** via `field_schema.area_facts` (`guide_page._FACT_INLINE` :
+  `waste_rules`→`C_trash`, `noise_rules`→`B_house_rules`), sous les champs du
+  propriétaire, dans un encart sobre (`.sec-facts`). Le bloc de fin de guide
+  (`_render_numbers`) ne garde **que** les `emergency_numbers` (liste complète).
+  Conséquence à connaître : un fait n'apparaît que si sa **section hôte est
+  visible** (les sections invisibles ne sont pas rendues) — `C_trash` /
+  `B_house_rules` sont visibles par défaut au seed. Toute nouvelle association
+  fait→section passe par l'ajout d'un renderer à `_FACT_INLINE` **et** de la clé
+  dans `field_schema.area_facts` du seed.
+- Régénérer des `area_facts` déjà en base (M-17, prompt resserré) : les faits sont
+  **mutualisés** par `(country_code, admin_area)` et sautés par le pipeline tant
+  qu'ils sont frais (`db.area_facts_fresh`, < 180 j). Pour forcer une régénération
+  avec le nouveau prompt : `DELETE FROM area_facts WHERE country_code = 'ES' AND
+  admin_area = 'Orihuela Costa';` (ou `admin_area IS NULL` pour le national), puis
+  relancer un enrichissement (`POST /api/properties/{id}/enrich` ou
+  `python -m enrich.pipeline --property-id <uuid>`) — l'étape 4a les régénère.
+  Les faits laissés en base restent tels quels (aucune migration de contenu).
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 
