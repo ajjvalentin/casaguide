@@ -184,6 +184,78 @@ def test_owner_favourites_lead_their_category():
     assert "❤ Notre préféré !" in html
 
 
+# ── M-14 : itinéraires « en un tap » dans A_arrival ──────────────────────────
+
+_ARRIVAL_SCHEMA = {
+    "fields": [{"key": "from_airport", "type": "textarea",
+                "label": {"fr": "Depuis l'aéroport"}}],
+    "poi_categories": ["airport", "train_station"],
+}
+
+
+def _airport(name="Aéroport d'Alicante", lat=38.2822, lon=-0.5581, drive=35):
+    return {"id": name, "category_code": "airport", "chapter": "A",
+            "category_name": {"fr": "Aéroports"}, "map_color": "#546E7A",
+            "name": name, "lat": lat, "lon": lon, "cuisine": None,
+            "walk_min": None, "dist_walk_m": None, "drive_min": drive,
+            "owner_comment": None, "description_md": None, "opening_hours": None,
+            "phone": None, "website": None}
+
+
+def test_arrival_renders_itinerary_blocks_with_correct_urls():
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA,
+                         content={"from_airport": "Prenez la N-332 vers le sud."},
+                         name={"fr": "Venir depuis l'aéroport"})]
+    html = guide_page.render_guide(_prop(lat=37.928, lon=-0.748),
+                                   sections, [_airport()], {}, "tok")
+
+    # Bloc de trajet présent, avec durée en voiture.
+    assert '<div class="transport"' in html and '<div class="trip">' in html
+    assert "Aéroport d'Alicante" in html
+    assert "35 min en voiture" in html
+
+    # Google Maps : origine = aéroport, destination = logement (pré-rempli).
+    assert ("https://www.google.com/maps/dir/?api=1&origin=38.2822,-0.5581"
+            "&destination=37.928,-0.748") in html
+    # Waze : navigation vers le logement.
+    assert "https://waze.com/ul?ll=37.928,-0.748&navigate=yes" in html
+
+    # Le texte libre du propriétaire reste affiché, EN COMPLÉMENT (après le bloc).
+    assert "Prenez la N-332 vers le sud." in html
+    assert html.index('<div class="transport"') < html.index("Prenez la N-332")
+
+    # L'aéroport n'est PAS aussi rendu en carte POI ordinaire (pas de doublon).
+    assert 'class="poi-card"' not in html
+    assert "Aéroports ·" not in html   # pas de titre de catégorie POI
+
+
+def test_itinerary_labels_localised_es():
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
+    html = guide_page.render_guide(_prop(), sections, [_airport()], {}, "tok",
+                                   lang="es")
+    assert "35 min en coche" in html          # durée localisée
+    assert 'aria-label="Cómo llegar al alojamiento"' in html
+
+
+def test_train_station_also_gets_itinerary_block():
+    station = _airport("Gare de Torrevieja")
+    station["category_code"] = "train_station"
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
+    html = guide_page.render_guide(_prop(), sections, [station], {}, "tok")
+    assert "Gare de Torrevieja" in html and '<div class="trip">' in html
+
+
+def test_transport_falls_back_to_poi_card_when_arrival_section_hidden():
+    """Sans section hôte visible, les aéroports restent des cartes POI (repli :
+    jamais de perte d'information)."""
+    # Aucune section A_arrival dans les sections visibles.
+    sections = [_section("A_checkin", "A", {"fields": []})]
+    html = guide_page.render_guide(_prop(), sections, [_airport()], {}, "tok")
+    assert '<div class="trip">' not in html
+    assert 'class="poi-card"' in html          # rendu en carte POI ordinaire
+    assert "Aéroports ·" in html               # avec son titre de catégorie
+
+
 # ── M-17 : le prompt de génération est resserré (on vérifie les CONSIGNES) ───
 
 def test_area_prompt_forbids_administrative_context_and_generalities():

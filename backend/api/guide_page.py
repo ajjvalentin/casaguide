@@ -34,6 +34,11 @@ _CHAPTER_COLORS: dict[str, str] = {
 }
 _CHAPTER_ORDER = ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
 
+# Catégories « point de départ du trajet » : rendues comme blocs d'itinéraire
+# « en un tap » dans la section qui les déclare (A_arrival), et non en cartes
+# POI ordinaires (M-14).
+_TRANSPORT_CATEGORIES = {"airport", "train_station"}
+
 # Noms de chapitre localisés (M-09). Le français reste la source/repli.
 _CHAPTER_NAMES: dict[str, dict[str, str]] = {
     "fr": {"A": "Arrivée & départ", "B": "Le logement", "C": "Vie pratique",
@@ -74,6 +79,7 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Tranquillité du voisinage", "numbers": "Tous les numéros utiles",
         "filter": "Filtrer par thème", "lang": "Langue",
         "cuisine_filter": "Filtrer par cuisine",
+        "nav_to_home": "Itinéraire vers le logement", "open_in": "Ouvrir dans",
         "title_suffix": "Guide du logement", "home": "Votre logement",
         "footer": "Guide propulsé par CasaGuide — données OpenStreetMap. Bon séjour !",
     },
@@ -88,6 +94,7 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Neighbourhood quiet", "numbers": "All useful numbers",
         "filter": "Filter by theme", "lang": "Language",
         "cuisine_filter": "Filter by cuisine",
+        "nav_to_home": "Directions to the property", "open_in": "Open in",
         "title_suffix": "Property guide", "home": "Your accommodation",
         "footer": "Guide powered by CasaGuide — OpenStreetMap data. Enjoy your stay!",
     },
@@ -102,6 +109,7 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Tranquilidad del vecindario", "numbers": "Todos los números útiles",
         "filter": "Filtrar por tema", "lang": "Idioma",
         "cuisine_filter": "Filtrar por cocina",
+        "nav_to_home": "Cómo llegar al alojamiento", "open_in": "Abrir en",
         "title_suffix": "Guía del alojamiento", "home": "Tu alojamiento",
         "footer": "Guía con tecnología de CasaGuide — datos de OpenStreetMap. ¡Feliz estancia!",
     },
@@ -332,14 +340,66 @@ def _render_contact(contact: dict, lang: str = "fr") -> str:
     return f'<div class="contact-card">{who}<div class="cbtns">{"".join(btns)}</div></div>'
 
 
+# ── Itinéraires « en un tap » (M-14) : aéroport / gare → logement ────────────
+# Rendus DANS la section qui déclare ces catégories (A_arrival), au-dessus du
+# texte libre du propriétaire (qui reste affiché en complément). Deux boutons par
+# POI : Google Maps (trajet aéroport→logement pré-rempli) et Waze (navigation
+# vers le logement). Zéro saisie : tout dérive de la géométrie du logement et des
+# POI approuvés/édités. Aucun appel externe au rendu (invariant 4).
+
+def _latlon(lat: Any, lon: Any) -> str:
+    """Couple « lat,lon » pour une URL de navigation (jamais de virgule décimale)."""
+    return f"{lat},{lon}"
+
+
+def _render_transport(pois: list[dict], home_lat: Any, home_lon: Any,
+                      lang: str = "fr") -> str:
+    if not pois or home_lat is None or home_lon is None:
+        return ""
+    home = _latlon(home_lat, home_lon)
+    waze = f"https://waze.com/ul?ll={home}&navigate=yes"
+    trips: list[str] = []
+    for p in pois:
+        name = _esc(p["name"])
+        drive = p.get("drive_min")
+        dur = (f'<span class="trip-dur">{_esc(str(drive))} {_esc(_t(lang, "drive"))}</span>'
+               if drive is not None else "")
+        btns: list[str] = []
+        # Google Maps : itinéraire aéroport/gare → logement (origine pré-remplie).
+        if p.get("lat") is not None and p.get("lon") is not None:
+            gmaps = (f"https://www.google.com/maps/dir/?api=1&origin={_latlon(p['lat'], p['lon'])}"
+                     f"&destination={home}")
+        else:  # sans coordonnées du POI, on laisse Google demander l'origine
+            gmaps = f"https://www.google.com/maps/dir/?api=1&destination={home}"
+        btns.append(f'<a class="trip-btn gmaps" href="{gmaps}" target="_blank" '
+                    f'rel="noopener">Google Maps</a>')
+        # Waze : navigation directe vers le logement.
+        btns.append(f'<a class="trip-btn waze" href="{waze}" target="_blank" '
+                    f'rel="noopener">Waze</a>')
+        trips.append(
+            f'<div class="trip"><div class="trip-head"><b>{name}</b>{dur}</div>'
+            f'<div class="trip-btns">{"".join(btns)}</div></div>')
+    return (f'<div class="transport" aria-label="{_esc(_t(lang, "nav_to_home"))}">'
+            f'{"".join(trips)}</div>')
+
+
 # ── Section complète ─────────────────────────────────────────────────────────
 
 def _render_section(sec: dict, contact: dict, tourism_license: str | None,
-                    area_facts: dict | None = None, lang: str = "fr") -> str:
+                    area_facts: dict | None = None, transport: dict | None = None,
+                    lang: str = "fr") -> str:
     schema = sec.get("field_schema") or {}
     content = sec.get("content") or {}
     title = _esc(_i18n(sec.get("name_i18n"), lang, sec.get("code", "")))
     parts: list[str] = [f"<h3>{title}</h3>"]
+
+    # Itinéraires « en un tap » (M-14) : si la section déclare airport/train_station,
+    # les blocs de trajet sont rendus en tête (le texte libre du propriétaire suit).
+    if transport and (set(schema.get("poi_categories") or []) & _TRANSPORT_CATEGORIES):
+        trans_html = _render_transport(transport.get("pois") or [],
+                                       transport.get("lat"), transport.get("lon"), lang)
+        if trans_html:
+            parts.append(trans_html)
 
     fields_html = _render_fields(schema, content, lang)
     if fields_html:
@@ -584,6 +644,17 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
         if ch in present:
             chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(_chapter_name(ch, lang))}</button>')
 
+    # Itinéraires « en un tap » (M-14) : les POI aéroport/gare sont rendus comme
+    # blocs de trajet DANS la section A_arrival (si elle est visible), et donc
+    # retirés de la liste POI ordinaire. Si aucune section hôte n'est visible, on
+    # les laisse en cartes POI classiques (repli — jamais de perte d'information).
+    transport_pois = [p for p in pois if p["category_code"] in _TRANSPORT_CATEGORIES]
+    host_visible = any(set((s.get("field_schema") or {}).get("poi_categories") or [])
+                       & _TRANSPORT_CATEGORIES for s in sections)
+    transport_ctx = ({"pois": transport_pois, "lat": prop.get("lat"),
+                      "lon": prop.get("lon")}
+                     if transport_pois and host_visible else None)
+
     # Corps : un bloc par chapitre (sections visibles + POI du chapitre)
     body: list[str] = []
     for ch in _CHAPTER_ORDER:
@@ -593,8 +664,12 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
         inner: list[str] = []
         for sec in [s for s in sections if s["chapter"] == ch]:
             inner.append(_render_section(sec, contact, prop.get("tourism_license"),
-                                         area_facts, lang))
-        inner.append(_render_pois([p for p in pois if p["chapter"] == ch], lang))
+                                         area_facts, transport_ctx, lang))
+        chapter_pois = [p for p in pois if p["chapter"] == ch]
+        if transport_ctx:  # trajets rendus dans A_arrival → hors liste POI ordinaire
+            chapter_pois = [p for p in chapter_pois
+                            if p["category_code"] not in _TRANSPORT_CATEGORIES]
+        inner.append(_render_pois(chapter_pois, lang))
         body.append(
             f'<section class="chapter" data-chapter="{ch}">'
             f'<h2>{_esc(_chapter_name(ch, lang))}</h2>'

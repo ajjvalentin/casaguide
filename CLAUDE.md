@@ -293,6 +293,17 @@ Docker** : Caddy (frontal :80/:443) → uvicorn `127.0.0.1:8000` (systemd
   `B_house_rules` sont visibles par défaut au seed. Toute nouvelle association
   fait→section passe par l'ajout d'un renderer à `_FACT_INLINE` **et** de la clé
   dans `field_schema.area_facts` du seed.
+- Itinéraires en un tap (M-14) : les POI `airport`/`train_station`
+  (`_TRANSPORT_CATEGORIES`) sont rendus comme **blocs de trajet** dans la section
+  qui les déclare (`field_schema.poi_categories` — `A_arrival`), via
+  `guide_page._render_transport` : bouton Google Maps (`/maps/dir/?api=1&origin=
+  <lat,lon aéroport>&destination=<lat,lon logement>`) et Waze (`waze.com/ul?ll=
+  <lat,lon logement>&navigate=yes`). Le texte libre du propriétaire reste affiché
+  **sous** les blocs (en complément). Pour éviter le doublon, ces POI sont
+  **retirés** de la liste POI ordinaire du chapitre — **sauf** si aucune section
+  hôte n'est visible (repli en cartes POI classiques, jamais de perte). Tout
+  dérive de `properties.geom` + POI approuvés/édités : zéro saisie, zéro appel
+  externe au rendu (invariant 4).
 - Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
   _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
   en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`

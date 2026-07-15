@@ -148,6 +148,18 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .meta{margin-top:6px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap}
 .meta a{color:var(--sea);font-weight:500}
 
+/* ── Itinéraires « en un tap » (M-14) : aéroport / gare → logement ───────── */
+.transport{display:flex;flex-direction:column;gap:8px;margin:4px 0 14px}
+.trip{background:var(--sand);border:1px solid var(--line);border-radius:12px;padding:11px 13px}
+.trip-head{display:flex;align-items:baseline;justify-content:space-between;gap:6px 10px;flex-wrap:wrap}
+.trip-head b{font-size:14.5px;font-weight:600;flex:1 1 auto;min-width:0}
+.trip-dur{font-size:12.5px;color:var(--muted);white-space:nowrap;flex:none}
+.trip-btns{display:flex;gap:8px;margin-top:9px;flex-wrap:wrap}
+.trip-btn{flex:1 1 0;min-width:120px;text-align:center;border-radius:9px;padding:9px 12px;
+          font-weight:600;font-size:13.5px;color:#fff;text-decoration:none}
+.trip-btn.gmaps{background:#1A73E8}   /* bleu Google Maps */
+.trip-btn.waze{background:#33CCFF;color:#0A2540}  /* cyan Waze */
+
 /* ── area_facts ──────────────────────────────────────────────────────────── */
 .facts{background:var(--shell);border:1px solid var(--line);border-radius:12px;padding:15px 17px;margin-bottom:9px;font-size:14px}
 .facts .tt{font-family:Fraunces,serif;font-size:17px;font-weight:600}
