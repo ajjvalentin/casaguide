@@ -41,6 +41,14 @@ export async function renderPois(view, pid) {
   let filter = pois.some((p) => p.status === "suggested") ? "suggested" : "all";
   const markers = new Map();
   const cardsById = new Map();
+  // Actions réversibles (M-23) : POI récemment approuvé/rejeté → id → {prev, action, timer}.
+  // La carte reste visible et grisée ~5 s avec un bandeau « Annuler » avant de quitter la vue.
+  const justActed = new Map();
+  const UNDO_MS = 5000;
+  function clearJustActed() {
+    for (const info of justActed.values()) clearTimeout(info.timer);
+    justActed.clear();
+  }
 
   const filterBar = el("div", { class: "filters" });
   const listCol = el("div", {});
@@ -110,8 +118,9 @@ export async function renderPois(view, pid) {
     for (const [key, label, pred] of FILTERS) {
       const n = pois.filter(pred).length;
       filterBar.append(el("button", {
-        class: "chip" + (filter === key ? " on" : ""), onClick: () => { filter = key; renderFilters(); renderList(); },
-      }, `${label} · ${n}`));
+        class: "chip" + (filter === key ? " on" : ""),
+        onClick: () => { filter = key; clearJustActed(); renderFilters(); renderList(); },
+      }, label, el("span", { class: "chip-n" }, String(n))));
     }
     refreshIcons();
   }
@@ -120,7 +129,9 @@ export async function renderPois(view, pid) {
   function renderList() {
     clear(listCol); cardsById.clear();
     const pred = FILTERS.find((f) => f[0] === filter)[2];
-    const shown = pois.filter(pred);
+    // Les POI juste arbitrés restent affichés (grisés) le temps de l'annulation,
+    // même si leur nouveau statut ne correspond plus au filtre courant.
+    const shown = pois.filter((p) => pred(p) || justActed.has(p.id));
 
     // Résumé sur la carte
     const nSug = pois.filter((p) => p.status === "suggested").length;
@@ -140,6 +151,17 @@ export async function renderPois(view, pid) {
       return;
     }
     if (!shown.length) {
+      // État vide utile quand « À valider » est vide : orienter vers Retenus (M-23).
+      if (filter === "suggested") {
+        mount(listCol, emptyBlock({
+          icon: "check-check", title: "Aucune suggestion en attente",
+          text: `Tout est traité. Vos ${nKept} lieu(x) retenu(s) sont dans l'onglet « Retenus ».`,
+          action: el("button", { class: "btn btn-primary",
+            onClick: () => { filter = "kept"; clearJustActed(); renderFilters(); renderList(); } },
+            "Voir les lieux retenus"),
+        }));
+        return;
+      }
       mount(listCol, emptyBlock({ icon: "check-check", title: "Rien dans ce filtre",
         text: "Aucun lieu ne correspond à ce filtre pour le moment." }));
       return;
@@ -173,7 +195,25 @@ export async function renderPois(view, pid) {
     refreshIcons();
   }
 
+  function actedCard(p, info) {
+    const label = info.action === "approve" ? "Approuvé" : "Rejeté";
+    const card = el("div", {
+      class: "poi-card is-acted",
+      style: { borderLeftColor: p.map_color || "#0E5A73" },
+    },
+      el("div", { class: "acted-banner" },
+        icon(info.action === "approve" ? "check" : "x", 15),
+        el("span", { class: "acted-lbl" }, `${label} — ${p.name}`),
+        el("span", { class: "spacer" }),
+        el("button", { class: "btn btn-sm btn-ghost", onClick: () => undoAction(p) },
+          icon("undo-2", 15), "Annuler")));
+    cardsById.set(p.id, card);
+    return card;
+  }
+
   function poiCard(p) {
+    const acted = justActed.get(p.id);
+    if (acted) return actedCard(p, acted);
     const d = fmtDist(p);
     const [badgeCls, badgeLbl] = STATUS_BADGE[p.status] || ["", p.status];
     const card = el("div", {
@@ -211,10 +251,31 @@ export async function renderPois(view, pid) {
 
   async function doAction(p, action) {
     try {
+      const prev = p.status;
       const res = action === "approve" ? await api.approvePoi(pid, p.id) : await api.rejectPoi(pid, p.id);
       p.status = res.status;
+      // Réversible : on garde la carte visible (grisée + bandeau Annuler) ~5 s.
+      const existing = justActed.get(p.id);
+      if (existing) clearTimeout(existing.timer);
+      const timer = setTimeout(() => { justActed.delete(p.id); renderList(); }, UNDO_MS);
+      justActed.set(p.id, { prev, action, timer });
       renderFilters(); renderList();
     } catch (err) { toast(err.message || "Action impossible.", "err"); }
+  }
+
+  async function undoAction(p) {
+    const info = justActed.get(p.id);
+    if (!info) return;
+    clearTimeout(info.timer);
+    justActed.delete(p.id);
+    try {
+      const res = await api.setPoiStatus(pid, p.id, info.prev);
+      p.status = res.status;
+      renderFilters(); renderList();
+    } catch (err) {
+      toast(err.message || "Annulation impossible.", "err");
+      renderList();
+    }
   }
 
   async function approveCategory(code, pending) {
@@ -407,7 +468,7 @@ export async function renderPois(view, pid) {
         addMarker(created);
         modal.close();
         toast("Lieu ajouté au guide.", "ok");
-        filter = "kept";
+        filter = "kept"; clearJustActed();
         renderFilters(); renderList();
       } catch (err) {
         toast(err.message || "Ajout impossible.", "err");

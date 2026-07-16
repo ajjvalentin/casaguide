@@ -122,6 +122,7 @@ export const api = {
     request("GET", `/api/properties/${id}/pois` + (status ? `?status=${status}` : "")),
   approvePoi: (id, poi) => request("POST", `/api/properties/${id}/pois/${poi}/approve`),
   rejectPoi:  (id, poi) => request("POST", `/api/properties/${id}/pois/${poi}/reject`),
+  setPoiStatus: (id, poi, status) => request("POST", `/api/properties/${id}/pois/${poi}/status`, { body: { status } }),
   editPoi:    (id, poi, b) => request("PATCH", `/api/properties/${id}/pois/${poi}`, { body: b }),
   // Ajout manuel de lieux (M-22)
   poiCategories: (id) => request("GET", `/api/properties/${id}/pois/categories`),

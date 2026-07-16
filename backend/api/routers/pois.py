@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from .. import repo
 from ..deps import (Conn, DistanceComputer, NominatimSearcher, OwnedProperty,
                     get_distance_computer, get_poi_searcher)
-from ..schemas import PoiCandidateOut, PoiCreateIn, PoiEditIn
+from ..schemas import PoiCandidateOut, PoiCreateIn, PoiEditIn, PoiStatusIn
 
 router = APIRouter(prefix="/api/properties/{property_id}/pois", tags=["pois"])
 
@@ -90,6 +90,14 @@ def approve_poi(poi_id: str, conn: Conn, prop: OwnedProperty):
 def reject_poi(poi_id: str, conn: Conn, prop: OwnedProperty):
     _require_poi(conn, str(prop["id"]), poi_id)
     return repo.set_poi_status(conn, str(prop["id"]), poi_id, "rejected")
+
+
+@router.post("/{poi_id}/status")
+def set_poi_status(poi_id: str, payload: PoiStatusIn, conn: Conn, prop: OwnedProperty):
+    """Positionne le statut d'un POI (annulation réversible d'un Approuver/Rejeter,
+    M-23 : restaure le statut précédent, y compris 'suggested')."""
+    _require_poi(conn, str(prop["id"]), poi_id)
+    return repo.set_poi_status(conn, str(prop["id"]), poi_id, payload.status)
 
 
 @router.patch("/{poi_id}")

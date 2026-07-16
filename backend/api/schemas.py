@@ -171,6 +171,11 @@ class PoiEditIn(BaseModel):
     owner_comment: str | None = None
 
 
+class PoiStatusIn(BaseModel):
+    """Positionne explicitement le statut d'un POI (annulation réversible, M-23)."""
+    status: Literal["suggested", "approved", "edited", "rejected"]
+
+
 class PoiCandidateOut(BaseModel):
     """Candidat renvoyé par la recherche Nominatim (M-22) — jamais persisté tel
     quel : le propriétaire l'édite puis valide via POST /pois."""

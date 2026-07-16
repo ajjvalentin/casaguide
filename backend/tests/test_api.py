@@ -519,6 +519,33 @@ def test_create_manual_poi_computes_distances_shows_in_guide_off_quota(client):
     assert meson["cuisine"] == "seafood" and meson["owner_comment"]
 
 
+def test_undo_restores_previous_poi_status(client):
+    """M-23 : l'annulation d'un Approuver/Rejeter restaure le statut précédent
+    (y compris 'suggested') via POST /pois/{id}/status."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    _enrich_and_wait(client, owner["headers"], pid)
+    poi = client.get(f"/api/properties/{pid}/pois?status=suggested",
+                     headers=owner["headers"]).json()[0]
+    pid_poi = poi["id"]
+
+    # Approuver puis annuler → retour à 'suggested'
+    assert client.post(f"/api/properties/{pid}/pois/{pid_poi}/approve",
+                       headers=owner["headers"]).json()["status"] == "approved"
+    back = client.post(f"/api/properties/{pid}/pois/{pid_poi}/status",
+                       headers=owner["headers"], json={"status": "suggested"})
+    assert back.status_code == 200 and back.json()["status"] == "suggested"
+
+    # Statut invalide → 422 ; POI d'un autre propriétaire → 404
+    assert client.post(f"/api/properties/{pid}/pois/{pid_poi}/status",
+                       headers=owner["headers"], json={"status": "bogus"}).status_code == 422
+    intruder = register(client)
+    assert client.post(f"/api/properties/{pid}/pois/{pid_poi}/status",
+                       headers=intruder["headers"],
+                       json={"status": "suggested"}).status_code == 404
+
+
 def test_create_manual_poi_rejects_unknown_category(client):
     owner = register(client)
     prop = make_property(client, owner["headers"])
