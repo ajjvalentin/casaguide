@@ -125,11 +125,8 @@ VALUES
 
 ('A_arrival', 'A', 5, 'plane-landing',
  '{"fr":"Venir depuis l’aéroport / la gare","en":"From the airport / station","es":"Desde el aeropuerto / la estación"}',
- '{"fr":"Itinéraires recommandés, navettes, ordre de prix d’un taxi."}',
- '{"fields":[
-    {"key":"from_airport","type":"textarea","label":{"fr":"Depuis l’aéroport","en":"From the airport","es":"Desde el aeropuerto"}},
-    {"key":"from_station","type":"textarea","label":{"fr":"Depuis la gare","en":"From the station","es":"Desde la estación"}}
-  ],"poi_categories":["airport","train_station"]}', TRUE, FALSE),
+ '{"fr":"Itinéraires générés automatiquement (GPS, adresse copiable, trajets depuis les aéroports validés). Ajoutez ici vos conseils personnels : péages, sorties, pièges à éviter…"}',
+ '{"poi_categories":["airport","train_station"]}', TRUE, FALSE),
 
 -- ─── B. LE LOGEMENT ─────────────────────────────────────────────────────────
 ('B_wifi', 'B', 110, 'wifi',
