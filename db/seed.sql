@@ -123,7 +123,7 @@ VALUES
     {"key":"details","type":"textarea","label":{"fr":"Détails","en":"Details","es":"Detalles"}}
   ],"poi_categories":["parking"]}', TRUE, FALSE),
 
-('A_arrival', 'A', 60, 'plane-landing',
+('A_arrival', 'A', 5, 'plane-landing',
  '{"fr":"Venir depuis l’aéroport / la gare","en":"From the airport / station","es":"Desde el aeropuerto / la estación"}',
  '{"fr":"Itinéraires recommandés, navettes, ordre de prix d’un taxi."}',
  '{"fields":[
