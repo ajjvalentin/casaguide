@@ -181,22 +181,38 @@ async function initSecrets() {
 }
 
 function fillWifi(slot, sec) {
-  if (!sec.wifi_pass && !sec.wifi_ssid) return;
-  const card = el("div", { class: "secret-card" }, el("div", { class: "sc-title" }, "📶 Connexion Wifi"));
-  if (sec.wifi_ssid) card.appendChild(secretRow("Réseau", sec.wifi_ssid));
-  if (sec.wifi_pass) card.appendChild(secretRow("Mot de passe", sec.wifi_pass, { mono: true }));
+  // Multi-wifi (M-15) : une carte par réseau (nom d'usage, SSID, mot de passe, QR).
+  // Repli si un ancien guide ne renvoie encore que les champs simples.
+  let networks = Array.isArray(sec.wifi_networks) ? sec.wifi_networks : [];
+  if (!networks.length && (sec.wifi_ssid || sec.wifi_pass)) {
+    networks = [{ label: "Wifi", ssid: sec.wifi_ssid, pass: sec.wifi_pass }];
+  }
+  if (!networks.length) return;
+
+  const cards = networks.map((n) => wifiCard(n, networks.length > 1));
+  slot.replaceChildren(...cards.filter(Boolean));
+  slot.hidden = false;
+}
+
+function wifiCard(net, showLabel) {
+  const ssid = net.ssid || "";
+  const pass = net.pass || "";
+  if (!ssid && !pass) return null;
+  const title = showLabel && net.label ? `📶 ${net.label}` : "📶 Connexion Wifi";
+  const card = el("div", { class: "secret-card" }, el("div", { class: "sc-title" }, title));
+  if (ssid) card.appendChild(secretRow("Réseau", ssid));
+  if (pass) card.appendChild(secretRow("Mot de passe", pass, { mono: true }));
 
   // QR de connexion automatique (norme WIFI:…), généré via le module mutualisé
-  if (sec.wifi_ssid && sec.wifi_pass) {
-    const canvas = qrCanvas(wifiPayload(sec.wifi_ssid, sec.wifi_pass),
-      { label: "QR code de connexion Wifi" });
+  if (ssid && pass) {
+    const canvas = qrCanvas(wifiPayload(ssid, pass),
+      { label: `QR de connexion Wifi ${net.label || ""}`.trim() });
     if (canvas) {
       card.appendChild(el("div", { class: "qr-wrap" }, canvas,
         el("div", { class: "qr-cap" }, "Scannez pour vous connecter automatiquement au Wifi.")));
     }
   }
-  slot.replaceChildren(card);
-  slot.hidden = false;
+  return card;
 }
 
 function fillKeybox(slot, sec) {

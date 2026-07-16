@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException, Request,
                      Response, status)
 
-from .. import crypto, poster, repo
+from .. import crypto, poster, repo, wifi
 from ..config import settings
 from ..deps import (
     Conn, CurrentOwner, DistanceComputer, OwnedProperty, TranslationRunner,
@@ -16,7 +16,7 @@ from ..deps import (
 )
 from ..schemas import (
     PropertyIn, PropertyOut, PropertyStatsOut, PropertyUpdate, RecomputeOut,
-    SecretsIn, SecretsOut, SectionUpsertIn,
+    SecretsIn, SecretsOut, SectionUpsertIn, WifiNetworkOut,
 )
 from .enrich import schedule_translation
 
@@ -138,22 +138,51 @@ def guide_poster(request: Request, prop: OwnedProperty,
 
 # ── Données sensibles (chiffrées AES-GCM, invariant 5) ───────────────────────
 
+def _secrets_out(networks: list[dict], keybox_code: str | None,
+                 keybox_notes: str | None) -> SecretsOut:
+    """Vue propriétaire des secrets : liste multi-wifi + champs legacy alimentés
+    depuis le réseau n°1 (rétrocompatibilité, M-15)."""
+    net1 = wifi.first_network(networks)
+    return SecretsOut(
+        wifi_networks=[WifiNetworkOut(label=n["label"], ssid=n["ssid"],
+                                      password=n["pass"]) for n in networks],
+        wifi_ssid=net1["ssid"] if net1 else None,
+        wifi_pass=net1["pass"] if net1 else None,
+        keybox_code=keybox_code, keybox_notes=keybox_notes)
+
+
+def _incoming_networks(payload: SecretsIn) -> list[dict]:
+    """Réseaux entrants normalisés. Rétrocompat : si seuls les anciens champs
+    wifi_ssid/wifi_pass sont fournis, ils forment un réseau unique (n°1)."""
+    if payload.wifi_networks is not None:
+        return wifi.clean_networks(
+            [{"label": n.label, "ssid": n.ssid, "pass": n.password}
+             for n in payload.wifi_networks])
+    if payload.wifi_ssid or payload.wifi_pass:
+        return wifi.clean_networks(
+            [{"label": wifi.DEFAULT_LABEL, "ssid": payload.wifi_ssid,
+              "pass": payload.wifi_pass}])
+    return []
+
+
 @router.put("/{property_id}/secrets", response_model=SecretsOut)
 def set_secrets(payload: SecretsIn, conn: Conn, prop: OwnedProperty):
     if not crypto.is_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Chiffrement non configuré (CASAGUIDE_SECRET_KEY absente)")
+    networks = _incoming_networks(payload)
+    net1 = wifi.first_network(networks)
     repo.upsert_secrets(
         conn, str(prop["id"]),
-        wifi_ssid=payload.wifi_ssid,
-        wifi_pass_enc=crypto.encrypt(payload.wifi_pass) if payload.wifi_pass else None,
+        # Colonnes legacy en miroir du réseau n°1 (rétrocompat, M-15)
+        wifi_ssid=net1["ssid"] if net1 else None,
+        wifi_pass_enc=crypto.encrypt(net1["pass"]) if net1 and net1["pass"] else None,
+        wifi_networks_enc=wifi.encrypt_networks(networks),
         keybox_code_enc=crypto.encrypt(payload.keybox_code) if payload.keybox_code else None,
         keybox_notes=payload.keybox_notes,
     )
-    return SecretsOut(
-        wifi_ssid=payload.wifi_ssid, wifi_pass=payload.wifi_pass,
-        keybox_code=payload.keybox_code, keybox_notes=payload.keybox_notes)
+    return _secrets_out(networks, payload.keybox_code, payload.keybox_notes)
 
 
 @router.get("/{property_id}/secrets", response_model=SecretsOut)
@@ -166,12 +195,9 @@ def get_secrets(conn: Conn, prop: OwnedProperty):
     row = repo.get_secrets(conn, str(prop["id"]))
     if not row:
         return SecretsOut()
-    return SecretsOut(
-        wifi_ssid=row["wifi_ssid"],
-        wifi_pass=crypto.decrypt(row["wifi_pass_enc"]),
-        keybox_code=crypto.decrypt(row["keybox_code_enc"]),
-        keybox_notes=row["keybox_notes"],
-    )
+    return _secrets_out(wifi.networks_from_row(row),
+                        crypto.decrypt(row["keybox_code_enc"]),
+                        row["keybox_notes"])
 
 
 # ── Sections du guide (contenu saisi par le propriétaire) ────────────────────

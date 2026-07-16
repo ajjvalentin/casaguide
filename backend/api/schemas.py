@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -111,7 +111,26 @@ class PropertyOut(BaseModel):
 
 # ── Données sensibles ────────────────────────────────────────────────────────
 
+class WifiNetworkIn(BaseModel):
+    """Un réseau wifi entrant (M-15). Le champ JSON est « pass » (aliasé)."""
+    model_config = ConfigDict(populate_by_name=True)
+    label: str | None = Field(default=None, max_length=80)
+    ssid: str | None = Field(default=None, max_length=200)
+    password: str | None = Field(default=None, alias="pass", max_length=200)
+
+
+class WifiNetworkOut(BaseModel):
+    """Un réseau wifi sortant (M-15). Sérialisé avec la clé « pass »."""
+    model_config = ConfigDict(populate_by_name=True)
+    label: str
+    ssid: str | None = None
+    password: str | None = Field(default=None, alias="pass")
+
+
 class SecretsIn(BaseModel):
+    # Multi-wifi (M-15) : liste de réseaux. Les champs simples wifi_ssid/wifi_pass
+    # restent acceptés (rétrocompat) et sont traités comme un réseau unique.
+    wifi_networks: list[WifiNetworkIn] | None = None
     wifi_ssid: str | None = None
     wifi_pass: str | None = None      # sera chiffré avant stockage
     keybox_code: str | None = None    # sera chiffré avant stockage
@@ -119,7 +138,10 @@ class SecretsIn(BaseModel):
 
 
 class SecretsOut(BaseModel):
-    """Renvoyé uniquement au propriétaire authentifié (jamais au voyageur)."""
+    """Renvoyé uniquement au propriétaire authentifié (jamais au voyageur).
+    Expose la liste multi-wifi (M-15) ET les anciens champs alimentés depuis le
+    réseau n°1 (pour ne rien casser)."""
+    wifi_networks: list[WifiNetworkOut] = []
     wifi_ssid: str | None = None
     wifi_pass: str | None = None
     keybox_code: str | None = None

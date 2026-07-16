@@ -222,8 +222,10 @@ export async function renderEditor(view, pid) {
       });
       if (hasSecrets && secretsAvailable) {
         Object.assign(secrets, secretsPatch);
+        // Multi-wifi (M-15) : on renvoie la liste de réseaux (le PUT remplace
+        // l'objet complet ; on conserve donc l'état des autres secrets en mémoire).
         await api.putSecrets(pid, {
-          wifi_ssid: secrets.wifi_ssid || null, wifi_pass: secrets.wifi_pass || null,
+          wifi_networks: secrets.wifi_networks || [],
           keybox_code: secrets.keybox_code || null, keybox_notes: secrets.keybox_notes || null,
         });
       } else if (hasSecrets && !secretsAvailable) {

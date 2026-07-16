@@ -19,7 +19,7 @@
 // `__ASSET_VERSION__` est remplacé à la volée par le SHA git du déploiement
 // (route /guide/sw.js, M-11) : chaque déploiement change le nom des caches → le
 // SW se réactive et purge les anciens, sans bump manuel en production.
-const VERSION = "casaguide-guide-v8-__ASSET_VERSION__";
+const VERSION = "casaguide-guide-v9-__ASSET_VERSION__";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 

@@ -27,6 +27,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | `db/seed.sql` | 43 sections pré-définies + 27 catégories POI + 3 plans — idempotent, testé |
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
 | `db/migrations/003` | Colonne `cuisine` sur `pois` (type de cuisine, M-16) — idempotent |
+| `db/migrations/004` | Colonne `wifi_networks_enc` sur `property_secrets` (multi-wifi, M-15) — idempotent |
 | `backend/enrich/` | Pipeline d'enrichissement complet — testé (2 tests d'intégration verts) |
 | `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, **traductions (M-09)** : `POST /{id}/translate` (tâche de fond, trigger='translate', hors quota) + `GET /{id}/translation-status`, **guide voyageur (M-08/M-09)** : `GET /g/{token}[?lang=]` sert une **page HTML** localisée (rendu serveur `api/guide_page.py`), `GET /g/{token}/data[?lang=]` le JSON (`charset=utf-8`), `GET /g/{token}/secrets` (wifi/boîte à clés, mode 'link'), `/g/{token}/media/{id}`, `/g/{token}/manifest.webmanifest`, `/guide/sw.js` — testé (51 tests d'intégration/unitaires verts) |
 | `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-06/M-07/M-09/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section** + **aperçu/QR wifi + téléchargement PNG, M-06** + **groupe « Équipe d'entretien » (sections staff) avec lien `/s`, M-13** + **bouton « QR à imprimer » PDF, M-07** + **bouton « Traductions » avec état à jour/périmé, M-09**), validation des POI (carte Leaflet), éditeur de position — servie par FastAPI |
@@ -105,6 +106,7 @@ psql -d casaguide -f db/seed.sql
 psql -d casaguide -f db/migrations/001_pois_unique_source.sql
 psql -d casaguide -f db/migrations/002_staff_cahier.sql   # audience + staff_token (M-13)
 psql -d casaguide -f db/migrations/003_pois_cuisine.sql   # colonne cuisine sur pois (M-16)
+psql -d casaguide -f db/migrations/004_wifi_networks.sql  # wifi_networks_enc (multi-wifi, M-15)
 
 # Backend
 cd backend
@@ -249,12 +251,29 @@ Docker** : Caddy (frontal :80/:443) → uvicorn `127.0.0.1:8000` (systemd
   pour certaines charges wifi, est illisible par OpenCV mais lu par zbar et les
   téléphones). Ne pas « corriger » l'algorithme de qr.js sur la seule foi d'un
   échec OpenCV.
-- QR wifi back-office (M-06) : `frontend/guide/qr.js` est **mutualisé** (exports
-  `qrMatrix`/`qrCanvas`/`wifiPayload`) entre le guide voyageur et l'éditeur
-  (`js/components/wifiqr.js`). Le QR est généré **dans le navigateur** à partir des
-  identifiants déjà chargés (`GET /secrets`, propriétaire) : le mot de passe ne
-  transite par **aucun** autre canal (ni requête, ni serveur). Le PNG à imprimer
-  est produit par `canvas.toDataURL`.
+- QR wifi back-office (M-06/M-15) : `frontend/guide/qr.js` est **mutualisé** (exports
+  `qrMatrix`/`qrCanvas`/`wifiPayload`) entre le guide voyageur et l'éditeur. Le QR
+  est généré **dans le navigateur** à partir des identifiants déjà chargés
+  (`GET /secrets`, propriétaire) : le mot de passe ne transite par **aucun** autre
+  canal (ni requête, ni serveur). Le PNG à imprimer est produit par
+  `canvas.toDataURL`. Depuis M-15, l'éditeur multi-réseaux est
+  `js/components/wifinetworks.js` (un QR + un PNG **par réseau**) ; l'ancien
+  `wifiqr.js` (réseau unique) a été supprimé.
+- Multi-wifi (M-15) : plusieurs réseaux par logement (Maison, Terrasse…). La liste
+  `[{label, ssid, pass}]` est **sérialisée en JSON puis chiffrée en un seul bytea**
+  (`property_secrets.wifi_networks_enc`) via l'AES applicatif (`api/wifi.py` —
+  `encrypt_networks`/`networks_from_row`). Invariant 5 intact : clé hors base,
+  jamais de mot de passe en clair côté serveur ni dans `/data`. **Migration lazy**
+  (impossible en SQL pur, la clé est hors base) : tant que `wifi_networks_enc` est
+  NULL, `networks_from_row` synthétise le **réseau n°1** (label « Wifi ») depuis les
+  colonnes legacy `wifi_ssid`/`wifi_pass_enc` → l'ancien wifi n'a rien à re-saisir.
+  Le `PUT /secrets` accepte `wifi_networks[]` (et encore les anciens champs simples,
+  traités comme réseau unique) ; il écrit `wifi_networks_enc` **et** garde les
+  colonnes legacy en miroir du réseau n°1. `GET /secrets` et `/g/{token}/secrets`
+  (mode 'link') renvoient `wifi_networks[]` **plus** les anciens champs alimentés
+  depuis le réseau n°1 (rétrocompat). Le guide affiche un QR par réseau
+  (`app.js fillWifi` → `wifiCard`). La clé JSON du mot de passe est `pass` (aliasée
+  `password` côté Pydantic — `pass` est un mot-clé Python).
 - Affiche QR imprimable (M-07) : `api/poster.py` (reportlab, QR natif — pas de
   dépendance QR supplémentaire) sert un PDF A5/A4 sur
   `GET /api/properties/{id}/guide-poster.pdf` (réservé au propriétaire via

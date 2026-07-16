@@ -155,25 +155,32 @@ def delete_property(conn, owner_id: str, property_id: str) -> bool:
 # ── Données sensibles (chiffrées) ────────────────────────────────────────────
 
 def upsert_secrets(conn, property_id: str, *, wifi_ssid: str | None,
-                   wifi_pass_enc: bytes | None, keybox_code_enc: bytes | None,
+                   wifi_pass_enc: bytes | None, wifi_networks_enc: bytes | None,
+                   keybox_code_enc: bytes | None,
                    keybox_notes: str | None) -> None:
+    """Écrit les secrets. `wifi_networks_enc` porte la liste multi-réseaux (M-15) ;
+    `wifi_ssid`/`wifi_pass_enc` restent en **miroir du réseau n°1** (rétrocompat)."""
     conn.execute(
         """INSERT INTO property_secrets (property_id, wifi_ssid, wifi_pass_enc,
+                                         wifi_networks_enc,
                                          keybox_code_enc, keybox_notes, updated_at)
-           VALUES (%s, %s, %s, %s, %s, now())
+           VALUES (%s, %s, %s, %s, %s, %s, now())
            ON CONFLICT (property_id) DO UPDATE SET
                wifi_ssid = EXCLUDED.wifi_ssid,
                wifi_pass_enc = EXCLUDED.wifi_pass_enc,
+               wifi_networks_enc = EXCLUDED.wifi_networks_enc,
                keybox_code_enc = EXCLUDED.keybox_code_enc,
                keybox_notes = EXCLUDED.keybox_notes,
                updated_at = now()""",
-        (property_id, wifi_ssid, wifi_pass_enc, keybox_code_enc, keybox_notes),
+        (property_id, wifi_ssid, wifi_pass_enc, wifi_networks_enc,
+         keybox_code_enc, keybox_notes),
     )
 
 
 def get_secrets(conn, property_id: str) -> dict | None:
     return conn.execute(
-        "SELECT wifi_ssid, wifi_pass_enc, keybox_code_enc, keybox_notes "
+        "SELECT wifi_ssid, wifi_pass_enc, wifi_networks_enc, "
+        "keybox_code_enc, keybox_notes "
         "FROM property_secrets WHERE property_id = %s",
         (property_id,),
     ).fetchone()
@@ -638,7 +645,8 @@ def get_published_secrets_by_token(conn, token: str) -> dict | None:
     token est inconnu, le guide non publié, ou le mode d'accès n'est pas 'link'
     (les modes 'pin'/'stay_dates' de la V2 exigeront la saisie d'un code)."""
     return conn.execute(
-        """SELECT s.wifi_ssid, s.wifi_pass_enc, s.keybox_code_enc, s.keybox_notes
+        """SELECT s.wifi_ssid, s.wifi_pass_enc, s.wifi_networks_enc,
+                  s.keybox_code_enc, s.keybox_notes
            FROM properties pr
            JOIN property_secrets s ON s.property_id = pr.id
            WHERE pr.guide_token = %s AND pr.status = 'published'

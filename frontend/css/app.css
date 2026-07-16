@@ -149,6 +149,17 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .wifiqr-foot{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between}
 .wifiqr-foot .help{flex:1;min-width:160px}
 
+/* Réseaux Wifi multiples (M-15) */
+.wifi-nets{margin:10px 0}
+.wifi-net{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:10px;
+          background:#FCFAF6;position:relative}
+.wifi-net .rm{position:absolute;top:8px;right:8px}
+.wifi-net .field{margin-bottom:8px}
+.wifi-net-qr{margin-top:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.wifi-net-qr .wifiqr-canvas{margin:0}
+.wifi-net-qr .wifiqr-canvas canvas{width:118px;height:118px}
+.wifi-net-qr .wifiqr-empty{flex:1;min-width:150px}
+
 /* Groupe répétable */
 .repeat-item{border:1px solid var(--line);border-radius:12px;padding:14px;
              margin-bottom:10px;background:#FCFAF6;position:relative}

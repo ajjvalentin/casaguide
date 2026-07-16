@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import assets, crypto, guide_page, media_files, repo, storage
+from .. import assets, crypto, guide_page, media_files, repo, storage, wifi
 from ..config import settings
 from ..deps import Conn
 
@@ -158,16 +158,21 @@ def public_guide_secrets(guide_token: str, conn: Conn):
     Déchiffrement à la demande — jamais dans la page HTML ni dans `/data`. Renvoie
     un objet vide (jamais 404) si aucun secret, chiffrement non configuré, ou mode
     d'accès non 'link' : le client masque simplement les blocs correspondants."""
-    empty = {"wifi_ssid": None, "wifi_pass": None, "keybox_code": None,
-             "keybox_notes": None}
+    empty = {"wifi_networks": [], "wifi_ssid": None, "wifi_pass": None,
+             "keybox_code": None, "keybox_notes": None}
     if not crypto.is_configured():
         return _json(empty, no_store=True)
     row = repo.get_published_secrets_by_token(conn, guide_token)
     if not row:
         return _json(empty, no_store=True)
+    # Multi-wifi (M-15) : liste déchiffrée + repli legacy sur le réseau n°1. Les
+    # anciens champs restent alimentés depuis le réseau n°1 (rétrocompat app.js).
+    networks = wifi.networks_from_row(row)
+    net1 = wifi.first_network(networks)
     return _json({
-        "wifi_ssid": row["wifi_ssid"],
-        "wifi_pass": crypto.decrypt(row["wifi_pass_enc"]),
+        "wifi_networks": networks,
+        "wifi_ssid": net1["ssid"] if net1 else None,
+        "wifi_pass": net1["pass"] if net1 else None,
         "keybox_code": crypto.decrypt(row["keybox_code_enc"]),
         "keybox_notes": row["keybox_notes"],
     }, no_store=True)

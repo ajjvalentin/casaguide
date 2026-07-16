@@ -101,8 +101,9 @@ CREATE INDEX idx_properties_geom  ON properties USING GIST(geom);
 -- (AES-GCM, clé hors base) avant insertion ; la base ne voit que du bytea.
 CREATE TABLE property_secrets (
     property_id  UUID PRIMARY KEY REFERENCES properties(id) ON DELETE CASCADE,
-    wifi_ssid    TEXT,                             -- non secret
-    wifi_pass_enc BYTEA,                           -- chiffré
+    wifi_ssid    TEXT,                             -- legacy : miroir du réseau n°1 (M-15)
+    wifi_pass_enc BYTEA,                           -- legacy : chiffré, miroir du réseau n°1
+    wifi_networks_enc BYTEA,                       -- liste [{label,ssid,pass}] chiffrée (M-15)
     keybox_code_enc BYTEA,                         -- chiffré
     keybox_notes TEXT,                             -- emplacement, instructions
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()

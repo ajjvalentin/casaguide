@@ -12,18 +12,12 @@
 
 import { el, icon, t, refreshIcons } from "../ui.js";
 import { OPTION_LABELS } from "../constants.js";
-import { buildWifiQrPanel } from "./wifiqr.js";
+import { buildWifiNetworksPanel } from "./wifinetworks.js";
 
 // Regroupements de champs sensibles (le field_schema ne liste que la clé
-// chiffrée ; on y adjoint les champs en clair associés — SSID, notes).
+// chiffrée ; on y adjoint les champs en clair associés — SSID, notes). Le wifi
+// (M-15) est un cas à part : liste multi-réseaux, géré par buildWifiNetworksPanel.
 const SECRET_BLOCKS = {
-  wifi_pass: {
-    title: "Identifiants Wifi",
-    fields: [
-      { key: "wifi_ssid", label: "Nom du réseau (SSID)", type: "text" },
-      { key: "wifi_pass", label: "Mot de passe Wifi", type: "password" },
-    ],
-  },
   keybox_code: {
     title: "Boîte à clés",
     fields: [
@@ -161,31 +155,26 @@ export function buildSectionForm(section, { secrets = {}, propertyId } = {}) {
   }
 
   // Champs sensibles chiffrés
-  const secretGetters = [];
+  const secretGetters = [];          // [clé plate, get] pour keybox
+  let wifiPanel = null;              // panneau multi-wifi (M-15), collecte à part
   for (const sk of schema.secrets || []) {
+    // Wifi (M-15) : liste multi-réseaux avec un QR + PNG par réseau. Généré
+    // localement (module mutualisé), le mot de passe ne transite que par /secrets.
+    if (sk === "wifi_pass") {
+      wifiPanel = buildWifiNetworksPanel({ networks: secrets.wifi_networks || [] });
+      form.append(wifiPanel.node);
+      continue;
+    }
     const block = SECRET_BLOCKS[sk];
     if (!block) continue;
     const box = el("div", { class: "secret-field" }, el("div", { class: "field-label" }, block.title));
-    const controls = {};
     for (const sf of block.fields) {
       const { node, get } = fieldNode({ label: { fr: sf.label }, type: sf.type, key: sf.key }, secrets[sf.key]);
       box.append(node);
       secretGetters.push([sf.key, get]);
-      controls[sf.key] = node.querySelector("input, textarea, select");
     }
     box.append(el("div", { class: "secret-note" }, icon("lock", 13),
       "Chiffré côté serveur, jamais visible par le voyageur."));
-    // Aperçu du QR de connexion Wifi (M-06) — généré localement, mot de passe
-    // jamais transmis ailleurs que par l'endpoint /secrets déjà utilisé.
-    if (sk === "wifi_pass") {
-      const qr = buildWifiQrPanel({
-        getSsid: () => controls.wifi_ssid && controls.wifi_ssid.value,
-        getPass: () => controls.wifi_pass && controls.wifi_pass.value,
-      });
-      box.append(qr.node);
-      controls.wifi_ssid && controls.wifi_ssid.addEventListener("input", qr.refresh);
-      controls.wifi_pass && controls.wifi_pass.addEventListener("input", qr.refresh);
-    }
     form.append(box);
   }
 
@@ -203,13 +192,15 @@ export function buildSectionForm(section, { secrets = {}, propertyId } = {}) {
     for (const rg of repeatGetters) { const arr = rg.get(); if (arr.length) c[rg.key] = arr; }
     const secretsPatch = {};
     for (const [k, g] of secretGetters) secretsPatch[k] = g();
+    if (wifiPanel) secretsPatch.wifi_networks = wifiPanel.collect();   // M-15
     return {
       content: c,
       body_md: bodyTa.value.trim() || null,
-      hasSecrets: secretGetters.length > 0,
+      hasSecrets: secretGetters.length > 0 || wifiPanel != null,
       secretsPatch,
     };
   }
 
-  return { node: form, collect, hasSecrets: (schema.secrets || []).length > 0 };
+  return { node: form, collect,
+           hasSecrets: (schema.secrets || []).length > 0 };
 }

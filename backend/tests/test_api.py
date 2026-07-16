@@ -876,8 +876,8 @@ def test_guide_secrets_only_link_mode(client):
     s2 = client.get(f"/g/{token}/secrets")
     assert s2.status_code == 200
     body = s2.json()
-    assert body == {"wifi_ssid": None, "wifi_pass": None, "keybox_code": None,
-                    "keybox_notes": None}
+    assert body == {"wifi_networks": [], "wifi_ssid": None, "wifi_pass": None,
+                    "keybox_code": None, "keybox_notes": None}
     assert "secret-wifi-xyz" not in s2.text
 
     # Guide non publié : 404 même en mode 'link'
@@ -885,6 +885,96 @@ def test_guide_secrets_only_link_mode(client):
                  json={"access_mode": "link", "status": "draft"})
     # (le token reste valide mais le guide n'est plus publié)
     assert client.get(f"/g/{token}/secrets").json()["wifi_pass"] is None
+
+
+# ── Multi-wifi (M-15) ────────────────────────────────────────────────────────
+
+def test_multi_wifi_roundtrip_encrypted_and_legacy_mirror(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    nets = [{"label": "Maison", "ssid": "Villa-Interieur", "pass": "dedans-2026"},
+            {"label": "Terrasse", "ssid": "Villa-Exterieur", "pass": "dehors-2026"}]
+    r = client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
+                   json={"wifi_networks": nets})
+    assert r.status_code == 200
+    out = r.json()
+    # La liste revient telle quelle (clé « pass »).
+    assert [(n["label"], n["ssid"], n["pass"]) for n in out["wifi_networks"]] == [
+        ("Maison", "Villa-Interieur", "dedans-2026"),
+        ("Terrasse", "Villa-Exterieur", "dehors-2026")]
+    # Champs legacy alimentés depuis le réseau n°1 (rétrocompat).
+    assert out["wifi_ssid"] == "Villa-Interieur" and out["wifi_pass"] == "dedans-2026"
+
+    # GET renvoie la même liste.
+    g = client.get(f"/api/properties/{pid}/secrets", headers=owner["headers"]).json()
+    assert [n["label"] for n in g["wifi_networks"]] == ["Maison", "Terrasse"]
+    assert g["wifi_pass"] == "dedans-2026"
+
+    # Invariant 5 : rien en clair en base (ni pass, ni SSID chiffré via la liste).
+    with psycopg.connect(settings.db_dsn) as conn:
+        row = conn.execute(
+            "SELECT wifi_networks_enc, wifi_pass_enc FROM property_secrets "
+            "WHERE property_id = %s", (pid,)).fetchone()
+    blob = bytes(row[0])
+    assert blob and b"dedans-2026" not in blob and b"dehors-2026" not in blob
+    assert bytes(row[1]) and b"dedans-2026" not in bytes(row[1])
+
+
+def test_legacy_single_wifi_becomes_network_one(client):
+    """Donnée pré-migration (colonnes legacy, wifi_networks_enc NULL) : l'ancien
+    wifi devient le réseau n°1 « Wifi » sans re-saisie (M-15)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    # Simule une ligne écrite AVANT M-15 : seulement les colonnes historiques.
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            "INSERT INTO property_secrets (property_id, wifi_ssid, wifi_pass_enc) "
+            "VALUES (%s, %s, %s)",
+            (pid, "AncienReseau", crypto.encrypt("ancien-mdp-123")))
+        conn.commit()
+
+    g = client.get(f"/api/properties/{pid}/secrets", headers=owner["headers"]).json()
+    assert g["wifi_networks"] == [
+        {"label": "Wifi", "ssid": "AncienReseau", "pass": "ancien-mdp-123"}]
+    assert g["wifi_ssid"] == "AncienReseau" and g["wifi_pass"] == "ancien-mdp-123"
+
+
+def test_backward_compat_single_wifi_fields_still_accepted(client):
+    """Un client qui n'envoie que wifi_ssid/wifi_pass (ancien format) fonctionne :
+    le wifi devient le réseau n°1 (M-15, rétrocompat PUT)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
+               json={"wifi_ssid": "SoloNet", "wifi_pass": "solo-pass"})
+    g = client.get(f"/api/properties/{pid}/secrets", headers=owner["headers"]).json()
+    assert [n["label"] for n in g["wifi_networks"]] == ["Wifi"]
+    assert g["wifi_networks"][0]["ssid"] == "SoloNet"
+    assert g["wifi_pass"] == "solo-pass"
+
+
+def test_guide_public_secrets_expose_wifi_networks(client):
+    """Le guide voyageur (mode 'link') reçoit la liste multi-wifi ; jamais dans /data."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    nets = [{"label": "Maison", "ssid": "In", "pass": "in-pass-99"},
+            {"label": "Jardin", "ssid": "Out", "pass": "out-pass-99"}]
+    client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
+               json={"wifi_networks": nets})
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    s = client.get(f"/g/{token}/secrets").json()
+    assert [(n["label"], n["ssid"], n["pass"]) for n in s["wifi_networks"]] == [
+        ("Maison", "In", "in-pass-99"), ("Jardin", "Out", "out-pass-99")]
+    assert s["wifi_pass"] == "in-pass-99"  # rétrocompat : réseau n°1
+
+    # Jamais dans le JSON public /data ni la page HTML.
+    assert "in-pass-99" not in client.get(f"/g/{token}/data").text
+    assert "out-pass-99" not in client.get(f"/g/{token}").text
 
 
 def test_guide_manifest_is_per_guide(client):
