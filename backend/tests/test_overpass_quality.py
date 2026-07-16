@@ -136,7 +136,7 @@ def test_fetch_grouped_single_request_per_radius_bucket():
 
 
 def test_fetch_grouped_reduces_request_count_on_full_catalogue():
-    """Sur les 25 catégories interrogeables, le regroupement par palier tient
+    """Sur les 26 catégories interrogeables, le regroupement par palier tient
     la promesse « moins de 10 requêtes »."""
     settings.politeness_delay_s = 0
     calls: list[str] = []
@@ -148,11 +148,30 @@ def test_fetch_grouped_reduces_request_count_on_full_catalogue():
         "veterinary": 10000, "taxi": 10000, "rental": 10000, "restaurant": 3000,
         "bar": 3000, "cafe": 2000, "beach": 10000, "sight": 20000,
         "family_activity": 15000, "sport": 10000, "bus_stop": 1000,
-        "train_station": 15000, "airport": 100000,
+        "bus_station": 20000, "train_station": 15000, "airport": 100000,
     }.items()]
     overpass.fetch_grouped(cats, LAT, LON, client=client)
     client.close()
     assert len(calls) < 10          # objectif M-01 (constaté : 5 paliers)
+
+
+# ── M-21 : gare routière (bus_station) ───────────────────────────────────────
+
+def test_bus_station_selector_and_bucket():
+    """bus_station est interrogeable (amenity=bus_station) et son rayon 20 km
+    tombe dans un palier NORMAL (25 km < 50 km), pas dans le palier lointain
+    aéroport → timeout standard, aucune requête Overpass supplémentaire."""
+    # Sélecteur OSM dérivé de CATEGORY_TAGS
+    assert overpass.CATEGORY_TAGS["bus_station"] == [("amenity", "bus_station")]
+    assert overpass.category_matches("bus_station",
+                                     {"amenity": "bus_station", "name": "Estación de autobuses"})
+    assert not overpass.category_matches("bus_station", {"highway": "bus_stop"})
+    # Palier de rayon : 20 km → palier 25 km (< overpass_far_bucket_m = 50 km)
+    bucket = overpass._bucket_radius(20000)
+    assert bucket == 25000
+    assert bucket < settings.overpass_far_bucket_m
+    # Donc timeout standard, pas le timeout « far » de l'aéroport
+    assert overpass._bucket_timeout(bucket) == settings.overpass_timeout_s
 
 
 # ── M-16 : récolte et normalisation du tag OSM « cuisine » ───────────────────

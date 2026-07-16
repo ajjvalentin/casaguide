@@ -36,8 +36,9 @@ _CHAPTER_ORDER = ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
 
 # Catégories « point de départ du trajet » : rendues comme blocs d'itinéraire
 # « en un tap » dans la section qui les déclare (A_arrival), et non en cartes
-# POI ordinaires (M-14).
-_TRANSPORT_CATEGORIES = {"airport", "train_station"}
+# POI ordinaires (M-14). La gare routière (bus_station, M-21) rejoint les
+# aéroports/gares — hub d'arrivée fréquent là où il n'y a pas de gare ferroviaire.
+_TRANSPORT_CATEGORIES = {"airport", "train_station", "bus_station"}
 
 # Noms de chapitre localisés (M-09). Le français reste la source/repli.
 _CHAPTER_NAMES: dict[str, dict[str, str]] = {

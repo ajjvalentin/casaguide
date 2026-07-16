@@ -59,6 +59,7 @@ INSERT INTO poi_categories (code, chapter, name_i18n, icon, map_color, default_r
 ('sport',          'G', '{"fr":"Sport & loisirs","en":"Sports & leisure","es":"Deporte y ocio"}',           'dumbbell',        '#0277BD', 10000),
 -- H — Transports
 ('bus_stop',       'H', '{"fr":"Arrêt de bus","en":"Bus stop","es":"Parada de bus"}',                       'bus',             '#00695C', 1000),
+('bus_station',    'H', '{"fr":"Gare routière","en":"Bus station","es":"Estación de autobuses"}',           'bus-front',       '#00695C', 20000),
 ('train_station',  'H', '{"fr":"Gare","en":"Train station","es":"Estación de tren"}',                       'train-front',     '#00695C', 15000),
 ('airport',        'H', '{"fr":"Aéroport","en":"Airport","es":"Aeropuerto"}',                               'plane',           '#00695C', 100000)
 ON CONFLICT (code) DO UPDATE SET
@@ -126,7 +127,7 @@ VALUES
 ('A_arrival', 'A', 5, 'plane-landing',
  '{"fr":"Venir depuis l’aéroport / la gare","en":"From the airport / station","es":"Desde el aeropuerto / la estación"}',
  '{"fr":"Itinéraires générés automatiquement (GPS, adresse copiable, trajets depuis les aéroports validés). Ajoutez ici vos conseils personnels : péages, sorties, pièges à éviter…"}',
- '{"poi_categories":["airport","train_station"]}', TRUE, FALSE),
+ '{"poi_categories":["airport","train_station","bus_station"]}', TRUE, FALSE),
 
 -- ─── B. LE LOGEMENT ─────────────────────────────────────────────────────────
 ('B_wifi', 'B', 110, 'wifi',

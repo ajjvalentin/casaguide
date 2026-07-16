@@ -53,6 +53,7 @@ CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
     "sport":           [("leisure", "sports_centre"), ("leisure", "golf_course")],
     "taxi":            [("amenity", "taxi")],
     "bus_stop":        [("highway", "bus_stop")],
+    "bus_station":     [("amenity", "bus_station")],
     "train_station":   [("railway", "station")],
     "airport":         [("aeroway", "aerodrome")],
     "parking":         [("amenity", "parking")],

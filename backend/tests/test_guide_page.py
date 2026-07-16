@@ -263,6 +263,39 @@ def test_train_station_also_gets_planning_block():
     assert "Gare de Torrevieja" in html and '<div class="trip">' in html
 
 
+def test_bus_station_gets_planning_block_like_airport():
+    """M-21 : la gare routière (bus_station) rejoint aéroport/gare dans les blocs
+    de planification M-14/M-20 (durée voiture + « Voir l'itinéraire »)."""
+    station = _airport("Gare routière de Torrevieja", lat=37.978, lon=-0.682, drive=22)
+    station["category_code"] = "bus_station"
+    station["category_name"] = {"fr": "Gares routières"}
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
+    html = guide_page.render_guide(_prop(lat=37.928, lon=-0.748),
+                                   sections, [station], {}, "tok")
+    assert '<div class="trip">' in html and "Gare routière de Torrevieja" in html
+    assert "22 min en voiture" in html
+    assert ">Voir l&#x27;itinéraire<" in html
+    assert ("https://www.google.com/maps/dir/?api=1&origin=37.978,-0.682"
+            "&destination=37.928,-0.748") in html
+    # Rendu en bloc de planification, PAS en carte POI ordinaire (pas de doublon).
+    assert 'class="poi-card"' not in html
+
+
+def test_bus_stop_stays_ordinary_poi_card_in_transit_chapter():
+    """M-21 : les arrêts bus_stop NE sont PAS des trajets de planification —
+    ils remontent en cartes POI ordinaires dans le chapitre Transports (H)."""
+    stop = _airport("Arrêt Avenida", lat=37.930, lon=-0.750, drive=None)
+    stop["category_code"] = "bus_stop"
+    stop["chapter"] = "H"
+    stop["category_name"] = {"fr": "Arrêts de bus"}
+    stop["walk_min"] = 4
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
+    html = guide_page.render_guide(_prop(), sections, [stop], {}, "tok")
+    assert 'class="poi-card"' in html and "Arrêt Avenida" in html
+    # Jamais rendu comme un bloc de trajet.
+    assert '<div class="trip">' not in html
+
+
 def test_transport_falls_back_to_poi_card_when_arrival_section_hidden():
     """Sans section hôte visible, les aéroports restent des cartes POI (repli :
     jamais de perte d'information)."""
