@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
+from typing import Callable
 
 import anthropic
 import httpx
@@ -150,6 +152,116 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
 
     summary["job_id"] = job_id
     return summary
+
+
+# ── Fiabilisation de la moisson : ré-essai différé des catégories manquantes ──
+# (M-18). Après un job terminé « normalement » mais avec des catégories en échec
+# (échecs Overpass transitoires : 406/timeout, surtout le palier aéroport 100 km),
+# on rejoue UNIQUEMENT les catégories manquantes, jusqu'à `max_retries` fois, avec
+# un délai entre tentatives. C'est le MÊME job logique (même job_id, quota
+# inchangé) ; chaque passage est journalisé dans `enrichment_jobs.steps`
+# (`retry_1`, `retry_2`…). Aucun POI arbitré n'est touché : l'upsert ne réécrit
+# que les POI `status='suggested'` (invariant 1).
+
+RETRY_DELAY_S = 180        # 3 minutes entre tentatives (constat prod)
+MAX_RETRIES = 3
+
+
+def run_with_retries(property_id: str, *, use_claude: bool = True,
+                     trigger: str = "manual", job_id: str | None = None,
+                     only_categories: set[str] | None = None,
+                     http_client: httpx.Client | None = None,
+                     anthropic_client: anthropic.Anthropic | None = None,
+                     max_retries: int = MAX_RETRIES,
+                     retry_delay_s: int = RETRY_DELAY_S,
+                     sleep: Callable[[float], None] = time.sleep) -> dict:
+    """Exécute le pipeline puis, si des catégories ont échoué, les rejoue en
+    différé (mêmes réglages, même job). `sleep` est injectable pour les tests."""
+    summary = run(property_id, use_claude=use_claude, trigger=trigger, job_id=job_id,
+                  only_categories=only_categories, http_client=http_client,
+                  anthropic_client=anthropic_client)
+    job_id = summary["job_id"]
+    failed = set((summary.get("failed_categories") or {}).keys())
+    attempt = 0
+    while failed and attempt < max_retries:
+        attempt += 1
+        sleep(retry_delay_s)
+        failed = set(_retry_failed(
+            property_id, job_id, failed, attempt, use_claude=use_claude,
+            http_client=http_client, anthropic_client=anthropic_client).keys())
+    summary["retries"] = attempt
+    summary["failed_categories"] = {c: "encore en échec" for c in failed}
+    return summary
+
+
+def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: int,
+                  *, use_claude: bool, http_client: httpx.Client | None,
+                  anthropic_client: anthropic.Anthropic | None) -> dict[str, str]:
+    """Rejoue la moisson des seules `categories` manquantes et journalise l'étape
+    `retry_{attempt}`. N'altère PAS le statut du job (il reste 'done') ni les POI
+    arbitrés. Retourne le dict des catégories encore en échec."""
+    got = 0
+    resolved: list[str] = []
+    with db.connect() as conn:
+        prop = db.load_property(conn, property_id)
+        try:
+            if prop["lat"] is None:  # jamais en pratique (geocode fait au 1er run)
+                db.job_step(conn, job_id, f"retry_{attempt}",
+                            {"ok": False, "error": "logement sans position"})
+                conn.commit()
+                return {c: "logement sans position" for c in categories}
+            origin = (prop["lat"], prop["lon"])
+            all_cats = db.load_categories(conn)
+            wanted = [c for c in all_cats if c["code"] in categories
+                      and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
+            grouped, failed = overpass.fetch_grouped(
+                wanted, origin[0], origin[1], client=http_client)
+
+            editorial: list[dict] = []
+            for cat in wanted:
+                code = cat["code"]
+                pois = grouped.get(code) or []
+                if not pois:
+                    continue
+                try:
+                    distance.compute_distances(origin, pois, client=http_client)
+                except Exception as exc:
+                    failed[code] = f"{type(exc).__name__}: {exc}"[:120]
+                    continue
+                for p in pois:
+                    p["category"] = code
+                if code in settings.describe_categories:
+                    editorial.extend(pois)
+                got += db.upsert_pois(conn, property_id, code, pois)
+                resolved.append(code)
+                conn.commit()
+
+            # Descriptions IA pour les catégories éditoriales récupérées au retry.
+            if use_claude and editorial:
+                ai = anthropic_client or anthropic.Anthropic(
+                    api_key=os.environ["ANTHROPIC_API_KEY"])
+                descs, meta = claude_enrich.describe_pois(
+                    editorial, prop["city"], prop["country_code"], ai)
+                for p in editorial:
+                    if p["source_ref"] in descs:
+                        p["description_md"] = descs[p["source_ref"]]
+                for code in {p["category"] for p in editorial}:
+                    db.upsert_pois(conn, property_id, code,
+                                   [p for p in editorial if p["category"] == code])
+                db.record_cost(conn, property_id, job_id, "anthropic",
+                               "describe_pois", meta["units"], meta["cost_cts"])
+
+            db.job_step(conn, job_id, f"retry_{attempt}",
+                        {"ok": not failed, "pois": got,
+                         "resolved": resolved, "failed": failed})
+            conn.commit()
+            return failed
+        except Exception as exc:  # un retry ne doit jamais casser le job 'done'
+            conn.rollback()
+            db.job_step(conn, job_id, f"retry_{attempt}",
+                        {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:120]})
+            conn.commit()
+            return {c: "erreur de retry" for c in categories}
 
 
 def main() -> None:

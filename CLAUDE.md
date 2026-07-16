@@ -219,6 +219,41 @@ Docker** : Caddy (frontal :80/:443) → uvicorn `127.0.0.1:8000` (systemd
   rayon (`_RADIUS_BUCKETS`) en ~5 requêtes au lieu de ~25, puis re-filtre chaque
   catégorie à son rayon exact du seed. Un échec de palier marque toutes ses
   catégories `failed` (ré-enrichissables) sans casser le guide.
+- Fiabilisation de la moisson (M-18) :
+  - **Ré-essai différé** : `pipeline.run_with_retries` (branché dans
+    `deps._default_runner`) exécute le pipeline puis, si des catégories ont
+    échoué, rejoue **uniquement les manquantes** (`_retry_failed`) après
+    `RETRY_DELAY_S` (180 s), jusqu'à `MAX_RETRIES` (3). C'est le **même job**
+    (même `job_id`, quota inchangé) ; chaque passage est journalisé dans
+    `enrichment_jobs.steps` sous `retry_1`, `retry_2`… Le job reste `done` (les
+    retries ne changent jamais son statut) et **aucun POI arbitré n'est touché**
+    (l'upsert ne réécrit que `status='suggested'`, invariant 1). `sleep`
+    injectable pour les tests. NB : la tâche de fond `run_with_retries` bloque un
+    thread du threadpool jusqu'à ~9 min ; elle ne survit pas à un redémarrage
+    d'uvicorn (best-effort, comme tout `BackgroundTasks`).
+  - **Requête aéroport (100 km)** : le palier ≥ `overpass_far_bucket_m` (50 km)
+    est déjà une requête Overpass **séparée** (son propre palier de rayon) et
+    reçoit un **timeout dédié plus long** (`overpass_timeout_far_s`, 60 s) —
+    `overpass._bucket_timeout`, propagé au `[timeout:]` serveur et au timeout HTTP.
+  - **Repli manuel aéroport** (déjà pratiqué en prod) : si l'aéroport reste
+    introuvable après les retries (absence de donnée OSM fiable dans le rayon),
+    l'insérer à la main en `source='owner'` (jamais écrasé, invariant 1) :
+    ```sql
+    INSERT INTO pois (property_id, category_code, name, geom, source, status)
+    VALUES ('<uuid-logement>', 'airport', 'Aéroport d''Alicante-Elche',
+            ST_SetSRID(ST_MakePoint(-0.5582, 38.2822), 4326), 'owner', 'approved');
+    ```
+    puis recalculer ses distances : `POST /api/properties/{id}/recompute-distances`.
+  - **Fournisseur Overpass géré** (à décider plus tard, NON implémenté) — options :
+    (1) **auto-héberger Overpass** (Docker `overpass-api`, extrait régional
+    Geofabrik) : ~0 €/mois hors VPS, mais RAM/disque et maintenance des mises à
+    jour (effort élevé au départ) ; (2) **Overpass géré / mutualisé** type
+    kumi.systems ou overpass.private.coffee (déjà en miroir) : gratuit/don, pas
+    de SLA (effort nul, fiabilité moyenne — l'actuel) ; (3) **Geoapify / MapTiler
+    POI API** (fournisseur commercial) : SLA + quotas, ~50–100 €/mois pour le
+    volume MVP, mais mapping catégories à refaire (effort moyen). Recommandation
+    provisoire : rester sur (2) + retries M-18, basculer vers (1) quand le volume
+    le justifie.
 - Jobs orphelins : les `BackgroundTasks` ne survivent pas à un redémarrage
   d'uvicorn → le `lifespan` de l'API requalifie au démarrage les jobs `running`
   en `failed` (`repo.fail_orphan_running_jobs`). À terme : file persistante.

@@ -221,3 +221,146 @@ def test_rerun_is_idempotent_and_preserves_owner_choices(property_id, http_clien
         merca = next(p for p in pois if p["name"] == "Mercadona")
         assert merca["status"] == "approved"          # choix conservé
         assert merca["owner_comment"] == "Le plus pratique"
+
+
+# ── M-18 : fiabilisation de la moisson (ré-essai + timeout aéroport) ──────────
+
+from enrich import overpass  # noqa: E402
+
+AIRPORT_EL = {"type": "node", "id": 999, "lat": 38.2822, "lon": -0.5581,
+              "tags": {"name": "Aeropuerto de Alicante-Elche",
+                       "aeroway": "aerodrome", "iata": "ALC"}}
+
+
+class FlakyOverpass:
+    """Overpass simulé : le palier aéroport (aeroway=aerodrome) échoue les
+    `fail_airport_times` premières requêtes puis réussit. Compte les requêtes par
+    sélecteur pour vérifier que le retry ne rejoue QUE les catégories manquantes."""
+
+    def __init__(self, fail_airport_times=1):
+        self.fail_airport_times = fail_airport_times
+        self.airport_queries = 0
+        self.supermarket_queries = 0
+
+    def handler(self, request):
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=NOMINATIM)
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            if '"aeroway"="aerodrome"' in body:
+                self.airport_queries += 1
+                if self.airport_queries <= self.fail_airport_times:
+                    return httpx.Response(504)          # échec transitoire
+                return httpx.Response(200, json={"elements": [AIRPORT_EL]})
+            if '"shop"="supermarket"' in body:
+                self.supermarket_queries += 1
+            return httpx.Response(200, json=_overpass_payload(body))
+        if "/table/v1/" in url:
+            return httpx.Response(200, json=_osrm_payload(url))
+        return httpx.Response(404)
+
+
+def _no_mirrors():
+    """Contexte : un seul serveur Overpass → 1 POST par requête logique (mesure
+    déterministe du nombre de requêtes dans les tests de retry)."""
+    settings.politeness_delay_s = 0
+    orig = settings.overpass_mirrors
+    settings.overpass_mirrors = ()
+    return orig
+
+
+def test_bucket_timeout_airport_is_longer():
+    """Le palier aéroport (100 km) utilise le timeout dédié plus long (M-18)."""
+    assert overpass._bucket_timeout(100000) == settings.overpass_timeout_far_s
+    assert overpass._bucket_timeout(2000) == settings.overpass_timeout_s
+    # La requête du palier lointain embarque le timeout serveur long.
+    q = overpass._build_query(['"aeroway"="aerodrome"'], 37.9, -0.7, 100000,
+                              timeout_s=settings.overpass_timeout_far_s)
+    assert f"[timeout:{settings.overpass_timeout_far_s}]" in q
+
+
+def test_retry_recovers_airport_and_replays_only_missing(property_id):
+    orig = _no_mirrors()
+    sleeps = []
+    try:
+        flaky = FlakyOverpass(fail_airport_times=1)
+        with httpx.Client(transport=httpx.MockTransport(flaky.handler)) as client:
+            result = pipeline.run_with_retries(
+                property_id, use_claude=True,
+                only_categories={"airport", "supermarket"},
+                http_client=client, anthropic_client=FakeAnthropic(),
+                retry_delay_s=0, sleep=lambda s: sleeps.append(s))
+    finally:
+        settings.overpass_mirrors = orig
+
+    assert result["retries"] == 1 and not result["failed_categories"]
+    assert sleeps == [0]                       # une attente avant le seul retry
+    # L'aéroport est requêté 2 fois (échec + retry) ; le supermarché 1 SEULE fois
+    # (le retry ne rejoue que les catégories manquantes).
+    assert flaky.airport_queries == 2
+    assert flaky.supermarket_queries == 1
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        cats = {r["category_code"] for r in conn.execute(
+            "SELECT category_code FROM pois WHERE property_id=%s", (property_id,)).fetchall()}
+        assert "airport" in cats and "supermarket" in cats
+        job = conn.execute("SELECT steps, status FROM enrichment_jobs WHERE id=%s",
+                           (result["job_id"],)).fetchone()
+        assert job["status"] == "done"          # le job reste 'done'
+        assert job["steps"]["retry_1"]["ok"] is True
+        assert "airport" in job["steps"]["retry_1"]["resolved"]
+
+
+def test_retry_gives_up_after_max_attempts(property_id):
+    orig = _no_mirrors()
+    sleeps = []
+    try:
+        flaky = FlakyOverpass(fail_airport_times=99)   # échoue toujours
+        with httpx.Client(transport=httpx.MockTransport(flaky.handler)) as client:
+            result = pipeline.run_with_retries(
+                property_id, use_claude=False,
+                only_categories={"airport", "supermarket"},
+                http_client=client, anthropic_client=FakeAnthropic(),
+                max_retries=3, retry_delay_s=0, sleep=lambda s: sleeps.append(s))
+    finally:
+        settings.overpass_mirrors = orig
+
+    assert result["retries"] == 3 and len(sleeps) == 3
+    assert "airport" in result["failed_categories"]
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        job = conn.execute("SELECT steps, status FROM enrichment_jobs WHERE id=%s",
+                           (result["job_id"],)).fetchone()
+        assert {"retry_1", "retry_2", "retry_3"} <= set(job["steps"])
+        assert job["status"] == "done"          # terminé normalement malgré l'échec
+
+
+def test_retry_preserves_arbitrated_pois(property_id):
+    """Invariant 1 : un POI arbitré n'est jamais écrasé par un retry."""
+    orig = _no_mirrors()
+    try:
+        # POI aéroport DÉJÀ approuvé (même source_ref que renverra le retry).
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute(
+                """INSERT INTO pois (property_id, category_code, name, geom,
+                       source, source_ref, status)
+                   VALUES (%s,'airport','Mon aéroport à moi',
+                       ST_SetSRID(ST_MakePoint(-0.5581,38.2822),4326),
+                       'osm','node/999','approved')""", (property_id,))
+            conn.commit()
+        flaky = FlakyOverpass(fail_airport_times=1)
+        with httpx.Client(transport=httpx.MockTransport(flaky.handler)) as client:
+            pipeline.run_with_retries(
+                property_id, use_claude=False, only_categories={"airport"},
+                http_client=client, anthropic_client=FakeAnthropic(),
+                retry_delay_s=0, sleep=lambda _s: None)
+    finally:
+        settings.overpass_mirrors = orig
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rows = conn.execute(
+            "SELECT name, status FROM pois WHERE property_id=%s AND category_code='airport'",
+            (property_id,)).fetchall()
+    assert len(rows) == 1                         # aucun doublon
+    assert rows[0]["status"] == "approved"        # choix conservé (invariant 1)
+    assert rows[0]["name"] == "Mon aéroport à moi"  # non écrasé par le retry

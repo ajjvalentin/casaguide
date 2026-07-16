@@ -90,8 +90,10 @@ EnrichmentRunner = Callable[[str, str, str], None]
 
 
 def _default_runner(property_id: str, trigger: str, job_id: str) -> None:
-    """Lance le vrai pipeline (géo + Overpass + OSRM + Claude) en tâche de fond."""
-    pipeline.run(property_id, use_claude=True, trigger=trigger, job_id=job_id)
+    """Lance le vrai pipeline (géo + Overpass + OSRM + Claude) en tâche de fond,
+    puis rejoue en différé les catégories manquantes (M-18, même job)."""
+    pipeline.run_with_retries(property_id, use_claude=True, trigger=trigger,
+                              job_id=job_id)
 
 
 def get_enrichment_runner() -> EnrichmentRunner:

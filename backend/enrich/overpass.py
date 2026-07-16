@@ -147,28 +147,43 @@ def _dedup_health_categories(results: dict[str, list[dict]]) -> None:
 
 # ── Requête et parsing ───────────────────────────────────────────────────────
 
-def _build_query(selectors: list[str], lat: float, lon: float, radius_m: int) -> str:
+def _bucket_timeout(bucket_m: int) -> int:
+    """Timeout Overpass adapté au rayon (M-18) : le palier aéroport (≥ 50 km,
+    typiquement 100 km) est bien plus lourd → timeout dédié plus long."""
+    return (settings.overpass_timeout_far_s
+            if bucket_m >= settings.overpass_far_bucket_m
+            else settings.overpass_timeout_s)
+
+
+def _build_query(selectors: list[str], lat: float, lon: float, radius_m: int,
+                 timeout_s: int | None = None) -> str:
     clauses = "".join(
         f'nwr[{sel}](around:{radius_m},{lat},{lon});' for sel in selectors
     )
     return (
-        f"[out:json][timeout:{settings.overpass_timeout_s}];"
+        f"[out:json][timeout:{timeout_s or settings.overpass_timeout_s}];"
         f"({clauses});out center tags;"
     )
 
 
-def _post_overpass(client: httpx.Client, query: str) -> list[dict]:
+def _post_overpass(client: httpx.Client, query: str,
+                   timeout_s: int | None = None) -> list[dict]:
     """POST vers Overpass avec bascule automatique sur les miroirs.
 
     Le serveur principal overpass-api.de renvoie des 406 aux clients automatisés
     depuis 2026 : on essaie l'URL principale puis chaque miroir dans l'ordre.
     Lève la dernière erreur si tous échouent (disjoncteur en amont côté appelant).
-    """
+
+    `timeout_s` (M-18) surcharge le timeout de la requête HTTP : le palier aéroport
+    a besoin de plus de temps que le timeout du client partagé."""
     headers = {"User-Agent": settings.user_agent, "Accept": "application/json"}
+    post_kwargs: dict = {}
+    if timeout_s is not None:
+        post_kwargs["timeout"] = timeout_s + 5  # marge au-dessus du [timeout:] serveur
     last_error: Exception | None = None
     for url in (settings.overpass_url, *settings.overpass_mirrors):
         try:
-            resp = client.post(url, data={"data": query}, headers=headers)
+            resp = client.post(url, data={"data": query}, headers=headers, **post_kwargs)
             resp.raise_for_status()
             return resp.json().get("elements", [])
         except httpx.HTTPError as exc:
@@ -293,9 +308,12 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
                 for sel in CATEGORY_SELECTORS[code]:
                     if sel not in selectors:
                         selectors.append(sel)
-            query = _build_query(selectors, lat, lon, bucket)
+            # M-18 : le palier aéroport (100 km) est une requête à part, avec un
+            # timeout dédié plus long (elle est déjà isolée par son propre palier).
+            timeout_s = _bucket_timeout(bucket)
+            query = _build_query(selectors, lat, lon, bucket, timeout_s=timeout_s)
             try:
-                elements = _post_overpass(client, query)
+                elements = _post_overpass(client, query, timeout_s=timeout_s)
             except Exception as exc:  # tout le palier échoue -> catégories tracées
                 msg = f"{type(exc).__name__}: {exc}"[:120]
                 for code in codes:

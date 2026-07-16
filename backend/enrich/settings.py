@@ -29,6 +29,9 @@ class Settings:
         "https://overpass-api.de/api/interpreter",
     )
     overpass_timeout_s: int = 15
+    # Rayon aéroport (100 km) : requête lourde → timeout dédié plus long (M-18).
+    overpass_timeout_far_s: int = int(os.getenv("CASAGUIDE_OVERPASS_TIMEOUT_FAR", "60"))
+    overpass_far_bucket_m: int = 50000  # au-delà : requête « lointaine » (timeout long)
     politeness_delay_s: float = float(os.getenv("CASAGUIDE_DELAY", "1.0"))
     max_pois_per_category: int = int(os.getenv("CASAGUIDE_MAX_POIS", "8"))
 
