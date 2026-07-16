@@ -9,7 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from enrich import db, distance, pipeline, translate
 
-from . import repo, security
+from . import poi_search, repo, security
 
 
 # ── Connexion PostgreSQL (une par requête) ───────────────────────────────────
@@ -135,3 +135,21 @@ def get_distance_computer() -> DistanceComputer:
     """Surchargée dans les tests par un calcul sans réseau
     (app.dependency_overrides[get_distance_computer])."""
     return _default_distance_computer
+
+
+# ── Recherche de lieux Nominatim (ajout manuel de POI, M-22) ─────────────────
+
+# (requête, lat/lon du logement) → liste de candidats normalisés
+NominatimSearcher = Callable[[str, "float | None", "float | None"], list[dict]]
+
+
+def _default_poi_searcher(query: str, lat: float | None,
+                          lon: float | None) -> list[dict]:
+    """Recherche réelle Nominatim (User-Agent + politesse 1 req/s)."""
+    return poi_search.search(query, lat, lon)
+
+
+def get_poi_searcher() -> NominatimSearcher:
+    """Surchargée dans les tests par une recherche sans réseau
+    (app.dependency_overrides[get_poi_searcher])."""
+    return _default_poi_searcher

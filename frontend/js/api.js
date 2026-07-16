@@ -123,6 +123,10 @@ export const api = {
   approvePoi: (id, poi) => request("POST", `/api/properties/${id}/pois/${poi}/approve`),
   rejectPoi:  (id, poi) => request("POST", `/api/properties/${id}/pois/${poi}/reject`),
   editPoi:    (id, poi, b) => request("PATCH", `/api/properties/${id}/pois/${poi}`, { body: b }),
+  // Ajout manuel de lieux (M-22)
+  poiCategories: (id) => request("GET", `/api/properties/${id}/pois/categories`),
+  searchPois: (id, q) => request("GET", `/api/properties/${id}/pois/search?q=${encodeURIComponent(q)}`),
+  createPoi:  (id, b) => request("POST", `/api/properties/${id}/pois`, { body: b }),
 
   // Enrichissement
   enrich:   (id, trigger) => request("POST", `/api/properties/${id}/enrich`, { body: { trigger } }),

@@ -357,7 +357,32 @@ def reorder_media(conn, property_id: str, ordered_ids: list[str]) -> int:
     return n
 
 
+# ── Catégories POI (catalogue pour l'ajout manuel, M-22) ─────────────────────
+
+def list_categories(conn) -> list[dict]:
+    """Catalogue des catégories POI (code, chapitre, libellés, couleur, icône)
+    pour le sélecteur de l'ajout manuel. Ordonné par chapitre puis code."""
+    return conn.execute(
+        "SELECT code, chapter, name_i18n, map_color, icon "
+        "FROM poi_categories ORDER BY chapter, code"
+    ).fetchall()
+
+
 # ── POI ──────────────────────────────────────────────────────────────────────
+
+# Projection commune de l'écran de validation (libellé/icône/couleur de chapitre
+# depuis le seed) : partagée par la liste et la relecture d'un POI unique.
+_POI_SELECT = (
+    "SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name, "
+    "c.icon AS category_icon, c.map_color, "
+    "p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon, "
+    "p.address, p.phone, p.website, p.opening_hours, p.cuisine, p.description_md, "
+    "p.owner_comment, p.price_level, "
+    "p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min, "
+    "p.source, p.source_ref, p.status, p.fetched_at "
+    "FROM pois p JOIN poi_categories c ON c.code = p.category_code "
+    "WHERE p.property_id = %s")
+
 
 def list_pois(conn, property_id: str, status: str | None) -> list[dict]:
     """POI du logement pour l'écran de validation (§5.1 étape 5).
@@ -365,21 +390,48 @@ def list_pois(conn, property_id: str, status: str | None) -> list[dict]:
     Jointure sur `poi_categories` pour porter le libellé, l'icône et la couleur
     de chapitre du seed : l'écran de validation regroupe et colore les POI comme
     le guide voyageur, sans second appel. Données owner-side (aucun secret)."""
-    q = ("SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name, "
-         "c.icon AS category_icon, c.map_color, "
-         "p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon, "
-         "p.address, p.phone, p.website, p.opening_hours, p.cuisine, p.description_md, "
-         "p.owner_comment, p.price_level, "
-         "p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min, "
-         "p.source, p.source_ref, p.status, p.fetched_at "
-         "FROM pois p JOIN poi_categories c ON c.code = p.category_code "
-         "WHERE p.property_id = %s")
+    q = _POI_SELECT
     params: list[Any] = [property_id]
     if status:
         q += " AND p.status = %s"
         params.append(status)
     q += " ORDER BY p.category_code, p.dist_walk_m NULLS LAST, p.name"
     return conn.execute(q, params).fetchall()
+
+
+def get_poi_full(conn, property_id: str, poi_id: str) -> dict | None:
+    """Relit un POI unique dans la même projection que `list_pois` (pour renvoyer
+    le POI fraîchement créé au front, prêt à afficher, M-22)."""
+    return conn.execute(_POI_SELECT + " AND p.id = %s",
+                        [property_id, poi_id]).fetchone()
+
+
+def poi_category_exists(conn, code: str) -> bool:
+    """Vrai si `code` est une catégorie POI connue (validation avant création)."""
+    return conn.execute("SELECT 1 FROM poi_categories WHERE code = %s",
+                        (code,)).fetchone() is not None
+
+
+def create_manual_poi(conn, property_id: str, data: dict) -> dict | None:
+    """Crée un POI saisi par le propriétaire (M-22) : source='owner',
+    status='approved' (arbitrage explicite → jamais écrasé, invariant 1),
+    sans `source_ref` (hors upsert d'enrichissement). Les distances déjà
+    calculées sont passées dans `data` (dist_*_m / *_min)."""
+    row = conn.execute(
+        """INSERT INTO pois (property_id, category_code, name, geom, address,
+               phone, website, opening_hours, cuisine, description_md, owner_comment,
+               dist_walk_m, walk_min, dist_drive_m, drive_min,
+               source, status, fetched_at)
+           VALUES (%(pid)s, %(category_code)s, %(name)s,
+               ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
+               %(address)s, %(phone)s, %(website)s, %(opening_hours)s,
+               %(cuisine)s, %(description_md)s, %(owner_comment)s,
+               %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
+               'owner', 'approved', now())
+           RETURNING id""",
+        {"pid": property_id, **data},
+    ).fetchone()
+    return get_poi_full(conn, property_id, str(row["id"])) if row else None
 
 
 def property_stats(conn, property_id: str) -> dict:

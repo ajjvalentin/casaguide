@@ -315,7 +315,17 @@ kbd{font-family:inherit;background:#F1ECE2;border-radius:5px;padding:1px 6px;fon
             border-top:1px solid var(--line-soft)}
 .modal .close{border:none;background:transparent;color:var(--muted);padding:4px;border-radius:8px}
 .modal .close:hover{background:rgba(30,42,50,.06)}
-#edit-map,#pos-map{height:300px;border-radius:12px;border:1px solid var(--line)}
+#edit-map,#pos-map,#addpoi-map{height:300px;border-radius:12px;border:1px solid var(--line)}
+
+/* Ajout manuel de lieu (M-22) : résultats de recherche Nominatim + candidats */
+hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
+.poi-search-results{display:flex;flex-direction:column;gap:6px;margin-top:8px;max-height:230px;overflow:auto}
+.poi-cand{display:flex;flex-direction:column;gap:2px;text-align:left;width:100%;
+          border:1px solid var(--line);background:var(--shell);border-radius:10px;
+          padding:9px 12px;cursor:pointer}
+.poi-cand:hover{border-color:var(--sea);background:#F7FbFc}
+.poi-cand b{font-size:14px;color:var(--ink)}
+.poi-cand span{font-size:12px;color:var(--muted)}
 
 /* ── Progression d'enrichissement ─────────────────────────────────────────── */
 .steps{list-style:none;padding:0;margin:8px 0 0}

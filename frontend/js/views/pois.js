@@ -55,8 +55,11 @@ export async function renderPois(view, pid) {
     el("div", { class: "row", style: { justifyContent: "space-between", alignItems: "flex-start", marginBottom: "14px" } },
       el("div", {}, el("div", { class: "eyebrow" }, "Validation des lieux"),
         el("h1", { class: "page-title", style: { margin: "2px 0 0" } }, "Suggestions à valider")),
-      el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${pid}/editor`) },
-        icon("arrow-left", 16), "Retour à l'éditeur")),
+      el("div", { class: "row", style: { gap: "8px" } },
+        el("button", { class: "btn btn-primary btn-sm", onClick: () => openAddPlace() },
+          icon("plus", 16), "Ajouter un lieu"),
+        el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${pid}/editor`) },
+          icon("arrow-left", 16), "Retour à l'éditeur"))),
     filterBar,
     el("div", { class: "pois-layout" },
       el("div", { class: "pois-list-col" }, listCol),
@@ -74,8 +77,8 @@ export async function renderPois(view, pid) {
   }
   setTimeout(() => map.invalidateSize(), 60);
 
-  for (const p of pois) {
-    if (p.lat == null) continue;
+  function addMarker(p) {
+    if (p.lat == null) return;
     const m = L.circleMarker([p.lat, p.lon], markerStyle(p));
     m.bindPopup(`<b>${escapeHtml(p.name)}</b><br>${t(p.category_name, p.category_code)}`);
     m.on("mouseover", () => highlightCard(p.id, true));
@@ -84,6 +87,7 @@ export async function renderPois(view, pid) {
     m.addTo(map);
     markers.set(p.id, m);
   }
+  for (const p of pois) addMarker(p);
 
   function markerStyle(p) {
     const dimmed = p.status === "rejected";
@@ -272,6 +276,142 @@ export async function renderPois(view, pid) {
       } catch (err) {
         toast(err.message || "Modification impossible.", "err");
         save.disabled = false; save.textContent = "Enregistrer";
+      }
+    });
+  }
+
+  // ── Ajout manuel d'un lieu (M-22) ──────────────────────────────────────────
+  let categoriesCache = null;
+
+  async function openAddPlace() {
+    if (!categoriesCache) {
+      try { categoriesCache = await api.poiCategories(pid); }
+      catch (err) { return toast(err.message || "Catégories indisponibles.", "err"); }
+    }
+
+    const f = (label, value, type = "text") => {
+      const control = type === "textarea" ? el("textarea", {}) : el("input", { type });
+      if (value != null) control.value = value;
+      return { control, node: el("div", { class: "field" }, el("label", {}, label), control) };
+    };
+
+    // Sélecteur de catégorie (optgroup par chapitre)
+    const catSel = el("select", {});
+    const byChapter = new Map();
+    for (const c of categoriesCache) {
+      if (!byChapter.has(c.chapter)) byChapter.set(c.chapter, []);
+      byChapter.get(c.chapter).push(c);
+    }
+    for (const [ch, list] of byChapter) {
+      const og = el("optgroup", { label: chapterMeta(ch).name });
+      for (const c of list) og.append(el("option", { value: c.code }, t(c.name_i18n, c.code)));
+      catSel.append(og);
+    }
+    const catField = el("div", { class: "field" }, el("label", {}, "Catégorie"), catSel);
+
+    const name = f("Nom du lieu");
+    const address = f("Adresse");
+    const phone = f("Téléphone", null, "tel");
+    const website = f("Site web", null, "url");
+    const cuisine = f("Type de cuisine (restaurants)");
+    const comment = f("Coup de cœur (commentaire personnel)", null, "textarea");
+
+    // Recherche Nominatim (debounce) → candidats cliquables
+    const searchInput = el("input", { type: "search", placeholder: "Rechercher un lieu (ex. El Meson de la Costa Torrevieja)…" });
+    const results = el("div", { class: "poi-search-results" });
+    const manualBtn = el("button", { class: "btn btn-sm btn-ghost", type: "button" },
+      icon("pencil-line", 15), "Saisie manuelle");
+
+    const mapEl2 = el("div", { id: "addpoi-map" });
+    const coordLine = el("div", { class: "muted", style: { fontSize: "12.5px", marginTop: "6px" } });
+    const add = el("button", { class: "btn btn-primary" }, "Ajouter au guide");
+
+    const modal = openModal({
+      title: "Ajouter un lieu", size: "lg",
+      body: el("form", { onSubmit: (e) => e.preventDefault() },
+        el("div", { class: "field" }, el("label", {}, "Recherche"),
+          el("div", { class: "row", style: { gap: "8px" } }, searchInput, manualBtn)),
+        results,
+        el("hr", { class: "soft" }),
+        catField, name.node,
+        el("div", { class: "grid-2" }, phone.node, website.node),
+        address.node, cuisine.node, comment.node,
+        el("label", { class: "muted", style: { fontSize: "12.5px" } },
+          "Position (faites glisser le marqueur ou cliquez sur la carte)"),
+        mapEl2, coordLine),
+      footer: [el("button", { class: "btn btn-ghost", type: "button", onClick: () => modal.close() }, "Annuler"), add],
+    });
+
+    // Mini-carte avec marqueur ajustable (repli sur une vue large si logement non placé)
+    let lat = property.lat != null ? property.lat : 0;
+    let lon = property.lon != null ? property.lon : 0;
+    const amap = L.map(mapEl2).setView([lat, lon], property.lat != null ? 15 : 2);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(amap);
+    const marker = L.marker([lat, lon], { draggable: true }).addTo(amap);
+    const showCoords = () => { coordLine.textContent = `Latitude ${lat.toFixed(6)}, longitude ${lon.toFixed(6)}`; };
+    showCoords();
+    marker.on("dragend", () => { const p = marker.getLatLng(); lat = p.lat; lon = p.lng; showCoords(); });
+    amap.on("click", (e) => { lat = e.latlng.lat; lon = e.latlng.lng; marker.setLatLng(e.latlng); showCoords(); });
+    setTimeout(() => amap.invalidateSize(), 80);
+
+    function fillFrom(c) {
+      if (c.category_code) catSel.value = c.category_code;
+      name.control.value = c.name || "";
+      address.control.value = c.address || "";
+      phone.control.value = c.phone || "";
+      website.control.value = c.website || "";
+      if (c.lat != null && c.lon != null) {
+        lat = c.lat; lon = c.lon;
+        marker.setLatLng([lat, lon]); amap.setView([lat, lon], 16); showCoords();
+      }
+      clear(results);
+      name.control.focus();
+    }
+
+    let timer;
+    searchInput.addEventListener("input", () => {
+      clearTimeout(timer);
+      const q = searchInput.value.trim();
+      if (q.length < 2) { clear(results); return; }
+      timer = setTimeout(async () => {
+        results.textContent = "Recherche…";
+        try {
+          const cands = await api.searchPois(pid, q);
+          clear(results);
+          if (!cands.length) { results.append(el("div", { class: "muted", style: { padding: "6px 2px" } }, "Aucun résultat — utilisez « Saisie manuelle ».")); return; }
+          for (const c of cands) {
+            results.append(el("button", { class: "poi-cand", type: "button", onClick: () => fillFrom(c) },
+              el("b", {}, c.name || "(sans nom)"),
+              c.address ? el("span", {}, c.address) : null));
+          }
+        } catch (err) { results.textContent = err.message || "Recherche impossible."; }
+      }, 400);
+    });
+    manualBtn.addEventListener("click", () => { clear(results); name.control.focus(); });
+
+    add.addEventListener("click", async () => {
+      const nm = name.control.value.trim();
+      if (!nm) return toast("Donnez un nom au lieu.", "err");
+      add.disabled = true; add.textContent = "Ajout…";
+      try {
+        const created = await api.createPoi(pid, {
+          category_code: catSel.value, name: nm,
+          lat, lon,
+          address: address.control.value.trim() || null,
+          phone: phone.control.value.trim() || null,
+          website: website.control.value.trim() || null,
+          cuisine: cuisine.control.value.trim().toLowerCase() || null,
+          owner_comment: comment.control.value.trim() || null,
+        });
+        pois.push(created);
+        addMarker(created);
+        modal.close();
+        toast("Lieu ajouté au guide.", "ok");
+        filter = "kept";
+        renderFilters(); renderList();
+      } catch (err) {
+        toast(err.message || "Ajout impossible.", "err");
+        add.disabled = false; add.textContent = "Ajouter au guide";
       }
     });
   }

@@ -407,6 +407,141 @@ def test_enrich_quota_enforced(client):
     assert second.status_code == 429
 
 
+# ── M-22 : ajout manuel de POI (recherche Nominatim + création owner) ─────────
+
+def test_poi_search_maps_category_and_isolates(client):
+    """La recherche mappe class/type OSM → category_code et reste étanche
+    (un autre propriétaire n'y accède pas). Searcher injecté (aucun réseau)."""
+    from api.deps import get_poi_searcher
+
+    seen: list[tuple] = []
+
+    def fake_searcher(q, lat, lon):
+        seen.append((q, lat, lon))
+        return [{"name": "El Meson de la Costa", "address": "Av. de la Costa, Torrevieja",
+                 "lat": 37.978, "lon": -0.682, "category_code": "restaurant",
+                 "phone": "+34 966 00 00 00", "website": None}]
+
+    app.dependency_overrides[get_poi_searcher] = lambda: fake_searcher
+    try:
+        owner = register(client)
+        prop = make_property(client, owner["headers"])
+        pid = prop["id"]
+        client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                     json={"lat": PROP_LAT, "lon": PROP_LON})
+
+        r = client.get(f"/api/properties/{pid}/pois/search?q=Meson Costa",
+                       headers=owner["headers"])
+        assert r.status_code == 200
+        cands = r.json()
+        assert cands[0]["name"] == "El Meson de la Costa"
+        assert cands[0]["category_code"] == "restaurant"
+        # Le biais géographique reçoit la position du logement
+        assert seen[-1] == ("Meson Costa", pytest.approx(PROP_LAT), pytest.approx(PROP_LON))
+
+        # Étanchéité : un autre propriétaire ne peut pas chercher sur ce logement
+        intruder = register(client)
+        assert client.get(f"/api/properties/{pid}/pois/search?q=x",
+                          headers=intruder["headers"]).status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_poi_searcher, None)
+
+
+def test_poi_search_function_biases_and_guesses(client):
+    """Test unitaire de poi_search.search avec un transport httpx simulé : biais
+    viewbox, User-Agent requis, mappage class/type, extratags → téléphone/site."""
+    from api import poi_search
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["ua"] = request.headers.get("User-Agent")
+        return httpx.Response(200, json=[{
+            "lat": "37.978", "lon": "-0.682", "class": "amenity", "type": "restaurant",
+            "name": "El Meson de la Costa", "display_name": "El Meson…, Torrevieja",
+            "extratags": {"contact:phone": "+34 966 11 22 33",
+                          "website": "https://meson.example"}}])
+
+    settings.politeness_delay_s = 0
+    with httpx.Client(transport=httpx.MockTransport(handler)) as c:
+        out = poi_search.search("Meson", PROP_LAT, PROP_LON, client=c)
+    assert "viewbox=" in captured["url"] and "extratags=1" in captured["url"]
+    assert captured["ua"] == settings.user_agent          # politesse : UA obligatoire
+    assert out[0]["category_code"] == "restaurant"
+    assert out[0]["phone"] == "+34 966 11 22 33"
+    assert out[0]["website"] == "https://meson.example"
+    # Mappage direct : class/type inconnu → repli 'sight'
+    assert poi_search.guess_category("tourism", "artwork") == "sight"
+    assert poi_search.guess_category("aeroway", "aerodrome") == "airport"
+
+
+def test_create_manual_poi_computes_distances_shows_in_guide_off_quota(client):
+    """Création manuelle : distances calculées à l'insertion, source='owner',
+    status='approved', visible dans le guide publié, et AUCUN job d'enrichissement
+    créé (hors quota)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"lat": PROP_LAT, "lon": PROP_LON})
+
+    body = {"category_code": "restaurant", "name": "El Meson de la Costa",
+            "lat": 37.9290, "lon": -0.7470, "address": "Av. de la Costa, Torrevieja",
+            "phone": "+34 966 00 00 00", "cuisine": "seafood",
+            "owner_comment": "Notre cantine à Torrevieja"}
+    r = client.post(f"/api/properties/{pid}/pois", headers=owner["headers"], json=body)
+    assert r.status_code == 201, r.text
+    poi = r.json()
+    assert poi["source"] == "owner" and poi["status"] == "approved"
+    assert poi["map_color"] == "#EF6C00"                  # catégorie jointe (chapitre F)
+    # Distances calculées à l'insertion (computer de test = haversine × 1,3)
+    expected = round(haversine_m(PROP_LAT, PROP_LON, 37.9290, -0.7470) * 1.3)
+    assert poi["dist_walk_m"] == expected and poi["walk_min"] >= 1
+
+    # Hors quota : la création manuelle n'ouvre AUCUN job d'enrichissement
+    # (vérifié avant toute publication, qui elle enfile une traduction).
+    with psycopg.connect(settings.db_dsn) as conn:
+        n_jobs = conn.execute("SELECT count(*) FROM enrichment_jobs "
+                              "WHERE property_id = %s", (pid,)).fetchone()[0]
+    assert n_jobs == 0
+
+    # Apparaît dans « Retenus » (approved) de l'écran de validation
+    kept = client.get(f"/api/properties/{pid}/pois?status=approved",
+                      headers=owner["headers"]).json()
+    assert any(p["name"] == "El Meson de la Costa" for p in kept)
+
+    # Publié → visible dans le guide voyageur comme les autres POI
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+    data = client.get(f"/g/{token}/data").json()
+    meson = next(p for p in data["pois"] if p["name"] == "El Meson de la Costa")
+    assert meson["cuisine"] == "seafood" and meson["owner_comment"]
+
+
+def test_create_manual_poi_rejects_unknown_category(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    r = client.post(f"/api/properties/{pid}/pois", headers=owner["headers"],
+                    json={"category_code": "not_a_category", "name": "X",
+                          "lat": 37.9, "lon": -0.7})
+    assert r.status_code == 422
+
+
+def test_create_manual_poi_without_property_position(client):
+    """Sans position du logement, le POI est créé mais sans distances (jamais
+    d'erreur : le propriétaire peut recalculer après avoir placé le logement)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]  # logement non positionné
+    r = client.post(f"/api/properties/{pid}/pois", headers=owner["headers"],
+                    json={"category_code": "beach", "name": "Playa de la Zenia",
+                          "lat": 37.93, "lon": -0.735})
+    assert r.status_code == 201
+    assert r.json()["walk_min"] is None and r.json()["source"] == "owner"
+
+
 # ── Guide public (invariants 4 et 5) ─────────────────────────────────────────
 
 def test_public_guide(client):

@@ -171,6 +171,34 @@ class PoiEditIn(BaseModel):
     owner_comment: str | None = None
 
 
+class PoiCandidateOut(BaseModel):
+    """Candidat renvoyé par la recherche Nominatim (M-22) — jamais persisté tel
+    quel : le propriétaire l'édite puis valide via POST /pois."""
+    name: str
+    address: str | None = None
+    lat: float
+    lon: float
+    category_code: str
+    phone: str | None = None
+    website: str | None = None
+
+
+class PoiCreateIn(BaseModel):
+    """Création manuelle d'un POI par le propriétaire (M-22) → source='owner',
+    status='approved' (jamais écrasé par un ré-enrichissement, invariant 1)."""
+    category_code: str
+    name: str = Field(min_length=1)
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    address: str | None = None
+    phone: str | None = None
+    website: str | None = None
+    opening_hours: str | None = None
+    cuisine: str | None = None
+    description_md: str | None = None
+    owner_comment: str | None = None
+
+
 # ── Médias (photos / PDF par section, M-12) ──────────────────────────────────
 
 class MediaOut(BaseModel):
