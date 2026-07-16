@@ -10,9 +10,9 @@
    de format BCH(15,5). Vérifié par comparaison matricielle exacte avec segno
    (masque forcé) : voir backend/tests / scripts de vérification M-08.
 
-   Module QR **mutualisé** (M-06) : le générateur de matrice sert à la fois au
-   guide voyageur (frontend/guide/app.js) et au back-office propriétaire
-   (frontend/js/components/wifiqr.js). Exports :
+   Module QR **mutualisé** (M-06/M-15) : le générateur de matrice sert à la fois
+   au guide voyageur (frontend/guide/app.js) et au back-office propriétaire
+   (frontend/js/components/wifinetworks.js — un QR par réseau). Exports :
      · qrMatrix(text)   → matrice booléenne carrée (true = module noir), SANS
                           zone de silence (l'appelant ajoute la marge au tracé) ;
      · qrCanvas(text)   → <canvas> prêt à afficher (marge incluse) ;
