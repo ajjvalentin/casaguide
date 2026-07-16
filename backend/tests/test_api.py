@@ -440,6 +440,9 @@ def test_public_guide(client):
                      "is_visible": True, "completed": True})
     client.put(f"/api/properties/{pid}/sections/A_keybox", headers=owner["headers"],
                json={"content": {"location": "Sous le pot"}, "is_visible": False})
+    # A_arrival visible → héberge l'adresse & le GPS copiables (M-19)
+    client.put(f"/api/properties/{pid}/sections/A_arrival", headers=owner["headers"],
+               json={"content": {"from_airport": "Prenez l'AP-7"}, "is_visible": True})
 
     # Secrets renseignés — ne doivent JAMAIS apparaître dans le guide public
     client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
@@ -461,6 +464,10 @@ def test_public_guide(client):
     assert "Sous le pot" not in page.text                # section A_keybox masquée : absente du HTML
     # Aucun secret dans la page HTML (déchiffrement réservé à /secrets)
     assert "MotDePasseUltraSecret" not in page.text
+    # M-19 : adresse & GPS copiables rendus dans A_arrival (position géocodée)
+    assert 'class="arrival-meta"' in page.text
+    assert 'data-copy="Calle Ejemplo 1, Orihuela Costa"' in page.text
+    assert 'data-copy="37.928000, -0.748200"' in page.text  # GPS 6 décimales
 
     # ── Guide JSON (/data) : charset explicite, sans secret ──────────────────
     g = client.get(f"/g/{token}/data")

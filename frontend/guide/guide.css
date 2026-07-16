@@ -149,6 +149,13 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .meta a{color:var(--sea);font-weight:500}
 
 /* ── Itinéraires « en un tap » (M-14) : aéroport / gare → logement ───────── */
+/* ── Adresse & GPS copiables (M-19) ──────────────────────────────────────── */
+.arrival-meta{display:flex;flex-direction:column;gap:8px;margin:4px 0 12px}
+.copy-row{background:var(--sand);border:1px solid var(--line);border-radius:12px;padding:10px 13px}
+.copy-row .cr-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.copy-row .cr-label{font-size:12.5px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+.copy-row .cr-val{margin-top:4px;font-size:14.5px;word-break:break-word}
+
 .transport{display:flex;flex-direction:column;gap:8px;margin:4px 0 14px}
 .trip{background:var(--sand);border:1px solid var(--line);border-radius:12px;padding:11px 13px}
 .trip-head{display:flex;align-items:baseline;justify-content:space-between;gap:6px 10px;flex-wrap:wrap}

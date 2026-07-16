@@ -80,6 +80,8 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filtrer par thème", "lang": "Langue",
         "cuisine_filter": "Filtrer par cuisine",
         "nav_to_home": "Itinéraire vers le logement", "open_in": "Ouvrir dans",
+        "address": "Adresse", "gps": "Coordonnées GPS",
+        "copy": "Copier", "copied": "Copié ✓",
         "title_suffix": "Guide du logement", "home": "Votre logement",
         "footer": "Guide propulsé par CasaGuide — données OpenStreetMap. Bon séjour !",
     },
@@ -95,6 +97,8 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filter by theme", "lang": "Language",
         "cuisine_filter": "Filter by cuisine",
         "nav_to_home": "Directions to the property", "open_in": "Open in",
+        "address": "Address", "gps": "GPS coordinates",
+        "copy": "Copy", "copied": "Copied ✓",
         "title_suffix": "Property guide", "home": "Your accommodation",
         "footer": "Guide powered by CasaGuide — OpenStreetMap data. Enjoy your stay!",
     },
@@ -110,6 +114,8 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filtrar por tema", "lang": "Idioma",
         "cuisine_filter": "Filtrar por cocina",
         "nav_to_home": "Cómo llegar al alojamiento", "open_in": "Abrir en",
+        "address": "Dirección", "gps": "Coordenadas GPS",
+        "copy": "Copiar", "copied": "Copiado ✓",
         "title_suffix": "Guía del alojamiento", "home": "Tu alojamiento",
         "footer": "Guía con tecnología de CasaGuide — datos de OpenStreetMap. ¡Feliz estancia!",
     },
@@ -352,6 +358,49 @@ def _latlon(lat: Any, lon: Any) -> str:
     return f"{lat},{lon}"
 
 
+# ── Adresse & GPS copiables (M-19) : dans A_arrival, au-dessus des itinéraires ─
+# L'adresse complète et les coordonnées GPS (position ajustée par le propriétaire,
+# plus fiable que l'adresse en zone mal géocodée) sont affichées avec un bouton
+# « Copier » (presse-papiers côté client, repli sélection). À coller dans un taxi,
+# un covoiturage ou un GPS tiers.
+
+def _gps_string(lat: Any, lon: Any) -> str:
+    """Coordonnées « lat, lon » à 6 décimales (format universel taxi/GPS)."""
+    return f"{float(lat):.6f}, {float(lon):.6f}"
+
+
+def _address_string(prop: dict) -> str:
+    """Adresse complète sur une ligne : voie, (complément), code postal + ville."""
+    line1 = (prop.get("address_line1") or "").strip()
+    line2 = (prop.get("address_line2") or "").strip()
+    cp_city = " ".join(x for x in [(prop.get("postal_code") or "").strip(),
+                                   (prop.get("city") or "").strip()] if x)
+    return ", ".join(x for x in [line1, line2, cp_city] if x)
+
+
+def _copy_row(label: str, value: str, lang: str) -> str:
+    """Une ligne « libellé — valeur — bouton Copier » (data-copy pour le JS)."""
+    v = _esc(value)
+    return (f'<div class="copy-row">'
+            f'<div class="cr-head"><span class="cr-label">{_esc(label)}</span>'
+            f'<button class="copy-btn" type="button" data-copy="{v}" '
+            f'data-copied="{_esc(_t(lang, "copied"))}">{_esc(_t(lang, "copy"))}</button></div>'
+            f'<div class="cr-val" data-copy-value>{v}</div></div>')
+
+
+def _render_arrival_meta(prop: dict, lang: str = "fr") -> str:
+    rows: list[str] = []
+    address = _address_string(prop)
+    if address:
+        rows.append(_copy_row(_t(lang, "address"), address, lang))
+    if prop.get("lat") is not None and prop.get("lon") is not None:
+        rows.append(_copy_row(_t(lang, "gps"),
+                              _gps_string(prop["lat"], prop["lon"]), lang))
+    if not rows:
+        return ""
+    return f'<div class="arrival-meta">{"".join(rows)}</div>'
+
+
 def _render_transport(pois: list[dict], home_lat: Any, home_lon: Any,
                       lang: str = "fr") -> str:
     if not pois or home_lat is None or home_lon is None:
@@ -386,18 +435,22 @@ def _render_transport(pois: list[dict], home_lat: Any, home_lon: Any,
 # ── Section complète ─────────────────────────────────────────────────────────
 
 def _render_section(sec: dict, contact: dict, tourism_license: str | None,
-                    area_facts: dict | None = None, transport: dict | None = None,
+                    area_facts: dict | None = None, arrival: dict | None = None,
                     lang: str = "fr") -> str:
     schema = sec.get("field_schema") or {}
     content = sec.get("content") or {}
     title = _esc(_i18n(sec.get("name_i18n"), lang, sec.get("code", "")))
     parts: list[str] = [f"<h3>{title}</h3>"]
 
-    # Itinéraires « en un tap » (M-14) : si la section déclare airport/train_station,
-    # les blocs de trajet sont rendus en tête (le texte libre du propriétaire suit).
-    if transport and (set(schema.get("poi_categories") or []) & _TRANSPORT_CATEGORIES):
-        trans_html = _render_transport(transport.get("pois") or [],
-                                       transport.get("lat"), transport.get("lon"), lang)
+    # Section d'arrivée (déclare airport/train_station) : adresse & GPS copiables
+    # (M-19), puis blocs d'itinéraire « en un tap » (M-14) — rendus en tête, le
+    # texte libre du propriétaire suit.
+    if arrival and (set(schema.get("poi_categories") or []) & _TRANSPORT_CATEGORIES):
+        meta_html = _render_arrival_meta(arrival.get("prop") or {}, lang)
+        if meta_html:
+            parts.append(meta_html)
+        trans_html = _render_transport(arrival.get("pois") or [],
+                                       arrival.get("lat"), arrival.get("lon"), lang)
         if trans_html:
             parts.append(trans_html)
 
@@ -644,16 +697,16 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
         if ch in present:
             chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(_chapter_name(ch, lang))}</button>')
 
-    # Itinéraires « en un tap » (M-14) : les POI aéroport/gare sont rendus comme
-    # blocs de trajet DANS la section A_arrival (si elle est visible), et donc
-    # retirés de la liste POI ordinaire. Si aucune section hôte n'est visible, on
-    # les laisse en cartes POI classiques (repli — jamais de perte d'information).
+    # Section d'arrivée (A_arrival, déclare airport/train_station) : si elle est
+    # visible, elle héberge l'adresse & le GPS copiables (M-19) et les blocs
+    # d'itinéraire (M-14). Les POI aéroport/gare y sont rendus comme trajets et
+    # retirés de la liste POI ordinaire (anti-doublon). Si la section hôte n'est
+    # pas visible, on les laisse en cartes POI classiques (repli — jamais de perte).
     transport_pois = [p for p in pois if p["category_code"] in _TRANSPORT_CATEGORIES]
     host_visible = any(set((s.get("field_schema") or {}).get("poi_categories") or [])
                        & _TRANSPORT_CATEGORIES for s in sections)
-    transport_ctx = ({"pois": transport_pois, "lat": prop.get("lat"),
-                      "lon": prop.get("lon")}
-                     if transport_pois and host_visible else None)
+    arrival_ctx = ({"prop": prop, "pois": transport_pois, "lat": prop.get("lat"),
+                    "lon": prop.get("lon")} if host_visible else None)
 
     # Corps : un bloc par chapitre (sections visibles + POI du chapitre)
     body: list[str] = []
@@ -664,9 +717,9 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
         inner: list[str] = []
         for sec in [s for s in sections if s["chapter"] == ch]:
             inner.append(_render_section(sec, contact, prop.get("tourism_license"),
-                                         area_facts, transport_ctx, lang))
+                                         area_facts, arrival_ctx, lang))
         chapter_pois = [p for p in pois if p["chapter"] == ch]
-        if transport_ctx:  # trajets rendus dans A_arrival → hors liste POI ordinaire
+        if arrival_ctx and transport_pois:  # trajets rendus dans A_arrival → hors liste POI
             chapter_pois = [p for p in chapter_pois
                             if p["category_code"] not in _TRANSPORT_CATEGORIES]
         inner.append(_render_pois(chapter_pois, lang))

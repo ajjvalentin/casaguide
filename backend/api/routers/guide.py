@@ -290,6 +290,9 @@ def _property_public(prop: dict) -> dict:
     """Vue publique du logement (jamais de secrets — invariant 5)."""
     return {
         "name": prop["name"],
+        "address_line1": prop["address_line1"],
+        "address_line2": prop["address_line2"],
+        "postal_code": prop["postal_code"],
         "city": prop["city"],
         "region": prop["region"],
         "country_code": prop["country_code"],

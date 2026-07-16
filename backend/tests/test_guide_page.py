@@ -19,8 +19,10 @@ from enrich import claude_enrich  # noqa: E402
 
 def _prop(**over):
     base = {
-        "name": "Villa Test", "city": "Orihuela Costa", "region": "Alicante",
-        "country_code": "ES", "lat": 37.928, "lon": -0.748,
+        "name": "Villa Test", "address_line1": "Calle Ejemplo 1",
+        "address_line2": None, "postal_code": "03189",
+        "city": "Orihuela Costa", "region": "Alicante",
+        "country_code": "ES", "lat": 37.9261992, "lon": -0.7233174,
         "default_lang": "fr", "published_langs": [], "tourism_license": None,
         "contact": {},
     }
@@ -254,6 +256,51 @@ def test_transport_falls_back_to_poi_card_when_arrival_section_hidden():
     assert '<div class="trip">' not in html
     assert 'class="poi-card"' in html          # rendu en carte POI ordinaire
     assert "Aéroports ·" in html               # avec son titre de catégorie
+
+
+# ── M-19 : adresse & GPS copiables dans A_arrival ────────────────────────────
+
+def test_arrival_shows_copyable_address_and_gps():
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA,
+                         content={"from_airport": "Prenez la N-332."})]
+    prop = _prop(lat=37.9261992, lon=-0.7233174, address_line1="Calle Ejemplo 1",
+                 postal_code="03189", city="Orihuela Costa")
+    html = guide_page.render_guide(prop, sections, [_airport()], AREA_FACTS, "tok")
+
+    # Bloc adresse/GPS présent, avec libellés localisés FR.
+    assert '<div class="arrival-meta">' in html
+    assert "Adresse" in html and "Coordonnées GPS" in html
+    # Adresse complète (voie + code postal + ville) copiable.
+    assert 'data-copy="Calle Ejemplo 1, 03189 Orihuela Costa"' in html
+    # GPS à 6 décimales, format « lat, lon ».
+    assert 'data-copy="37.926199, -0.723317"' in html
+    assert "37.926199, -0.723317" in html
+    # Boutons Copier avec libellé de confirmation localisé.
+    assert 'class="copy-btn"' in html and 'data-copied="Copié ✓"' in html
+    assert ">Copier<" in html
+
+    # Rendu AU-DESSUS des blocs d'itinéraire (M-19 exige « au-dessus »).
+    assert html.index('<div class="arrival-meta">') < html.index('<div class="transport"')
+
+
+def test_arrival_copy_labels_localised_es():
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
+    html = guide_page.render_guide(_prop(), sections, [], AREA_FACTS, "tok", lang="es")
+    assert "Dirección" in html and "Coordenadas GPS" in html
+    assert ">Copiar<" in html and 'data-copied="Copiado ✓"' in html
+
+
+def test_gps_uses_adjusted_position_six_decimals():
+    """Le GPS reflète la position (lat/lon du logement) à 6 décimales exactement."""
+    assert guide_page._gps_string(37.9261992, -0.7233174) == "37.926199, -0.723317"
+    assert guide_page._gps_string(38, -0.5) == "38.000000, -0.500000"
+
+
+def test_arrival_meta_absent_without_arrival_section():
+    """Pas de section d'arrivée visible → pas de bloc adresse/GPS."""
+    sections = [_section("C_trash", "C", {"area_facts": ["waste_rules"]})]
+    html = guide_page.render_guide(_prop(), sections, [], AREA_FACTS, "tok")
+    assert '<div class="arrival-meta">' not in html
 
 
 # ── M-17 : le prompt de génération est resserré (on vérifie les CONSIGNES) ───

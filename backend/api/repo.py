@@ -545,7 +545,8 @@ def get_published_property_by_token(conn, token: str) -> dict | None:
     """Logement publié désigné par son token secret. None si brouillon/archivé
     ou token inconnu (on ne révèle pas l'existence d'un guide non publié)."""
     return conn.execute(
-        """SELECT id, name, city, region, country_code,
+        """SELECT id, name, address_line1, address_line2, postal_code,
+                  city, region, country_code,
                   ST_Y(geom) AS lat, ST_X(geom) AS lon,
                   default_lang, published_langs, access_mode,
                   contact_name, contact_phone, contact_whatsapp, contact_email,

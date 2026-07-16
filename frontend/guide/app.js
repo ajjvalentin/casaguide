@@ -99,6 +99,46 @@ function initCuisineFilter() {
   });
 }
 
+// ── Adresse & GPS copiables (M-19) ───────────────────────────────────────────
+// Boutons rendus côté serveur (data-copy = texte à copier, data-copied = libellé
+// de confirmation localisé). Presse-papiers si dispo, sinon repli : on sélectionne
+// le texte pour que le voyageur puisse le copier à la main.
+function initCopy() {
+  document.querySelectorAll(".copy-btn[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const text = btn.dataset.copy || "";
+      const done = btn.dataset.copied || "✓";
+      const original = btn.textContent;
+      let ok = false;
+      try {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      } catch (_) {
+        ok = selectValue(btn);   // repli : sélection du texte affiché
+      }
+      if (ok) {
+        btn.textContent = done;
+        btn.classList.add("done");
+        setTimeout(() => { btn.textContent = original; btn.classList.remove("done"); }, 1600);
+      }
+    });
+  });
+}
+
+function selectValue(btn) {
+  const row = btn.closest(".copy-row");
+  const val = row && row.querySelector("[data-copy-value]");
+  if (!val) return false;
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(val);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  } catch (_) { return false; }
+}
+
 // ── Visionneuse plein écran ──────────────────────────────────────────────────
 function initLightbox() {
   const figures = [...document.querySelectorAll(".gphoto")];
@@ -245,6 +285,7 @@ initLang();
 initMap();
 initChips();
 initCuisineFilter();
+initCopy();
 initLightbox();
 initSecrets();
 initPwa();
