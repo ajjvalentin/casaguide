@@ -204,42 +204,58 @@ def _airport(name="Aéroport d'Alicante", lat=38.2822, lon=-0.5581, drive=35):
             "phone": None, "website": None}
 
 
-def test_arrival_renders_itinerary_blocks_with_correct_urls():
+def test_arrival_renders_nav_banner_and_planning_blocks_with_correct_urls():
     sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA,
                          content={"from_airport": "Prenez la N-332 vers le sud."},
                          name={"fr": "Venir depuis l'aéroport"})]
     html = guide_page.render_guide(_prop(lat=37.928, lon=-0.748),
                                    sections, [_airport()], {}, "tok")
 
-    # Bloc de trajet présent, avec durée en voiture.
+    # M-20 : bandeau de navigation universelle en tête, destination seule.
+    assert '<div class="nav-banner"' in html
+    assert "Me guider vers le logement" in html
+    assert ("https://www.google.com/maps/dir/?api=1&destination=37.928,-0.748"
+            in html)                                     # Google Maps destination seule
+    assert "https://waze.com/ul?ll=37.928,-0.748&navigate=yes" in html   # Waze du bandeau
+
+    # Waze n'apparaît QU'UNE seule fois dans toute la page (le bandeau).
+    assert html.count("waze.com/ul") == 1
+
+    # Bloc de PLANIFICATION présent, avec durée en voiture et un bouton « Voir l'itinéraire ».
     assert '<div class="transport"' in html and '<div class="trip">' in html
     assert "Aéroport d'Alicante" in html
     assert "35 min en voiture" in html
-
-    # Google Maps : origine = aéroport, destination = logement (pré-rempli).
+    assert ">Voir l&#x27;itinéraire<" in html   # apostrophe échappée par html.escape
+    # Google Maps du bloc : origine = aéroport, destination = logement (planification).
     assert ("https://www.google.com/maps/dir/?api=1&origin=38.2822,-0.5581"
             "&destination=37.928,-0.748") in html
-    # Waze : navigation vers le logement.
-    assert "https://waze.com/ul?ll=37.928,-0.748&navigate=yes" in html
+    # Le bloc ne contient PLUS de bouton Waze (retiré, redondant avec le bandeau).
+    assert 'class="trip-btn waze"' not in html
+
+    # Ordre : bandeau → adresse/GPS → blocs → texte libre du propriétaire.
+    assert (html.index('<div class="nav-banner"')
+            < html.index('<div class="transport"')
+            < html.index("Prenez la N-332"))
 
     # Le texte libre du propriétaire reste affiché, EN COMPLÉMENT (après le bloc).
     assert "Prenez la N-332 vers le sud." in html
-    assert html.index('<div class="transport"') < html.index("Prenez la N-332")
 
     # L'aéroport n'est PAS aussi rendu en carte POI ordinaire (pas de doublon).
     assert 'class="poi-card"' not in html
     assert "Aéroports ·" not in html   # pas de titre de catégorie POI
 
 
-def test_itinerary_labels_localised_es():
+def test_nav_banner_and_route_labels_localised_es():
     sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
     html = guide_page.render_guide(_prop(), sections, [_airport()], {}, "tok",
                                    lang="es")
-    assert "35 min en coche" in html          # durée localisée
+    assert "35 min en coche" in html                    # durée localisée
+    assert "Llévame al alojamiento" in html             # bandeau localisé
+    assert ">Ver ruta<" in html                         # bouton de bloc localisé
     assert 'aria-label="Cómo llegar al alojamiento"' in html
 
 
-def test_train_station_also_gets_itinerary_block():
+def test_train_station_also_gets_planning_block():
     station = _airport("Gare de Torrevieja")
     station["category_code"] = "train_station"
     sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
@@ -254,6 +270,7 @@ def test_transport_falls_back_to_poi_card_when_arrival_section_hidden():
     sections = [_section("A_checkin", "A", {"fields": []})]
     html = guide_page.render_guide(_prop(), sections, [_airport()], {}, "tok")
     assert '<div class="trip">' not in html
+    assert '<div class="nav-banner"' not in html   # pas de section hôte → pas de bandeau
     assert 'class="poi-card"' in html          # rendu en carte POI ordinaire
     assert "Aéroports ·" in html               # avec son titre de catégorie
 
@@ -279,8 +296,10 @@ def test_arrival_shows_copyable_address_and_gps():
     assert 'class="copy-btn"' in html and 'data-copied="Copié ✓"' in html
     assert ">Copier<" in html
 
-    # Rendu AU-DESSUS des blocs d'itinéraire (M-19 exige « au-dessus »).
-    assert html.index('<div class="arrival-meta">') < html.index('<div class="transport"')
+    # Ordre M-20 : bandeau de navigation → adresse/GPS → blocs de planification.
+    assert (html.index('<div class="nav-banner"')
+            < html.index('<div class="arrival-meta">')
+            < html.index('<div class="transport"'))
 
 
 def test_arrival_copy_labels_localised_es():

@@ -80,6 +80,7 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filtrer par thème", "lang": "Langue",
         "cuisine_filter": "Filtrer par cuisine",
         "nav_to_home": "Itinéraire vers le logement", "open_in": "Ouvrir dans",
+        "nav_take_me": "Me guider vers le logement", "view_route": "Voir l'itinéraire",
         "address": "Adresse", "gps": "Coordonnées GPS",
         "copy": "Copier", "copied": "Copié ✓",
         "title_suffix": "Guide du logement", "home": "Votre logement",
@@ -97,6 +98,7 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filter by theme", "lang": "Language",
         "cuisine_filter": "Filter by cuisine",
         "nav_to_home": "Directions to the property", "open_in": "Open in",
+        "nav_take_me": "Take me to the property", "view_route": "View route",
         "address": "Address", "gps": "GPS coordinates",
         "copy": "Copy", "copied": "Copied ✓",
         "title_suffix": "Property guide", "home": "Your accommodation",
@@ -114,6 +116,7 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filtrar por tema", "lang": "Idioma",
         "cuisine_filter": "Filtrar por cocina",
         "nav_to_home": "Cómo llegar al alojamiento", "open_in": "Abrir en",
+        "nav_take_me": "Llévame al alojamiento", "view_route": "Ver ruta",
         "address": "Dirección", "gps": "Coordenadas GPS",
         "copy": "Copiar", "copied": "Copiado ✓",
         "title_suffix": "Guía del alojamiento", "home": "Tu alojamiento",
@@ -346,16 +349,38 @@ def _render_contact(contact: dict, lang: str = "fr") -> str:
     return f'<div class="contact-card">{who}<div class="cbtns">{"".join(btns)}</div></div>'
 
 
-# ── Itinéraires « en un tap » (M-14) : aéroport / gare → logement ────────────
-# Rendus DANS la section qui déclare ces catégories (A_arrival), au-dessus du
-# texte libre du propriétaire (qui reste affiché en complément). Deux boutons par
-# POI : Google Maps (trajet aéroport→logement pré-rempli) et Waze (navigation
-# vers le logement). Zéro saisie : tout dérive de la géométrie du logement et des
-# POI approuvés/édités. Aucun appel externe au rendu (invariant 4).
+# ── Navigation « en un tap » (M-14/M-20) : aéroport / gare → logement ────────
+# Rendus DANS la section qui déclare ces catégories (A_arrival). En tête, un
+# bandeau de navigation universelle (M-20) « Me guider vers le logement » — deux
+# gros boutons Google Maps + Waze en destination seule : l'app part de la
+# position réelle du voyageur (à l'aéroport comme ailleurs). En dessous, un bloc
+# par lieu prédéfini reste un itinéraire de PLANIFICATION (durée en voiture + un
+# bouton Google Maps origine→logement). Waze ne supporte pas d'origine → retiré
+# des blocs (redondant avec le bandeau). Zéro saisie : tout dérive de la
+# géométrie du logement et des POI. Aucun appel externe au rendu (invariant 4).
 
 def _latlon(lat: Any, lon: Any) -> str:
     """Couple « lat,lon » pour une URL de navigation (jamais de virgule décimale)."""
     return f"{lat},{lon}"
+
+
+def _render_nav_banner(home_lat: Any, home_lon: Any, lang: str = "fr") -> str:
+    """Bandeau de navigation universelle (M-20) : « Me guider vers le logement ».
+    Deux gros boutons en destination seule (Google Maps + Waze) — l'app démarre de
+    la position réelle du voyageur. C'est LE geste principal de la section."""
+    if home_lat is None or home_lon is None:
+        return ""
+    home = _latlon(home_lat, home_lon)
+    gmaps = f"https://www.google.com/maps/dir/?api=1&destination={home}"
+    waze = f"https://waze.com/ul?ll={home}&navigate=yes"
+    return (f'<div class="nav-banner" aria-label="{_esc(_t(lang, "nav_take_me"))}">'
+            f'<p class="nav-banner-title">{_esc(_t(lang, "nav_take_me"))}</p>'
+            f'<div class="nav-banner-btns">'
+            f'<a class="nav-btn gmaps" href="{gmaps}" target="_blank" '
+            f'rel="noopener">Google Maps</a>'
+            f'<a class="nav-btn waze" href="{waze}" target="_blank" '
+            f'rel="noopener">Waze</a>'
+            f'</div></div>')
 
 
 # ── Adresse & GPS copiables (M-19) : dans A_arrival, au-dessus des itinéraires ─
@@ -406,28 +431,24 @@ def _render_transport(pois: list[dict], home_lat: Any, home_lon: Any,
     if not pois or home_lat is None or home_lon is None:
         return ""
     home = _latlon(home_lat, home_lon)
-    waze = f"https://waze.com/ul?ll={home}&navigate=yes"
     trips: list[str] = []
     for p in pois:
         name = _esc(p["name"])
         drive = p.get("drive_min")
         dur = (f'<span class="trip-dur">{_esc(str(drive))} {_esc(_t(lang, "drive"))}</span>'
                if drive is not None else "")
-        btns: list[str] = []
-        # Google Maps : itinéraire aéroport/gare → logement (origine pré-remplie).
+        # Itinéraire de PLANIFICATION Google Maps : origine lieu → logement.
         if p.get("lat") is not None and p.get("lon") is not None:
             gmaps = (f"https://www.google.com/maps/dir/?api=1&origin={_latlon(p['lat'], p['lon'])}"
                      f"&destination={home}")
         else:  # sans coordonnées du POI, on laisse Google demander l'origine
             gmaps = f"https://www.google.com/maps/dir/?api=1&destination={home}"
-        btns.append(f'<a class="trip-btn gmaps" href="{gmaps}" target="_blank" '
-                    f'rel="noopener">Google Maps</a>')
-        # Waze : navigation directe vers le logement.
-        btns.append(f'<a class="trip-btn waze" href="{waze}" target="_blank" '
-                    f'rel="noopener">Waze</a>')
+        # Un seul bouton : Waze (pas d'origine) serait redondant avec le bandeau.
+        btn = (f'<a class="trip-btn gmaps" href="{gmaps}" target="_blank" '
+               f'rel="noopener">{_esc(_t(lang, "view_route"))}</a>')
         trips.append(
             f'<div class="trip"><div class="trip-head"><b>{name}</b>{dur}</div>'
-            f'<div class="trip-btns">{"".join(btns)}</div></div>')
+            f'<div class="trip-btns">{btn}</div></div>')
     return (f'<div class="transport" aria-label="{_esc(_t(lang, "nav_to_home"))}">'
             f'{"".join(trips)}</div>')
 
@@ -442,10 +463,14 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
     title = _esc(_i18n(sec.get("name_i18n"), lang, sec.get("code", "")))
     parts: list[str] = [f"<h3>{title}</h3>"]
 
-    # Section d'arrivée (déclare airport/train_station) : adresse & GPS copiables
-    # (M-19), puis blocs d'itinéraire « en un tap » (M-14) — rendus en tête, le
-    # texte libre du propriétaire suit.
+    # Section d'arrivée (déclare airport/train_station) : bandeau de navigation
+    # universelle (M-20), puis adresse & GPS copiables (M-19), puis blocs de
+    # planification par lieu (M-14) — rendus en tête, le texte libre du
+    # propriétaire suit.
     if arrival and (set(schema.get("poi_categories") or []) & _TRANSPORT_CATEGORIES):
+        banner_html = _render_nav_banner(arrival.get("lat"), arrival.get("lon"), lang)
+        if banner_html:
+            parts.append(banner_html)
         meta_html = _render_arrival_meta(arrival.get("prop") or {}, lang)
         if meta_html:
             parts.append(meta_html)
