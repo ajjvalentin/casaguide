@@ -24,7 +24,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Composant | État |
 |---|---|
 | `db/schema.sql` | Schéma PostgreSQL 15+ / PostGIS — testé, validé |
-| `db/seed.sql` | 43 sections pré-définies + 27 catégories POI + 3 plans — idempotent, testé |
+| `db/seed.sql` | 43 sections pré-définies + 28 catégories POI (dont `bus_station`, M-21) + 3 plans — idempotent, testé |
 | `db/migrations/001` | Index unique pour l'idempotence des upserts POI — requis |
 | `db/migrations/003` | Colonne `cuisine` sur `pois` (type de cuisine, M-16) — idempotent |
 | `db/migrations/004` | Colonne `wifi_networks_enc` sur `property_secrets` (multi-wifi, M-15) — idempotent |
@@ -203,6 +203,22 @@ Docker** : Caddy (frontal :80/:443) → uvicorn `127.0.0.1:8000` (systemd
   (import ES cassé sur un module périmé).
 - Serveurs OSM publics : 1 req/s max, User-Agent obligatoire → en production,
   prévoir OSRM auto-hébergé et/ou un fournisseur géré.
+- Ajout manuel de POI (M-22) : `GET /api/properties/{id}/pois/search` est un
+  **proxy Nominatim côté serveur** (`api/poi_search.py`) — le navigateur n'appelle
+  jamais Nominatim directement (pas de fuite d'User-Agent, politesse centralisée).
+  Il respecte la **politique d'usage Nominatim** : User-Agent obligatoire
+  (`settings.user_agent`) **et au plus 1 req/s** (`poi_search._throttle`, borné par
+  `settings.politeness_delay_s`, `sleep`/`now` injectables → les tests posent
+  `politeness_delay_s = 0`). La recherche est déclenchée par un **debounce 400 ms**
+  côté client (`js/views/pois.js`) pour ne pas marteler le service à chaque frappe.
+  La catégorie est **devinée** par inversion de `overpass.CATEGORY_TAGS`
+  (class/type OSM → `category_code`, repli `sight`) puis corrigeable par le
+  propriétaire. `POST /api/properties/{id}/pois` crée un POI `source='owner'`,
+  `status='approved'` (jamais écrasé, invariant 1), distances calculées à
+  l'insertion via `distance.compute_distances` — **hors quota d'enrichissement**
+  (aucun job). Le repli manuel « aéroport en SQL » documenté plus bas (M-18) est
+  désormais faisable depuis l'UI (mais bus_station M-21 couvre le hub d'arrivée
+  quand il n'y a pas de gare ferroviaire).
 - `food_delivery` et `babysitter` : pas de tags OSM fiables → à enrichir via
   Claude + web search (V1.1), voir `CLAUDE_ONLY_CATEGORIES` dans `overpass.py`.
 - L'upsert des POI exige la migration 001 (ON CONFLICT sur index partiel :
