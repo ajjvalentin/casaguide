@@ -1,58 +1,53 @@
 # ============================================================================
-# CasaGuide — reverse proxy Caddy (M-11)
+# CasaGuide — reverse proxy Caddy (M-11, bascule domaine M-27)
 # ----------------------------------------------------------------------------
 # Installation :
 #   sudo cp /opt/casaguide/ops/Caddyfile /etc/caddy/Caddyfile
+#   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 #   sudo systemctl reload caddy
 #
-# État actuel : accès par IP, sans nom de domaine.
-#   · HTTP (port 80)  → servi tel quel, sans redirection (accès simple, aucun
-#                       avertissement de certificat) ;
-#   · HTTPS (port 443) → certificat AUTO-SIGNÉ (Caddy `tls internal`) : le
-#                       navigateur affichera un avertissement (attendu tant qu'il
-#                       n'y a pas de domaine). NB : un service worker / PWA n'est
-#                       pleinement actif que sur HTTPS de confiance → le mode
-#                       hors-ligne complet arrivera avec le domaine + Let's Encrypt.
+# État actuel (M-27, 17/07/2026) : HTTPS de confiance sur le domaine technique
+# provisoire « guide.holaquetalimmo.es ».
+#   · guide.holaquetalimmo.es → certificat Let's Encrypt obtenu et renouvelé
+#     AUTOMATIQUEMENT par Caddy ; redirection http→https automatique ; HSTS actif.
+#   · L'ancienne adresse par IP (179.237.85.250, http ET https) → redirection 301
+#     PERMANENTE vers le domaine : les liens/QR déjà partagés continuent de mener
+#     au guide. (Le https par IP garde un cert auto-signé `tls internal` — il ne
+#     sert qu'à rediriger ; Let's Encrypt ne délivre pas de cert pour une IP.)
 #
-# ─── BASCULE VERS UN NOM DE DOMAINE (Let's Encrypt) ────────────────────────────
-# Le jour où un domaine pointe vers ce serveur (A/AAAA), remplacer le bloc de site
-# ci-dessous par (Caddy obtient et renouvelle le certificat automatiquement) :
+# Le HTTPS de confiance débloque le mode PWA hors-ligne complet (service worker,
+# M-10).
 #
-#     guide.mondomaine.fr {
-#         encode zstd gzip
-#         reverse_proxy 127.0.0.1:8000
-#         import securite
-#         header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-#         log { output file /var/log/caddy/access.log ; format json }
-#     }
-#
-# c'est-à-dire : (1) mettre le domaine comme adresse de site, (2) supprimer
-# `tls internal` et l'option globale `auto_https disable_redirects`, (3) décommenter
-# l'en-tête HSTS. Puis `CASAGUIDE_PUBLIC_BASE_URL=https://guide.mondomaine.fr` dans
-# backend/.env et `sudo systemctl reload caddy && sudo systemctl restart casaguide`.
+# ─── DOMAINE DÉFINITIF (le jour venu) ──────────────────────────────────────────
+# « guide.holaquetalimmo.es » est un domaine TECHNIQUE PROVISOIRE. Quand la marque
+# définitive sera choisie : créer un enregistrement A du nouveau domaine vers
+# 179.237.85.250, ajouter son bloc de site ci-dessous (Caddy obtient le cert
+# automatiquement), faire pointer l'ancien domaine en redir 301 vers le nouveau
+# (comme l'IP ci-dessous), puis basculer CASAGUIDE_PUBLIC_BASE_URL /
+# CASAGUIDE_CORS_ORIGINS dans backend/.env.
 # ============================================================================
-
 {
-	# Pas de redirection HTTP→HTTPS tant que le certificat est auto-signé
-	# (évite de pousser les visiteurs vers un cert non fiable). À retirer avec le domaine.
-	auto_https disable_redirects
-	# email admin@mondomaine.fr   # requis par Let's Encrypt le jour du domaine
+	# Contact Let's Encrypt (avis d'expiration / problèmes de certificat).
+	email av@weemo.ch
 }
 
-# En-têtes de sécurité mutualisés (HSTS volontairement exclu ici : réservé au
-# HTTPS de confiance, cf. bascule domaine ci-dessus).
+# En-têtes de sécurité mutualisés. HSTS activé (HTTPS de confiance) — max-age
+# volontairement modéré pour commencer (180 j), includeSubDomains, SANS preload
+# (le preload est irréversible et engloberait tout le domaine : à n'activer que
+# plus tard, en connaissance de cause).
 (securite) {
 	header {
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy strict-origin-when-cross-origin
+		Strict-Transport-Security "max-age=15552000; includeSubDomains"
 		# On ne divulgue pas la stack
 		-Server
 	}
 }
 
-http://179.237.85.250, https://179.237.85.250 {
-	tls internal
+# Guide public — HTTPS de confiance (Let's Encrypt, http→https automatique).
+guide.holaquetalimmo.es {
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:8000
 	import securite
@@ -60,4 +55,14 @@ http://179.237.85.250, https://179.237.85.250 {
 		output file /var/log/caddy/access.log
 		format json
 	}
+}
+
+# Ancienne adresse par IP → redirection permanente vers le domaine, en http comme
+# en https (cert auto-signé conservé uniquement pour honorer la redirection TLS).
+http://179.237.85.250 {
+	redir https://guide.holaquetalimmo.es{uri} permanent
+}
+https://179.237.85.250 {
+	tls internal
+	redir https://guide.holaquetalimmo.es{uri} permanent
 }

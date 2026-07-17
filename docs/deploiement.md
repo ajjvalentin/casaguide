@@ -14,7 +14,9 @@ Internet ──▶ Caddy (:80/:443, TLS)  ──▶ uvicorn 127.0.0.1:8000 (syst
 - **Serveur** : `ubuntu@179.237.85.250` (sudo sans mot de passe).
 - **Utilisateur applicatif** : `casaguide` (non-root), code dans `/opt/casaguide`.
 - **Dépôt** : `github.com/ajjvalentin/casaguide` (privé, deploy key en lecture seule).
-- **URL provisoire** : `http://179.237.85.250` (et `https://` en cert auto-signé).
+- **URL de production** : `https://guide.holaquetalimmo.es` (HTTPS de confiance,
+  Let's Encrypt — M-27). L'ancienne adresse par IP `http(s)://179.237.85.250`
+  redirige en **301 permanent** vers le domaine (liens/QR déjà partagés préservés).
 
 ---
 
@@ -230,18 +232,62 @@ En local/dev (variable absente), la version vaut `dev` (comportement stable).
 
 ---
 
-## 4. Bascule vers un nom de domaine (Let's Encrypt) — le jour venu
+## 4. Bascule vers un nom de domaine (Let's Encrypt) — FAIT le 17/07/2026 (M-27)
 
-1. Faire pointer le domaine (`A`/`AAAA`) vers `179.237.85.250`.
-2. Dans `/etc/caddy/Caddyfile` (cf. commentaires de `ops/Caddyfile`) : remplacer
-   le bloc `http://…, https://179.237.85.250 { tls internal … }` par
-   `guide.mondomaine.fr { … }` (Caddy obtient le certificat automatiquement),
-   supprimer `auto_https disable_redirects` et **décommenter l'en-tête HSTS**.
-3. `backend/.env` : `CASAGUIDE_PUBLIC_BASE_URL=https://guide.mondomaine.fr` et
-   `CASAGUIDE_CORS_ORIGINS=https://guide.mondomaine.fr`.
-4. `sudo systemctl reload caddy && sudo -u casaguide /opt/casaguide/deploy.sh`.
+**Domaine technique provisoire** : `guide.holaquetalimmo.es` (sous-domaine créé
+chez Infomaniak → `A` vers `179.237.85.250` ; **aucun** autre enregistrement du
+domaine touché — le site immobilier `holaquetalimmo.es` vit dessus). Le jour où la
+**marque définitive** sera choisie, elle redirigera ici de la même façon (le bloc
+« domaine définitif » est décrit en tête de `ops/Caddyfile`).
 
-HTTPS de confiance → le service worker / PWA devient pleinement actif (hors-ligne).
+Déroulé réellement appliqué (le runbook théorique tenait, à deux améliorations près
+notées ci-dessous) :
+
+1. **DNS** : vérifier la propagation avant tout — `dig +short guide.holaquetalimmo.es`
+   doit renvoyer `179.237.85.250` (confirmé aussi via `@8.8.8.8` / `@1.1.1.1`).
+2. **Caddyfile** (`ops/Caddyfile`, copié dans `/etc/caddy/Caddyfile`) :
+   - bloc de site `guide.holaquetalimmo.es { … }` → Caddy obtient et renouvelle le
+     cert Let's Encrypt **automatiquement** (challenge `tls-alpn-01`), et active la
+     redirection **http→https** automatiquement (plus besoin de la gérer à la main) ;
+   - `email av@weemo.ch` dans le bloc global (contact Let's Encrypt) ;
+   - `auto_https disable_redirects` **supprimé** ;
+   - HSTS **activé** dans le snippet `(securite)` : `max-age=15552000; includeSubDomains`
+     (180 j pour commencer, **sans preload** — le preload est irréversible) ;
+   - **[écart au runbook, amélioration]** l'ancienne adresse par IP est **conservée**
+     en **redir 301** (`http://` **et** `https://179.237.85.250 { tls internal }`) vers
+     `https://guide.holaquetalimmo.es{uri}` : les liens/QR déjà partagés (l'ancien
+     `CASAGUIDE_PUBLIC_BASE_URL`) continuent de mener au guide sans page morte.
+   - Validation + normalisation : `sudo caddy validate --config … --adapter caddyfile`
+     puis `sudo caddy fmt --overwrite /etc/caddy/Caddyfile` (le dépôt est resynchronisé
+     sur cette version formatée).
+3. **Reload + obtention du cert** : `sudo systemctl reload caddy`, puis vérifier les
+   logs (`sudo journalctl -u caddy`) : `certificate obtained successfully`. Un
+   avertissement `failed to install root certificate` peut apparaître : il concerne
+   **uniquement** la CA locale du `tls internal` (IP), pas Let's Encrypt — cosmétique.
+4. **`backend/.env`** : `CASAGUIDE_PUBLIC_BASE_URL=https://guide.holaquetalimmo.es`
+   et `CASAGUIDE_CORS_ORIGINS=https://guide.holaquetalimmo.es`, puis
+   `sudo systemctl restart casaguide`. (Au passage, un doublon de la ligne
+   `CASAGUIDE_PUBLIC_BASE_URL` a été nettoyé ; permissions `600` / propriété
+   `casaguide` reconfirmées.) Les futurs QR PDF et liens copiés portent le domaine.
+5. **Validation curl** (toutes vertes le 17/07/2026) :
+   - cert : `openssl s_client -connect guide.holaquetalimmo.es:443 -servername
+     guide.holaquetalimmo.es | openssl x509 -noout -subject -issuer -dates` →
+     `issuer=Let's Encrypt`, `subject=CN=guide.holaquetalimmo.es`, `notAfter=Oct 15 2026` ;
+   - `curl -s -w '%{http_code} ssl_verify=%{ssl_verify_result}' https://guide.holaquetalimmo.es/health`
+     → `200 ssl_verify=0` (chaîne de confiance OK) ; `/docs` → `200` ;
+   - en-têtes sur `/` : `strict-transport-security`, `x-content-type-options`,
+     `x-frame-options`, `referrer-policy` présents, `Server` masqué ;
+   - guide publié réel : `GET /g/{token}` → `200` (titre `Villa Ballarin — Guide du
+     logement`), `/g/{token}/data` → `200 application/json; charset=utf-8` ;
+   - redirections : `http://guide.holaquetalimmo.es/…` → `308` vers `https://…` ;
+     `http(s)://179.237.85.250/…` → `301` vers `https://guide.holaquetalimmo.es{uri}`.
+
+**Renouvellement automatique** : géré **en interne par Caddy** (pas de cron/timer à
+prévoir) ; cert + clé + méta ACME persistés sous
+`/var/lib/caddy/.local/share/caddy/certificates/…/guide.holaquetalimmo.es/`.
+
+HTTPS de confiance → le prérequis du **mode hors-ligne PWA (service worker, M-10)**
+est désormais **levé**.
 
 ---
 

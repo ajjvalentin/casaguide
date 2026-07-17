@@ -140,10 +140,14 @@ par `deploy.sh` → cache-busting des assets ; défaut `dev`).
 
 ## Production (M-11) — **runbook complet : `docs/deploiement.md`**
 
-**EN LIGNE** sur VPS Infomaniak (Ubuntu 24.04, UE) : `http://179.237.85.250`
-(+ `https://` en cert auto-signé). Architecture volontairement **simple, sans
-Docker** : Caddy (frontal :80/:443) → uvicorn `127.0.0.1:8000` (systemd
-`casaguide`) → PostgreSQL 16 + PostGIS **local** (jamais exposé, peer auth).
+**EN LIGNE** sur VPS Infomaniak (Ubuntu 24.04, UE) : **`https://guide.holaquetalimmo.es`**
+(HTTPS de confiance Let's Encrypt, M-27 ; domaine **technique provisoire** — la
+marque définitive redirigera ici le jour venu). L'ancienne adresse par IP
+`http(s)://179.237.85.250` redirige en **301** vers le domaine (liens/QR déjà
+partagés préservés). Architecture volontairement **simple, sans Docker** : Caddy
+(frontal :80/:443, cert Let's Encrypt auto-renouvelé, HSTS) → uvicorn
+`127.0.0.1:8000` (systemd `casaguide`) → PostgreSQL 16 + PostGIS **local** (jamais
+exposé, peer auth).
 
 - **Serveur** : `ssh -i ~/.ssh/casaguide_vps ubuntu@179.237.85.250` (sudo sans mdp).
 - **Utilisateur applicatif** `casaguide` (non-root), code dans `/opt/casaguide`
