@@ -106,6 +106,30 @@ export function confirmDialog(message, { title = "Confirmer", okLabel = "Confirm
   });
 }
 
+// ── Presse-papiers : repli en contexte non sécurisé (HTTP) ────────────────────
+// navigator.clipboard n'existe qu'en HTTPS/localhost. Tant que la production
+// est servie par IP en HTTP (avant le domaine), on fournit un équivalent via
+// l'ancienne API execCommand — même signature, donc transparent pour les vues.
+if (!navigator.clipboard) {
+  const writeText = (text) => new Promise((resolve, reject) => {
+    const ta = document.createElement("textarea");
+    ta.value = String(text);
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.append(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length); // iOS
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+    ta.remove();
+    ok ? resolve() : reject(new Error("copy failed"));
+  });
+  try {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  } catch (_) { /* navigateur récalcitrant : le message d'erreur existant reste le repli */ }
+}
+
 // ── États génériques ─────────────────────────────────────────────────────────
 export function loadingBlock(label = "Chargement…") {
   return el("div", { class: "loading" }, el("div", {}, icon("loader-circle", 30), el("div", { style: { marginTop: "8px" } }, label)));
