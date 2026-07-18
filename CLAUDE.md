@@ -36,7 +36,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Affiche QR imprimable (M-07) | `api/poster.py` (reportlab) → `GET /api/properties/{id}/guide-poster.pdf` (A5/A4, propriétaire uniquement) : nom du logement, QR du lien du guide, mot d'accueil FR/EN, identité sable/mer |
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
-| Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) et tuiles hors-ligne (M-10) restent à faire |
+| Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v12) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}` |
 
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
 
@@ -400,6 +400,41 @@ exposé, peer auth).
   relancer un enrichissement (`POST /api/properties/{id}/enrich` ou
   `python -m enrich.pipeline --property-id <uuid>`) — l'étape 4a les régénère.
   Les faits laissés en base restent tels quels (aucune migration de contenu).
+- Fiche du logement éditable (M-24) : modale mutualisée `frontend/js/components/
+  propertyinfo.js` (infos + position), ouverte depuis la carte (`properties.js`) ET
+  l'éditeur. Le re-géocodage n'est **jamais automatique** : `POST /api/properties/
+  {id}/geocode` (`repo.set_geocode`, `deps.get_geocoder` injectable) n'est appelé
+  qu'après accord explicite (case décochée par défaut si `geocode_source='manual'`)
+  et **uniquement** si l'adresse a changé → une position manuelle n'est jamais
+  écrasée en silence. Le placement manuel (`update_property` avec lat/lon) reste
+  `geocode_source='manual'` ; le re-géocodage repasse à `'nominatim'`. La mini-carte
+  de position est accessible **à tout moment** (plus seulement si accuracy≠rooftop).
+- Liens de partage (M-25) : `guide_page._og_tags` ajoute Open Graph/Twitter dans le
+  `<head>` (og:title/description **localisées**, og:url en **slug**, og:image en URL
+  **absolue**). `og:image` = 1re photo du logement (`guide.py._first_photo_path` :
+  niveau logement d'abord, puis 1re photo d'une section visible), sinon image de
+  marque générée `api/og_image.py` (Pillow, servie sur `/g/{token}/og-image.png`).
+  Slug : `/g/{slug}-{token}` accepté en plus de `/g/{token}` — `guide.py._real_token`
+  = `rsplit('-',1)[-1]` (le token est **hex pur**, donc sans tiret : le slug
+  décoratif devant est ignoré, seul le token fait foi ; anciens liens nus valides à
+  jamais). Le corps porte le **token réel** (`data-token`) → fetches internes
+  intacts. `noindex` conservé. Côté back-office, « Copier le lien » copie la forme
+  slug (`frontend/js/share.js`, slugify aligné sur le backend).
+- Langue du QR PDF (M-26) : `poster.build_guide_poster(..., lang=)` — textes
+  localisés FR/EN/ES (`_TEXT`, surtitre via `_spaced`, mot d'accueil avec mention
+  wifi) ; le poster ne sort plus qu'en **une** langue. Endpoint `guide-poster.pdf
+  ?lang=fr|en|es` (Literal → 422 sinon). Le bouton « QR à imprimer » ouvre un petit
+  menu FR/EN/ES (`editor.js openPosterMenu`).
+- Hors-ligne des tuiles (M-10) : `sw.js` **cache-first** pour `tile.openstreetmap.
+  org` (avant : réseau seul). Pré-chargement de la zone déclenché par l'app une fois
+  EN LIGNE (`app.js initPwa` → `postMessage {prefetch-tiles, lat, lon}` après
+  `serviceWorker.ready`) : le SW moissonne zooms 13-16 autour du logement (~148
+  tuiles) **séquentiellement** avec pause (politesse OSM, pas de rafale), saute les
+  tuiles déjà en cache, cache `TILES` plafonné (éviction FIFO). Hors-ligne + tuile
+  absente → `Response.error` → `errorTileUrl` transparent + message discret
+  `.map-offline`. **Toute modif de `frontend/guide/*` impose de bumper `VERSION`
+  dans `sw.js`** (actuellement v12) — voir piège cache-busting SW plus haut. NB : le
+  cache `TILES` doit rester dans la liste `keep` de l'`activate` (sinon purgé).
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 

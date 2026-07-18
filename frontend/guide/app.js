@@ -30,8 +30,15 @@ function initMap() {
   if (!mapEl || !window.L || P.lat == null || P.lon == null) return;
 
   const map = L.map(mapEl, { scrollWheelZoom: false }).setView([P.lat, P.lon], 14);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-    { attribution: "© OpenStreetMap", maxZoom: 19 }).addTo(map);
+  // Tuile transparente en cas d'échec (hors-ligne, hors zone pré-chargée) : la
+  // carte reste sobre au lieu d'afficher des vignettes cassées (M-10).
+  const TRANSPARENT_TILE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { attribution: "© OpenStreetMap", maxZoom: 19, errorTileUrl: TRANSPARENT_TILE });
+  // Hors-ligne : si des tuiles manquent (au-delà de la zone pré-chargée), afficher
+  // un message discret. Se retire au retour en ligne.
+  tiles.on("tileerror", () => { if (!navigator.onLine) showMapOffline(mapEl); });
+  tiles.addTo(map);
   L.marker([P.lat, P.lon], {
     icon: L.divIcon({ className: "", html: '<div class="home-pin">🏠</div>', iconAnchor: [13, 13] }),
     keyboard: false,
@@ -56,6 +63,15 @@ function initMap() {
   // La carte est créée avant la mise en page finale : recalage.
   setTimeout(() => map.invalidateSize(), 80);
   window._guideMap = map;
+}
+
+// Message discret « hors ligne / hors zone » sur la carte (M-10).
+function showMapOffline(mapEl) {
+  if (mapEl.querySelector(".map-offline")) return;
+  const note = el("div", { class: "map-offline" },
+    "Hors ligne — carte limitée à la zone du logement");
+  mapEl.appendChild(note);
+  window.addEventListener("online", () => note.remove(), { once: true });
 }
 
 // ── Filtres par chapitre (chips ↔ sections ↔ marqueurs) ──────────────────────
@@ -275,7 +291,17 @@ function initLang() {
 function initPwa() {
   if (!("serviceWorker" in navigator)) return;
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/guide/sw.js", { scope: "/" }).catch(() => { /* non bloquant */ });
+    navigator.serviceWorker.register("/guide/sw.js", { scope: "/" })
+      .then(() => navigator.serviceWorker.ready)
+      .then((reg) => {
+        // Hors-ligne complet (M-10) : à la 1re visite EN LIGNE, demander au SW
+        // de pré-charger les tuiles de la zone du logement (en tâche de fond).
+        const P = GUIDE.property || {};
+        if (navigator.onLine && reg.active && P.lat != null && P.lon != null) {
+          reg.active.postMessage({ type: "prefetch-tiles", lat: P.lat, lon: P.lon });
+        }
+      })
+      .catch(() => { /* non bloquant */ });
   });
 }
 
