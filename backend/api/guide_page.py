@@ -23,9 +23,13 @@ from __future__ import annotations
 import html
 import json
 import re
+import unicodedata
 from typing import Any
 
 from .assets import versioned
+
+# Locale Open Graph par langue (M-25) : repli fr_FR.
+_OG_LOCALE = {"fr": "fr_FR", "en": "en_GB", "es": "es_ES"}
 
 # ── Couleurs de chapitre (alignées sur frontend/js/constants.js) ─────────────
 _CHAPTER_COLORS: dict[str, str] = {
@@ -85,6 +89,8 @@ _UI: dict[str, dict[str, str]] = {
         "address": "Adresse", "gps": "Coordonnées GPS",
         "copy": "Copier", "copied": "Copié ✓",
         "title_suffix": "Guide du logement", "home": "Votre logement",
+        "share_desc": "Tout pour votre séjour : arrivée, wifi, urgences, commerces, "
+                      "restaurants et carte du quartier.",
         "footer": "Guide propulsé par CasaGuide — données OpenStreetMap. Bon séjour !",
     },
     "en": {
@@ -103,6 +109,8 @@ _UI: dict[str, dict[str, str]] = {
         "address": "Address", "gps": "GPS coordinates",
         "copy": "Copy", "copied": "Copied ✓",
         "title_suffix": "Property guide", "home": "Your accommodation",
+        "share_desc": "Everything for your stay: check-in, wifi, emergencies, shops, "
+                      "restaurants and a map of the area.",
         "footer": "Guide powered by CasaGuide — OpenStreetMap data. Enjoy your stay!",
     },
     "es": {
@@ -121,6 +129,8 @@ _UI: dict[str, dict[str, str]] = {
         "address": "Dirección", "gps": "Coordenadas GPS",
         "copy": "Copiar", "copied": "Copiado ✓",
         "title_suffix": "Guía del alojamiento", "home": "Tu alojamiento",
+        "share_desc": "Todo para tu estancia: llegada, wifi, urgencias, comercios, "
+                      "restaurantes y mapa del barrio.",
         "footer": "Guía con tecnología de CasaGuide — datos de OpenStreetMap. ¡Feliz estancia!",
     },
 }
@@ -696,8 +706,51 @@ def _chapter_name(ch: str, lang: str) -> str:
             or _CHAPTER_NAMES["fr"].get(ch, ch))
 
 
+def slugify(name: str | None, maxlen: int = 60) -> str:
+    """Fragment lisible et sûr pour l'URL de partage (M-25) : « Villa Mar Azul »
+    → « villa-mar-azul ». **Décoratif** : seul le token final fait foi côté
+    serveur (le slug est ignoré à la lecture)."""
+    ascii_name = (unicodedata.normalize("NFKD", name or "")
+                  .encode("ascii", "ignore").decode())
+    s = re.sub(r"[^A-Za-z0-9]+", "-", ascii_name).strip("-").lower()
+    return (s[:maxlen].strip("-")) or "guide"
+
+
+def share_path(name: str | None, token: str) -> str:
+    """Chemin de partage élégant `/g/{slug}-{token}` (M-25). L'ancien lien nu
+    `/g/{token}` reste valide à jamais (le slug est décoratif)."""
+    slug = slugify(name)
+    return f"/g/{slug}-{token}"
+
+
+def _og_tags(*, title: str, desc: str, url: str, image: str | None,
+             locale: str) -> str:
+    """Balises Open Graph + Twitter Card (M-25) : vignette de partage dans
+    WhatsApp/iMessage/e-mail. `noindex` est conservé par ailleurs (§8)."""
+    tags = [
+        '<meta property="og:type" content="website">',
+        '<meta property="og:site_name" content="CasaGuide">',
+        f'<meta property="og:title" content="{_esc(title)}">',
+        f'<meta property="og:description" content="{_esc(desc)}">',
+        f'<meta property="og:locale" content="{_esc(locale)}">',
+        f'<meta name="twitter:title" content="{_esc(title)}">',
+        f'<meta name="twitter:description" content="{_esc(desc)}">',
+    ]
+    if url:
+        tags.append(f'<meta property="og:url" content="{_esc(url)}">')
+    if image:
+        tags.append(f'<meta property="og:image" content="{_esc(image)}">')
+        tags.append(f'<meta property="og:image:alt" content="{_esc(title)}">')
+        tags.append(f'<meta name="twitter:image" content="{_esc(image)}">')
+        tags.append('<meta name="twitter:card" content="summary_large_image">')
+    else:
+        tags.append('<meta name="twitter:card" content="summary">')
+    return "\n".join(tags)
+
+
 def render_guide(prop: dict, sections: list[dict], pois: list[dict],
-                 area_facts: dict, token: str, lang: str = "fr") -> str:
+                 area_facts: dict, token: str, lang: str = "fr", *,
+                 base_url: str = "", og_image_url: str | None = None) -> str:
     contact = prop.get("contact") or {}
     name = _esc(prop.get("name") or _t(lang, "home"))
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
@@ -762,6 +815,15 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
     langs = _render_langs(default_lang, prop.get("published_langs") or [], lang)
     has_map = map_data["property"]["lat"] is not None
 
+    # Liens de partage élégants (M-25) : vignette Open Graph. L'URL canonique de
+    # partage porte le slug lisible (le token reste l'autorité).
+    plain_name = prop.get("name") or _t(lang, "home")
+    share_title = f"{plain_name} — {_t(lang, 'title_suffix')}"
+    og_url = (base_url.rstrip("/") + share_path(prop.get("name"), token)) if base_url else ""
+    og_html = _og_tags(title=share_title, desc=_t(lang, "share_desc"),
+                       url=og_url, image=og_image_url,
+                       locale=_OG_LOCALE.get(lang, "fr_FR"))
+
     return f"""<!DOCTYPE html>
 <html lang="{_esc(lang)}">
 <head>
@@ -770,6 +832,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0E5A73">
 <title>{name} — {_esc(_t(lang, "title_suffix"))}</title>
+{og_html}
 <link rel="manifest" href="/g/{_esc(token)}/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/guide/icon-192.png">
 <link rel="icon" href="/guide/icon-192.png">

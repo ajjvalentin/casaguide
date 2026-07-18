@@ -11,6 +11,7 @@ import {
 import { navigate } from "../nav.js";
 import { COUNTRIES } from "../constants.js";
 import { openPropertyInfoModal } from "../components/propertyinfo.js";
+import { guideShareUrl } from "../share.js";
 
 const STATUS_LABEL = { draft: "Brouillon", published: "Publié", archived: "Archivé" };
 
@@ -110,7 +111,7 @@ export async function renderProperties(view) {
 
   async function copyGuideLink(p) {
     try {
-      await navigator.clipboard.writeText(location.origin + `/g/${p.guide_token}`);
+      await navigator.clipboard.writeText(guideShareUrl(p));
       toast("Lien du guide copié.", "ok");
     } catch (_) { toast("Copie impossible — ouvrez le guide pour récupérer le lien.", "err"); }
   }

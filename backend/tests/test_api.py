@@ -1609,3 +1609,58 @@ def test_geocode_endpoint_isolated_by_owner(client):
     r = client.post(f"/api/properties/{prop['id']}/geocode",
                     headers=intruder["headers"])
     assert r.status_code == 404
+
+
+# ── Liens de partage élégants : Open Graph + slug (M-25) ─────────────────────
+
+def test_share_open_graph_and_slug_link(client):
+    """La page publiée porte des balises Open Graph/Twitter (vignette de partage)
+    et accepte le lien lisible /g/{slug}-{token} ; noindex conservé."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"], name="Villa Mar Azul")
+    pid, token = prop["id"], prop["guide_token"]
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    page = client.get(f"/g/{token}")
+    assert page.status_code == 200
+    assert page.headers["X-Robots-Tag"].startswith("noindex")  # noindex conservé
+    assert '<meta property="og:title" content="Villa Mar Azul — Guide du logement">' in page.text
+    assert '<meta property="og:description"' in page.text
+    assert '<meta property="og:image"' in page.text
+    assert '<meta name="twitter:card" content="summary_large_image">' in page.text
+    # og:url porte le slug lisible
+    assert f"/g/villa-mar-azul-{token}" in page.text
+    # Aucune photo → og:image = image de marque générée
+    assert f"/g/{token}/og-image.png" in page.text
+
+    # Le lien de partage avec slug résout le MÊME guide (le slug est décoratif)
+    slug_page = client.get(f"/g/villa-mar-azul-{token}")
+    assert slug_page.status_code == 200
+    assert "Villa Mar Azul" in slug_page.text
+    # Le corps porte le token RÉEL (pas le slug) → fetches internes corrects
+    assert f'data-token="{token}"' in slug_page.text
+
+    # L'ancien lien nu reste valide à jamais
+    assert client.get(f"/g/{token}").status_code == 200
+    # Slug erroné mais token correct : toujours valide (token = autorité)
+    assert client.get(f"/g/nimporte-quoi-{token}").status_code == 200
+
+
+def test_og_image_is_generated_png(client):
+    """L'image de marque (aucune photo) est un vrai PNG 1200×630, noindex."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"], name="Casa del Sol")
+    pid, token = prop["id"], prop["guide_token"]
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    img = client.get(f"/g/{token}/og-image.png")
+    assert img.status_code == 200
+    assert img.headers["content-type"] == "image/png"
+    assert img.headers["X-Robots-Tag"].startswith("noindex")
+    assert img.content[:8] == b"\x89PNG\r\n\x1a\n"  # signature PNG
+    # Brouillon : 404 propre (jamais l'image d'un guide non publié)
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "draft"})
+    assert client.get(f"/g/{token}/og-image.png").status_code == 404

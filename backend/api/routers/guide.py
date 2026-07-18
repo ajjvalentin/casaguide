@@ -18,11 +18,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import assets, crypto, guide_page, media_files, repo, storage, wifi
+from .. import (assets, crypto, guide_page, media_files, og_image, repo,
+                storage, wifi)
 from ..config import settings
 from ..deps import Conn
 
@@ -47,6 +48,36 @@ def _json(payload: dict, *, no_store: bool = False) -> JSONResponse:
         media_type="application/json; charset=utf-8",
         headers=_public_headers(no_store=no_store),
     )
+
+
+def _real_token(token_or_slug: str) -> str:
+    """Extrait le token réel d'un lien de partage `/g/{slug}-{token}` (M-25).
+
+    Le token est purement hexadécimal (`gen_random_bytes`) et le slug décoratif
+    précède le dernier tiret : le token est donc le segment après le dernier `-`.
+    Un ancien lien nu `/g/{token}` (sans tiret) est renvoyé tel quel."""
+    return token_or_slug.rsplit("-", 1)[-1]
+
+
+def _base_url(request: Request) -> str:
+    """Origine publique des liens absolus (M-25) : `CASAGUIDE_PUBLIC_BASE_URL`
+    sinon l'origine de la requête."""
+    return (settings.public_base_url or str(request.base_url)).rstrip("/")
+
+
+def _first_photo_path(sections: list[dict], property_media: list[dict],
+                      token: str) -> str | None:
+    """Chemin de la première photo du logement (M-25) : photos de niveau
+    logement d'abord (« façade »), puis premières photos des sections visibles,
+    dans l'ordre du guide. `None` si le logement n'a aucune photo."""
+    for m in property_media:
+        if m.get("kind") == "photo":
+            return m["url"]
+    for s in sections:
+        for m in s.get("media") or []:
+            if m.get("kind") == "photo":
+                return m["url"]
+    return None
 
 
 def _effective_lang(prop: dict, requested: str | None) -> str:
@@ -118,25 +149,50 @@ def _overlay_translations(conn, pid: str, lang: str, sections: list[dict],
 
 
 @router.get("/g/{guide_token}", response_class=HTMLResponse)
-def public_guide_page(guide_token: str, conn: Conn, lang: str | None = None):
+def public_guide_page(guide_token: str, conn: Conn, request: Request,
+                      lang: str | None = None):
     """Page HTML du guide voyageur, rendue dans `lang` si c'est une langue
     publiée (M-09 ; repli sur la langue source sinon). 404 propre si token
-    inconnu / non publié."""
-    loaded = _load_guide(conn, guide_token, lang)
+    inconnu / non publié. Accepte le lien de partage `/g/{slug}-{token}` (M-25) :
+    le slug est décoratif, seul le token fait foi."""
+    token = _real_token(guide_token)
+    loaded = _load_guide(conn, token, lang)
     if not loaded:
         return HTMLResponse(guide_page.render_not_found(), status_code=404,
                             headers=_NOINDEX)
-    prop, sections, pois, area_facts, _property_media, effective = loaded
+    prop, sections, pois, area_facts, property_media, effective = loaded
+    # Vignette de partage (M-25) : première photo du logement, sinon image de
+    # marque générée. URL absolue pour les scrapers (WhatsApp/iMessage/e-mail).
+    base = _base_url(request)
+    photo = _first_photo_path(sections, property_media, token)
+    og_image_url = base + (photo or f"/g/{token}/og-image.png")
     html = guide_page.render_guide(_property_public(prop), sections, pois,
-                                   area_facts, guide_token, lang=effective)
+                                   area_facts, token, lang=effective,
+                                   base_url=base, og_image_url=og_image_url)
     return HTMLResponse(html, headers=_public_headers())
+
+
+@router.get("/g/{guide_token}/og-image.png")
+def public_og_image(guide_token: str, conn: Conn):
+    """Image de marque 1200×630 pour les liens de partage (M-25), servie quand
+    le logement n'a aucune photo. 404 propre si le guide n'est pas publié."""
+    token = _real_token(guide_token)
+    prop = repo.get_published_property_by_token(conn, token)
+    if not prop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Guide introuvable")
+    place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
+    png = og_image.build_og_image(prop["name"], subtitle=place)
+    return Response(content=png, media_type="image/png",
+                    headers=_public_headers())
 
 
 @router.get("/g/{guide_token}/data")
 def public_guide_data(guide_token: str, conn: Conn, lang: str | None = None):
     """Guide JSON pré-calculé (sans aucun secret) pour l'app / usages tiers.
-    Le contenu est renvoyé dans `lang` si c'est une langue publiée (M-09)."""
-    loaded = _load_guide(conn, guide_token, lang)
+    Le contenu est renvoyé dans `lang` si c'est une langue publiée (M-09).
+    Accepte aussi le lien de partage `/g/{slug}-{token}/data` (M-25)."""
+    loaded = _load_guide(conn, _real_token(guide_token), lang)
     if not loaded:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Guide introuvable")

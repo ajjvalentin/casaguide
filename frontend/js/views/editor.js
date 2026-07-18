@@ -15,6 +15,7 @@ import { CHAPTER_ORDER, chapterMeta } from "../constants.js";
 import { buildSectionForm } from "../components/dynform.js";
 import { buildMediaPanel } from "../components/media.js";
 import { openPropertyInfoModal, openPositionModal } from "../components/propertyinfo.js";
+import { guideShareUrl } from "../share.js";
 import { runEnrichment } from "./properties.js";
 
 const ACCURACY_LABEL = { rooftop: "précise", street: "au niveau de la rue", city: "au centre de la commune" };
@@ -321,7 +322,8 @@ export async function renderEditor(view, pid) {
     }
   }
 
-  function guideLink() { return location.origin + `/g/${property.guide_token}`; }
+  // Lien de partage élégant (M-25) : /g/{slug}-{token}. Le token reste l'autorité.
+  function guideLink() { return guideShareUrl(property); }
   function staffLink() { return location.origin + `/s/${property.staff_token}`; }
 
   async function copyGuideLink() {
@@ -363,7 +365,7 @@ export async function renderEditor(view, pid) {
     if (!(await confirmDialog("Rendre ce guide accessible via son lien public ? Les voyageurs pourront le consulter.",
       { title: "Publier le guide", okLabel: "Publier" }))) return;
     await setStatus("published");
-    const link = location.origin + `/g/${property.guide_token}`;
+    const link = guideShareUrl(property);
     openModal({
       title: "Guide publié 🎉",
       body: el("div", {},
