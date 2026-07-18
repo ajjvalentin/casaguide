@@ -108,8 +108,15 @@ export const api = {
   recomputeDistances: (id) => request("POST", `/api/properties/${id}/recompute-distances`),
   // (Re)géocodage explicite de l'adresse + recalcul des distances (M-24)
   geocodeProperty: (id) => request("POST", `/api/properties/${id}/geocode`),
-  // Affiche QR imprimable (M-07) — PDF protégé récupéré comme Blob (jeton joint)
-  posterBlob: (id, size) => fetchBlob(`/api/properties/${id}/guide-poster.pdf` + (size ? `?size=${size}` : "")),
+  // Affiche QR imprimable (M-07) — PDF protégé récupéré comme Blob (jeton joint).
+  // Langue du poster au choix (M-26) : fr|en|es.
+  posterBlob: (id, { size, lang } = {}) => {
+    const q = new URLSearchParams();
+    if (size) q.set("size", size);
+    if (lang) q.set("lang", lang);
+    const qs = q.toString();
+    return fetchBlob(`/api/properties/${id}/guide-poster.pdf` + (qs ? `?${qs}` : ""));
+  },
 
   // Secrets chiffrés
   getSecrets: (id) => request("GET", `/api/properties/${id}/secrets`),

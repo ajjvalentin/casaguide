@@ -268,8 +268,8 @@ export async function renderEditor(view, pid) {
         el("button", { class: "btn btn-sm", onClick: () => copyGuideLink() },
           icon("link", 16), "Copier le lien"),
         translationBtn,
-        el("button", { class: "btn btn-sm", onClick: () => downloadPoster() },
-          icon("qr-code", 16), "QR à imprimer"),
+        el("button", { class: "btn btn-sm", onClick: () => openPosterMenu() },
+          icon("qr-code", 16), "QR à imprimer", icon("chevron-down", 14)),
         el("button", { class: "btn btn-sm", onClick: () => setStatus("draft") }, "Dépublier"));
       refreshTranslationState();
     } else {
@@ -348,13 +348,29 @@ export async function renderEditor(view, pid) {
           el("a", { class: "btn btn-sm", href: `/s/${property.staff_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 15), "Ouvrir"))));
   }
 
-  // Téléchargement de l'affiche QR imprimable (M-07). Le PDF est protégé (owner) :
-  // on le récupère avec le jeton puis on déclenche le téléchargement local.
-  async function downloadPoster(size) {
+  // Petit menu de langue du poster QR (M-26) : FR / EN / ES. Le poster ne sort
+  // plus qu'en une langue, choisie par le propriétaire.
+  const POSTER_LANGS = [["fr", "Français"], ["en", "English"], ["es", "Español"]];
+  function openPosterMenu() {
+    const body = el("div", {},
+      el("p", { class: "muted", style: { marginTop: 0 } },
+        "Langue de l'affiche à imprimer (le QR reste le même) :"),
+      el("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } },
+        ...POSTER_LANGS.map(([code, label]) =>
+          el("button", { class: "btn", onClick: () => { menu.close(); downloadPoster({ lang: code }); } },
+            icon("qr-code", 16), label))));
+    const menu = openModal({ title: "QR à imprimer", body,
+      footer: [el("button", { class: "btn btn-ghost", type: "button", onClick: () => menu.close() }, "Fermer")] });
+  }
+
+  // Téléchargement de l'affiche QR imprimable (M-07, M-26). Le PDF est protégé
+  // (owner) : on le récupère avec le jeton puis on déclenche le téléchargement.
+  async function downloadPoster({ size, lang } = {}) {
     try {
-      const blob = await api.posterBlob(pid, size);
+      const blob = await api.posterBlob(pid, { size, lang });
       const url = URL.createObjectURL(blob);
-      const a = el("a", { href: url, download: `casaguide-qr-${property.name || pid}.pdf` });
+      const suffix = lang ? `-${lang}` : "";
+      const a = el("a", { href: url, download: `casaguide-qr-${property.name || pid}${suffix}.pdf` });
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
       toast("Affiche QR téléchargée.", "ok");
@@ -373,7 +389,7 @@ export async function renderEditor(view, pid) {
         el("div", { class: "field" }, el("input", { type: "text", value: link, readonly: true, onFocus: (e) => e.target.select() })),
         el("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } },
           el("a", { class: "btn btn-sm", href: `/g/${property.guide_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 16), "Ouvrir le guide"),
-          el("button", { class: "btn btn-sm", type: "button", onClick: () => downloadPoster() }, icon("qr-code", 16), "QR code à imprimer"))),
+          el("button", { class: "btn btn-sm", type: "button", onClick: () => openPosterMenu() }, icon("qr-code", 16), "QR code à imprimer"))),
       footer: [el("button", { class: "btn btn-primary", onClick: (e) => { navigator.clipboard?.writeText(link); toast("Lien copié.", "ok"); } }, "Copier le lien")],
     });
   }

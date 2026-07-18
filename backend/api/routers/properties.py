@@ -159,18 +159,19 @@ def geocode_property(
 
 @router.get("/{property_id}/guide-poster.pdf")
 def guide_poster(request: Request, prop: OwnedProperty,
-                 size: Literal["a5", "a4"] = "a5"):
+                 size: Literal["a5", "a4"] = "a5",
+                 lang: Literal["fr", "en", "es"] = "fr"):
     """PDF imprimable (A5 par défaut, `?size=a4`) : nom du logement + QR du lien
-    du guide + mot d'accueil FR/EN. Réservé au propriétaire du logement (via
-    `OwnedProperty`). N'encode que le lien public `/g/{guide_token}` — jamais un
-    secret. L'origine des liens vient de `CASAGUIDE_PUBLIC_BASE_URL` sinon de la
-    requête."""
+    du guide + mot d'accueil localisé (`?lang=fr|en|es`, M-26). Réservé au
+    propriétaire du logement (via `OwnedProperty`). N'encode que le lien public
+    `/g/{guide_token}` — jamais un secret. L'origine des liens vient de
+    `CASAGUIDE_PUBLIC_BASE_URL` sinon de la requête."""
     base = (settings.public_base_url or str(request.base_url)).rstrip("/")
     guide_url = f"{base}/g/{prop['guide_token']}"
     pdf = poster.build_guide_poster(
         property_name=prop["name"], guide_url=guide_url,
-        city=prop.get("city"), size=size)
-    filename = f"casaguide-qr-{_slug(prop['name'])}.pdf"
+        city=prop.get("city"), size=size, lang=lang)
+    filename = f"casaguide-qr-{_slug(prop['name'])}-{lang}.pdf"
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'})

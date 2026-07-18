@@ -1664,3 +1664,24 @@ def test_og_image_is_generated_png(client):
     client.patch(f"/api/properties/{pid}", headers=owner["headers"],
                  json={"status": "draft"})
     assert client.get(f"/g/{token}/og-image.png").status_code == 404
+
+
+# ── Langue du QR PDF (M-26) ──────────────────────────────────────────────────
+
+def test_guide_poster_localised(client):
+    """Le poster QR sort dans la langue demandée (fr|en|es), en un vrai PDF ;
+    langue inconnue → 422 (Literal)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"], name="Villa Mar Azul")
+    pid = prop["id"]
+    for lang in ("fr", "en", "es"):
+        r = client.get(f"/api/properties/{pid}/guide-poster.pdf?lang={lang}",
+                       headers=owner["headers"])
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "application/pdf"
+        assert r.content[:4] == b"%PDF"
+        assert f"-{lang}.pdf" in r.headers.get("content-disposition", "")
+    r = client.get(f"/api/properties/{pid}/guide-poster.pdf", headers=owner["headers"])
+    assert r.status_code == 200 and "-fr.pdf" in r.headers.get("content-disposition", "")
+    assert client.get(f"/api/properties/{pid}/guide-poster.pdf?lang=de",
+                      headers=owner["headers"]).status_code == 422

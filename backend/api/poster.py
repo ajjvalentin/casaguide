@@ -32,6 +32,35 @@ _LINE = HexColor("#E7E0D4")
 
 _SIZES = {"a5": A5, "a4": A4}
 
+# Textes du poster localisés (M-26 : menu FR/EN/ES). La « mention wifi » figure
+# dans la phrase d'accueil (arrivée, wifi, urgences…). Repli français.
+_TEXT: dict[str, dict[str, str]] = {
+    "fr": {
+        "eyebrow": "VOTRE GUIDE DE SÉJOUR",
+        "welcome": "Scannez ce QR code pour ouvrir votre guide de séjour : "
+                   "arrivée, wifi, urgences, commerces et bonnes adresses du quartier.",
+        "title": "QR code du guide",
+    },
+    "en": {
+        "eyebrow": "YOUR STAY GUIDE",
+        "welcome": "Scan this QR code to open your stay guide: check-in, wifi, "
+                   "emergencies, shops and the best spots nearby.",
+        "title": "Guide QR code",
+    },
+    "es": {
+        "eyebrow": "TU GUÍA DE ESTANCIA",
+        "welcome": "Escanea este código QR para abrir tu guía de estancia: "
+                   "llegada, wifi, urgencias, comercios y los mejores sitios del barrio.",
+        "title": "Código QR de la guía",
+    },
+}
+
+
+def _spaced(text: str) -> str:
+    """« VOTRE GUIDE » → « V O T R E   G U I D E » (surtitre aéré, façon capitales
+    espacées) tout en restant localisable (les accents sont préservés)."""
+    return "   ".join(" ".join(word) for word in text.split(" "))
+
 
 def _wrap(c: canvas.Canvas, text: str, font: str, size: float,
           max_width: float) -> list[str]:
@@ -52,13 +81,16 @@ def _wrap(c: canvas.Canvas, text: str, font: str, size: float,
 
 
 def build_guide_poster(*, property_name: str, guide_url: str,
-                       city: str | None = None, size: str = "a5") -> bytes:
-    """PDF de l'affiche QR (octets). `size` ∈ {'a5','a4'}."""
+                       city: str | None = None, size: str = "a5",
+                       lang: str = "fr") -> bytes:
+    """PDF de l'affiche QR (octets). `size` ∈ {'a5','a4'} ; `lang` ∈ {'fr','en','es'}
+    localise entièrement le surtitre, le mot d'accueil et la mention wifi (M-26)."""
+    txt = _TEXT.get(lang, _TEXT["fr"])
     page = _SIZES.get(size.lower(), A5)
     pw, ph = page
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=page)
-    c.setTitle(f"{property_name} — QR code du guide")
+    c.setTitle(f"{property_name} — {txt['title']}")
 
     # Fond sable + cadre fin (l'affiche reste élégante même en N&B).
     c.setFillColor(_SAND)
@@ -71,11 +103,11 @@ def build_guide_poster(*, property_name: str, guide_url: str,
     cx = pw / 2
     inner = pw - 2 * (m + 8 * mm)
 
-    # Surtitre
+    # Surtitre (localisé, capitales espacées)
     y = ph - m - 20 * mm
     c.setFillColor(_SEA)
     c.setFont("Helvetica-Bold", 10)
-    c.drawCentredString(cx, y, "V O T R E   G U I D E   D E   S É J O U R")
+    c.drawCentredString(cx, y, _spaced(txt["eyebrow"]))
 
     # Nom du logement (titre — Times fait office de serif façon Fraunces)
     y -= 16 * mm
@@ -107,21 +139,13 @@ def build_guide_poster(*, property_name: str, guide_url: str,
     d.add(widget)
     renderPDF.draw(d, c, cx - qr_side / 2, qy)
 
-    # Mot d'accueil FR / EN
+    # Mot d'accueil localisé (une seule langue, choisie par le propriétaire)
     ty = qy - 14 * mm
-    welcome_fr = "Scannez ce QR code pour ouvrir votre guide de séjour : arrivée, wifi, urgences, commerces et bonnes adresses du quartier."
-    welcome_en = "Scan this QR code to open your stay guide: check-in, wifi, emergencies, shops and the best spots nearby."
     c.setFillColor(_INK)
-    for line in _wrap(c, welcome_fr, "Helvetica", 11.5, inner):
-        c.setFont("Helvetica", 11.5)
+    for line in _wrap(c, txt["welcome"], "Helvetica", 12, inner):
+        c.setFont("Helvetica", 12)
         c.drawCentredString(cx, ty, line)
-        ty -= 15
-    ty -= 4
-    c.setFillColor(_MUTED)
-    for line in _wrap(c, welcome_en, "Helvetica-Oblique", 10.5, inner):
-        c.setFont("Helvetica-Oblique", 10.5)
-        c.drawCentredString(cx, ty, line)
-        ty -= 13
+        ty -= 16
 
     # Pied de page (identité)
     c.setFillColor(_SEA)
