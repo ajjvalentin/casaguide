@@ -501,3 +501,38 @@ def test_collapse_favourites_still_lead_before_truncation():
     # ❤ d'abord dans l'ordre SSR, donc avant les 4 premières cartes de distance.
     assert html.index("Coup de cœur") < html.index("Proche 0")
     assert "❤ Le meilleur !" in html
+
+
+# ── V2-09 (cohérences) : ancres de section → bon onglet, sélecteur de langue ──
+
+def test_section_anchors_live_in_their_owning_tab_panel():
+    """Chaque section porte un id=<code> logé DANS le panneau de son onglet :
+    une ancre profonde #<code> mène donc au bon onglet (résolu côté client)."""
+    sections = [_section("B_house_rules", "B", {"fields": []}, body_md="Règles"),
+                _section("C_trash", "C", {"fields": []}, body_md="Tri"),
+                _section("D_safety", "D", {"fields": []}, body_md="Sécurité")]
+    html = guide_page.render_guide(_prop(), sections, [], {}, "tok")
+    assert 'id="B_house_rules"' in _panel(html, "home")
+    assert 'id="C_trash"' in _panel(html, "home")
+    assert 'id="D_safety"' in _panel(html, "emergency")
+
+
+def test_language_selector_rendered_for_hash_preserving_switch():
+    """Le sélecteur de langue est rendu (liens ?lang=xx que le client complète du
+    hash courant) → l'onglet actif survit au changement de langue (une seule page)."""
+    prop = _prop(default_lang="fr", published_langs=["es"])
+    html = guide_page.render_guide(prop, [_section("B_wifi", "B", {"fields": []})],
+                                   [], {}, "tok")
+    assert 'class="langs"' in html and 'data-lang="es"' in html
+
+
+def test_single_page_no_new_routes_hashes_are_fixed():
+    """Les onglets sont de simples ancres FIXES (#logement/#urgences/#autour) sur
+    la même page : aucune route serveur nouvelle."""
+    html = guide_page.render_guide(_prop(), [_section("B_wifi", "B", {"fields": []})],
+                                   [], {}, "tok")
+    # Les panneaux portent les data-tab attendus ; le mapping hash est stable.
+    assert guide_page._TAB_HASH == {"home": "logement", "emergency": "urgences",
+                                    "around": "autour"}
+    for key in ("home", "emergency", "around"):
+        assert f'id="tab-{key}"' in html

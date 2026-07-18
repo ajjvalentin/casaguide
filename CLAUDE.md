@@ -36,7 +36,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Affiche QR imprimable (M-07) | `api/poster.py` (reportlab) → `GET /api/properties/{id}/guide-poster.pdf` (A5/A4, propriétaire uniquement) : nom du logement, QR du lien du guide, mot d'accueil FR/EN, identité sable/mer |
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
-| Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v12) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}` |
+| Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v14) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}`. **Lisibilité (V2-09) faite** : TROIS onglets (Le logement / Urgences / Autour de vous, état dans le hash, `app.js initTabs`) + listes de lieux repliées (4 + « Voir les N autres », `initCategoryLists`) |
 
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
 
@@ -435,6 +435,39 @@ exposé, peer auth).
   `.map-offline`. **Toute modif de `frontend/guide/*` impose de bumper `VERSION`
   dans `sw.js`** (actuellement v12) — voir piège cache-busting SW plus haut. NB : le
   cache `TILES` doit rester dans la liste `keep` de l'`activate` (sinon purgé).
+- Guide en TROIS onglets (V2-09) : le guide voyageur n'est plus un rouleau unique
+  mais trois espaces — « Le logement » (home), « Urgences » (emergency), « Autour
+  de vous » (around). La répartition se fait **chapitre par chapitre** dans
+  `guide_page.render_guide` via `_SECTION_TAB` / `_POI_TAB` (les sections d'un
+  chapitre et ses POI peuvent aller dans des onglets différents — seul C : sections
+  → home, commerces → around). La barre d'urgences **compacte** reste dans l'en-tête
+  (persistante sur les 3 onglets) ; la version **`_render_sos(big=True)`** ouvre
+  l'onglet Urgences, avec le bloc complet des numéros (`_render_numbers`). La carte
+  et les puces de filtre vivent dans le panneau « around » ; `map_data` ne contient
+  que les POI de cet espace (`_POI_TAB == "around"`). **Sans JS, tous les panneaux
+  restent visibles** (CSS `html.js .tab-panel:not(.tab-active){display:none}` +
+  script inline `<head>` qui pose la classe `js` → pas de FOUC, noscript = rouleau
+  complet, aucune perte). État d'onglet dans le hash **fixe** `#logement/#urgences/
+  #autour` (`_TAB_HASH`, non localisé) → deep-link + retour arrière. `app.js
+  initTabs` gère l'activation, résout une ancre de section `#<code>` vers l'onglet
+  propriétaire (chaque `.sec-card` porte `id=<code>`), recale la carte
+  (`invalidateSize`) à l'activation d'« around », et complète les liens de langue
+  du hash courant (onglet conservé au changement de langue). **Une seule page,
+  aucune route serveur** → le SW hors-ligne (M-10) et le sélecteur de langue (M-09)
+  fonctionnent inchangés. Toute nouvelle catégorie/chapitre doit être ajoutée à
+  `_SECTION_TAB`/`_POI_TAB` (défaut `home`).
+- Listes de lieux repliées (V2-09) : `_render_pois` enveloppe chaque catégorie en
+  `.cat > .poi-group` et rend **4 cartes** puis un bouton « Voir les N autres »
+  (`.more-btn`, compte exact) **rendu côté serveur mais masqué par CSS** (sans JS
+  toutes les cartes restent visibles). `app.js initCategoryLists` déplie/replie et
+  **coopère avec le filtre par cuisine** des restaurants (le compte du bouton suit
+  les cartes réellement éligibles ; `data-more-tpl` = gabarit `{n}` réinjecté côté
+  client). Les coups de cœur ❤ restent en tête (tri serveur) donc visibles avant la
+  troncature. Catégories ≤ 4 : affichées telles quelles (pas de bouton). NB : la
+  vérification headless-new clippe les captures à la largeur de fenêtre alors que la
+  mise en page se fait à la largeur du `.wrap` (680px) → un « débordement » apparent
+  à 390px est un **artefact du screenshot**, pas un bug (vérifier à 900px : colonne
+  centrée propre).
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 
