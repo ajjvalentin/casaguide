@@ -159,24 +159,55 @@ function initChips() {
   }));
 }
 
-// ── Filtre par cuisine (restaurants, M-16) ───────────────────────────────────
-// Les puces sont rendues côté serveur depuis les cuisines réellement présentes ;
-// ici on ne fait que masquer/afficher les cartes concernées, sans rechargement.
-function initCuisineFilter() {
-  document.querySelectorAll(".cuisines[data-cat]").forEach((bar) => {
-    const group = bar.nextElementSibling && bar.nextElementSibling.classList.contains("poi-group")
-      ? bar.nextElementSibling
-      : bar.parentElement.querySelector('.poi-group[data-cat="restaurant"]');
+// ── Listes de lieux : repli à 4 + filtre par cuisine (V2-09, M-16) ───────────
+// Chaque catégorie (`.cat`) affiche 4 cartes (coups de cœur ❤ d'abord — tri
+// serveur — puis les plus proches) et un bouton « Voir les N autres » qui déplie
+// le reste (puis « Réduire »). Repli PUREMENT client : le HTML contient tout
+// (sans JS, tout est visible). Pour les restaurants, le filtre par cuisine et le
+// repli coopèrent : le compte du bouton suit les cartes réellement éligibles.
+const POI_LIMIT = 4;
+function initCategoryLists() {
+  document.querySelectorAll(".cat").forEach((cat) => {
+    const group = cat.querySelector(".poi-group");
     if (!group) return;
-    const chips = [...bar.querySelectorAll(".cchip")];
+    const cards = [...group.querySelectorAll(":scope > .poi-card")];
+    const moreBtn = cat.querySelector(".more-btn");
+    const chips = [...cat.querySelectorAll(".cuisines .cchip")];
+    const state = { cuisine: "", expanded: false };
+
+    const eligible = (card) => !state.cuisine || card.dataset.cuisine === state.cuisine;
+
+    function apply() {
+      let shown = 0;
+      cards.forEach((card) => {
+        if (!eligible(card)) { card.style.display = "none"; return; }
+        shown += 1;
+        card.style.display = (state.expanded || shown <= POI_LIMIT) ? "" : "none";
+      });
+      if (moreBtn) {
+        const total = cards.filter(eligible).length;
+        if (total > POI_LIMIT) {
+          moreBtn.classList.add("show");
+          moreBtn.textContent = state.expanded
+            ? (moreBtn.dataset.less || "")
+            : (moreBtn.dataset.moreTpl || "").replace("{n}", total - POI_LIMIT);
+        } else {
+          moreBtn.classList.remove("show");   // filtre laissant ≤ 4 : rien à replier
+        }
+      }
+    }
+
+    if (moreBtn) {
+      moreBtn.addEventListener("click", () => { state.expanded = !state.expanded; apply(); });
+    }
     chips.forEach((chip) => chip.addEventListener("click", () => {
       chips.forEach((c) => c.classList.remove("on"));
       chip.classList.add("on");
-      const cui = chip.dataset.cuisine || "";
-      group.querySelectorAll(".poi-card").forEach((card) => {
-        card.style.display = (!cui || card.dataset.cuisine === cui) ? "" : "none";
-      });
+      state.cuisine = chip.dataset.cuisine || "";
+      state.expanded = false;
+      apply();
     }));
+    apply();   // repli initial à 4
   });
 }
 
@@ -392,7 +423,7 @@ initLang();
 initMap();
 initTabs();
 initChips();
-initCuisineFilter();
+initCategoryLists();
 initCopy();
 initLightbox();
 initSecrets();

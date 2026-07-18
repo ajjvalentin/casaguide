@@ -46,6 +46,10 @@ _CHAPTER_ORDER = ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
 #   · around    « Autour de vous » : carte + tous les autres lieux (E/F/G/H + commerces C)
 # Un chapitre voit ses SECTIONS et ses POI potentiellement dans des espaces
 # différents (seul le chapitre C : sections → home, commerces → around).
+# Listes de lieux repliées (V2-09) : nombre de cartes visibles par catégorie
+# avant le bouton « Voir les N autres ».
+_POI_VISIBLE = 4
+
 _TAB_ORDER = ["home", "emergency", "around"]
 # Ancres d'URL FIXES (non localisées) : liens profonds + retour arrière stables.
 _TAB_HASH = {"home": "logement", "emergency": "urgences", "around": "autour"}
@@ -104,6 +108,7 @@ _UI: dict[str, dict[str, str]] = {
         "cuisine_filter": "Filtrer par cuisine",
         "tabs": "Espaces du guide", "tab_home": "Le logement",
         "tab_emergency": "Urgences", "tab_around": "Autour de vous",
+        "show_more": "Voir les {n} autres", "show_less": "Réduire",
         "nav_to_home": "Itinéraire vers le logement", "open_in": "Ouvrir dans",
         "nav_take_me": "Me guider vers le logement", "view_route": "Voir l'itinéraire",
         "address": "Adresse", "gps": "Coordonnées GPS",
@@ -126,6 +131,7 @@ _UI: dict[str, dict[str, str]] = {
         "cuisine_filter": "Filter by cuisine",
         "tabs": "Guide sections", "tab_home": "The home",
         "tab_emergency": "Emergencies", "tab_around": "Around you",
+        "show_more": "Show {n} more", "show_less": "Show less",
         "nav_to_home": "Directions to the property", "open_in": "Open in",
         "nav_take_me": "Take me to the property", "view_route": "View route",
         "address": "Address", "gps": "GPS coordinates",
@@ -148,6 +154,7 @@ _UI: dict[str, dict[str, str]] = {
         "cuisine_filter": "Filtrar por cocina",
         "tabs": "Espacios de la guía", "tab_home": "El alojamiento",
         "tab_emergency": "Emergencias", "tab_around": "A tu alrededor",
+        "show_more": "Ver {n} más", "show_less": "Reducir",
         "nav_to_home": "Cómo llegar al alojamiento", "open_in": "Abrir en",
         "nav_take_me": "Llévame al alojamiento", "view_route": "Ver ruta",
         "address": "Dirección", "gps": "Coordenadas GPS",
@@ -596,15 +603,22 @@ def _render_pois(pois: list[dict], lang: str = "fr") -> str:
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
                 f'<div class="poi-body"><h4>{_esc(p["name"])}{cuisine_tag}</h4>{comment}'
                 f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}</div></div>')
-        head = f'<h4 class="cat-title">{cat_name} · {len(lst)}</h4>'
-        if is_resto:
-            # Filtre par cuisine (M-16), généré depuis les valeurs présentes ; le
-            # filtrage lui-même est fait côté client (app.js), sans rechargement.
-            chips = _render_cuisine_chips(lst, lang)
-            blocks.append(head + chips
-                          + f'<div class="poi-group" data-cat="restaurant">{"".join(cards)}</div>')
-        else:
-            blocks.append(head + "".join(cards))
+        n = len(lst)
+        head = f'<h4 class="cat-title">{cat_name} · {n}</h4>'
+        group = f'<div class="poi-group" data-cat="{_esc(code)}">{"".join(cards)}</div>'
+        # Liste repliée (V2-09) : 4 cartes visibles, le reste sous « Voir les N
+        # autres ». Rendu SSR (bouton masqué par défaut : sans JS toutes les cartes
+        # restent visibles, dégradation acceptable). Le gabarit `{n}` est réinjecté
+        # côté client (le compte change avec le filtre par cuisine des restaurants).
+        more = ""
+        if n > _POI_VISIBLE:
+            tpl = _t(lang, "show_more")
+            more = (f'<button class="more-btn" type="button" '
+                    f'data-more-tpl="{_esc(tpl)}" data-less="{_esc(_t(lang, "show_less"))}">'
+                    f'{_esc(tpl.format(n=n - _POI_VISIBLE))}</button>')
+        chips = _render_cuisine_chips(lst, lang) if is_resto else ""
+        blocks.append(f'<div class="cat" data-cat="{_esc(code)}">'
+                      f'{head}{chips}{group}{more}</div>')
     return "".join(blocks)
 
 

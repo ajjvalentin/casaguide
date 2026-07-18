@@ -62,6 +62,13 @@ html.js .tab-panel.tab-active{display:block}
 /* Dans un panneau, les chips ne sont plus collantes en haut (la barre d'onglets
    l'est déjà) pour éviter le chevauchement. */
 .tab-panel .chips{position:static;background:none;z-index:auto}
+/* Listes de lieux repliées (V2-09) : bouton « Voir les N autres ». Masqué sans
+   JS (toutes les cartes restent visibles) ; révélé par la classe .show. */
+.more-btn{display:none;margin:8px 0 6px;border:1px solid var(--line);background:var(--shell);
+  color:var(--sea);border-radius:999px;padding:8px 16px;font:inherit;font-size:13px;
+  font-weight:600;cursor:pointer;transition:.12s}
+.more-btn.show{display:inline-flex;align-items:center;gap:6px}
+.more-btn:hover{border-color:var(--sea)}
 
 /* ── Carte ───────────────────────────────────────────────────────────────── */
 #map{position:relative;height:320px;border-radius:14px;border:1px solid var(--line);margin:14px 0 4px;background:#E9EEF0}

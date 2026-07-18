@@ -462,3 +462,42 @@ def test_pois_chapter_order_respected_within_around():
     html = guide_page.render_guide(_prop(), [], pois, {}, "tok")
     around = _panel(html, "around")
     assert around.index("Taxi Sur") < around.index("Bar Pepe") < around.index("Playa")
+
+
+# ── V2-09 : listes de lieux repliées (4 + « Voir les N autres ») ─────────────
+
+def test_collapse_more_button_exact_count_and_all_cards_ssr():
+    pois = [_poi(f"Super {i}", "supermarket", "C", walk=i + 1) for i in range(6)]
+    html = guide_page._render_pois(pois, "fr")
+    # Le HTML contient TOUTES les cartes (SSR : repli purement client).
+    for i in range(6):
+        assert f"Super {i}" in html
+    # Bouton « Voir les N autres » avec le compte exact (6 - 4 = 2) + gabarit/less
+    # pour le calcul dynamique côté client.
+    assert 'class="more-btn"' in html
+    assert 'data-more-tpl="Voir les {n} autres"' in html
+    assert 'data-less="Réduire"' in html
+    assert "Voir les 2 autres" in html
+
+
+def test_collapse_absent_when_four_or_fewer():
+    pois = [_poi(f"Super {i}", "supermarket", "C", walk=i + 1) for i in range(4)]
+    html = guide_page._render_pois(pois, "fr")
+    assert 'class="more-btn"' not in html      # ≤ 4 : affichée telle quelle
+
+
+def test_collapse_button_localised_es():
+    pois = [_poi(f"Bar {i}", "bar", "F", walk=i + 1) for i in range(7)]
+    html = guide_page._render_pois(pois, "es")
+    assert "Ver 3 más" in html                 # 7 - 4
+    assert 'data-less="Reducir"' in html
+
+
+def test_collapse_favourites_still_lead_before_truncation():
+    """Le coup de cœur (loin) reste en tête → visible parmi les 4 premières."""
+    pois = ([_poi(f"Proche {i}", "supermarket", "C", walk=i + 1) for i in range(5)]
+            + [_poi("Coup de cœur", "supermarket", "C", walk=99, comment="Le meilleur !")])
+    html = guide_page._render_pois(pois, "fr")
+    # ❤ d'abord dans l'ordre SSR, donc avant les 4 premières cartes de distance.
+    assert html.index("Coup de cœur") < html.index("Proche 0")
+    assert "❤ Le meilleur !" in html
