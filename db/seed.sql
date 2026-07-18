@@ -125,7 +125,7 @@ VALUES
   ],"poi_categories":["parking"]}', TRUE, FALSE),
 
 ('A_arrival', 'A', 5, 'plane-landing',
- '{"fr":"Venir depuis l’aéroport / la gare","en":"From the airport / station","es":"Desde el aeropuerto / la estación"}',
+ '{"fr":"Venir depuis votre emplacement","en":"Getting here from your location","es":"Cómo llegar desde tu ubicación"}',
  '{"fr":"Itinéraires générés automatiquement (GPS, adresse copiable, trajets depuis les aéroports validés). Ajoutez ici vos conseils personnels : péages, sorties, pièges à éviter…"}',
  '{"poi_categories":["airport","train_station","bus_station"]}', TRUE, FALSE),
 
