@@ -40,6 +40,28 @@ h1{font-family:Fraunces,serif;font-weight:700;font-size:clamp(28px,7vw,36px);mar
           border-radius:10px;padding:9px 12px;color:var(--ink)}
 .sos-item .num{font-family:Fraunces,serif;font-size:22px;font-weight:700;color:var(--alert);display:block;line-height:1.1}
 .sos-item .lbl{font-size:12px;color:var(--muted)}
+/* Barre d'urgences EN GRAND dans l'onglet « Urgences » (V2-09) */
+.sos-lg{margin:2px 0 16px}
+.sos-lg .sos-item{flex:1 1 130px;padding:15px 16px}
+.sos-lg .sos-item .num{font-size:30px}
+.sos-lg .sos-item .lbl{font-size:13px}
+
+/* ── Onglets « Le logement / Urgences / Autour de vous » (V2-09) ──────────────
+   Sans JS : la barre est masquée et TOUS les panneaux restent visibles (rouleau
+   complet, aucune perte). Avec JS (html.js) : un seul panneau actif. */
+.guide-tabs{display:none;gap:6px;position:sticky;top:0;z-index:700;
+  background:var(--sand);padding:9px 0;margin:6px 0 4px}
+html.js .guide-tabs{display:flex}
+.tab{flex:1 1 0;min-width:0;border:1px solid var(--line);background:var(--shell);
+  color:var(--muted);border-radius:999px;padding:9px 6px;font:inherit;font-size:13px;
+  font-weight:600;cursor:pointer;white-space:nowrap;text-align:center;
+  overflow:hidden;text-overflow:ellipsis;transition:.12s}
+.tab.on{background:var(--sea);border-color:var(--sea);color:#fff}
+html.js .tab-panel{display:none}
+html.js .tab-panel.tab-active{display:block}
+/* Dans un panneau, les chips ne sont plus collantes en haut (la barre d'onglets
+   l'est déjà) pour éviter le chevauchement. */
+.tab-panel .chips{position:static;background:none;z-index:auto}
 
 /* ── Carte ───────────────────────────────────────────────────────────────── */
 #map{position:relative;height:320px;border-radius:14px;border:1px solid var(--line);margin:14px 0 4px;background:#E9EEF0}

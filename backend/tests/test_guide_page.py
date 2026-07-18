@@ -196,7 +196,10 @@ _ARRIVAL_SCHEMA = {
 
 
 def _airport(name="Aéroport d'Alicante", lat=38.2822, lon=-0.5581, drive=35):
-    return {"id": name, "category_code": "airport", "chapter": "A",
+    # Chapitre H (Transports) comme au seed : les POI transport relèvent de
+    # l'espace « Autour de vous » (V2-09), même s'ils sont rendus en blocs de
+    # trajet dans A_arrival.
+    return {"id": name, "category_code": "airport", "chapter": "H",
             "category_name": {"fr": "Aéroports"}, "map_color": "#546E7A",
             "name": name, "lat": lat, "lon": lon, "cuisine": None,
             "walk_min": None, "dist_walk_m": None, "drive_min": drive,
@@ -369,3 +372,93 @@ def test_area_prompt_forbids_administrative_context_and_generalities():
     # On demande couleurs de conteneurs + ce qu'on y met, heures de silence.
     assert "couleur" in low and "on y met" in low
     assert "silence" in low
+
+
+# ── V2-09 : trois espaces à onglets ──────────────────────────────────────────
+
+def _panel(html, key):
+    """Extrait le HTML du panneau d'onglet `key` (home|emergency|around)."""
+    start = html.index(f'id="tab-{key}"')
+    rest = html[start:]
+    nxt = rest.find('<section class="tab-panel', 1)
+    return rest if nxt == -1 else rest[:nxt]
+
+
+def _poi(name, cat, ch, walk=5, comment=None):
+    return {"id": name, "name": name, "category_code": cat, "chapter": ch,
+            "category_name": {"fr": cat}, "map_color": "#0E5A73",
+            "lat": 37.9, "lon": -0.74, "walk_min": walk, "dist_walk_m": walk * 70,
+            "drive_min": None, "owner_comment": comment, "description_md": None,
+            "opening_hours": None, "phone": None, "website": None, "cuisine": None}
+
+
+def test_three_tabs_present_and_labelled():
+    html = guide_page.render_guide(_prop(), [_section("B_wifi", "B", {"fields": []})],
+                                   [], {}, "tok")
+    assert '<nav class="guide-tabs"' in html
+    for key in ("home", "emergency", "around"):
+        assert f'data-tab="{key}"' in html and f'id="tab-{key}"' in html
+    assert "Le logement" in html and "Urgences" in html and "Autour de vous" in html
+    # L'onglet « Le logement » est actif par défaut (SSR).
+    assert 'class="tab-panel tab-active" data-tab="home"' in html
+
+
+def test_tab_labels_localised_es():
+    html = guide_page.render_guide(_prop(), [_section("B_wifi", "B", {"fields": []})],
+                                   [], {}, "tok", lang="es")
+    assert "El alojamiento" in html and "Emergencias" in html and "A tu alrededor" in html
+
+
+def test_chapters_and_pois_distributed_across_the_three_tabs():
+    sections = [
+        _section("A_checkin", "A", {"fields": []}, body_md="Arrivée 16h"),
+        _section("B_house_rules", "B", {"fields": []}, body_md="Règles"),
+        _section("C_trash", "C", {"fields": []}, body_md="Tri des déchets"),
+        _section("D_safety", "D", {"fields": []}, body_md="Consignes de sécurité"),
+        _section("I_license", "I", {"fields": []}, body_md="Licence"),
+        _section("F_restaurants", "F", {"fields": []}, body_md="Nos restos"),
+    ]
+    pois = [_poi("Mercadona", "supermarket", "C"),     # commerce C → around
+            _poi("Farmacia Sol", "pharmacy", "D"),     # santé D → urgences
+            _poi("La Marejada", "restaurant", "F")]    # resto F → around
+    html = guide_page.render_guide(_prop(lat=37.9, lon=-0.74), sections, pois, {}, "tok")
+
+    home = _panel(html, "home")
+    emergency = _panel(html, "emergency")
+    around = _panel(html, "around")
+
+    # « Le logement » : sections A, B, C, I (mais PAS les commerces de C).
+    assert "Arrivée 16h" in home and "Règles" in home
+    assert "Tri des déchets" in home and "Licence" in home
+    assert "Mercadona" not in home
+    # « Urgences » : sections + santé du chapitre D.
+    assert "Consignes de sécurité" in emergency and "Farmacia Sol" in emergency
+    assert "Farmacia Sol" not in around and "Farmacia Sol" not in home
+    # « Autour de vous » : sections E/F/G/H + commerces de C + carte.
+    assert "Nos restos" in around and "La Marejada" in around
+    assert "Mercadona" in around
+    assert '<div id="map"></div>' in around
+    # Les commerces de C ne fuient pas dans « Le logement ».
+    assert "La Marejada" not in home
+
+
+def test_emergency_tab_has_big_sos_and_numbers_block():
+    facts = {"emergency_numbers": {"items": [
+        {"number": "112", "label": "Urgences"}, {"number": "062", "label": "Guardia Civil"}]}}
+    html = guide_page.render_guide(_prop(), [_section("D_safety", "D", {"fields": []})],
+                                   [], facts, "tok")
+    emergency = _panel(html, "emergency")
+    assert 'class="sos sos-lg"' in emergency          # barre d'urgences EN GRAND
+    assert "Tous les numéros utiles" in emergency      # bloc complet des numéros
+    # La barre compacte reste dans l'en-tête, en tête des trois onglets.
+    header = html[:html.index('<nav class="guide-tabs"')]
+    assert '<div class="sos">' in header
+
+
+def test_pois_chapter_order_respected_within_around():
+    """L'ordre du seed (E→F→G→H) est conservé dans l'espace « Autour »."""
+    pois = [_poi("Playa", "beach", "G"), _poi("Taxi Sur", "taxi", "E"),
+            _poi("Bar Pepe", "bar", "F")]
+    html = guide_page.render_guide(_prop(), [], pois, {}, "tok")
+    around = _panel(html, "around")
+    assert around.index("Taxi Sur") < around.index("Bar Pepe") < around.index("Playa")

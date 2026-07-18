@@ -74,15 +74,80 @@ function showMapOffline(mapEl) {
   window.addEventListener("online", () => note.remove(), { once: true });
 }
 
+// ── Onglets « Le logement / Urgences / Autour de vous » (V2-09) ───────────────
+// Une seule page : navigation sans rechargement, état dans l'URL (#logement /
+// #urgences / #autour) pour que liens profonds + retour arrière fonctionnent.
+// Les ancres de section (#<code>) mènent au bon onglet et défilent jusqu'à elle.
+const TAB_HASH = { home: "logement", emergency: "urgences", around: "autour" };
+const HASH_TAB = { logement: "home", urgences: "emergency", autour: "around" };
+
+function initTabs() {
+  const tabs = [...document.querySelectorAll(".guide-tabs .tab[data-tab]")];
+  const panels = [...document.querySelectorAll(".tab-panel[data-tab]")];
+  if (!tabs.length || !panels.length) return;
+
+  function activate(tabKey, { push = true } = {}) {
+    if (!TAB_HASH[tabKey]) tabKey = "home";
+    tabs.forEach((t) => {
+      const on = t.dataset.tab === tabKey;
+      t.classList.toggle("on", on);
+      t.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    panels.forEach((p) => p.classList.toggle("tab-active", p.dataset.tab === tabKey));
+    if (push) {
+      const h = "#" + TAB_HASH[tabKey];
+      if (location.hash !== h) history.pushState(null, "", h);
+    }
+    // La carte est créée dans l'onglet « Autour » (masqué au départ) : recalage.
+    if (tabKey === "around" && window._guideMap) {
+      setTimeout(() => window._guideMap.invalidateSize(), 30);
+    }
+    updateLangHash();
+  }
+
+  // Résout le hash courant : onglet fixe (#logement…) OU ancre de section
+  // (#B_wifi → l'onglet qui contient cette section, puis défilement).
+  function applyHash({ push = false } = {}) {
+    const raw = decodeURIComponent(location.hash.replace(/^#/, ""));
+    let tabKey = HASH_TAB[raw];
+    let scrollEl = null;
+    if (!tabKey && raw) {
+      const elt = document.getElementById(raw);
+      const panel = elt && elt.closest(".tab-panel[data-tab]");
+      if (panel) { tabKey = panel.dataset.tab; scrollEl = elt; }
+    }
+    activate(tabKey || "home", { push });
+    if (scrollEl) setTimeout(() => scrollEl.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+  }
+
+  tabs.forEach((t) => t.addEventListener("click", () => activate(t.dataset.tab)));
+  window.addEventListener("hashchange", () => applyHash({ push: false }));
+  window.addEventListener("popstate", () => applyHash({ push: false }));
+  applyHash({ push: false });   // état initial (deep link / retour arrière)
+  window._activateTab = (k) => activate(k);
+}
+
+// Le sélecteur de langue recharge la page (?lang=xx) : on lui joint le hash
+// courant pour conserver l'onglet actif après changement de langue (V2-09).
+function updateLangHash() {
+  document.querySelectorAll(".langs a[data-lang]").forEach((a) => {
+    a.setAttribute("href", "?lang=" + encodeURIComponent(a.dataset.lang) + location.hash);
+  });
+}
+
 // ── Filtres par chapitre (chips ↔ sections ↔ marqueurs) ──────────────────────
+// Scopés à l'onglet « Autour de vous » : ne masque jamais les chapitres des
+// autres onglets (qui ne portent pas de puce).
 function initChips() {
-  const chips = [...document.querySelectorAll(".chip")];
+  const around = document.querySelector('.tab-panel[data-tab="around"]');
+  if (!around) return;
+  const chips = [...around.querySelectorAll(".chip")];
   if (!chips.length) return;
   chips.forEach((chip) => chip.addEventListener("click", () => {
     chips.forEach((c) => c.classList.remove("on"));
     chip.classList.add("on");
     const ch = chip.dataset.chapter || "";
-    document.querySelectorAll(".chapter[data-chapter]").forEach((sec) => {
+    around.querySelectorAll(".chapter[data-chapter]").forEach((sec) => {
       sec.style.display = (!ch || sec.dataset.chapter === ch) ? "" : "none";
     });
     const map = window._guideMap;
@@ -325,6 +390,7 @@ function escapeHtml(s) {
 // ── Démarrage ────────────────────────────────────────────────────────────────
 initLang();
 initMap();
+initTabs();
 initChips();
 initCuisineFilter();
 initCopy();

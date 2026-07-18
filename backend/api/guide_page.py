@@ -38,6 +38,24 @@ _CHAPTER_COLORS: dict[str, str] = {
 }
 _CHAPTER_ORDER = ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
 
+# Trois espaces à onglets (V2-09) : les retours testeurs unanimes (« trop
+# d'informations ») imposent de casser le rouleau unique. On répartit le contenu
+# SANS rien retirer :
+#   · home      « Le logement »   : arrivée, maison, vie pratique, infos (+ wifi/secrets)
+#   · emergency « Urgences »      : barre SOS en grand, santé (chap. D), numéros utiles
+#   · around    « Autour de vous » : carte + tous les autres lieux (E/F/G/H + commerces C)
+# Un chapitre voit ses SECTIONS et ses POI potentiellement dans des espaces
+# différents (seul le chapitre C : sections → home, commerces → around).
+_TAB_ORDER = ["home", "emergency", "around"]
+# Ancres d'URL FIXES (non localisées) : liens profonds + retour arrière stables.
+_TAB_HASH = {"home": "logement", "emergency": "urgences", "around": "autour"}
+_SECTION_TAB = {"A": "home", "B": "home", "C": "home", "D": "emergency",
+                "E": "around", "F": "around", "G": "around", "H": "around",
+                "I": "home"}
+_POI_TAB = {"A": "home", "B": "home", "C": "around", "D": "emergency",
+            "E": "around", "F": "around", "G": "around", "H": "around",
+            "I": "home"}
+
 # Catégories « point de départ du trajet » : rendues comme blocs d'itinéraire
 # « en un tap » dans la section qui les déclare (A_arrival), et non en cartes
 # POI ordinaires (M-14). La gare routière (bus_station, M-21) rejoint les
@@ -84,6 +102,8 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Tranquillité du voisinage", "numbers": "Tous les numéros utiles",
         "filter": "Filtrer par thème", "lang": "Langue",
         "cuisine_filter": "Filtrer par cuisine",
+        "tabs": "Espaces du guide", "tab_home": "Le logement",
+        "tab_emergency": "Urgences", "tab_around": "Autour de vous",
         "nav_to_home": "Itinéraire vers le logement", "open_in": "Ouvrir dans",
         "nav_take_me": "Me guider vers le logement", "view_route": "Voir l'itinéraire",
         "address": "Adresse", "gps": "Coordonnées GPS",
@@ -104,6 +124,8 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Neighbourhood quiet", "numbers": "All useful numbers",
         "filter": "Filter by theme", "lang": "Language",
         "cuisine_filter": "Filter by cuisine",
+        "tabs": "Guide sections", "tab_home": "The home",
+        "tab_emergency": "Emergencies", "tab_around": "Around you",
         "nav_to_home": "Directions to the property", "open_in": "Open in",
         "nav_take_me": "Take me to the property", "view_route": "View route",
         "address": "Address", "gps": "GPS coordinates",
@@ -124,6 +146,8 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Tranquilidad del vecindario", "numbers": "Todos los números útiles",
         "filter": "Filtrar por tema", "lang": "Idioma",
         "cuisine_filter": "Filtrar por cocina",
+        "tabs": "Espacios de la guía", "tab_home": "El alojamiento",
+        "tab_emergency": "Emergencias", "tab_around": "A tu alrededor",
         "nav_to_home": "Cómo llegar al alojamiento", "open_in": "Abrir en",
         "nav_take_me": "Llévame al alojamiento", "view_route": "Ver ruta",
         "address": "Dirección", "gps": "Coordenadas GPS",
@@ -520,7 +544,11 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
         parts.append('<div class="secret-slot" data-secret="keybox" hidden></div>')
 
     parts.append(_render_media(sec.get("media") or [], lang))
-    return f'<article class="sec-card">{"".join(p for p in parts if p)}</article>'
+    # `id` = code de section (V2-09) : les ancres profondes `#<code>` mènent au
+    # bon onglet (résolu côté client) et défilent jusqu'à la section.
+    sec_id = _esc(sec.get("code") or "")
+    return (f'<article class="sec-card" id="{sec_id}">'
+            f'{"".join(p for p in parts if p)}</article>')
 
 
 # ── POI d'un chapitre, groupés par catégorie, triés par distance ─────────────
@@ -600,7 +628,10 @@ def _render_cuisine_chips(restaurants: list[dict], lang: str) -> str:
 
 # ── Barre d'urgences (numéros prioritaires, tel:) ────────────────────────────
 
-def _render_sos(area_facts: dict) -> str:
+def _render_sos(area_facts: dict, big: bool = False) -> str:
+    """Barre d'urgences tactile (numéros prioritaires, `tel:`). En version
+    compacte, elle reste en tête des TROIS onglets (§V2-09 : vital, ne se range
+    pas) ; en version `big`, elle ouvre l'onglet « Urgences »."""
     items = ((area_facts.get("emergency_numbers") or {}).get("items") or [])[:4]
     if not items:
         return ""
@@ -610,7 +641,8 @@ def _render_sos(area_facts: dict) -> str:
         cells.append(f'<a class="sos-item" href="tel:{_tel(num)}">'
                      f'<span class="num">{_esc(num)}</span>'
                      f'<span class="lbl">{_esc(it.get("label", ""))}</span></a>')
-    return f'<div class="sos">{"".join(cells)}</div>'
+    cls = "sos sos-lg" if big else "sos"
+    return f'<div class="{cls}">{"".join(cells)}</div>'
 
 
 # ── Faits locaux (area_facts) rendus à leur place (M-17) ─────────────────────
@@ -755,10 +787,62 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
     name = _esc(prop.get("name") or _t(lang, "home"))
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
 
-    # Chapitres présents (sections visibles ou POI retenus)
-    present = {s["chapter"] for s in sections} | {p["chapter"] for p in pois}
+    # Trajets d'arrivée (M-14) : POI transport rendus en blocs dans A_arrival (et
+    # retirés des listes ordinaires, anti-doublon). Repli en cartes si A_arrival
+    # masquée — inchangé.
+    transport_pois = [p for p in pois if p["category_code"] in _TRANSPORT_CATEGORIES]
+    host_visible = any(set((s.get("field_schema") or {}).get("poi_categories") or [])
+                       & _TRANSPORT_CATEGORIES for s in sections)
+    arrival_ctx = ({"prop": prop, "pois": transport_pois, "lat": prop.get("lat"),
+                    "lon": prop.get("lon")} if host_visible else None)
 
-    # Données embarquées pour la carte (aucun second appel réseau)
+    def _chapter_card_pois(ch: str) -> list[dict]:
+        cps = [p for p in pois if p["chapter"] == ch]
+        if arrival_ctx and transport_pois:  # trajets rendus dans A_arrival
+            cps = [p for p in cps
+                   if p["category_code"] not in _TRANSPORT_CATEGORIES]
+        return cps
+
+    def _chapter_block(ch: str, inner: list[str]) -> str:
+        parts = [x for x in inner if x]
+        if not parts:
+            return ""
+        return (f'<section class="chapter" data-chapter="{ch}">'
+                f'<h2>{_esc(_chapter_name(ch, lang))}</h2>'
+                f'<div class="chapline" style="background:{_CHAPTER_COLORS[ch]}"></div>'
+                f'{"".join(parts)}</section>')
+
+    # Répartition chapitre par chapitre dans les trois espaces (V2-09). Un chapitre
+    # dont sections et POI vont au même espace produit UN bloc ; le chapitre C
+    # (sections → « logement », commerces → « autour ») produit deux blocs.
+    panels: dict[str, list[str]] = {"home": [], "emergency": [], "around": []}
+    for ch in _CHAPTER_ORDER:
+        sec_tab = _SECTION_TAB.get(ch, "home")
+        poi_tab = _POI_TAB.get(ch, "home")
+        sec_html = [_render_section(s, contact, prop.get("tourism_license"),
+                                    area_facts, arrival_ctx, lang)
+                    for s in sections if s["chapter"] == ch]
+        pois_html = _render_pois(_chapter_card_pois(ch), lang)
+        if sec_tab == poi_tab:
+            blk = _chapter_block(ch, sec_html + [pois_html])
+            if blk:
+                panels[sec_tab].append(blk)
+        else:
+            sblk = _chapter_block(ch, sec_html)
+            if sblk:
+                panels[sec_tab].append(sblk)
+            pblk = _chapter_block(ch, [pois_html])
+            if pblk:
+                panels[poi_tab].append(pblk)
+
+    # Urgences : barre SOS EN GRAND + santé (chap. D, déjà réparti) + numéros utiles.
+    big_sos = _render_sos(area_facts, big=True)
+    numbers = _render_numbers(area_facts, _CHAPTER_COLORS["I"], lang)
+    emergency_inner = (([big_sos] if big_sos else []) + panels["emergency"]
+                       + ([numbers] if numbers else []))
+
+    # Autour de vous : carte + puces de filtre (bâties sur les POI de cet espace).
+    around_pois = [p for p in pois if _POI_TAB.get(p["chapter"], "home") == "around"]
     map_data = {
         "property": {"name": prop.get("name"), "lat": prop.get("lat"), "lon": prop.get("lon")},
         "pois": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"],
@@ -766,54 +850,49 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                   "category": _i18n(p.get("category_name"), lang, p["category_code"]),
                   "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
                   "phone": p.get("phone")}
-                 for p in pois if p.get("lat") is not None and p.get("lon") is not None],
+                 for p in around_pois
+                 if p.get("lat") is not None and p.get("lon") is not None],
     }
     data_json = json.dumps(map_data, ensure_ascii=False).replace("</", "<\\/")
+    has_map = map_data["property"]["lat"] is not None
 
-    # Filtres par chapitre (puces)
+    around_chapters = [ch for ch in _CHAPTER_ORDER
+                       if any(p["chapter"] == ch for p in around_pois)]
     chips = [f'<button class="chip on" data-chapter="">{_esc(_t(lang, "all"))}</button>']
-    for ch in _CHAPTER_ORDER:
-        if ch in present:
-            chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(_chapter_name(ch, lang))}</button>')
+    for ch in around_chapters:
+        chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(_chapter_name(ch, lang))}</button>')
+    around_inner: list[str] = []
+    if has_map:
+        around_inner.append('<div id="map"></div>')
+    if around_chapters:
+        around_inner.append(
+            f'<nav class="chips" aria-label="{_esc(_t(lang, "filter"))}">{"".join(chips)}</nav>')
+    around_inner += panels["around"]
 
-    # Section d'arrivée (A_arrival, déclare airport/train_station) : si elle est
-    # visible, elle héberge l'adresse & le GPS copiables (M-19) et les blocs
-    # d'itinéraire (M-14). Les POI aéroport/gare y sont rendus comme trajets et
-    # retirés de la liste POI ordinaire (anti-doublon). Si la section hôte n'est
-    # pas visible, on les laisse en cartes POI classiques (repli — jamais de perte).
-    transport_pois = [p for p in pois if p["category_code"] in _TRANSPORT_CATEGORIES]
-    host_visible = any(set((s.get("field_schema") or {}).get("poi_categories") or [])
-                       & _TRANSPORT_CATEGORIES for s in sections)
-    arrival_ctx = ({"prop": prop, "pois": transport_pois, "lat": prop.get("lat"),
-                    "lon": prop.get("lon")} if host_visible else None)
-
-    # Corps : un bloc par chapitre (sections visibles + POI du chapitre)
-    body: list[str] = []
-    for ch in _CHAPTER_ORDER:
-        if ch not in present:
-            continue
-        ch_color = _CHAPTER_COLORS[ch]
-        inner: list[str] = []
-        for sec in [s for s in sections if s["chapter"] == ch]:
-            inner.append(_render_section(sec, contact, prop.get("tourism_license"),
-                                         area_facts, arrival_ctx, lang))
-        chapter_pois = [p for p in pois if p["chapter"] == ch]
-        if arrival_ctx and transport_pois:  # trajets rendus dans A_arrival → hors liste POI
-            chapter_pois = [p for p in chapter_pois
-                            if p["category_code"] not in _TRANSPORT_CATEGORIES]
-        inner.append(_render_pois(chapter_pois, lang))
-        body.append(
-            f'<section class="chapter" data-chapter="{ch}">'
-            f'<h2>{_esc(_chapter_name(ch, lang))}</h2>'
-            f'<div class="chapline" style="background:{ch_color}"></div>'
-            f'{"".join(x for x in inner if x)}</section>')
-
-    body.append(_render_numbers(area_facts, _CHAPTER_COLORS["I"], lang))
+    # Onglets + panneaux (V2-09). Sans JS, tous les panneaux restent visibles
+    # (CSS gated sur `html.js`) → aucune perte de contenu (noscript = rouleau).
+    _labels = {"home": _t(lang, "tab_home"), "emergency": _t(lang, "tab_emergency"),
+               "around": _t(lang, "tab_around")}
+    _inner = {"home": "".join(panels["home"]),
+              "emergency": "".join(emergency_inner),
+              "around": "".join(around_inner)}
+    tabs_btns, panels_html = [], []
+    for key in _TAB_ORDER:
+        on = " on" if key == "home" else ""
+        sel = "true" if key == "home" else "false"
+        active = " tab-active" if key == "home" else ""
+        tabs_btns.append(
+            f'<button class="tab{on}" role="tab" data-tab="{key}" id="tabbtn-{key}" '
+            f'aria-controls="tab-{key}" aria-selected="{sel}">{_esc(_labels[key])}</button>')
+        panels_html.append(
+            f'<section class="tab-panel{active}" data-tab="{key}" id="tab-{key}" '
+            f'role="tabpanel" aria-labelledby="tabbtn-{key}">{_inner[key]}</section>')
+    tabs_nav = (f'<nav class="guide-tabs" role="tablist" '
+                f'aria-label="{_esc(_t(lang, "tabs"))}">{"".join(tabs_btns)}</nav>')
 
     sos = _render_sos(area_facts)
     default_lang = prop.get("default_lang") or "fr"
     langs = _render_langs(default_lang, prop.get("published_langs") or [], lang)
-    has_map = map_data["property"]["lat"] is not None
 
     # Liens de partage élégants (M-25) : vignette Open Graph. L'URL canonique de
     # partage porte le slug lisible (le token reste l'autorité).
@@ -831,6 +910,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0E5A73">
+<script>document.documentElement.className += " js";</script>
 <title>{name} — {_esc(_t(lang, "title_suffix"))}</title>
 {og_html}
 <link rel="manifest" href="/g/{_esc(token)}/manifest.webmanifest">
@@ -855,9 +935,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
     </div>
     {sos}
   </header>
-  {'<div id="map"></div>' if has_map else ''}
-  <nav class="chips" aria-label="{_esc(_t(lang, "filter"))}">{"".join(chips)}</nav>
-  <main id="content">{"".join(body)}</main>
+  {tabs_nav}
+  <main id="content">{"".join(panels_html)}</main>
   <footer>{_esc(_t(lang, "footer"))}</footer>
 </div>
 <script id="guide-data" type="application/json">{data_json}</script>
