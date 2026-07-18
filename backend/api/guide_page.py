@@ -60,6 +60,15 @@ _POI_TAB = {"A": "home", "B": "home", "C": "around", "D": "emergency",
             "E": "around", "F": "around", "G": "around", "H": "around",
             "I": "home"}
 
+# Dérogations PAR SECTION (retour terrain 18/07) : les sections « coquilles »
+# commerçantes du chapitre C (leur contenu réel = des lieux) suivent leurs POI
+# dans « Autour de vous » — sans quoi elles restent orphelines et vides dans
+# « Le logement ». Seule C_trash (poubelles & tri) est un vrai contenu maison.
+_SECTION_TAB_OVERRIDES = {
+    "C_supermarkets": "around", "C_markets": "around", "C_shops": "around",
+    "C_malls": "around", "C_laundry": "around",
+}
+
 # Catégories « point de départ du trajet » : rendues comme blocs d'itinéraire
 # « en un tap » dans la section qui les déclare (A_arrival), et non en cartes
 # POI ordinaires (M-14). La gare routière (bus_station, M-21) rejoint les
@@ -831,23 +840,24 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
     # (sections → « logement », commerces → « autour ») produit deux blocs.
     panels: dict[str, list[str]] = {"home": [], "emergency": [], "around": []}
     for ch in _CHAPTER_ORDER:
-        sec_tab = _SECTION_TAB.get(ch, "home")
         poi_tab = _POI_TAB.get(ch, "home")
-        sec_html = [_render_section(s, contact, prop.get("tourism_license"),
-                                    area_facts, arrival_ctx, lang)
-                    for s in sections if s["chapter"] == ch]
+        default_tab = _SECTION_TAB.get(ch, "home")
+        sec_by_tab: dict[str, list[str]] = {}
+        for s in sections:
+            if s["chapter"] != ch:
+                continue
+            tab = _SECTION_TAB_OVERRIDES.get(s.get("code"), default_tab)
+            sec_by_tab.setdefault(tab, []).append(
+                _render_section(s, contact, prop.get("tourism_license"),
+                                area_facts, arrival_ctx, lang))
         pois_html = _render_pois(_chapter_card_pois(ch), lang)
-        if sec_tab == poi_tab:
-            blk = _chapter_block(ch, sec_html + [pois_html])
+        for tab in _TAB_ORDER:
+            inner = list(sec_by_tab.get(tab, []))
+            if tab == poi_tab and pois_html:
+                inner.append(pois_html)
+            blk = _chapter_block(ch, inner)
             if blk:
-                panels[sec_tab].append(blk)
-        else:
-            sblk = _chapter_block(ch, sec_html)
-            if sblk:
-                panels[sec_tab].append(sblk)
-            pblk = _chapter_block(ch, [pois_html])
-            if pblk:
-                panels[poi_tab].append(pblk)
+                panels[tab].append(blk)
 
     # Urgences : barre SOS EN GRAND + santé (chap. D, déjà réparti) + numéros utiles.
     big_sos = _render_sos(area_facts, big=True)
