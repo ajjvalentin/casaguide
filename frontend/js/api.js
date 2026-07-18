@@ -106,6 +106,8 @@ export const api = {
   deleteProperty: (id) => request("DELETE", `/api/properties/${id}`),
   stats:          (id) => request("GET", `/api/properties/${id}/stats`),
   recomputeDistances: (id) => request("POST", `/api/properties/${id}/recompute-distances`),
+  // (Re)géocodage explicite de l'adresse + recalcul des distances (M-24)
+  geocodeProperty: (id) => request("POST", `/api/properties/${id}/geocode`),
   // Affiche QR imprimable (M-07) — PDF protégé récupéré comme Blob (jeton joint)
   posterBlob: (id, size) => fetchBlob(`/api/properties/${id}/guide-poster.pdf` + (size ? `?size=${size}` : "")),
 

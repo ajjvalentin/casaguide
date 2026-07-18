@@ -1550,3 +1550,62 @@ def test_translate_excluded_from_enrich_quota(client):
     # Un second enrichissement reste refusé (quota du plan free = 1)
     assert client.post(f"/api/properties/{pid}/enrich", headers=owner["headers"],
                        json={"trigger": "refresh"}).status_code == 429
+
+
+# ── Fiche du logement éditable : (re)géocodage explicite (M-24) ──────────────
+
+def test_geocode_endpoint_repositions_from_address(client):
+    """POST /geocode re-localise depuis l'adresse et repasse geocode_source à
+    'nominatim' (jamais automatique — c'est un geste explicite du propriétaire)."""
+    from api.deps import get_geocoder
+    app.dependency_overrides[get_geocoder] = lambda: (
+        lambda prop: {"lat": 38.077, "lon": -0.703, "accuracy": "street",
+                      "source": "nominatim"})
+    try:
+        owner = register(client)
+        prop = make_property(client, owner["headers"])
+        pid = prop["id"]
+        r = client.post(f"/api/properties/{pid}/geocode", headers=owner["headers"])
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["accuracy"] == "street"
+        assert body["property"]["lat"] == pytest.approx(38.077)
+        assert body["property"]["lon"] == pytest.approx(-0.703)
+        assert body["property"]["geocode_source"] == "nominatim"
+    finally:
+        app.dependency_overrides.pop(get_geocoder, None)
+
+
+def test_geocode_endpoint_422_when_address_not_found(client):
+    """Adresse introuvable → 422, la position existante est préservée."""
+    from api.deps import get_geocoder
+    from enrich.geocode import GeocodeError
+
+    def _boom(prop):
+        raise GeocodeError("introuvable")
+
+    app.dependency_overrides[get_geocoder] = lambda: _boom
+    try:
+        owner = register(client)
+        prop = make_property(client, owner["headers"])
+        pid = prop["id"]
+        # Position manuelle préalable : ne doit pas être écrasée par l'échec.
+        client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                     json={"lat": 38.0, "lon": -0.7})
+        r = client.post(f"/api/properties/{pid}/geocode", headers=owner["headers"])
+        assert r.status_code == 422
+        cur = client.get(f"/api/properties/{pid}", headers=owner["headers"]).json()
+        assert cur["lat"] == pytest.approx(38.0)
+        assert cur["geocode_source"] == "manual"
+    finally:
+        app.dependency_overrides.pop(get_geocoder, None)
+
+
+def test_geocode_endpoint_isolated_by_owner(client):
+    """Un tiers ne peut pas re-géocoder le logement d'autrui (404)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    intruder = register(client)
+    r = client.post(f"/api/properties/{prop['id']}/geocode",
+                    headers=intruder["headers"])
+    assert r.status_code == 404

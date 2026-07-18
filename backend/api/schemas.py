@@ -242,6 +242,13 @@ class RecomputeOut(BaseModel):
     updated: int
 
 
+class GeocodeOut(BaseModel):
+    """Résultat d'un (re)géocodage explicite de l'adresse (M-24)."""
+    property: PropertyOut
+    accuracy: str
+    distances_updated: int
+
+
 # ── Enrichissement ───────────────────────────────────────────────────────────
 
 class EnrichIn(BaseModel):

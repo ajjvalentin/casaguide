@@ -14,6 +14,7 @@ import { navigate } from "../nav.js";
 import { CHAPTER_ORDER, chapterMeta } from "../constants.js";
 import { buildSectionForm } from "../components/dynform.js";
 import { buildMediaPanel } from "../components/media.js";
+import { openPropertyInfoModal, openPositionModal } from "../components/propertyinfo.js";
 import { runEnrichment } from "./properties.js";
 
 const ACCURACY_LABEL = { rooftop: "précise", street: "au niveau de la rue", city: "au centre de la commune" };
@@ -56,13 +57,15 @@ export async function renderEditor(view, pid) {
   const banner = el("div", {});
   const sidebar = el("nav", { class: "card chapters", style: { padding: "10px" } });
   const panel = el("section", { class: "card section-panel" });
+  const titleEl = el("h1", { class: "page-title", style: { margin: "0 0 6px" } }, property.name);
+  const crumbName = el("span", {}, property.name);
 
   const page = el("div", { class: "page" },
     el("div", { class: "crumbs" },
       el("a", { href: "#/properties" }, "Mes logements"), icon("chevron-right", 14),
-      el("span", {}, property.name)),
+      crumbName),
     el("div", { class: "row", style: { justifyContent: "space-between", alignItems: "flex-start", marginBottom: "6px" } },
-      el("div", {}, el("h1", { class: "page-title", style: { margin: "0 0 6px" } }, property.name),
+      el("div", {}, titleEl,
         el("div", { class: "row", style: { gap: "10px" } }, statusBadge, globalPct,
           el("span", { class: "muted", style: { fontSize: "13px" } }, "complété"))),
       headerRight),
@@ -248,6 +251,10 @@ export async function renderEditor(view, pid) {
     statusBadge.textContent = { draft: "Brouillon", published: "Publié", archived: "Archivé" }[property.status] || property.status;
     statusBadge.className = "badge badge-" + property.status;
     clear(headerRight);
+    // Fiche du logement éditable (M-24) — accessible en permanence.
+    headerRight.append(
+      el("button", { class: "btn btn-sm", onClick: () => openInfo() },
+        icon("home", 16), "Informations"));
     if (property.status === "published") {
       // ── Traductions du guide (M-09) : bouton « Mettre à jour les traductions »
       // avec état (à jour / X éléments périmés). La (re)traduction est déclenchée
@@ -378,18 +385,41 @@ export async function renderEditor(view, pid) {
     } catch (err) { toast(err.message || "Action impossible.", "err"); }
   }
 
+  // ── Fiche du logement + position (M-24, M-05) ─────────────────────────────
+  // La modale « Informations » et la mini-carte de position sont mutualisées
+  // (components/propertyinfo.js) et accessibles À TOUT MOMENT.
+  function applyPropertyUpdate(updated) {
+    property = { ...property, ...updated };
+    titleEl.textContent = property.name;
+    crumbName.textContent = property.name;
+    renderBanner();
+    renderHeaderActions();
+  }
+
+  function openInfo() {
+    openPropertyInfoModal(property, { onSaved: applyPropertyUpdate });
+  }
+
+  function openPosition() {
+    openPositionModal(property, { onSaved: applyPropertyUpdate });
+  }
+
   // ── Bandeau de position (M-05) ────────────────────────────────────────────
   function renderBanner() {
     clear(banner);
     if (property.lat == null) {
-      banner.append(el("div", { class: "notice notice-warn", style: { marginTop: "14px" } }, icon("map-pin-off", 18),
-        el("div", {}, el("b", {}, "Logement non localisé. "),
+      banner.append(el("div", { class: "notice notice-warn", style: { marginTop: "14px", alignItems: "center" } }, icon("map-pin-off", 18),
+        el("div", { style: { flex: "1" } }, el("b", {}, "Logement non localisé. "),
           "Lancez l'enrichissement pour géocoder l'adresse, ou placez le point manuellement. ",
-          el("a", { href: "#", onClick: (e) => { e.preventDefault(); runEnrichment(pid, "initial", { onFinished: () => reloadProperty() }); } }, "Enrichir maintenant"))));
+          el("a", { href: "#", onClick: (e) => { e.preventDefault(); runEnrichment(pid, "initial", { onFinished: () => reloadProperty() }); } }, "Enrichir maintenant")),
+        el("button", { class: "btn btn-sm", onClick: () => openPosition() }, icon("map-pin", 16), "Placer sur la carte")));
+      refreshIcons();
       return;
     }
+    // Bandeau d'ALERTE quand la position est douteuse (M-24 : ce n'est plus la
+    // seule porte vers la carte — « Ajuster la position » est toujours dispo).
     if (property.geocode_accuracy && property.geocode_accuracy !== "rooftop") {
-      const btn = el("button", { class: "btn btn-sm", onClick: () => openPositionModal() }, icon("move", 16), "Ajuster la position");
+      const btn = el("button", { class: "btn btn-sm", onClick: () => openPosition() }, icon("move", 16), "Ajuster la position");
       banner.append(el("div", { class: "notice notice-warn", style: { marginTop: "14px", alignItems: "center" } }, icon("map-pin", 18),
         el("div", { style: { flex: "1" } }, el("b", {}, "Position approximative "),
           `(localisation ${ACCURACY_LABEL[property.geocode_accuracy] || property.geocode_accuracy}). `,
@@ -400,50 +430,6 @@ export async function renderEditor(view, pid) {
   }
 
   async function reloadProperty() {
-    try { property = await api.getProperty(pid); renderBanner(); renderHeaderActions(); } catch (_) {}
-  }
-
-  function openPositionModal() {
-    const mapEl = el("div", { id: "pos-map" });
-    const coordLine = el("div", { class: "muted", style: { fontSize: "12.5px", marginTop: "8px" } });
-    const saveBtn = el("button", { class: "btn btn-primary" }, "Enregistrer la position");
-    const modal = openModal({
-      title: "Position du logement", size: "lg",
-      body: el("div", {},
-        el("p", { class: "muted", style: { marginTop: 0 } }, "Faites glisser le marqueur (ou cliquez sur la carte) pour placer précisément l'entrée du logement."),
-        mapEl, coordLine),
-      footer: [el("button", { class: "btn btn-ghost", type: "button", onClick: () => modal.close() }, "Annuler"), saveBtn],
-    });
-
-    let lat = property.lat, lon = property.lon;
-    const map = L.map(mapEl).setView([lat, lon], 16);
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(map);
-    const marker = L.marker([lat, lon], { draggable: true }).addTo(map);
-    const showCoords = () => { coordLine.textContent = `Latitude ${lat.toFixed(6)}, longitude ${lon.toFixed(6)}`; };
-    showCoords();
-    marker.on("dragend", () => { const p = marker.getLatLng(); lat = p.lat; lon = p.lng; showCoords(); });
-    map.on("click", (e) => { lat = e.latlng.lat; lon = e.latlng.lng; marker.setLatLng(e.latlng); showCoords(); });
-    setTimeout(() => map.invalidateSize(), 60);
-
-    saveBtn.addEventListener("click", async () => {
-      saveBtn.disabled = true; saveBtn.textContent = "Enregistrement…";
-      try {
-        const updated = await api.updateProperty(pid, { lat, lon });
-        property = { ...property, ...updated };
-        modal.close();
-        renderBanner();
-        toast("Position mise à jour.", "ok");
-        if (await confirmDialog("Recalculer les distances de tous les lieux suggérés depuis la nouvelle position ?",
-          { title: "Recalculer les distances", okLabel: "Recalculer" })) {
-          try {
-            const r = await api.recomputeDistances(pid);
-            toast(`Distances recalculées pour ${r.updated} lieu(x).`, "ok");
-          } catch (e2) { toast(e2.message || "Recalcul impossible.", "err"); }
-        }
-      } catch (err) {
-        toast(err.message || "Enregistrement impossible.", "err");
-        saveBtn.disabled = false; saveBtn.textContent = "Enregistrer la position";
-      }
-    });
+    try { property = await api.getProperty(pid); applyPropertyUpdate(property); } catch (_) {}
   }
 }

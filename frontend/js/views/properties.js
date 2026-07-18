@@ -10,6 +10,7 @@ import {
 } from "../ui.js";
 import { navigate } from "../nav.js";
 import { COUNTRIES } from "../constants.js";
+import { openPropertyInfoModal } from "../components/propertyinfo.js";
 
 const STATUS_LABEL = { draft: "Brouillon", published: "Publié", archived: "Archivé" };
 
@@ -80,10 +81,17 @@ export async function renderProperties(view) {
           ? el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Copier le lien du guide", title: "Copier le lien du guide",
             onClick: () => copyGuideLink(p) }, icon("link", 16))
           : null,
+        el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Informations du logement", title: "Informations du logement",
+          onClick: () => editInfo(p) }, icon("home", 16)),
         el("span", { style: { flex: "1" } }),
         el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Supprimer", onClick: () => removeProperty(p) },
           icon("trash-2", 16))));
     return card;
+  }
+
+  // Fiche du logement éditable (M-24) — accessible depuis la carte.
+  function editInfo(p) {
+    openPropertyInfoModal(p, { onSaved: () => renderProperties(view) });
   }
 
   function fillStats(card, p, s) {

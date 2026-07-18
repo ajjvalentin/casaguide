@@ -7,7 +7,7 @@ import jwt
 from fastapi import Depends, HTTPException, Path, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from enrich import db, distance, pipeline, translate
+from enrich import db, distance, geocode, pipeline, translate
 
 from . import poi_search, repo, security
 
@@ -135,6 +135,29 @@ def get_distance_computer() -> DistanceComputer:
     """Surchargée dans les tests par un calcul sans réseau
     (app.dependency_overrides[get_distance_computer])."""
     return _default_distance_computer
+
+
+# ── (Re)géocodage d'une adresse (fiche du logement éditable, M-24) ───────────
+
+# prop (dict) → {"lat", "lon", "accuracy", "source", ...}
+Geocoder = Callable[[dict], dict]
+
+
+def _default_geocoder(prop: dict) -> dict:
+    """(Re)géocodage réel via Nominatim depuis les composants d'adresse du
+    logement (échelle de repli rue→ville, M-24)."""
+    return geocode.geocode(
+        street=prop.get("address_line1"),
+        postalcode=prop.get("postal_code"),
+        city=prop.get("city"),
+        country_code=(prop.get("country_code") or "ES"),
+    )
+
+
+def get_geocoder() -> Geocoder:
+    """Surchargée dans les tests par un géocodeur sans réseau
+    (app.dependency_overrides[get_geocoder])."""
+    return _default_geocoder
 
 
 # ── Recherche de lieux Nominatim (ajout manuel de POI, M-22) ─────────────────

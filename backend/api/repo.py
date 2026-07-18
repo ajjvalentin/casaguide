@@ -144,6 +144,24 @@ def update_property(conn, owner_id: str, property_id: str,
     ).fetchone()
 
 
+def set_geocode(conn, owner_id: str, property_id: str, *, lat: float,
+                lon: float, accuracy: str, source: str = "nominatim") -> dict | None:
+    """Repositionne le logement depuis un (re)géocodage explicite (M-24).
+
+    À la différence du placement manuel (`update_property`), `geocode_source`
+    n'est PAS 'manual' : c'est une position issue de l'adresse, que le
+    propriétaire pourra encore ajuster à la main ensuite. N'est jamais appelé
+    automatiquement (invariant : une position 'manual' n'est écrasée qu'à la
+    demande explicite du propriétaire)."""
+    return conn.execute(
+        f"""UPDATE properties
+            SET geom = ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                geocode_source = %s, geocode_accuracy = %s
+            WHERE id = %s AND owner_id = %s RETURNING {_PROP_COLS}""",
+        (lon, lat, source, accuracy, property_id, owner_id),
+    ).fetchone()
+
+
 def delete_property(conn, owner_id: str, property_id: str) -> bool:
     row = conn.execute(
         "DELETE FROM properties WHERE id = %s AND owner_id = %s RETURNING id",

@@ -11,13 +11,15 @@ from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from .. import crypto, poster, repo, wifi
 from ..config import settings
 from ..deps import (
-    Conn, CurrentOwner, DistanceComputer, OwnedProperty, TranslationRunner,
-    get_distance_computer, get_translation_runner,
+    Conn, CurrentOwner, DistanceComputer, Geocoder, OwnedProperty,
+    TranslationRunner, get_distance_computer, get_geocoder,
+    get_translation_runner,
 )
 from ..schemas import (
-    PropertyIn, PropertyOut, PropertyStatsOut, PropertyUpdate, RecomputeOut,
-    SecretsIn, SecretsOut, SectionUpsertIn, WifiNetworkOut,
+    GeocodeOut, PropertyIn, PropertyOut, PropertyStatsOut, PropertyUpdate,
+    RecomputeOut, SecretsIn, SecretsOut, SectionUpsertIn, WifiNetworkOut,
 )
+from enrich.geocode import GeocodeError
 from .enrich import schedule_translation
 
 router = APIRouter(prefix="/api/properties", tags=["properties"])
@@ -103,16 +105,54 @@ def recompute_distances(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Le logement n'a pas encore de position géographique")
+    return RecomputeOut(updated=_recompute_distances(conn, prop, computer))
+
+
+def _recompute_distances(conn, prop: dict, computer: DistanceComputer) -> int:
+    """Recalcule les distances de tous les POI depuis la position de `prop`.
+    Ne touche que les colonnes de distance (invariant 1). Renvoie le nombre de
+    POI mis à jour."""
     pois = repo.list_poi_positions(conn, str(prop["id"]))
     if not pois:
-        return RecomputeOut(updated=0)
+        return 0
     computer((prop["lat"], prop["lon"]), pois)
     for p in pois:
         repo.update_poi_distances(
             conn, str(p["id"]),
             dist_walk_m=p.get("dist_walk_m"), walk_min=p.get("walk_min"),
             dist_drive_m=p.get("dist_drive_m"), drive_min=p.get("drive_min"))
-    return RecomputeOut(updated=len(pois))
+    return len(pois)
+
+
+# ── (Re)géocodage explicite de l'adresse (§5.1, M-24) ────────────────────────
+
+@router.post("/{property_id}/geocode", response_model=GeocodeOut)
+def geocode_property(
+    conn: Conn, owner: CurrentOwner, prop: OwnedProperty,
+    geocoder: Annotated[Geocoder, Depends(get_geocoder)],
+    computer: Annotated[DistanceComputer, Depends(get_distance_computer)],
+):
+    """(Re)géocode l'adresse actuelle du logement et recalcule les distances.
+
+    Action **explicite** du propriétaire, jamais automatique (M-24) : elle
+    remplace la position à partir de l'adresse (`geocode_source='nominatim'`).
+    Le front ne l'appelle qu'après accord (case décochée par défaut lorsque la
+    position a été placée à la main). 422 si l'adresse reste introuvable — la
+    position existante est alors préservée."""
+    try:
+        res = geocoder(prop)
+    except GeocodeError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Adresse introuvable : vérifiez la rue, le code postal et la "
+                   "ville, ou placez le point à la main sur la carte.")
+    updated = repo.set_geocode(
+        conn, str(owner["id"]), str(prop["id"]),
+        lat=res["lat"], lon=res["lon"], accuracy=res.get("accuracy") or "city",
+        source=res.get("source") or "nominatim")
+    n = _recompute_distances(conn, updated, computer)
+    return GeocodeOut(property=updated, accuracy=updated["geocode_accuracy"],
+                      distances_updated=n)
 
 
 # ── Affiche « QR code à imprimer » du guide (§3.2, M-07) ─────────────────────

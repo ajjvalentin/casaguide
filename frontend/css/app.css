@@ -119,6 +119,11 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .field .input-error{border-color:var(--alert)}
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
 @media(max-width:560px){.grid-2{grid-template-columns:1fr}}
+/* Fiche du logement (M-24) : sous-titre de section + groupe re-géocodage */
+.form-subhead{font-family:var(--serif,inherit);font-size:15px;font-weight:600;
+  margin:20px 0 12px;padding-top:14px;border-top:1px solid var(--line)}
+.field-group{margin:6px 0 12px}
+.field-group .help{font-size:12.5px;color:var(--muted);margin:2px 0 0}
 
 /* Interrupteur (bool) */
 .switch{display:inline-flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
