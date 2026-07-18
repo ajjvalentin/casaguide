@@ -154,9 +154,20 @@ VALUES
     {"key":"instructions","type":"textarea","label":{"fr":"Mode d’emploi","en":"Instructions","es":"Instrucciones"}}
   ]}}', FALSE, FALSE),
 
+('B_piscine', 'B', 127, 'waves',
+ '{"fr":"La piscine","en":"The pool","es":"La piscina"}',
+ '{"fr":"Entretien (passage du pisciniste), règles d’usage, éclairage nocturne — tout ce que vos voyageurs doivent savoir. Masquez cette section si non concerné."}',
+ '{"fields":[
+    {"key":"entretien","type":"textarea","label":{"fr":"Entretien (jours, horaires, accès du pisciniste)","en":"Maintenance (days, times, technician access)","es":"Mantenimiento (días, horarios, acceso del técnico)"}},
+    {"key":"horaires","type":"text","label":{"fr":"Horaires d’utilisation","en":"Hours of use","es":"Horario de uso"}},
+    {"key":"douche_obligatoire","type":"bool","label":{"fr":"Douche obligatoire avant la baignade","en":"Shower required before swimming","es":"Ducha obligatoria antes del baño"}},
+    {"key":"animaux_interdits","type":"bool","label":{"fr":"Animaux interdits dans la piscine","en":"No pets in the pool","es":"Mascotas prohibidas en la piscina"}},
+    {"key":"eclairage","type":"textarea","label":{"fr":"Éclairage nocturne (fonctionnement)","en":"Night lighting (how it works)","es":"Iluminación nocturna (funcionamiento)"}}
+  ]}', FALSE, FALSE),
+
 ('B_pool', 'B', 130, 'waves-ladder',
- '{"fr":"Piscine / jacuzzi / barbecue","en":"Pool / hot tub / BBQ","es":"Piscina / jacuzzi / barbacoa"}',
- '{"fr":"Règles d’usage, horaires, sécurité enfants, entretien. Masquez cette section si non concerné."}',
+ '{"fr":"Jacuzzi / barbecue","en":"Hot tub / BBQ","es":"Jacuzzi / barbacoa"}',
+ '{"fr":"Règles d’usage du jacuzzi et du barbecue. Masquez cette section si non concerné."}',
  '{"fields":[
     {"key":"rules","type":"textarea","label":{"fr":"Règles et consignes","en":"Rules and guidelines","es":"Normas e indicaciones"}}
   ]}', FALSE, FALSE),
