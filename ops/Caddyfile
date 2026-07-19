@@ -24,10 +24,8 @@
 # guide.holaquetalimmo.es) RÉSOLVENT vers 179.237.85.250 et obtiennent leur cert
 # Let's Encrypt via tls-alpn-01.
 #
-# EN ATTENTE — holaguia.es : la délégation .es n'est PAS encore publiée (le nom ne
-# résout pas). Son bloc est PRÊT mais COMMENTÉ plus bas : le décommenter dès que
-# `dig +short holaguia.es` renvoie 179.237.85.250 (sinon Caddy échoue en boucle
-# sur le challenge tls-alpn-01, faute de DNS). Cf. deploiement.md §4.
+# holaguia.es : délégation .es publiée le 20/07/2026 → bloc de redirection ACTIF
+# plus bas (301 vers holaguia.com, cert Let's Encrypt à la première requête).
 #
 # NB : holaquetalimmo.es héberge le SITE IMMOBILIER — seul le sous-domaine
 # « guide » nous concerne ; ne JAMAIS toucher un autre enregistrement.
@@ -73,19 +71,10 @@ guide.holaquetalimmo.es {
 	redir https://holaguia.com{uri} permanent
 }
 
-# ─── EN ATTENTE : holaguia.es (délégation .es non encore publiée) ────────────
-# À DÉCOMMENTER quand `dig +short holaguia.es` renvoie 179.237.85.250. Tant que
-# le nom ne résout pas, le laisser commenté : Caddy échouerait en boucle sur le
-# challenge tls-alpn-01 (aucun cert possible sans DNS pointant sur ce serveur).
-# Geste : décommenter le bloc, puis
-#   sudo cp /opt/casaguide/ops/Caddyfile /etc/caddy/Caddyfile
-#   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-#   sudo systemctl reload caddy
-# (le monitor DNS armé le jour de la bascule le fait automatiquement ; cf.
-#  deploiement.md §4).
-# holaguia.es {
-# 	redir https://holaguia.com{uri} permanent
-# }
+# ─── holaguia.es — ACTIVÉ le 20/07/2026 (délégation .es publiée) ────────────
+holaguia.es {
+	redir https://holaguia.com{uri} permanent
+}
 
 # Ancienne adresse par IP → redirection permanente, en http comme en https
 # (cert auto-signé conservé uniquement pour honorer la redirection TLS).
