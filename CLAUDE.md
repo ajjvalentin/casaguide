@@ -140,11 +140,13 @@ par `deploy.sh` → cache-busting des assets ; défaut `dev`).
 
 ## Production (M-11) — **runbook complet : `docs/deploiement.md`**
 
-**EN LIGNE** sur VPS Infomaniak (Ubuntu 24.04, UE) : **`https://guide.holaquetalimmo.es`**
-(HTTPS de confiance Let's Encrypt, M-27 ; domaine **technique provisoire** — la
-marque définitive redirigera ici le jour venu). L'ancienne adresse par IP
-`http(s)://179.237.85.250` redirige en **301** vers le domaine (liens/QR déjà
-partagés préservés). Architecture volontairement **simple, sans Docker** : Caddy
+**EN LIGNE** sur VPS Infomaniak (Ubuntu 24.04, UE) : **`https://holaguia.com`**
+(marque **Holaguia**, adresse canonique — HTTPS de confiance Let's Encrypt, M-28).
+`www.holaguia.com`, `holaguia.ch`, l'ancien domaine technique `guide.holaquetalimmo.es`
+(M-27) et l'ancienne adresse par IP `http(s)://179.237.85.250` redirigent tous en
+**301** vers `holaguia.com` (liens/QR déjà partagés préservés). `holaguia.es` suivra
+dès que la délégation .es sera publiée (bloc **prêt-commenté** dans `ops/Caddyfile`).
+Architecture volontairement **simple, sans Docker** : Caddy
 (frontal :80/:443, cert Let's Encrypt auto-renouvelé, HSTS) → uvicorn
 `127.0.0.1:8000` (systemd `casaguide`) → PostgreSQL 16 + PostGIS **local** (jamais
 exposé, peer auth).

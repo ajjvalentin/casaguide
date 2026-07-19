@@ -1,30 +1,36 @@
 # ============================================================================
-# CasaGuide — reverse proxy Caddy (M-11, bascule domaine M-27)
+# CasaGuide — reverse proxy Caddy (M-11, bascule domaine M-27, marque M-28)
 # ----------------------------------------------------------------------------
 # Installation :
 #   sudo cp /opt/casaguide/ops/Caddyfile /etc/caddy/Caddyfile
 #   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 #   sudo systemctl reload caddy
 #
-# État actuel (M-27, 17/07/2026) : HTTPS de confiance sur le domaine technique
-# provisoire « guide.holaquetalimmo.es ».
-#   · guide.holaquetalimmo.es → certificat Let's Encrypt obtenu et renouvelé
-#     AUTOMATIQUEMENT par Caddy ; redirection http→https automatique ; HSTS actif.
-#   · L'ancienne adresse par IP (179.237.85.250, http ET https) → redirection 301
-#     PERMANENTE vers le domaine : les liens/QR déjà partagés continuent de mener
-#     au guide. (Le https par IP garde un cert auto-signé `tls internal` — il ne
-#     sert qu'à rediriger ; Let's Encrypt ne délivre pas de cert pour une IP.)
+# État actuel (M-28, 19/07/2026) : la marque « Holaguia » est l'adresse
+# CANONIQUE du produit. Une seule adresse de service, tout le reste y redirige.
+#   · https://holaguia.com            → LE PRODUIT (back-office /, guides /g/,
+#                                        cahier équipe /s/). Cert Let's Encrypt
+#                                        obtenu et renouvelé AUTOMATIQUEMENT.
+#   · https://www.holaguia.com        → 301 vers https://holaguia.com{uri}
+#   · https://holaguia.ch             → 301 vers https://holaguia.com{uri}
+#   · https://guide.holaquetalimmo.es → 301 vers https://holaguia.com{uri}
+#     (ANCIEN domaine technique M-27 : garde son cert Let's Encrypt pour honorer
+#      la redirection https propre → chaque lien/QR déjà partagé survit)
+#   · http(s)://179.237.85.250        → 301 vers https://holaguia.com{uri}
+#     (cert auto-signé conservé uniquement pour honorer la redirection TLS ;
+#      Let's Encrypt ne délivre pas de cert pour une IP)
 #
-# Le HTTPS de confiance débloque le mode PWA hors-ligne complet (service worker,
-# M-10).
+# Ces 4 noms (holaguia.com, www.holaguia.com, holaguia.ch,
+# guide.holaquetalimmo.es) RÉSOLVENT vers 179.237.85.250 et obtiennent leur cert
+# Let's Encrypt via tls-alpn-01.
 #
-# ─── DOMAINE DÉFINITIF (le jour venu) ──────────────────────────────────────────
-# « guide.holaquetalimmo.es » est un domaine TECHNIQUE PROVISOIRE. Quand la marque
-# définitive sera choisie : créer un enregistrement A du nouveau domaine vers
-# 179.237.85.250, ajouter son bloc de site ci-dessous (Caddy obtient le cert
-# automatiquement), faire pointer l'ancien domaine en redir 301 vers le nouveau
-# (comme l'IP ci-dessous), puis basculer CASAGUIDE_PUBLIC_BASE_URL /
-# CASAGUIDE_CORS_ORIGINS dans backend/.env.
+# EN ATTENTE — holaguia.es : la délégation .es n'est PAS encore publiée (le nom ne
+# résout pas). Son bloc est PRÊT mais COMMENTÉ plus bas : le décommenter dès que
+# `dig +short holaguia.es` renvoie 179.237.85.250 (sinon Caddy échoue en boucle
+# sur le challenge tls-alpn-01, faute de DNS). Cf. deploiement.md §4.
+#
+# NB : holaquetalimmo.es héberge le SITE IMMOBILIER — seul le sous-domaine
+# « guide » nous concerne ; ne JAMAIS toucher un autre enregistrement.
 # ============================================================================
 {
 	# Contact Let's Encrypt (avis d'expiration / problèmes de certificat).
@@ -46,8 +52,8 @@
 	}
 }
 
-# Guide public — HTTPS de confiance (Let's Encrypt, http→https automatique).
-guide.holaquetalimmo.es {
+# ─── Adresse canonique du produit ───────────────────────────────────────────
+holaguia.com {
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:8000
 	import securite
@@ -57,12 +63,36 @@ guide.holaquetalimmo.es {
 	}
 }
 
-# Ancienne adresse par IP → redirection permanente vers le domaine, en http comme
-# en https (cert auto-signé conservé uniquement pour honorer la redirection TLS).
+# ─── Redirections 301 vers l'adresse canonique ──────────────────────────────
+# www + variante de marque .ch + ancien domaine technique (M-27). Ces noms
+# RÉSOLVENT : Caddy obtient un cert Let's Encrypt pour chacun (redirection
+# https propre).
+www.holaguia.com,
+holaguia.ch,
+guide.holaquetalimmo.es {
+	redir https://holaguia.com{uri} permanent
+}
+
+# ─── EN ATTENTE : holaguia.es (délégation .es non encore publiée) ────────────
+# À DÉCOMMENTER quand `dig +short holaguia.es` renvoie 179.237.85.250. Tant que
+# le nom ne résout pas, le laisser commenté : Caddy échouerait en boucle sur le
+# challenge tls-alpn-01 (aucun cert possible sans DNS pointant sur ce serveur).
+# Geste : décommenter le bloc, puis
+#   sudo cp /opt/casaguide/ops/Caddyfile /etc/caddy/Caddyfile
+#   sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+#   sudo systemctl reload caddy
+# (le monitor DNS armé le jour de la bascule le fait automatiquement ; cf.
+#  deploiement.md §4).
+# holaguia.es {
+# 	redir https://holaguia.com{uri} permanent
+# }
+
+# Ancienne adresse par IP → redirection permanente, en http comme en https
+# (cert auto-signé conservé uniquement pour honorer la redirection TLS).
 http://179.237.85.250 {
-	redir https://guide.holaquetalimmo.es{uri} permanent
+	redir https://holaguia.com{uri} permanent
 }
 https://179.237.85.250 {
 	tls internal
-	redir https://guide.holaquetalimmo.es{uri} permanent
+	redir https://holaguia.com{uri} permanent
 }

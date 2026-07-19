@@ -14,9 +14,13 @@ Internet ──▶ Caddy (:80/:443, TLS)  ──▶ uvicorn 127.0.0.1:8000 (syst
 - **Serveur** : `ubuntu@179.237.85.250` (sudo sans mot de passe).
 - **Utilisateur applicatif** : `casaguide` (non-root), code dans `/opt/casaguide`.
 - **Dépôt** : `github.com/ajjvalentin/casaguide` (privé, deploy key en lecture seule).
-- **URL de production** : `https://guide.holaquetalimmo.es` (HTTPS de confiance,
-  Let's Encrypt — M-27). L'ancienne adresse par IP `http(s)://179.237.85.250`
-  redirige en **301 permanent** vers le domaine (liens/QR déjà partagés préservés).
+- **URL de production** : `https://holaguia.com` (marque **Holaguia**, adresse
+  canonique — M-28, HTTPS de confiance Let's Encrypt). `www.holaguia.com`,
+  `holaguia.ch`, l'ancien domaine technique `guide.holaquetalimmo.es` (M-27) et
+  l'ancienne adresse par IP `http(s)://179.237.85.250` redirigent tous en **301
+  permanent** vers `holaguia.com` (liens/QR déjà partagés préservés). `holaguia.es`
+  suivra dès que la délégation .es sera publiée (bloc prêt-commenté dans le
+  Caddyfile ; cf. §4).
 
 ---
 
@@ -131,8 +135,8 @@ CASAGUIDE_JWT_SECRET=<openssl rand -hex 32 — généré sur le serveur>
 CASAGUIDE_SECRET_KEY=<openssl rand -hex 32 — généré sur le serveur>
 ANTHROPIC_API_KEY=REMPLACER_A_LA_MAIN          # ← fourni séparément par l'exploitant
 MEDIA_ROOT=/opt/casaguide/backend/var/media
-CASAGUIDE_PUBLIC_BASE_URL=http://179.237.85.250 # QR imprimables / liens (provisoire)
-CASAGUIDE_CORS_ORIGINS=http://179.237.85.250
+CASAGUIDE_PUBLIC_BASE_URL=https://holaguia.com  # QR imprimables / liens (M-28)
+CASAGUIDE_CORS_ORIGINS=https://holaguia.com
 ```
 
 Les clés JWT et SECRET sont générées **sur le serveur** (`openssl rand -hex 32`),
@@ -288,6 +292,51 @@ prévoir) ; cert + clé + méta ACME persistés sous
 
 HTTPS de confiance → le prérequis du **mode hors-ligne PWA (service worker, M-10)**
 est désormais **levé**.
+
+### 4bis. Bascule vers la marque **Holaguia** — FAIT le 19/07/2026 (M-28)
+
+`holaguia.com` devient l'adresse **canonique** du produit ; tout le reste y redirige
+en 301. Le domaine technique `guide.holaquetalimmo.es` (M-27) devient une simple
+redirection — les liens/QR déjà partagés survivent.
+
+**DNS (Infomaniak, `A` → `179.237.85.250`)** — au moment de la bascule, RÉSOLVAIENT :
+`holaguia.com`, `www.holaguia.com`, `holaguia.ch`, `guide.holaquetalimmo.es`.
+**Ne résolvait PAS encore** : `holaguia.es` (délégation .es non publiée par le
+registrar) → laissé **prêt-commenté** dans le Caddyfile (voir plus bas).
+
+Déroulé appliqué :
+1. **Caddyfile** (`ops/Caddyfile`) : bloc de site canonique `holaguia.com { … }`
+   (reverse_proxy `127.0.0.1:8000`) ; un bloc de redir 301 groupé
+   `www.holaguia.com, holaguia.ch, guide.holaquetalimmo.es` ; l'IP (http+https)
+   redirige aussi vers `holaguia.com`. Chaque nom qui résout obtient son cert
+   Let's Encrypt (tls-alpn-01) automatiquement.
+2. **Déploiement** : `git pull` sur `/opt/casaguide`, puis
+   `sudo cp /opt/casaguide/ops/Caddyfile /etc/caddy/Caddyfile`,
+   `sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile`,
+   `sudo systemctl reload caddy`. Vérifier `journalctl -u caddy` :
+   `certificate obtained successfully` pour chaque nom.
+3. **`backend/.env`** : `CASAGUIDE_PUBLIC_BASE_URL=https://holaguia.com` et
+   `CASAGUIDE_CORS_ORIGINS=https://holaguia.com`, puis
+   `sudo systemctl restart casaguide`.
+4. **Validation** : cert `subject=CN=holaguia.com`, `issuer=Let's Encrypt` ;
+   `https://holaguia.com/health` → `200 ssl_verify=0` ; chaque redirection
+   (`www`, `.ch`, `guide.holaquetalimmo.es`, IP) → `301` vers `https://holaguia.com`.
+
+**`holaguia.es` — geste restant (délégation .es en attente)** : son bloc est
+**prêt-commenté** en bas de `ops/Caddyfile`. Tant que `holaguia.es` ne résout pas,
+le **laisser commenté** — activé, Caddy échouerait en boucle sur le challenge
+tls-alpn-01 (aucun cert possible sans DNS pointant sur ce serveur). Dès que
+`dig +short holaguia.es` renvoie `179.237.85.250` :
+
+```bash
+# décommenter le bloc `holaguia.es { … }` dans ops/Caddyfile, puis :
+sudo cp /opt/casaguide/ops/Caddyfile /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy   # Caddy obtient le cert .es automatiquement
+```
+
+Aucune autre modif : `.es` n'est qu'une redirection de plus, pas de changement de
+`CASAGUIDE_PUBLIC_BASE_URL`.
 
 ---
 
