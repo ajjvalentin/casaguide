@@ -103,9 +103,20 @@ export async function renderProperties(view) {
         el("b", {}, s.completion_pct + " %")),
       el("div", { class: "meter mini" }, el("i", { style: { width: s.completion_pct + "%" } })),
       el("div", { class: "poi-counts" },
-        s.pois_suggested ? el("span", { class: "badge badge-suggested" }, s.pois_suggested + " à valider") : null,
+        // Pastilles cliquables (V2-11) : chemin le plus court vers l'action.
+        // Deep-link vers la vue POI avec le bon filtre pré-sélectionné.
+        s.pois_suggested
+          ? el("a", { class: "badge badge-suggested badge-link",
+            href: `#/properties/${p.id}/pois/suggested`,
+            "aria-label": `Valider les ${s.pois_suggested} lieux en attente` },
+            s.pois_suggested + " à valider")
+          : null,
         s.pois_approved || s.pois_edited
-          ? el("span", { class: "badge badge-approved" }, (s.pois_approved + s.pois_edited) + " retenus") : null,
+          ? el("a", { class: "badge badge-approved badge-link",
+            href: `#/properties/${p.id}/pois/kept`,
+            "aria-label": `Voir les ${s.pois_approved + s.pois_edited} lieux retenus` },
+            (s.pois_approved + s.pois_edited) + " retenus")
+          : null,
         !s.pois_total ? el("span", { class: "muted", style: { fontSize: "12px" } }, "Pas encore enrichi") : null));
   }
 

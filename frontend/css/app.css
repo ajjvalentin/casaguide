@@ -95,6 +95,11 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .badge-approved{background:#E7F3EA;color:var(--ok)}
 .badge-edited{background:#EAF3F6;color:var(--sea)}
 .badge-rejected{background:#F3E9E9;color:var(--alert)}
+/* Pastille cliquable (V2-11) : raccourci vers la validation des POI */
+.badge-link{cursor:pointer;text-decoration:none;
+       transition:filter .12s ease, transform .12s ease}
+.badge-link:hover{filter:brightness(.95);transform:translateY(-1px)}
+.badge-link:focus-visible{outline:2px solid var(--sea);outline-offset:2px}
 
 /* ── Barre de complétude ──────────────────────────────────────────────────── */
 .meter{height:8px;background:#EEE8DC;border-radius:5px;overflow:hidden}

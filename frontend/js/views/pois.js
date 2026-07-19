@@ -20,6 +20,7 @@ const FILTERS = [
   ["rejected", "Rejetés", (p) => p.status === "rejected"],
   ["all", "Tous", () => true],
 ];
+const FILTER_KEYS = new Set(FILTERS.map((f) => f[0]));
 const STATUS_BADGE = {
   suggested: ["badge-suggested", "À valider"],
   approved: ["badge-approved", "Approuvé"],
@@ -27,7 +28,7 @@ const STATUS_BADGE = {
   rejected: ["badge-rejected", "Rejeté"],
 };
 
-export async function renderPois(view, pid) {
+export async function renderPois(view, pid, initialFilter) {
   mount(view, el("div", { class: "page" }, loadingBlock("Chargement des suggestions…")));
 
   let property, pois;
@@ -38,7 +39,12 @@ export async function renderPois(view, pid) {
       el("div", { class: "errbox" }, err.message || "Impossible de charger les suggestions.")));
   }
 
-  let filter = pois.some((p) => p.status === "suggested") ? "suggested" : "all";
+  // Filtre initial transmis par la navigation (V2-11 : deep-link depuis les
+  // pastilles de « Mes logements »). À défaut, comportement historique :
+  // « À valider » s'il reste des suggestions, sinon « Tous ».
+  let filter = FILTER_KEYS.has(initialFilter)
+    ? initialFilter
+    : (pois.some((p) => p.status === "suggested") ? "suggested" : "all");
   const markers = new Map();
   const cardsById = new Map();
   // Actions réversibles (M-23) : POI récemment approuvé/rejeté → id → {prev, action, timer}.
