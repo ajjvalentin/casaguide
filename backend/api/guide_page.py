@@ -69,6 +69,20 @@ _SECTION_TAB_OVERRIDES = {
     "C_malls": "around", "C_laundry": "around",
 }
 
+# Titres de chapitre CONTEXTUALISÉS par onglet (retour terrain 19/07) : le
+# chapitre C étant écartelé entre deux onglets, son nom générique « Vie
+# pratique » apparaîtrait DEUX fois pour des contenus différents. Côté
+# logement il ne coiffe que le tri des déchets ; côté « Autour de vous », des
+# commerces. Clé : (chapitre, onglet) → libellés par langue.
+_CHAPTER_TAB_NAMES: dict[tuple[str, str], dict[str, str]] = {
+    ("C", "home"): {"fr": "Vie pratique — déchets & tri",
+                    "en": "Everyday life — waste & recycling",
+                    "es": "Vida práctica — basura y reciclaje"},
+    ("C", "around"): {"fr": "Commerces & services",
+                      "en": "Shops & services",
+                      "es": "Comercios y servicios"},
+}
+
 # Catégories « point de départ du trajet » : rendues comme blocs d'itinéraire
 # « en un tap » dans la section qui les déclare (A_arrival), et non en cartes
 # POI ordinaires (M-14). La gare routière (bus_station, M-21) rejoint les
@@ -826,12 +840,14 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                    if p["category_code"] not in _TRANSPORT_CATEGORIES]
         return cps
 
-    def _chapter_block(ch: str, inner: list[str]) -> str:
+    def _chapter_block(ch: str, inner: list[str], tab: str = "") -> str:
         parts = [x for x in inner if x]
         if not parts:
             return ""
+        title = _i18n(_CHAPTER_TAB_NAMES.get((ch, tab)), lang,
+                      _chapter_name(ch, lang)) if tab else _chapter_name(ch, lang)
         return (f'<section class="chapter" data-chapter="{ch}">'
-                f'<h2>{_esc(_chapter_name(ch, lang))}</h2>'
+                f'<h2>{_esc(title)}</h2>'
                 f'<div class="chapline" style="background:{_CHAPTER_COLORS[ch]}"></div>'
                 f'{"".join(parts)}</section>')
 
@@ -855,7 +871,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
             inner = list(sec_by_tab.get(tab, []))
             if tab == poi_tab and pois_html:
                 inner.append(pois_html)
-            blk = _chapter_block(ch, inner)
+            blk = _chapter_block(ch, inner, tab=tab)
             if blk:
                 panels[tab].append(blk)
 
@@ -884,7 +900,9 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                        if any(p["chapter"] == ch for p in around_pois)]
     chips = [f'<button class="chip on" data-chapter="">{_esc(_t(lang, "all"))}</button>']
     for ch in around_chapters:
-        chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(_chapter_name(ch, lang))}</button>')
+        chip_name = _i18n(_CHAPTER_TAB_NAMES.get((ch, "around")), lang,
+                          _chapter_name(ch, lang))
+        chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(chip_name)}</button>')
     around_inner: list[str] = []
     if has_map:
         around_inner.append('<div id="map"></div>')
