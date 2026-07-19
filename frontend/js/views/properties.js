@@ -11,7 +11,7 @@ import {
 import { navigate } from "../nav.js";
 import { COUNTRIES } from "../constants.js";
 import { openPropertyInfoModal } from "../components/propertyinfo.js";
-import { guideShareUrl } from "../share.js";
+import { openShareMenu } from "../components/sharemenu.js";
 
 const STATUS_LABEL = { draft: "Brouillon", published: "Publié", archived: "Archivé" };
 
@@ -80,7 +80,7 @@ export async function renderProperties(view) {
           : null,
         p.status === "published"
           ? el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Copier le lien du guide", title: "Copier le lien du guide",
-            onClick: () => copyGuideLink(p) }, icon("link", 16))
+            onClick: () => openShareMenu(p) }, icon("link", 16))
           : null,
         el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Informations du logement", title: "Informations du logement",
           onClick: () => editInfo(p) }, icon("home", 16)),
@@ -107,13 +107,6 @@ export async function renderProperties(view) {
         s.pois_approved || s.pois_edited
           ? el("span", { class: "badge badge-approved" }, (s.pois_approved + s.pois_edited) + " retenus") : null,
         !s.pois_total ? el("span", { class: "muted", style: { fontSize: "12px" } }, "Pas encore enrichi") : null));
-  }
-
-  async function copyGuideLink(p) {
-    try {
-      await navigator.clipboard.writeText(guideShareUrl(p));
-      toast("Lien du guide copié.", "ok");
-    } catch (_) { toast("Copie impossible — ouvrez le guide pour récupérer le lien.", "err"); }
   }
 
   async function reEnrich(p) {

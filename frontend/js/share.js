@@ -13,10 +13,19 @@ export function slugify(name, maxlen = 60) {
   return s.slice(0, maxlen).replace(/^-+|-+$/g, "") || "guide";
 }
 
-export function guideSharePath(property) {
-  return `/g/${slugify(property.name)}-${property.guide_token}`;
+/* Lien slug du guide, éventuellement forcé dans une langue (V2-10).
+
+   `lang` optionnel : quand il diffère de la langue par défaut du logement, on
+   ajoute `?lang=xx` — la page servie est alors localisée (M-09) et sa vignette
+   Open Graph (M-25) l'est aussi. Pour la langue par défaut (ou `lang` absent),
+   le lien reste nu : le voyageur retombe sur la détection automatique / le fr. */
+export function guideSharePath(property, lang) {
+  const path = `/g/${slugify(property.name)}-${property.guide_token}`;
+  const def = (property.default_lang || "fr").toLowerCase();
+  const target = (lang || "").toLowerCase();
+  return target && target !== def ? `${path}?lang=${target}` : path;
 }
 
-export function guideShareUrl(property) {
-  return location.origin + guideSharePath(property);
+export function guideShareUrl(property, lang) {
+  return location.origin + guideSharePath(property, lang);
 }

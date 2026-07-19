@@ -16,6 +16,7 @@ import { buildSectionForm } from "../components/dynform.js";
 import { buildMediaPanel } from "../components/media.js";
 import { openPropertyInfoModal, openPositionModal } from "../components/propertyinfo.js";
 import { guideShareUrl } from "../share.js";
+import { openShareMenu } from "../components/sharemenu.js";
 import { runEnrichment } from "./properties.js";
 
 const ACCURACY_LABEL = { rooftop: "précise", street: "au niveau de la rue", city: "au centre de la commune" };
@@ -265,8 +266,8 @@ export async function renderEditor(view, pid) {
       headerRight.append(
         el("a", { class: "btn btn-sm", href: `/g/${property.guide_token}`, target: "_blank", rel: "noopener" },
           icon("external-link", 16), "Voir le guide"),
-        el("button", { class: "btn btn-sm", onClick: () => copyGuideLink() },
-          icon("link", 16), "Copier le lien"),
+        el("button", { class: "btn btn-sm", onClick: () => openShareMenu(property) },
+          icon("link", 16), "Copier le lien", icon("chevron-down", 14)),
         translationBtn,
         el("button", { class: "btn btn-sm", onClick: () => openPosterMenu() },
           icon("qr-code", 16), "QR à imprimer", icon("chevron-down", 14)),
@@ -323,13 +324,8 @@ export async function renderEditor(view, pid) {
   }
 
   // Lien de partage élégant (M-25) : /g/{slug}-{token}. Le token reste l'autorité.
-  function guideLink() { return guideShareUrl(property); }
+  // « Copier le lien » ouvre un menu multilingue (V2-10, components/sharemenu.js).
   function staffLink() { return location.origin + `/s/${property.staff_token}`; }
-
-  async function copyGuideLink() {
-    try { await navigator.clipboard.writeText(guideLink()); toast("Lien du guide copié.", "ok"); }
-    catch (_) { toast("Copie impossible — copiez le lien manuellement.", "err"); }
-  }
 
   // Bandeau du lien /s (cahier équipe d'entretien) affiché sur une section staff.
   function staffLinkBanner() {
