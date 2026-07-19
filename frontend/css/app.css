@@ -203,7 +203,7 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .prop-card .statline{display:flex;justify-content:space-between;align-items:center;
                      font-size:12.5px;color:var(--muted)}
 .prop-card .poi-counts{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
-.prop-card .actions{display:flex;gap:8px;margin-top:auto;padding-top:4px}
+.prop-card .actions{display:flex;gap:8px;margin-top:auto;padding-top:4px;flex-wrap:wrap}
 
 /* ── Éditeur de guide (M-03) ──────────────────────────────────────────────── */
 .editor{display:grid;grid-template-columns:270px 1fr;gap:22px;align-items:start}
