@@ -9,7 +9,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from enrich import db, distance, geocode, pipeline, translate
 
+from . import mailer as _mailer
 from . import poi_search, repo, security
+from .config import settings
 
 
 # ── Connexion PostgreSQL (une par requête) ───────────────────────────────────
@@ -176,3 +178,29 @@ def get_poi_searcher() -> NominatimSearcher:
     """Surchargée dans les tests par une recherche sans réseau
     (app.dependency_overrides[get_poi_searcher])."""
     return _default_poi_searcher
+
+
+# ── Envoi d'emails transactionnels (V2-08, injectable pour les tests) ────────
+
+def build_mailer() -> _mailer.Mailer:
+    """Construit le mailer selon la configuration : SMTP si configuré, sinon
+    repli `ConsoleMailer` (les emails sont journalisés, pas envoyés). Instancié
+    une fois au chargement du module (`_MAILER`)."""
+    if settings.smtp_configured:
+        return _mailer.SmtpMailer(
+            host=settings.smtp_host, port=settings.smtp_port,
+            user=settings.smtp_user, password=settings.smtp_password,
+            from_addr=settings.smtp_from)
+    return _mailer.ConsoleMailer(from_addr=settings.smtp_from)
+
+
+_MAILER: _mailer.Mailer = build_mailer()
+
+
+def get_mailer() -> _mailer.Mailer:
+    """Surchargée dans les tests par un mailer inspectable sans réseau
+    (app.dependency_overrides[get_mailer])."""
+    return _MAILER
+
+
+Mailer = Annotated[_mailer.Mailer, Depends(get_mailer)]

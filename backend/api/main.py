@@ -39,6 +39,16 @@ async def lifespan(app: FastAPI):
             "\n".join(f"  {name}=$(openssl rand -hex 32)" for name in missing),
         )
 
+    # Emails transactionnels (V2-08) : sans SMTP, repli ConsoleMailer (les emails
+    # de réinitialisation / vérification sont journalisés, jamais envoyés).
+    if not settings.smtp_configured:
+        log.warning(
+            "SMTP non configuré (CASAGUIDE_SMTP_HOST/USER/PASSWORD) : les emails "
+            "transactionnels seront journalisés au lieu d'être envoyés "
+            "(ConsoleMailer). Définissez ces variables dans backend/.env pour "
+            "activer l'envoi réel (Infomaniak : mail.infomaniak.com:465)."
+        )
+
     with enrich_db.connect() as conn:
         n = repo.fail_orphan_running_jobs(conn)
         conn.commit()

@@ -53,6 +53,24 @@ class ApiSettings:
     # Origine publique servant à construire les liens absolus (QR imprimable M-07).
     # À défaut, on retombe sur l'origine de la requête (request.base_url).
     public_base_url: str | None = os.getenv("CASAGUIDE_PUBLIC_BASE_URL") or None
+    # ── Emails transactionnels (V2-08) ───────────────────────────────────────
+    # SMTP SSL (Infomaniak : mail.infomaniak.com:465). Sans host+user+password,
+    # repli ConsoleMailer (les emails sont journalisés, pas envoyés).
+    smtp_host: str | None = os.getenv("CASAGUIDE_SMTP_HOST") or None
+    smtp_port: int = int(os.getenv("CASAGUIDE_SMTP_PORT", "465"))
+    smtp_user: str | None = os.getenv("CASAGUIDE_SMTP_USER") or None
+    smtp_password: str | None = os.getenv("CASAGUIDE_SMTP_PASSWORD") or None
+    smtp_from: str = os.getenv("CASAGUIDE_SMTP_FROM",
+                               "Holaguia <no-reply@holaguia.com>")
+    # Durée de validité des jetons d'auth (réinitialisation, vérification), minutes
+    auth_token_ttl_min: int = int(os.getenv("CASAGUIDE_AUTH_TOKEN_TTL_MIN", "60"))
+    # Cadence minimale entre deux demandes « mot de passe oublié » par email (secondes)
+    forgot_min_interval_s: int = int(os.getenv("CASAGUIDE_FORGOT_MIN_INTERVAL_S", "120"))
+
+    @property
+    def smtp_configured(self) -> bool:
+        """Vrai si les trois éléments indispensables à l'envoi SMTP sont présents."""
+        return bool(self.smtp_host and self.smtp_user and self.smtp_password)
 
 
 settings = ApiSettings()
