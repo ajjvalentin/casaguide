@@ -28,6 +28,25 @@ class TokenOut(BaseModel):
     token_type: str = "bearer"
 
 
+class ForgotIn(BaseModel):
+    email: EmailStr
+
+
+class ResetIn(BaseModel):
+    token: str = Field(min_length=1)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class VerifyIn(BaseModel):
+    token: str = Field(min_length=1)
+
+
+class MessageOut(BaseModel):
+    """Réponse neutre (mot de passe oublié / vérification) — jamais d'info
+    révélant l'existence d'un compte."""
+    message: str
+
+
 class OwnerOut(BaseModel):
     id: UUID
     email: EmailStr
@@ -35,6 +54,7 @@ class OwnerOut(BaseModel):
     company_name: str | None = None
     phone: str | None = None
     locale: str
+    email_verified: bool = False
     plan_id: str | None = None
 
 

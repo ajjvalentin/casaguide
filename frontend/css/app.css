@@ -189,12 +189,25 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 
 .errbox{background:#FDECEC;border:1px solid #F2C4C4;color:#8A2A2A;border-radius:10px;
         padding:11px 14px;font-size:13.5px;margin:12px 0}
+.okbox{background:#EAF4EF;border:1px solid #BEDFCE;color:#1E5E43;border-radius:10px;
+       padding:12px 14px;font-size:14px;margin:12px 0}
 
 /* ── Écran de connexion ───────────────────────────────────────────────────── */
 .auth-wrap{min-height:100vh;display:grid;place-items:center;padding:24px}
 .auth-card{width:100%;max-width:420px;padding:30px 28px}
 .auth-card .brand{font-size:24px;justify-content:center;margin-bottom:4px}
 .auth-card .brand .mark{width:36px;height:36px;font-size:20px}
+.auth-title{font-size:20px;text-align:center;margin:18px 0 4px;color:var(--ink)}
+.auth-alt{text-align:center;font-size:13.5px;margin-top:14px}
+.auth-alt a{color:var(--sea);font-weight:600;text-decoration:none}
+.auth-alt a:hover{text-decoration:underline}
+
+/* ── Bandeau « vérifiez votre email » (V2-08) ─────────────────────────────── */
+.verify-banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+               background:#FBF3E0;border:1px solid #EAD9AE;color:#6B551E;
+               border-radius:10px;padding:10px 14px;margin:0 0 18px;font-size:13.5px}
+.verify-banner .vb-msg{flex:1;min-width:180px}
+.verify-banner .btn{flex:none}
 .auth-tabs{display:flex;gap:6px;background:#F1ECE2;border-radius:10px;padding:4px;margin:20px 0 22px}
 .auth-tabs button{flex:1;border:none;background:transparent;padding:8px;border-radius:8px;
                   font-weight:600;color:var(--muted)}

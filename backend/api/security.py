@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -38,6 +39,23 @@ def verify_password(password: str, stored: str | None) -> bool:
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(dk.hex(), hash_hex)
+
+
+# ── Jetons transactionnels (réinitialisation, vérification — V2-08) ──────────
+#
+# Le jeton brut (256 bits) est envoyé par email ; seule son empreinte SHA-256
+# est stockée en base. Le jeton étant à haute entropie et aléatoire, un simple
+# SHA-256 (sans sel ni itérations) suffit : il n'est pas devinable par force
+# brute comme le serait un mot de passe.
+
+def generate_reset_token() -> str:
+    """Jeton brut opaque, 256 bits (43 caractères url-safe). Jamais stocké."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_reset_token(raw: str) -> str:
+    """Empreinte SHA-256 (hex) du jeton — c'est elle qui est stockée/comparée."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def create_access_token(owner_id: str) -> str:

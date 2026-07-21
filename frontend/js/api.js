@@ -97,6 +97,9 @@ export const api = {
   register: (b) => request("POST", "/api/auth/register", { body: b, auth: false }),
   login:    (b) => request("POST", "/api/auth/login", { body: b, auth: false }),
   me:       () => request("GET", "/api/auth/me"),
+  // Mot de passe oublié / réinitialisation (V2-08) — sans session
+  forgotPassword: (email) => request("POST", "/api/auth/forgot", { body: { email }, auth: false }),
+  resetPassword:  (token, password) => request("POST", "/api/auth/reset", { body: { token, password }, auth: false }),
 
   // Logements
   listProperties: () => request("GET", "/api/properties"),

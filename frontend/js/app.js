@@ -13,6 +13,7 @@ import { getToken, getOwner, setOwner, clearSession } from "./store.js";
 import { el, icon, mount, clear, toast, refreshIcons } from "./ui.js";
 import { navigate } from "./nav.js";
 import { renderLogin } from "./views/login.js";
+import { renderForgot, renderReset } from "./views/reset.js";
 import { renderProperties } from "./views/properties.js";
 import { renderEditor } from "./views/editor.js";
 import { renderPois } from "./views/pois.js";
@@ -52,6 +53,14 @@ function updateUserMenu() {
 }
 
 function renderRoute() {
+  // Routes publiques (accessibles sans session) : mot de passe oublié /
+  // réinitialisation via lien à jeton reçu par email (V2-08).
+  const hash = location.hash;
+  if (hash === "#/forgot") { renderForgot(appEl); return; }
+  if (hash.startsWith("#/reset/")) {
+    return void renderReset(appEl, decodeURIComponent(hash.slice("#/reset/".length)));
+  }
+
   if (!getToken()) { renderLogin(appEl); return; }
 
   const view = ensureShell();

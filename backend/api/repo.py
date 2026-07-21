@@ -35,7 +35,7 @@ def get_owner_by_email(conn, email: str) -> dict | None:
 def get_owner(conn, owner_id: str) -> dict | None:
     return conn.execute(
         """SELECT o.id, o.email, o.full_name, o.company_name, o.phone, o.locale,
-                  o.is_active, o.password_hash,
+                  o.is_active, o.email_verified, o.password_hash,
                   (SELECT plan_id FROM subscriptions s WHERE s.owner_id = o.id
                    ORDER BY created_at DESC LIMIT 1) AS plan_id
            FROM owners o WHERE o.id = %s""",
@@ -60,6 +60,71 @@ def create_subscription(conn, owner_id: str, plan_id: str) -> None:
            VALUES (%s, %s, 'trialing')""",
         (owner_id, plan_id),
     )
+
+
+def set_owner_password(conn, owner_id: str, password_hash: str) -> None:
+    """Remplace le hash de mot de passe (réinitialisation, V2-08)."""
+    conn.execute(
+        "UPDATE owners SET password_hash = %s, updated_at = now() WHERE id = %s",
+        (password_hash, owner_id),
+    )
+
+
+def set_owner_email_verified(conn, owner_id: str) -> None:
+    """Marque l'email du propriétaire comme vérifié (V2-08)."""
+    conn.execute(
+        "UPDATE owners SET email_verified = TRUE, updated_at = now() WHERE id = %s",
+        (owner_id,),
+    )
+
+
+# ── Jetons transactionnels : réinitialisation / vérification (V2-08) ─────────
+
+def create_auth_token(conn, owner_id: str, token_hash: str, purpose: str,
+                      expires_at) -> None:
+    """Enregistre l'empreinte d'un jeton à usage unique (jamais le jeton en clair)."""
+    conn.execute(
+        """INSERT INTO password_resets (owner_id, token_hash, purpose, expires_at)
+           VALUES (%s, %s, %s, %s)""",
+        (owner_id, token_hash, purpose, expires_at),
+    )
+
+
+def get_auth_token(conn, token_hash: str, purpose: str) -> dict | None:
+    """Ligne du jeton pour cette empreinte + usage (incl. used_at / expires_at).
+    Le contrôle d'expiration / usage unique est fait par l'appelant."""
+    return conn.execute(
+        """SELECT id, owner_id, purpose, expires_at, used_at
+           FROM password_resets WHERE token_hash = %s AND purpose = %s""",
+        (token_hash, purpose),
+    ).fetchone()
+
+
+def mark_auth_token_used(conn, token_id: str) -> None:
+    conn.execute(
+        "UPDATE password_resets SET used_at = now() WHERE id = %s AND used_at IS NULL",
+        (token_id,),
+    )
+
+
+def invalidate_owner_tokens(conn, owner_id: str, purpose: str) -> None:
+    """Consomme tous les jetons encore valides du propriétaire pour cet usage
+    (après une réinitialisation réussie : plus aucun ancien lien n'est utilisable)."""
+    conn.execute(
+        """UPDATE password_resets SET used_at = now()
+           WHERE owner_id = %s AND purpose = %s AND used_at IS NULL""",
+        (owner_id, purpose),
+    )
+
+
+def recent_auth_token(conn, owner_id: str, purpose: str, since) -> bool:
+    """Vrai si un jeton de cet usage a été créé depuis `since` (cadence anti-spam)."""
+    row = conn.execute(
+        """SELECT 1 FROM password_resets
+           WHERE owner_id = %s AND purpose = %s AND created_at >= %s LIMIT 1""",
+        (owner_id, purpose, since),
+    ).fetchone()
+    return row is not None
 
 
 def get_owner_plan(conn, owner_id: str) -> dict | None:

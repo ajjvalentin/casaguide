@@ -39,6 +39,7 @@ export function renderLogin(root) {
       passF.input.setAttribute("autocomplete", "current-password");
       mount(fields, emailF.node, passF.node);
     }
+    forgotLink.classList.toggle("hidden", mode !== "login");
     submitBtn.textContent = mode === "register" ? "Créer mon compte" : "Se connecter";
   }
 
@@ -53,8 +54,12 @@ export function renderLogin(root) {
     refreshIcons();
   }
 
+  // Lien « Mot de passe oublié ? » — visible en mode connexion uniquement (V2-08).
+  const forgotLink = el("p", { class: "muted auth-alt" },
+    el("a", { href: "#/forgot" }, "Mot de passe oublié ?"));
+
   const form = el("form", { onSubmit: onSubmit }, fields, errBox,
-    el("div", { style: { marginTop: "8px" } }, submitBtn));
+    el("div", { style: { marginTop: "8px" } }, submitBtn), forgotLink);
 
   async function onSubmit(e) {
     e.preventDefault();
