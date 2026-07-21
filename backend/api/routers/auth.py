@@ -37,10 +37,21 @@ def _issue_token(conn, owner_id: str, purpose: str) -> str:
     return raw
 
 
+def _send_verification(conn, owner, background: BackgroundTasks, mailer,
+                       request: Request) -> None:
+    """Émet un jeton de vérification et programme l'envoi de l'email (V2-08)."""
+    raw = _issue_token(conn, str(owner["id"]), "verify")
+    verify_url = f"{_public_base(request)}/#/verify/{raw}"
+    email = emails.verify_email(verify_url, owner.get("full_name"))
+    background.add_task(mailer.send, owner["email"], email)
+
+
 @router.post("/register", response_model=TokenOut,
              status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterIn, conn: Conn):
-    """Crée un compte propriétaire + un abonnement d'essai, renvoie un JWT."""
+def register(payload: RegisterIn, conn: Conn, mailer: Mailer,
+             background: BackgroundTasks, request: Request):
+    """Crée un compte propriétaire + un abonnement d'essai, renvoie un JWT.
+    Envoie un email de vérification (non bloquant : la connexion est immédiate)."""
     if repo.get_owner_by_email(conn, payload.email):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="Un compte existe déjà pour cet email")
@@ -59,6 +70,10 @@ def register(payload: RegisterIn, conn: Conn):
         # Course entre deux inscriptions simultanées sur le même email
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="Un compte existe déjà pour cet email")
+    # Vérification d'email (V2-08) : le compte porte full_name dans owner_row.
+    owner_row = {"id": owner["id"], "email": payload.email,
+                 "full_name": payload.full_name}
+    _send_verification(conn, owner_row, background, mailer, request)
     return TokenOut(access_token=security.create_access_token(str(owner["id"])))
 
 
@@ -119,3 +134,33 @@ def reset_password(payload: ResetIn, conn: Conn):
     repo.invalidate_owner_tokens(conn, str(row["owner_id"]), "reset")
     return MessageOut(message="Votre mot de passe a été réinitialisé. "
                               "Vous pouvez vous connecter.")
+
+
+# ── Vérification d'email (V2-08) ─────────────────────────────────────────────
+
+@router.post("/verify-email", response_model=MessageOut)
+def verify_email_endpoint(payload: VerifyIn, conn: Conn):
+    """Consomme un jeton de vérification et pose owners.email_verified = TRUE.
+    Idempotent : un second clic (jeton déjà consommé mais non expiré) renvoie
+    aussi un succès. Un jeton inconnu ou expiré → 400."""
+    row = repo.get_auth_token(conn, security.hash_reset_token(payload.token), "verify")
+    now = datetime.now(timezone.utc)
+    if not row or row["expires_at"] <= now:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Lien de vérification invalide ou expiré.")
+    repo.set_owner_email_verified(conn, str(row["owner_id"]))
+    repo.mark_auth_token_used(conn, str(row["id"]))  # no-op si déjà consommé
+    return MessageOut(message="Votre adresse email est confirmée. Merci !")
+
+
+@router.post("/resend-verification", response_model=MessageOut)
+def resend_verification(owner: CurrentOwner, conn: Conn, mailer: Mailer,
+                        background: BackgroundTasks, request: Request):
+    """Renvoie un email de vérification au propriétaire connecté. Sans effet si
+    l'email est déjà vérifié. Action authentifiée (abus borné à son propre
+    compte) → pas de cadence : le bouton « renvoyer » reste toujours réactif."""
+    if owner.get("email_verified"):
+        return MessageOut(message="Votre adresse email est déjà vérifiée.")
+    _send_verification(conn, owner, background, mailer, request)
+    return MessageOut(message="Un nouvel email de vérification vient de partir.")

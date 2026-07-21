@@ -100,6 +100,9 @@ export const api = {
   // Mot de passe oublié / réinitialisation (V2-08) — sans session
   forgotPassword: (email) => request("POST", "/api/auth/forgot", { body: { email }, auth: false }),
   resetPassword:  (token, password) => request("POST", "/api/auth/reset", { body: { token, password }, auth: false }),
+  // Vérification d'email (V2-08) : clic sur le lien (sans session) + renvoi (session)
+  verifyEmail:        (token) => request("POST", "/api/auth/verify-email", { body: { token }, auth: false }),
+  resendVerification: () => request("POST", "/api/auth/resend-verification"),
 
   // Logements
   listProperties: () => request("GET", "/api/properties"),

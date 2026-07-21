@@ -34,6 +34,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Multilingue guide (M-09) | **Fait** — traductions FR→EN/ES **générées et stockées** (`enrich/translate.py`, tables `section_translations`/`poi_translations` + `is_stale`), jamais à la volée (invariant 4). Modèle dédié `CASAGUIDE_TRANSLATE_MODEL` (Haiku). Seuls les champs texte + `body_md` + descriptions/coups de cœur POI sont traduits (jamais heures/booléens/URLs/secrets). (Re)traduction ciblée à la (re)publication et via `/translate`. Guide localisé côté serveur (`?lang=`), repli élégant sur le fr, sélecteur de langue. Coûts dans `api_costs` (operation='translate') |
 | Cahier équipe d'entretien (M-13) | Schéma : `audience` (guest\|staff) sur `section_templates`, `staff_token` (128 bits) sur `properties` — schema.sql + `db/migrations/002`. Seed : chapitre « S » (5 sections staff). Page publique `GET /s/{staff_token}` (rendu `guide_page.render_staff`, variante sobre check-list, **accessible même en brouillon**, jamais de secrets/POI). Étanchéité guest↔staff dans les deux sens (invariant 7) |
 | Affiche QR imprimable (M-07) | `api/poster.py` (reportlab) → `GET /api/properties/{id}/guide-poster.pdf` (A5/A4, propriétaire uniquement) : nom du logement, QR du lien du guide, mot d'accueil FR/EN, identité sable/mer |
+| Auth transactionnel (V2-08) | **Fait** — mailer injectable (`deps.get_mailer` : `SmtpMailer` SSL Infomaniak + `ConsoleMailer` dev/tests), gabarits FR `api/emails.py`. **Mot de passe oublié** : `POST /api/auth/forgot` (200 constant anti-énumération, email en tâche de fond, cadence 2 min), `POST /api/auth/reset` (jeton 256 bits **haché SHA-256** en table `password_resets`, expiration 60 min, usage unique). **Vérification d'email** : lien à l'inscription (non bloquant), `POST /api/auth/verify-email` (idempotent), `POST /api/auth/resend-verification`. `owners.email_verified` exposé par `/me`. Migrations 005 (table) + 006 (grand-périsage des comptes existants). Front : routes publiques `#/forgot`, `#/reset/{token}`, `#/verify/{token}` (`js/views/reset.js`) + bandeau « vérifiez votre email » (`app.js`) — testé (22 tests + parcours headless) |
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
 | Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v14) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}`. **Lisibilité (V2-09) faite** : TROIS onglets (Le logement / Urgences / Autour de vous, état dans le hash, `app.js initTabs`) + listes de lieux repliées (4 + « Voir les N autres », `initCategoryLists`) |
@@ -134,9 +135,19 @@ AES-256 hex/base64 des colonnes `property_secrets` ; les endpoints de secrets
 répondent 503 si absente), `MEDIA_ROOT` (répertoire de stockage des médias,
 défaut `var/media`, relatif à `backend/`, exclu de git), `CASAGUIDE_JWT_EXPIRE_MIN`,
 `CASAGUIDE_CORS_ORIGINS`, `CASAGUIDE_MAX_UPLOAD_BYTES` (10 Mo par défaut),
-`CASAGUIDE_PUBLIC_BASE_URL` (origine publique des liens du QR imprimable M-07 ;
-à défaut, `request.base_url`), `CASAGUIDE_ASSET_VERSION` (M-11 : SHA git stampé
-par `deploy.sh` → cache-busting des assets ; défaut `dev`).
+`CASAGUIDE_PUBLIC_BASE_URL` (origine publique des liens du QR imprimable M-07 **et
+des emails transactionnels V2-08** — en production `https://holaguia.com` ; à
+défaut, `request.base_url`), `CASAGUIDE_ASSET_VERSION` (M-11 : SHA git stampé
+par `deploy.sh` → cache-busting des assets ; défaut `dev`). **Emails
+transactionnels (V2-08)** : `CASAGUIDE_SMTP_HOST` / `CASAGUIDE_SMTP_PORT` (465) /
+`CASAGUIDE_SMTP_USER` / `CASAGUIDE_SMTP_PASSWORD` / `CASAGUIDE_SMTP_FROM`
+(`Holaguia <no-reply@holaguia.com>` par défaut) — prestataire **Infomaniak**
+(`mail.infomaniak.com:465` SSL). Sans HOST+USER+PASSWORD, repli **ConsoleMailer**
+(les emails sont journalisés au lieu d'être envoyés) + avertissement au démarrage.
+Le mot de passe SMTP est renseigné à la main dans le `.env` du serveur (jamais
+committé). Options : `CASAGUIDE_AUTH_TOKEN_TTL_MIN` (60, validité des jetons
+réinit/vérif), `CASAGUIDE_FORGOT_MIN_INTERVAL_S` (120, cadence des demandes de
+réinitialisation par email).
 
 ## Production (M-11) — **runbook complet : `docs/deploiement.md`**
 
@@ -232,6 +243,22 @@ exposé, peer auth).
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer
   `property_secrets` sur l'endpoint public (déchiffrement à la demande,
   sections sensibles selon `access_mode`).
+- Jetons transactionnels (V2-08) : le jeton brut (256 bits, `token_urlsafe(32)`)
+  n'est **jamais** stocké ni journalisé — seule son empreinte **SHA-256** est en
+  base (`security.hash_reset_token`). SHA-256 nu (sans sel) suffit car le jeton est
+  déjà à haute entropie (contrairement à un mot de passe). La table
+  `password_resets` sert aux **deux** usages via `purpose` (`reset` | `verify`) ;
+  toute requête qui la lit doit filtrer `purpose`. `/forgot` répond **toujours**
+  200 au même message et envoie l'email en `BackgroundTask` → délai constant
+  (anti-énumération) ; ne jamais renvoyer d'indice sur l'existence du compte. La
+  migration 006 (grand-périsage) est sûre au rejeu **parce qu'**elle ne marque que
+  les comptes SANS jeton `verify` — ne pas la remplacer par un `UPDATE` global qui
+  re-vérifierait les nouveaux comptes en attente à chaque déploiement. Bandeau de
+  vérification côté front : n'apparaît que si `email_verified === false` **strict**
+  (jamais sur un champ absent → évite les faux positifs sur un profil en cache
+  d'avant V2-08). Les emails partent en tâche de fond : une panne SMTP ne casse
+  jamais l'inscription ni la demande de réinitialisation (best-effort, comme tout
+  `BackgroundTasks` — ne survit pas à un redémarrage d'uvicorn).
 - Cohérence catégorie/tags OSM (M-01) : `overpass.category_matches` rejette les
   POI incohérents (agence/minimarket taggés `marketplace`, `office=*`,
   vétérinaire hors catégorie `veterinary`) ; aéroports limités aux aérodromes

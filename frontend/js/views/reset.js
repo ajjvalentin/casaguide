@@ -8,6 +8,7 @@
        (#/reset/{token}). Succès → invite à se connecter. */
 
 import { api, ApiError } from "../api.js";
+import { getToken, setOwner } from "../store.js";
 import { el, icon, mount } from "../ui.js";
 import { navigate } from "../nav.js";
 
@@ -124,4 +125,35 @@ export function renderReset(root, token) {
       " · ",
       el("a", { href: "#/login" }, "Connexion"))));
   passInput.focus();
+}
+
+// ── Vérification d'email (clic sur le lien reçu par email) ───────────────────
+
+export function renderVerify(root, token) {
+  const status = el("p", { class: "muted", style: { textAlign: "center" } },
+    "Vérification de votre adresse en cours…");
+  // Destination selon l'état de session (connecté → tableau de bord).
+  const nextHref = getToken() ? "#/properties" : "#/login";
+  const nextLabel = getToken() ? "Aller à mes logements" : "Se connecter";
+  const link = el("p", { class: "muted auth-alt hidden" },
+    el("a", { href: nextHref }, nextLabel));
+
+  mount(root, authCard(
+    el("h1", { class: "auth-title" }, "Vérification de l'email"),
+    status, link));
+
+  (async () => {
+    try {
+      const r = await api.verifyEmail(token);
+      status.className = "okbox";
+      status.textContent = (r && r.message) || "Votre adresse email est confirmée.";
+      // Si une session est active, rafraîchir le profil pour masquer le bandeau.
+      if (getToken()) { try { setOwner(await api.me()); } catch (_) { /* non bloquant */ } }
+    } catch (err) {
+      status.className = "errbox";
+      status.textContent = err instanceof ApiError ? err.message
+        : "Impossible de vérifier votre adresse.";
+    }
+    link.classList.remove("hidden");
+  })();
 }

@@ -13,7 +13,7 @@ import { getToken, getOwner, setOwner, clearSession } from "./store.js";
 import { el, icon, mount, clear, toast, refreshIcons } from "./ui.js";
 import { navigate } from "./nav.js";
 import { renderLogin } from "./views/login.js";
-import { renderForgot, renderReset } from "./views/reset.js";
+import { renderForgot, renderReset, renderVerify } from "./views/reset.js";
 import { renderProperties } from "./views/properties.js";
 import { renderEditor } from "./views/editor.js";
 import { renderPois } from "./views/pois.js";
@@ -29,7 +29,7 @@ function logout() {
 // Construit (une fois) la barre supérieure + le conteneur de vue, renvoie la vue.
 function ensureShell() {
   let viewEl = document.getElementById("app-view");
-  if (viewEl) { updateUserMenu(); return viewEl; }
+  if (viewEl) { updateUserMenu(); updateVerifyBanner(); return viewEl; }
 
   const userMenu = el("div", { class: "usermenu", id: "usermenu" });
   const topbar = el("header", { class: "topbar" },
@@ -37,10 +37,41 @@ function ensureShell() {
       el("span", { class: "mark" }, icon("map-pinned", 18)), "CasaGuide"),
     el("span", { class: "spacer" }),
     userMenu);
+  const banner = el("div", { id: "verify-banner" });
   viewEl = el("main", { id: "app-view" });
-  mount(appEl, topbar, viewEl);
+  mount(appEl, topbar, banner, viewEl);
   updateUserMenu();
+  updateVerifyBanner();
   return viewEl;
+}
+
+// Bandeau discret « vérifiez votre email » (V2-08). Affiché uniquement quand le
+// profil frais indique explicitement email_verified === false (jamais sur un
+// profil au champ absent — évite les faux positifs sur un cache d'avant V2-08).
+async function resendVerification(btn) {
+  btn.disabled = true;
+  try {
+    const r = await api.resendVerification();
+    toast((r && r.message) || "Email de vérification renvoyé.", "ok");
+  } catch (_) {
+    toast("Envoi impossible pour le moment.", "err");
+    btn.disabled = false;
+  }
+}
+
+function updateVerifyBanner() {
+  const box = document.getElementById("verify-banner");
+  if (!box) return;
+  const owner = getOwner();
+  if (!owner || owner.email_verified !== false) { clear(box); return; }
+  const resend = el("button", { class: "btn btn-sm btn-ghost" },
+    icon("mail", 15), "Renvoyer l'email");
+  resend.addEventListener("click", () => resendVerification(resend));
+  mount(box, el("div", { class: "verify-banner" },
+    icon("mail-warning", 16),
+    el("span", { class: "vb-msg" },
+      "Confirmez votre adresse email pour sécuriser votre compte."),
+    resend));
 }
 
 function updateUserMenu() {
@@ -59,6 +90,9 @@ function renderRoute() {
   if (hash === "#/forgot") { renderForgot(appEl); return; }
   if (hash.startsWith("#/reset/")) {
     return void renderReset(appEl, decodeURIComponent(hash.slice("#/reset/".length)));
+  }
+  if (hash.startsWith("#/verify/")) {
+    return void renderVerify(appEl, decodeURIComponent(hash.slice("#/verify/".length)));
   }
 
   if (!getToken()) { renderLogin(appEl); return; }
