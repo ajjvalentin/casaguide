@@ -173,9 +173,12 @@ class FakeTranslator:
 LAST_TRANSLATOR = FakeTranslator()
 
 
-def _test_translation_runner(property_id: str, job_id: str) -> None:
-    """Exécuteur de traduction sans réseau, injecté à la place du vrai."""
-    translate.run(property_id, job_id=job_id, translator=LAST_TRANSLATOR)
+def _test_translation_runner(property_id: str, job_id: str,
+                             target_langs: list) -> None:
+    """Exécuteur de traduction sans réseau, injecté à la place du vrai. Reçoit
+    les langues cibles déjà plafonnées par le plan (V2-05a) et les propage."""
+    translate.run(property_id, job_id=job_id, target_langs=target_langs,
+                  translator=LAST_TRANSLATOR)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -208,6 +211,18 @@ def register(client, **over) -> dict:
     token = r.json()["access_token"]
     return {"email": email, "token": token,
             "headers": {"Authorization": f"Bearer {token}"}}
+
+
+def set_owner_plan(email: str, plan_id: str) -> None:
+    """Fixe le plan d'un compte de test (V2-05a) en écrivant directement en base
+    (l'abonnement d'essai créé à l'inscription est un 'free'). Sert à exercer les
+    quotas des offres payantes (traductions multilingues, quota d'enrichissement)."""
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            """UPDATE subscriptions SET plan_id = %s, status = 'active'
+               WHERE owner_id = (SELECT id FROM owners WHERE email = %s)""",
+            (plan_id, email))
+        conn.commit()
 
 
 def make_property(client, headers, **over) -> dict:
@@ -396,15 +411,17 @@ def test_enrich_then_validate_pois(client):
 
 
 def test_enrich_quota_enforced(client):
-    """Le plan gratuit autorise 1 enrichissement/mois (§5.2)."""
+    """Le plan gratuit autorise 1 enrichissement/mois (§5.2). Refus propre 402
+    `quota_exceeded` au-delà (V2-05a)."""
     owner = register(client)
     prop = make_property(client, owner["headers"])
     pid = prop["id"]
     _enrich_and_wait(client, owner["headers"], pid)
-    # Deuxième déclenchement le même mois -> 429
+    # Deuxième déclenchement le même mois -> 402 quota_exceeded
     second = client.post(f"/api/properties/{pid}/enrich", headers=owner["headers"],
                          json={"trigger": "refresh"})
-    assert second.status_code == 429
+    assert second.status_code == 402
+    assert second.json()["detail"]["code"] == "quota_exceeded"
 
 
 # ── M-22 : ajout manuel de POI (recherche Nominatim + création owner) ─────────
@@ -1431,6 +1448,7 @@ def _publish_guide_with_content(client, headers, pid):
 def test_publish_generates_translations_and_serves_es(client):
     LAST_TRANSLATOR.calls.clear()
     owner = register(client)
+    set_owner_plan(owner["email"], "pro")  # multilingue autorisé (langs=5, V2-05a)
     prop = make_property(client, owner["headers"])
     pid, token = prop["id"], prop["guide_token"]
     _publish_guide_with_content(client, owner["headers"], pid)
@@ -1470,6 +1488,7 @@ def test_publish_generates_translations_and_serves_es(client):
 
 def test_translation_cost_recorded_and_no_secret_translated(client):
     owner = register(client)
+    set_owner_plan(owner["email"], "pro")  # multilingue autorisé (V2-05a)
     prop = make_property(client, owner["headers"])
     pid, token = prop["id"], prop["guide_token"]
     # Secret wifi : ne doit jamais transiter par la traduction ni le guide
@@ -1495,6 +1514,7 @@ def test_translation_cost_recorded_and_no_secret_translated(client):
 
 def test_translation_is_stale_and_retranslation_is_targeted(client):
     owner = register(client)
+    set_owner_plan(owner["email"], "pro")  # multilingue autorisé (V2-05a)
     prop = make_property(client, owner["headers"])
     pid, token = prop["id"], prop["guide_token"]
     _publish_guide_with_content(client, owner["headers"], pid)
@@ -1538,18 +1558,125 @@ def test_translation_is_stale_and_retranslation_is_targeted(client):
 
 
 def test_translate_excluded_from_enrich_quota(client):
-    """Traduire ne consomme pas le quota d'enrichissement (M-09)."""
+    """Traduire ne consomme pas le quota d'enrichissement (M-09). Plan solo
+    (enrich_quota=3, langs=5 → traduction autorisée)."""
     owner = register(client)
+    set_owner_plan(owner["email"], "solo")
     prop = make_property(client, owner["headers"])
     pid = prop["id"]
-    _enrich_and_wait(client, owner["headers"], pid)          # 1er (et seul) enrichissement du plan free
-    # Plusieurs traductions n'entament pas le quota
+    # Consomme tout le quota d'enrichissement du plan solo (3 jobs)
+    for _ in range(3):
+        _enrich_and_wait(client, owner["headers"], pid)
+    # Plusieurs traductions n'entament pas ce quota (jobs trigger='translate')
     for _ in range(3):
         assert client.post(f"/api/properties/{pid}/translate",
                            headers=owner["headers"]).status_code == 202
-    # Un second enrichissement reste refusé (quota du plan free = 1)
-    assert client.post(f"/api/properties/{pid}/enrich", headers=owner["headers"],
-                       json={"trigger": "refresh"}).status_code == 429
+    # Un enrichissement supplémentaire reste refusé (quota solo = 3) → 402
+    r = client.post(f"/api/properties/{pid}/enrich", headers=owner["headers"],
+                    json={"trigger": "refresh"})
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "quota_exceeded"
+
+
+# ── V2-05a : plans & quotas appliqués côté serveur (volet 2) ─────────────────
+
+def test_property_quota_402_then_unlimited_on_pro(client):
+    """Le plan gratuit plafonne à 1 logement (402 `quota_exceeded`) ; le passage
+    en pro (max_properties NULL = illimité) débloque immédiatement la création."""
+    owner = register(client)                        # free : max_properties = 1
+    make_property(client, owner["headers"])         # 1er logement : OK (201)
+    second = client.post("/api/properties", headers=owner["headers"],
+                         json={"name": "Second", "address_line1": "Rue X",
+                               "city": "Ville", "country_code": "ES"})
+    assert second.status_code == 402
+    body = second.json()
+    assert body["detail"]["code"] == "quota_exceeded"
+    assert "offre" in body["detail"]["message"].lower()   # message FR affichable
+
+    set_owner_plan(owner["email"], "pro")           # illimité
+    ok = client.post("/api/properties", headers=owner["headers"],
+                     json={"name": "Second", "address_line1": "Rue X",
+                           "city": "Ville", "country_code": "ES"})
+    assert ok.status_code == 201
+
+
+def test_free_plan_publishes_no_translation(client):
+    """Plan gratuit (langs=1) : publier ne génère AUCUNE traduction, /translate
+    est refusé proprement (402), et le guide reste servi en français."""
+    LAST_TRANSLATOR.calls.clear()
+    owner = register(client)                        # free : langs = 1 (FR seul)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)
+
+    p = client.get(f"/api/properties/{pid}", headers=owner["headers"]).json()
+    assert p["published_langs"] == []               # aucune langue publiée
+    assert LAST_TRANSLATOR.calls == []              # traducteur jamais sollicité
+
+    r = client.post(f"/api/properties/{pid}/translate", headers=owner["headers"])
+    assert r.status_code == 402
+    assert r.json()["detail"]["code"] == "quota_exceeded"
+
+    # Le guide reste servi : une langue non publiée retombe sur le français
+    es = client.get(f"/g/{token}?lang=es").text
+    assert 'lang="fr"' in es and "[es]" not in es
+
+
+def test_downgrade_preserves_data_and_existing_translations(client):
+    """Un downgrade ne supprime RIEN (invariant 1) : logements et traductions
+    déjà publiées restent lisibles/servis ; seule la création de NOUVEAU contenu
+    est bloquée, et aucune nouvelle traduction n'est régénérée."""
+    owner = register(client)
+    set_owner_plan(owner["email"], "pro")
+    p1 = make_property(client, owner["headers"])
+    make_property(client, owner["headers"], name="Second")   # 2 logements (pro)
+    pid, token = p1["id"], p1["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)
+    assert set(client.get(f"/api/properties/{pid}",
+                          headers=owner["headers"]).json()["published_langs"]) == {"en", "es"}
+
+    set_owner_plan(owner["email"], "free")          # ── DOWNGRADE ──
+
+    # 1) Aucune donnée supprimée : les 2 logements restent listés et lisibles
+    props = client.get("/api/properties", headers=owner["headers"]).json()
+    assert len(props) == 2
+    assert client.get(f"/api/properties/{pid}", headers=owner["headers"]).status_code == 200
+
+    # 2) Créer un logement de plus est refusé (quota free = 1, déjà dépassé)
+    over = client.post("/api/properties", headers=owner["headers"],
+                       json={"name": "Trop", "address_line1": "X", "city": "Y",
+                             "country_code": "ES"})
+    assert over.status_code == 402
+
+    # 3) Les traductions déjà publiées restent servies (jamais effacées)
+    es = client.get(f"/g/{token}?lang=es")
+    assert 'lang="es"' in es.text and "[es] " in es.text
+
+    # 4) Re-publier en free ne régénère ni n'efface les traductions existantes
+    LAST_TRANSLATOR.calls.clear()
+    rep = client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                       json={"status": "published"})
+    assert rep.status_code == 200
+    assert LAST_TRANSLATOR.calls == []              # aucune (re)traduction lancée
+    assert set(client.get(f"/api/properties/{pid}",
+                          headers=owner["headers"]).json()["published_langs"]) == {"en", "es"}
+
+
+def test_watermark_present_on_free_absent_on_paid(client):
+    """Le pied de page « Créé avec Holaguia » n'apparaît que sur le plan gratuit
+    (features.watermark) ; il disparaît dès le passage à une offre payante."""
+    owner = register(client)                        # free → watermark
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)
+
+    free_html = client.get(f"/g/{token}").text
+    assert "Créé avec Holaguia" in free_html
+    assert 'class="watermark"' in free_html
+
+    set_owner_plan(owner["email"], "solo")          # payant → pas de watermark
+    paid_html = client.get(f"/g/{token}").text
+    assert "Créé avec Holaguia" not in paid_html
 
 
 # ── Fiche du logement éditable : (re)géocodage explicite (M-24) ──────────────

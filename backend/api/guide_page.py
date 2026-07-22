@@ -140,6 +140,7 @@ _UI: dict[str, dict[str, str]] = {
         "share_desc": "Tout pour votre séjour : arrivée, wifi, urgences, commerces, "
                       "restaurants et carte du quartier.",
         "footer": "Guide propulsé par CasaGuide — données OpenStreetMap. Bon séjour !",
+        "watermark": "Créé avec Holaguia",
     },
     "en": {
         "eyebrow": "Your stay guide", "all": "All",
@@ -163,6 +164,7 @@ _UI: dict[str, dict[str, str]] = {
         "share_desc": "Everything for your stay: check-in, wifi, emergencies, shops, "
                       "restaurants and a map of the area.",
         "footer": "Guide powered by CasaGuide — OpenStreetMap data. Enjoy your stay!",
+        "watermark": "Created with Holaguia",
     },
     "es": {
         "eyebrow": "Tu guía de estancia", "all": "Todo",
@@ -186,6 +188,7 @@ _UI: dict[str, dict[str, str]] = {
         "share_desc": "Todo para tu estancia: llegada, wifi, urgencias, comercios, "
                       "restaurantes y mapa del barrio.",
         "footer": "Guía con tecnología de CasaGuide — datos de OpenStreetMap. ¡Feliz estancia!",
+        "watermark": "Creado con Holaguia",
     },
 }
 
@@ -817,9 +820,18 @@ def _og_tags(*, title: str, desc: str, url: str, image: str | None,
     return "\n".join(tags)
 
 
+def _watermark_html(lang: str) -> str:
+    """Pied de page discret « Créé avec Holaguia » du plan gratuit (V2-05a).
+    Simple lien vers holaguia.com — aucun appel externe (invariant 4)."""
+    return (f'<div class="watermark">'
+            f'<a href="https://holaguia.com" target="_blank" rel="noopener">'
+            f'{_esc(_t(lang, "watermark"))}</a></div>')
+
+
 def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  area_facts: dict, token: str, lang: str = "fr", *,
-                 base_url: str = "", og_image_url: str | None = None) -> str:
+                 base_url: str = "", og_image_url: str | None = None,
+                 watermark: bool = False) -> str:
     contact = prop.get("contact") or {}
     name = _esc(prop.get("name") or _t(lang, "home"))
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
@@ -979,7 +991,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
   </header>
   {tabs_nav}
   <main id="content">{"".join(panels_html)}</main>
-  <footer>{_esc(_t(lang, "footer"))}</footer>
+  <footer>{_esc(_t(lang, "footer"))}{_watermark_html(lang) if watermark else ''}</footer>
 </div>
 <script id="guide-data" type="application/json">{data_json}</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

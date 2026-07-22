@@ -106,13 +106,16 @@ def get_enrichment_runner() -> EnrichmentRunner:
 
 # ── Exécuteur de traduction (M-09, injectable pour les tests) ────────────────
 
-# (property_id, job_id) — la tâche de fond (re)traduit le manquant/périmé.
-TranslationRunner = Callable[[str, str], None]
+# (property_id, job_id, target_langs) — la tâche de fond (re)traduit le
+# manquant/périmé vers `target_langs` (déjà plafonnées par le plan, V2-05a).
+TranslationRunner = Callable[[str, str, list], None]
 
 
-def _default_translation_runner(property_id: str, job_id: str) -> None:
-    """Lance la vraie traduction (API Claude) en tâche de fond."""
-    translate.run(property_id, job_id=job_id)
+def _default_translation_runner(property_id: str, job_id: str,
+                                target_langs: list) -> None:
+    """Lance la vraie traduction (API Claude) en tâche de fond, bornée aux langues
+    autorisées par le plan (`target_langs` déjà plafonnées, V2-05a)."""
+    translate.run(property_id, job_id=job_id, target_langs=target_langs)
 
 
 def get_translation_runner() -> TranslationRunner:

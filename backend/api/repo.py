@@ -159,6 +159,20 @@ def list_plans(conn) -> list[dict]:
     ).fetchall()
 
 
+def get_plan_by_guide_token(conn, token: str) -> dict | None:
+    """Plan du propriétaire d'un guide, désigné par son `guide_token` public
+    (V2-05a). Sert au rendu du guide voyageur (watermark du plan gratuit) sans
+    exposer l'`owner_id`. None si token inconnu."""
+    return conn.execute(
+        """SELECT p.* FROM plans p
+           JOIN subscriptions s ON s.plan_id = p.id
+           JOIN properties pr ON pr.owner_id = s.owner_id
+           WHERE pr.guide_token = %s
+           ORDER BY s.created_at DESC LIMIT 1""",
+        (token,),
+    ).fetchone()
+
+
 def published_langs(conn, property_id: str) -> list[str]:
     """Langues cibles déjà publiées pour un logement (`properties.published_langs`,
     hors langue source). Liste vide si le logement n'a jamais été traduit."""

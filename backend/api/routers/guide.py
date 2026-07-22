@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import (assets, crypto, guide_page, media_files, og_image, repo,
+from .. import (assets, crypto, guide_page, media_files, og_image, plans, repo,
                 storage, wifi)
 from ..config import settings
 from ..deps import Conn
@@ -166,9 +166,14 @@ def public_guide_page(guide_token: str, conn: Conn, request: Request,
     base = _base_url(request)
     photo = _first_photo_path(sections, property_media, token)
     og_image_url = base + (photo or f"/g/{token}/og-image.png")
+    # Marque blanche (V2-05a) : le plan gratuit affiche un pied de page discret
+    # « Créé avec Holaguia » ; les plans payants ne l'ont pas (features.watermark).
+    plan = repo.get_plan_by_guide_token(conn, token)
+    watermark = plans.wants_watermark(plan) if plan else True
     html = guide_page.render_guide(_property_public(prop), sections, pois,
                                    area_facts, token, lang=effective,
-                                   base_url=base, og_image_url=og_image_url)
+                                   base_url=base, og_image_url=og_image_url,
+                                   watermark=watermark)
     return HTMLResponse(html, headers=_public_headers())
 
 

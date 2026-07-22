@@ -8,8 +8,9 @@ from typing import Annotated, Literal
 from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException, Request,
                      Response, status)
 
-from .. import crypto, poster, repo, wifi
+from .. import crypto, plans, poster, repo, wifi
 from ..config import settings
+from ..quota import quota_exceeded
 from ..deps import (
     Conn, CurrentOwner, DistanceComputer, Geocoder, OwnedProperty,
     TranslationRunner, get_distance_computer, get_geocoder,
@@ -42,13 +43,12 @@ def list_properties(conn: Conn, owner: CurrentOwner):
 
 @router.post("", response_model=PropertyOut, status_code=status.HTTP_201_CREATED)
 def create_property(payload: PropertyIn, conn: Conn, owner: CurrentOwner):
-    # Limite de logements selon le plan (§10)
-    plan = repo.get_owner_plan(conn, str(owner["id"]))
-    if plan and plan["max_properties"] is not None:
-        if repo.count_properties(conn, str(owner["id"])) >= plan["max_properties"]:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Limite de logements atteinte pour le plan « {plan['name']} »")
+    # Limite de logements selon le plan (§10, V2-05a) — refus propre 402.
+    q = plans.check_quota(conn, str(owner["id"]), "properties")
+    if not q.ok:
+        raise quota_exceeded(
+            f"Vous avez atteint la limite de {q.limit} logement(s) de l'offre "
+            f"« {q.plan['name']} ». Passez à une offre supérieure pour en ajouter.")
     data = payload.model_dump()
     data["country_code"] = data["country_code"].upper()
     return repo.create_property(conn, str(owner["id"]), data)
@@ -69,10 +69,13 @@ def update_property(
     if "country_code" in fields and fields["country_code"]:
         fields["country_code"] = fields["country_code"].upper()
     updated = repo.update_property(conn, str(owner["id"]), str(prop["id"]), fields)
-    # À la (re)publication : (re)traduire ce qui manque ou est périmé (M-09, §9).
-    # Tâche de fond — n'allonge pas la réponse ; ciblage côté pipeline.
+    # À la (re)publication : (re)traduire ce qui manque ou est périmé (M-09, §9),
+    # dans la limite des langues autorisées par le plan (V2-05a). Tâche de fond —
+    # n'allonge pas la réponse ; ciblage côté pipeline. Un plan gratuit ne publie
+    # aucune traduction (les traductions déjà en base restent servies, invariant 1).
     if fields.get("status") == "published":
-        schedule_translation(background, conn, updated, runner)
+        plan = plans.get_plan(conn, str(owner["id"]))
+        schedule_translation(background, conn, updated, runner, plan)
     return updated
 
 

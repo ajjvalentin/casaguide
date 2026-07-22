@@ -227,6 +227,10 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .sec-facts .facts .tt{font-size:14px;letter-spacing:.02em}
 
 footer{margin-top:38px;font-size:12px;color:var(--muted);text-align:center}
+/* Marque blanche du plan gratuit (V2-05a) — discrète, sous le pied de page */
+.watermark{margin-top:6px}
+.watermark a{color:var(--muted);text-decoration:none;opacity:.75;font-weight:500}
+.watermark a:hover{opacity:1;text-decoration:underline}
 
 /* ── Visionneuse plein écran (lightbox) ──────────────────────────────────── */
 .lightbox{position:fixed;inset:0;z-index:2000;background:rgba(16,20,22,.94);
