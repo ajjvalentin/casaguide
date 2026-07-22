@@ -35,6 +35,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Cahier équipe d'entretien (M-13) | Schéma : `audience` (guest\|staff) sur `section_templates`, `staff_token` (128 bits) sur `properties` — schema.sql + `db/migrations/002`. Seed : chapitre « S » (5 sections staff). Page publique `GET /s/{staff_token}` (rendu `guide_page.render_staff`, variante sobre check-list, **accessible même en brouillon**, jamais de secrets/POI). Étanchéité guest↔staff dans les deux sens (invariant 7) |
 | Affiche QR imprimable (M-07) | `api/poster.py` (reportlab) → `GET /api/properties/{id}/guide-poster.pdf` (A5/A4, propriétaire uniquement) : nom du logement, QR du lien du guide, mot d'accueil FR/EN, identité sable/mer |
 | Auth transactionnel (V2-08) | **Fait** — mailer injectable (`deps.get_mailer` : `SmtpMailer` SSL Infomaniak + `ConsoleMailer` dev/tests), gabarits FR `api/emails.py`. **Mot de passe oublié** : `POST /api/auth/forgot` (200 constant anti-énumération, email en tâche de fond, cadence 2 min), `POST /api/auth/reset` (jeton 256 bits **haché SHA-256** en table `password_resets`, expiration 60 min, usage unique). **Vérification d'email** : lien à l'inscription (non bloquant), `POST /api/auth/verify-email` (idempotent), `POST /api/auth/resend-verification`. `owners.email_verified` exposé par `/me`. Migrations 005 (table) + 006 (grand-périsage des comptes existants). Front : routes publiques `#/forgot`, `#/reset/{token}`, `#/verify/{token}` (`js/views/reset.js`) + bandeau « vérifiez votre email » (`app.js`) — testé (22 tests + parcours headless) |
+| Plans & abonnements (V2-05a) | **Volet 1 fait** — couche d'accès `api/plans.py` branchée sur le modèle existant `plans`/`subscriptions` (CdC §10) : `get_subscription` / `get_plan` (repli 'free' + warning si abonnement manquant, jamais None) / `check_quota(owner_id, resource)` pour `properties` \| `enrichments` \| `langs` (lit `max_properties`, `enrich_quota` mensuel/logement, `features`) / `cap_target_langs` (plafond langues, source comprise) / `wants_watermark`. Inscription crée toujours une ligne `subscriptions` (`plan_id`='free', **`status='active'`** — pas de logique d'essai). Migration 007 : rattrapage idempotent d'un abo 'free' pour tout compte sans abonnement. Attribution manuelle par email : `ops/set_plan.py` (idempotent, non bloquant sur email absent). Aucun quota codé en dur (invariant 8) — testé (`tests/test_plans.py`, 13 tests). Volets 2 (application serveur + watermark) & 3 (UI) à suivre |
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
 | Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v14) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}`. **Lisibilité (V2-09) faite** : TROIS onglets (Le logement / Urgences / Autour de vous, état dans le hash, `app.js initTabs`) + listes de lieux repliées (4 + « Voir les N autres », `initCategoryLists`) |
@@ -97,6 +98,14 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
    média) ; une section `audience='guest'` ne sort **jamais** sur `/s`. Le cahier
    `/s/{staff_token}` n'expose **jamais** de secrets ni de POI/carte. Chaque sens
    est couvert par un test dédié (`test_staff_and_guest_are_watertight_both_ways`).
+8. **Plans & quotas (V2-05a)** : la définition des plans vit **en base**
+   (`plans` + seed) — aucun quota codé en dur en Python/JS. Les quotas sont
+   appliqués **côté serveur uniquement** (refus **HTTP 402**, `detail.code =
+   'quota_exceeded'`, message FR) ; le front peut griser, la vérité est dans
+   l'API. Un **downgrade ne supprime jamais de données** : logements/langues
+   excédentaires deviennent lecture seule, jamais effacés. Tout passe par la
+   couche `api/plans.py` (`get_plan` → repli 'free' + warning si abonnement
+   manquant, jamais None ; `check_quota` ; `cap_target_langs` ; `wants_watermark`).
 
 ## Commandes
 
@@ -108,6 +117,7 @@ psql -d casaguide -f db/migrations/001_pois_unique_source.sql
 psql -d casaguide -f db/migrations/002_staff_cahier.sql   # audience + staff_token (M-13)
 psql -d casaguide -f db/migrations/003_pois_cuisine.sql   # colonne cuisine sur pois (M-16)
 psql -d casaguide -f db/migrations/004_wifi_networks.sql  # wifi_networks_enc (multi-wifi, M-15)
+psql -d casaguide -f db/migrations/007_backfill_free_subscriptions.sql # abo 'free' de rattrapage (V2-05a)
 
 # Backend
 cd backend

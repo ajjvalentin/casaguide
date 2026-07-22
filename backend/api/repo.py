@@ -54,11 +54,18 @@ def create_owner(conn, *, email: str, password_hash: str, full_name: str,
     ).fetchone()
 
 
-def create_subscription(conn, owner_id: str, plan_id: str) -> None:
+def create_subscription(conn, owner_id: str, plan_id: str,
+                        status: str = "active") -> None:
+    """Attribue un abonnement au propriétaire (V2-05a).
+
+    `status` par défaut 'active' : il n'existe aucune logique d'essai dans cette
+    mission, et le plan gratuit est un palier permanent — pas une période
+    d'essai (décision cohérente avec la migration 007). En V2-05b, le webhook
+    Stripe deviendra la seule source de vérité du `status` des plans payants."""
     conn.execute(
         """INSERT INTO subscriptions (owner_id, plan_id, status)
-           VALUES (%s, %s, 'trialing')""",
-        (owner_id, plan_id),
+           VALUES (%s, %s, %s)""",
+        (owner_id, plan_id, status),
     )
 
 
@@ -136,6 +143,29 @@ def get_owner_plan(conn, owner_id: str) -> dict | None:
            ORDER BY s.created_at DESC LIMIT 1""",
         (owner_id,),
     ).fetchone()
+
+
+def get_plan_by_id(conn, plan_id: str) -> dict | None:
+    """Définition d'un plan par son identifiant ('free' | 'solo' | 'pro')."""
+    return conn.execute(
+        "SELECT * FROM plans WHERE id = %s", (plan_id,)
+    ).fetchone()
+
+
+def list_plans(conn) -> list[dict]:
+    """Catalogue des plans (par prix croissant) — inscription & page abonnement."""
+    return conn.execute(
+        "SELECT * FROM plans ORDER BY price_month_cts"
+    ).fetchall()
+
+
+def published_langs(conn, property_id: str) -> list[str]:
+    """Langues cibles déjà publiées pour un logement (`properties.published_langs`,
+    hors langue source). Liste vide si le logement n'a jamais été traduit."""
+    row = conn.execute(
+        "SELECT published_langs FROM properties WHERE id = %s", (property_id,)
+    ).fetchone()
+    return list(row["published_langs"]) if row and row["published_langs"] else []
 
 
 # ── Logements ────────────────────────────────────────────────────────────────
