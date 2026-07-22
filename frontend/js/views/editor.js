@@ -11,6 +11,7 @@ import {
   el, icon, mount, clear, t, toast, openModal, confirmDialog, loadingBlock, refreshIcons,
 } from "../ui.js";
 import { navigate } from "../nav.js";
+import { handleQuotaError } from "../quota.js";
 import { CHAPTER_ORDER, chapterMeta } from "../constants.js";
 import { buildSectionForm } from "../components/dynform.js";
 import { buildMediaPanel } from "../components/media.js";
@@ -315,7 +316,8 @@ export async function renderEditor(view, pid) {
       }
       toast("Traductions mises à jour.", "ok");
     } catch (err) {
-      toast(err.message || "Traduction impossible.", "err");
+      // Plafond de langues du plan atteint (402) → encart « changez d'offre ».
+      if (!handleQuotaError(err)) toast(err.message || "Traduction impossible.", "err");
     } finally {
       translationBtn.disabled = false;
       refreshTranslationState();

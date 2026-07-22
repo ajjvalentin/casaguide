@@ -1679,6 +1679,38 @@ def test_watermark_present_on_free_absent_on_paid(client):
     assert "Créé avec Holaguia" not in paid_html
 
 
+def test_plans_catalogue_is_public_and_from_db(client):
+    """`GET /api/plans` sert le catalogue (sans auth) — prix lus en base, jamais
+    codés en dur côté front."""
+    r = client.get("/api/plans")
+    assert r.status_code == 200
+    by_id = {p["id"]: p for p in r.json()}
+    assert set(by_id) == {"free", "solo", "pro"}
+    assert by_id["free"]["price_month_cts"] == 0
+    assert by_id["pro"]["max_properties"] is None        # illimité
+    assert by_id["solo"]["features"]["langs"] == 5
+    # ordre par prix croissant
+    assert [p["id"] for p in r.json()] == ["free", "solo", "pro"]
+
+
+def test_subscription_reports_plan_and_usage(client):
+    """`GET /api/subscription` (auth) : plan courant + jauges d'utilisation."""
+    assert client.get("/api/subscription").status_code == 401   # auth requise
+    owner = register(client)
+    make_property(client, owner["headers"])
+    body = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert body["plan"]["id"] == "free" and body["status"] == "active"
+    assert body["usage"]["properties"] == {"used": 1, "limit": 1}
+    assert body["usage"]["enrichments"]["limit"] == 1          # /logement/mois
+    assert body["usage"]["langs"]["limit"] == 1                # FR seul
+    # Passage pro : plafonds relevés (illimité pour les logements)
+    set_owner_plan(owner["email"], "pro")
+    body2 = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert body2["plan"]["id"] == "pro"
+    assert body2["usage"]["properties"]["limit"] is None
+    assert body2["usage"]["langs"]["limit"] == 5
+
+
 # ── Fiche du logement éditable : (re)géocodage explicite (M-24) ──────────────
 
 def test_geocode_endpoint_repositions_from_address(client):

@@ -692,6 +692,32 @@ def count_jobs_current_month(conn, property_id: str) -> int:
     ).fetchone()["n"]
 
 
+def count_owner_jobs_current_month(conn, owner_id: str) -> int:
+    """Total des enrichissements du mois calendaire pour TOUS les logements du
+    propriétaire (jauge « Mon abonnement », V2-05a). Même règle que le quota :
+    hors jobs `failed` et hors traductions."""
+    return conn.execute(
+        """SELECT count(*) AS n FROM enrichment_jobs j
+           JOIN properties p ON p.id = j.property_id
+           WHERE p.owner_id = %s
+             AND j.created_at >= date_trunc('month', now())
+             AND j.status <> 'failed'
+             AND j.trigger <> 'translate'""",
+        (owner_id,),
+    ).fetchone()["n"]
+
+
+def max_published_langs_count(conn, owner_id: str) -> int:
+    """Plus grand nombre de langues cibles publiées parmi les logements du
+    propriétaire (jauge langues, V2-05a). 0 si aucun logement traduit."""
+    row = conn.execute(
+        """SELECT coalesce(max(cardinality(published_langs)), 0) AS n
+           FROM properties WHERE owner_id = %s""",
+        (owner_id,),
+    ).fetchone()
+    return int(row["n"]) if row else 0
+
+
 def fail_orphan_running_jobs(conn) -> int:
     """Requalifie en 'failed' les jobs restés 'running' : leur BackgroundTask ne
     survit pas à un redémarrage d'uvicorn (M-01). Appelé au démarrage de l'API.

@@ -41,7 +41,13 @@ async function handleResponse(resp, auth) {
   }
   if (!resp.ok) {
     const detail = data && data.detail;
-    const msg = typeof detail === "string" ? detail : `Erreur serveur (${resp.status}).`;
+    // `detail` peut être une chaîne (erreurs classiques) OU un objet structuré
+    // {code, message} (refus de quota 402, V2-05a). On expose toujours un
+    // message FR lisible + on conserve `detail` pour tester `detail.code`.
+    let msg;
+    if (typeof detail === "string") msg = detail;
+    else if (detail && typeof detail === "object" && detail.message) msg = detail.message;
+    else msg = `Erreur serveur (${resp.status}).`;
     throw new ApiError(resp.status, msg, detail);
   }
   return data;
@@ -93,6 +99,10 @@ async function fetchBlob(path) {
 }
 
 export const api = {
+  // Plans & abonnement (V2-05a)
+  listPlans:       () => request("GET", "/api/plans", { auth: false }),
+  getSubscription: () => request("GET", "/api/subscription"),
+
   // Auth
   register: (b) => request("POST", "/api/auth/register", { body: b, auth: false }),
   login:    (b) => request("POST", "/api/auth/login", { body: b, auth: false }),

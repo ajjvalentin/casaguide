@@ -391,3 +391,32 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 
 /* Leaflet : marqueur logement */
 .home-pin{font-size:24px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}
+
+/* ── Plans & abonnement (V2-05a) ─────────────────────────────────────────── */
+.help{font-size:12.5px;color:var(--muted)}
+.usage-row{margin:12px 0}
+.plan-price{font-size:20px;font-weight:700;color:var(--sea);margin:2px 0 12px}
+.plan-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media(max-width:760px){.plan-grid{grid-template-columns:1fr}}
+.plan-card{position:relative;display:flex;flex-direction:column}
+.plan-card.plan-current{border-color:var(--sea);box-shadow:0 0 0 3px rgba(14,90,115,.10)}
+.plan-tag{position:absolute;top:-10px;right:14px}
+.feat-list{list-style:none;padding:0;margin:0 0 16px;flex:1}
+.feat{display:flex;align-items:flex-start;gap:8px;font-size:13.5px;padding:5px 0;color:var(--ink)}
+.feat [data-lucide]{width:15px;height:15px;flex:none;margin-top:2px}
+.feat.on [data-lucide]{color:var(--ok)}
+.feat.off{color:var(--muted)}
+.feat.off [data-lucide]{color:var(--todo)}
+
+/* Choix de l'offre à l'inscription */
+.signup-plans{margin:4px 0 10px}
+.signup-plans .label{font-size:13px;font-weight:600;color:var(--ink);margin-bottom:6px}
+.plan-choices{display:flex;flex-direction:column;gap:8px;margin-bottom:6px}
+.plan-choice{display:flex;align-items:center;gap:10px;border:1px solid var(--line);
+  border-radius:10px;padding:9px 12px;cursor:pointer}
+.plan-choice.on{border-color:var(--sea);background:#F4FAFB}
+.plan-choice.disabled{opacity:.7;cursor:not-allowed}
+.plan-choice .pc-body{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pc-price{color:var(--muted);font-size:13.5px}
+.pc-soon{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  background:var(--sand-hi);color:var(--sand-hi-ink);border-radius:20px;padding:2px 8px}

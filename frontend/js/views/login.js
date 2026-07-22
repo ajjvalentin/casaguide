@@ -30,11 +30,52 @@ export function renderLogin(root) {
   const companyF = field("Société (facultatif)", "company_name");
   const phoneF = field("Téléphone (facultatif)", "phone", "tel");
 
+  // Choix de l'offre à l'inscription (V2-05a) : offre gratuite présélectionnée ;
+  // les offres payantes sont affichées (prix depuis l'API) mais pas encore
+  // souscriptibles — aucune collecte de paiement (Stripe = V2-05b).
+  const plansBox = el("div", { class: "signup-plans" });
+  let plansLoaded = false;
+
+  async function loadPlans() {
+    if (plansLoaded) return;
+    plansLoaded = true;
+    try {
+      const plans = await api.listPlans();
+      mount(plansBox,
+        el("div", { class: "label" }, "Votre offre"),
+        el("div", { class: "plan-choices" }, ...plans.map(planChoice)),
+        el("div", { class: "help" },
+          "L'offre gratuite vous permet de démarrer tout de suite. Le passage à "
+          + "une offre payante sera disponible prochainement."));
+      refreshIcons();
+    } catch (_) { /* non bloquant : l'inscription reste possible sur l'offre gratuite */ }
+  }
+
+  function euros(cts) {
+    if (!cts) return "Gratuit";
+    const n = cts / 100;
+    return (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(".", ",")) + " €/mois";
+  }
+
+  function planChoice(p) {
+    const free = p.price_month_cts === 0;
+    return el("label", { class: "plan-choice" + (free ? " on" : " disabled") },
+      el("input", {
+        type: "radio", name: "plan", value: p.id,
+        ...(free ? { checked: true } : { disabled: true }),
+      }),
+      el("span", { class: "pc-body" },
+        el("b", {}, p.name), " ",
+        el("span", { class: "pc-price" }, euros(p.price_month_cts)),
+        free ? null : el("span", { class: "pc-soon" }, "Bientôt")));
+  }
+
   function renderFields() {
     if (mode === "register") {
       passF.input.setAttribute("autocomplete", "new-password");
       passF.input.setAttribute("minlength", "8");
-      mount(fields, nameF.node, emailF.node, passF.node, companyF.node, phoneF.node);
+      mount(fields, nameF.node, emailF.node, passF.node, companyF.node, phoneF.node, plansBox);
+      loadPlans();
     } else {
       passF.input.setAttribute("autocomplete", "current-password");
       mount(fields, emailF.node, passF.node);

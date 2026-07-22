@@ -58,6 +58,36 @@ class OwnerOut(BaseModel):
     plan_id: str | None = None
 
 
+# ── Plans & abonnement (V2-05a) ──────────────────────────────────────────────
+
+class PlanOut(BaseModel):
+    """Un plan du catalogue (source : table `plans`, jamais de prix en dur)."""
+    id: str
+    name: str
+    max_properties: int | None = None    # None = illimité
+    enrich_quota: int
+    price_month_cts: int
+    features: dict[str, Any] = {}
+
+
+class QuotaGaugeOut(BaseModel):
+    """Une jauge d'utilisation. `limit is None` ⇒ illimité."""
+    used: int
+    limit: int | None = None
+
+
+class UsageOut(BaseModel):
+    properties: QuotaGaugeOut            # logements créés vs max_properties
+    enrichments: QuotaGaugeOut           # enrichissements du mois (tous logements)
+    langs: QuotaGaugeOut                 # langues publiées (source comprise) vs plafond
+
+
+class SubscriptionOut(BaseModel):
+    plan: PlanOut
+    status: str
+    usage: UsageOut
+
+
 # ── Logements ────────────────────────────────────────────────────────────────
 
 class PropertyIn(BaseModel):

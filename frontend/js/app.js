@@ -17,6 +17,7 @@ import { renderForgot, renderReset, renderVerify } from "./views/reset.js";
 import { renderProperties } from "./views/properties.js";
 import { renderEditor } from "./views/editor.js";
 import { renderPois } from "./views/pois.js";
+import { renderSubscription } from "./views/subscription.js";
 
 const appEl = document.getElementById("app");
 
@@ -80,6 +81,8 @@ function updateUserMenu() {
   const owner = getOwner();
   mount(menu,
     owner ? el("span", { class: "email" }, icon("user", 15), " ", owner.email) : null,
+    el("a", { class: "btn btn-sm btn-ghost", href: "#/abonnement" },
+      icon("credit-card", 15), "Mon abonnement"),
     el("button", { class: "btn btn-sm btn-ghost", onClick: logout }, icon("log-out", 15), "Déconnexion"));
 }
 
@@ -100,6 +103,7 @@ function renderRoute() {
   const view = ensureShell();
   const seg = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
 
+  if (seg[0] === "abonnement") return void renderSubscription(view);
   if (!seg.length || seg[0] !== "properties") { navigate("#/properties"); return; }
   if (seg.length === 1) return void renderProperties(view);
 

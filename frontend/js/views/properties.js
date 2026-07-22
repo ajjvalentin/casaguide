@@ -9,6 +9,7 @@ import {
   emptyBlock, refreshIcons,
 } from "../ui.js";
 import { navigate } from "../nav.js";
+import { handleQuotaError } from "../quota.js";
 import { COUNTRIES } from "../constants.js";
 import { openPropertyInfoModal } from "../components/propertyinfo.js";
 import { openShareMenu } from "../components/sharemenu.js";
@@ -195,6 +196,8 @@ export async function renderProperties(view) {
         renderProperties(view);
         proposeEnrichment(created);
       } catch (e2) {
+        // Quota atteint (402) → encart « changez d'offre », on ferme le formulaire.
+        if (handleQuotaError(e2)) { modal.close(); return; }
         err.textContent = e2.message || "Création impossible."; err.classList.remove("hidden");
         submit.disabled = false; submit.textContent = "Créer le logement";
       }
@@ -297,6 +300,8 @@ export function runEnrichment(propertyId, trigger, { view, onFinished } = {}) {
       jobId = resp.job_id;
     } catch (err) {
       stopped = true;
+      // Quota d'enrichissement atteint (402) → encart dédié plutôt qu'un message d'échec.
+      if (handleQuotaError(err)) { modal.close(); return; }
       foot.classList.remove("hidden");
       statusLine.innerHTML = `<b style="color:var(--alert)">Impossible de démarrer</b> — ${err.message}`;
       return;
