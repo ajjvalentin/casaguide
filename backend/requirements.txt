@@ -12,3 +12,4 @@ python-multipart>=0.0.9   # téléversement multipart des médias (M-12)
 python-dotenv>=1.0        # chargement de backend/.env (M-02)
 Pillow>=10.0              # ré-encodage/strip EXIF des images téléversées (M-12)
 reportlab>=4.0            # PDF « QR code à imprimer » (M-07) — QR natif inclus
+stripe>=11.0              # Facturation Stripe : Checkout, webhooks, portail (V2-05b)

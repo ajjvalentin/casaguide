@@ -49,6 +49,21 @@ async def lifespan(app: FastAPI):
             "activer l'envoi réel (Infomaniak : mail.infomaniak.com:465)."
         )
 
+    # Facturation Stripe (V2-05b) : sans clé API, les endpoints de paiement
+    # répondent 503 (le reste de l'app est intact — même motif que le mailer).
+    if not settings.stripe_configured:
+        log.warning(
+            "Stripe non configuré (CASAGUIDE_STRIPE_SECRET_KEY) : les endpoints "
+            "de facturation (checkout, portail, webhook) répondront 503. "
+            "Renseignez la clé (sk_test_… en mode Test) dans backend/.env."
+        )
+    elif not settings.stripe_webhook_secret:
+        log.warning(
+            "CASAGUIDE_STRIPE_WEBHOOK_SECRET absent : les webhooks Stripe seront "
+            "refusés (400). Renseignez le whsec_… (stripe listen en local, ou "
+            "l'endpoint du Dashboard en production)."
+        )
+
     with enrich_db.connect() as conn:
         n = repo.fail_orphan_running_jobs(conn)
         conn.commit()

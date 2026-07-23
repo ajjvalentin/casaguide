@@ -66,11 +66,24 @@ class ApiSettings:
     auth_token_ttl_min: int = int(os.getenv("CASAGUIDE_AUTH_TOKEN_TTL_MIN", "60"))
     # Cadence minimale entre deux demandes « mot de passe oublié » par email (secondes)
     forgot_min_interval_s: int = int(os.getenv("CASAGUIDE_FORGOT_MIN_INTERVAL_S", "120"))
+    # ── Facturation Stripe (V2-05b) ──────────────────────────────────────────
+    # Clé secrète API (sk_test_… en mode Test, sk_live_… en production) et secret
+    # de signature des webhooks (whsec_…). Sans SECRET_KEY, les endpoints billing
+    # répondent 503 et le webhook est refusé — le reste de l'app est intact.
+    stripe_secret_key: str | None = os.getenv("CASAGUIDE_STRIPE_SECRET_KEY") or None
+    stripe_webhook_secret: str | None = (
+        os.getenv("CASAGUIDE_STRIPE_WEBHOOK_SECRET") or None)
 
     @property
     def smtp_configured(self) -> bool:
         """Vrai si les trois éléments indispensables à l'envoi SMTP sont présents."""
         return bool(self.smtp_host and self.smtp_user and self.smtp_password)
+
+    @property
+    def stripe_configured(self) -> bool:
+        """Vrai si la clé API Stripe est présente (paiement activable). La
+        vérification des webhooks exige en plus `stripe_webhook_secret`."""
+        return bool(self.stripe_secret_key)
 
 
 settings = ApiSettings()

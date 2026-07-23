@@ -9,6 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from enrich import db, distance, geocode, pipeline, translate
 
+from . import billing_stripe as _billing_stripe
 from . import mailer as _mailer
 from . import poi_search, repo, security
 from .config import settings
@@ -207,3 +208,19 @@ def get_mailer() -> _mailer.Mailer:
 
 
 Mailer = Annotated[_mailer.Mailer, Depends(get_mailer)]
+
+
+# ── Passerelle Stripe (V2-05b, injectable pour les tests) ────────────────────
+
+# Construite une fois au chargement : None si la clé API est absente (mode
+# dégradé → les routers de facturation répondent 503).
+_STRIPE: _billing_stripe.StripeGateway | None = _billing_stripe.build_stripe(settings)
+
+
+def get_stripe() -> _billing_stripe.StripeGateway | None:
+    """Passerelle Stripe, ou None si non configurée. Surchargée dans les tests
+    par une fausse passerelle sans réseau (app.dependency_overrides[get_stripe])."""
+    return _STRIPE
+
+
+Stripe = Annotated["_billing_stripe.StripeGateway | None", Depends(get_stripe)]

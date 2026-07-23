@@ -173,6 +173,103 @@ def get_plan_by_guide_token(conn, token: str) -> dict | None:
     ).fetchone()
 
 
+# ── Facturation Stripe (V2-05b) ──────────────────────────────────────────────
+
+def get_plan_by_stripe_price_id(conn, price_id: str) -> dict | None:
+    """Plan correspondant à un Price Stripe (résolution webhook price→plan). None
+    si aucun plan ne porte ce `stripe_price_id` (prix inconnu / non synchronisé)."""
+    return conn.execute(
+        "SELECT * FROM plans WHERE stripe_price_id = %s", (price_id,)
+    ).fetchone()
+
+
+def set_plan_stripe_price_id(conn, plan_id: str, price_id: str) -> None:
+    """Enregistre le Price Stripe d'un plan (écrit par `ops/stripe_sync_products.py`)."""
+    conn.execute(
+        "UPDATE plans SET stripe_price_id = %s WHERE id = %s", (price_id, plan_id))
+
+
+def get_subscription_by_customer_id(conn, customer_id: str) -> dict | None:
+    """Abonnement rattaché à un Customer Stripe (résolution owner côté webhook).
+    None si aucun abonnement ne porte ce `stripe_customer_id`."""
+    return conn.execute(
+        """SELECT id, owner_id, plan_id, status, stripe_customer_id,
+                  stripe_subscription_id, current_period_end
+           FROM subscriptions WHERE stripe_customer_id = %s
+           ORDER BY created_at DESC LIMIT 1""",
+        (customer_id,),
+    ).fetchone()
+
+
+def _latest_subscription_id(conn, owner_id: str):
+    """Id de la ligne d'abonnement courante (la plus récente) d'un propriétaire."""
+    row = conn.execute(
+        """SELECT id FROM subscriptions WHERE owner_id = %s
+           ORDER BY created_at DESC LIMIT 1""",
+        (owner_id,),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def set_subscription_customer(conn, owner_id: str, customer_id: str) -> None:
+    """Rattache un Customer Stripe à l'abonnement courant du propriétaire (posé au
+    moment du Checkout, AVANT tout webhook → la résolution owner par customer_id
+    fonctionne quel que soit l'ordre d'arrivée des événements)."""
+    sub_id = _latest_subscription_id(conn, owner_id)
+    if sub_id is not None:
+        conn.execute(
+            """UPDATE subscriptions SET stripe_customer_id = %s, updated_at = now()
+               WHERE id = %s""",
+            (customer_id, sub_id))
+
+
+def update_subscription_from_stripe(conn, owner_id: str, *, plan_id: str,
+                                    status: str,
+                                    stripe_subscription_id: str | None,
+                                    current_period_end) -> None:
+    """Applique l'état Stripe à l'abonnement courant (SEULE écriture d'autorité,
+    depuis le handler de webhook). Ne supprime jamais de données : un retour à
+    'free' ne fait que rebasculer `plan_id` (invariant downgrade V2-05a)."""
+    sub_id = _latest_subscription_id(conn, owner_id)
+    if sub_id is None:  # filet : compte sans abonnement → on en crée un
+        conn.execute(
+            """INSERT INTO subscriptions
+                   (owner_id, plan_id, status, stripe_subscription_id,
+                    current_period_end)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (owner_id, plan_id, status, stripe_subscription_id, current_period_end))
+        return
+    conn.execute(
+        """UPDATE subscriptions
+           SET plan_id = %s, status = %s, stripe_subscription_id = %s,
+               current_period_end = %s, updated_at = now()
+           WHERE id = %s""",
+        (plan_id, status, stripe_subscription_id, current_period_end, sub_id))
+
+
+# ── Idempotence des webhooks Stripe (V2-05b) ─────────────────────────────────
+
+def stripe_event_begin(conn, event_id: str, event_type: str) -> bool:
+    """Réserve le traitement d'un événement webhook. Renvoie True si l'événement
+    est nouveau (à traiter), False s'il a déjà été reçu (rejeu Stripe → ignorer).
+
+    L'INSERT ... ON CONFLICT DO NOTHING est atomique : deux livraisons
+    concurrentes du même event ne peuvent pas être traitées deux fois."""
+    row = conn.execute(
+        """INSERT INTO stripe_events (id, type) VALUES (%s, %s)
+           ON CONFLICT (id) DO NOTHING
+           RETURNING id""",
+        (event_id, event_type),
+    ).fetchone()
+    return row is not None
+
+
+def stripe_event_mark_processed(conn, event_id: str) -> None:
+    """Horodate la fin de traitement d'un événement (`processed_at`)."""
+    conn.execute(
+        "UPDATE stripe_events SET processed_at = now() WHERE id = %s", (event_id,))
+
+
 def published_langs(conn, property_id: str) -> list[str]:
     """Langues cibles déjà publiées pour un logement (`properties.published_langs`,
     hors langue source). Liste vide si le logement n'a jamais été traduit."""

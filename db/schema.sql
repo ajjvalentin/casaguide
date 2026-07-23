@@ -34,7 +34,8 @@ CREATE TABLE plans (
     max_properties  INT,                           -- NULL = illimité
     enrich_quota    INT NOT NULL,                  -- enrichissements IA / mois / logement
     price_month_cts INT NOT NULL,                  -- prix en centimes
-    features        JSONB NOT NULL DEFAULT '{}'    -- flags : multilingue, stats, marque blanche…
+    features        JSONB NOT NULL DEFAULT '{}',   -- flags : multilingue, stats, marque blanche…
+    stripe_price_id TEXT                            -- Price Stripe synchronisé (V2-05b, NULL pour 'free')
 );
 
 CREATE TABLE subscriptions (
@@ -50,6 +51,16 @@ CREATE TABLE subscriptions (
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_subscriptions_owner ON subscriptions(owner_id);
+
+-- Journal d'idempotence des webhooks Stripe (V2-05b) : un event.id déjà présent
+-- est ignoré silencieusement (Stripe rejoue ses événements). Le webhook est la
+-- seule source de vérité du status/plan_id/current_period_end des abonnements.
+CREATE TABLE stripe_events (
+    id           TEXT PRIMARY KEY,                   -- event.id Stripe (evt_...)
+    type         TEXT NOT NULL,
+    received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at TIMESTAMPTZ
+);
 
 -- ============================================================================
 -- 2. LOGEMENTS
