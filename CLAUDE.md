@@ -295,6 +295,21 @@ exposé, peer auth).
   construit désormais de **vrais** `stripe.StripeObject` (`construct_from`) et un
   `list()` renvoyant un objet `.data` façon `ListObject`. Un mock plus « simple »
   que le réel masque les bugs de contrat plutôt que de les révéler.
+- **Noms de méthodes Stripe à vérifier contre le SDK réel (OPS-1b)** : le
+  contrat à respecter n'est pas que le *comportement* des objets — c'est aussi la
+  **surface** (noms de méthodes). Sur l'interface `StripeClient` (`client.v1.*`),
+  la méthode d'écriture est **`update`**, **jamais `modify`** (`modify` est
+  l'ancienne API par ressources, `stripe.Price.modify(...)`). Le script appelait
+  `client.v1.products.modify(...)` → `AttributeError` (`KeyError 'modify'`) **en
+  prod réelle** dès la branche de mise à jour (product existant retrouvé —
+  l'idempotence du volet 1 marchait), mais **vert en test** parce que le fake
+  `_Collection` exposait `modify`. Règle : ne jamais deviner un nom de méthode de
+  mémoire ; vérifier par introspection contre le SDK installé (`dir(client.v1.
+  products)` → `create/list/retrieve/update/delete/search`). Garde-fou :
+  `test_stripe.py::test_fake_collection_matches_real_stripe_surface` vérifie que
+  le fake n'expose **QUE** des méthodes du vrai `StripeClient` (aurait attrapé le
+  bug). Tout nouvel appel Stripe dans un script/gateway : confirmer la signature
+  réelle *avant* d'écrire, et refléter exactement cette surface dans les fakes.
 - **Scripts `ops/` et `.env` (OPS-1)** : lancés à la main sur le serveur, ils
   n'héritent **pas** de l'`EnvironmentFile` systemd → ils chargent `backend/.env`
   eux-mêmes via `ops/opsenv.py` (option `--env-file`, `override=False`). **Ne

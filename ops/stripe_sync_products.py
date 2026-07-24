@@ -103,7 +103,9 @@ def _archive_stale_prices(client, product_id: str, keep_price_id: str) -> int:
     for pr in client.v1.prices.list(
             {"product": product_id, "active": True, "limit": 100}).data:
         if pr.id != keep_price_id:
-            client.v1.prices.modify(pr.id, {"active": False})
+            # Surface StripeClient : `client.v1.<svc>.update`, PAS `.modify`
+            # (modify = ancienne API par ressources `stripe.Price.modify`).
+            client.v1.prices.update(pr.id, {"active": False})
             n += 1
     return n
 
@@ -123,7 +125,8 @@ def sync_plan(client, conn, plan: dict, *, log=print) -> str:
         log(f"  ✓ Product créé : {product.id} ({plan_id})")
     else:
         # Garde le nom à jour (le prix, lui, vit dans un Price immuable).
-        client.v1.products.modify(product.id, {"name": name})
+        # Surface StripeClient : `.update`, pas `.modify` (cf. _archive_stale_prices).
+        client.v1.products.update(product.id, {"name": name})
         log(f"  = Product existant : {product.id} ({plan_id})")
 
     price = find_price(client, product.id, amount)

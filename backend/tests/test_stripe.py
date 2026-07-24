@@ -47,7 +47,13 @@ from stripe import StripeObject  # noqa: E402
 
 
 class _Collection:
-    """Imite `client.v1.products` / `client.v1.prices` : list/create/modify.
+    """Imite `client.v1.products` / `client.v1.prices` : list/create/update.
+
+    Fidélité à la SURFACE réelle de `StripeClient` (leçon du hotfix OPS-1b) : la
+    méthode d'écriture s'appelle `update`, PAS `modify` (`modify` est l'ancienne
+    API par ressources). Un fake qui exposait `modify` masquait le crash prod du
+    script — cf. `test_fake_collection_matches_real_stripe_surface`, qui vérifie
+    par introspection que ce fake n'expose QUE des méthodes du vrai SDK.
 
     Les objets stockés sont de vrais `StripeObject` (fidélité aux internals :
     accès attribut, `.to_dict()`, pas de `.get`, `dict()` qui lève)."""
@@ -74,7 +80,7 @@ class _Collection:
         self._store.append(obj)
         return obj
 
-    def modify(self, oid, params):
+    def update(self, oid, params):
         for i, o in enumerate(self._store):
             if o.id == oid:
                 merged = {**o.to_dict(), **params}
@@ -104,6 +110,33 @@ def conn():
                       (row["stripe_price_id"], row["id"]))
         c.commit()
         c.close()
+
+
+# ── Fidélité du fake au vrai SDK (garde-fou OPS-1b) ──────────────────────────
+
+def test_fake_collection_matches_real_stripe_surface():
+    """Le faux client ne doit exposer QUE des méthodes présentes sur le vrai
+    `StripeClient`. Le bug OPS-1b — le script appelait `client.v1.<svc>.modify`
+    alors que la surface réelle n'expose que `.update` — était **invisible** parce
+    que le fake exposait `modify`. On vérifie par introspection que chaque méthode
+    publique du fake existe (et est appelable) sur le service réel correspondant :
+    ce test aurait attrapé le bug (fake avec `modify` → `update` absent → échec).
+
+    `StripeClient(...)` ne fait aucun appel réseau à la construction : la clé est
+    factice, on n'introspecte que la surface des services."""
+    import stripe
+    real = stripe.StripeClient("sk_test_dummy")
+    fake = FakeStripeClient()
+    for svc_name in ("products", "prices"):
+        real_svc = getattr(real.v1, svc_name)
+        fake_svc = getattr(fake.v1, svc_name)
+        methods = [m for m in dir(fake_svc)
+                   if not m.startswith("_") and callable(getattr(fake_svc, m))]
+        assert methods, f"le fake {svc_name} n'expose aucune méthode (introspection cassée)"
+        for meth in methods:  # 'creates' est un int → exclu par le filtre callable
+            assert hasattr(real_svc, meth) and callable(getattr(real_svc, meth)), (
+                f"le fake expose `{svc_name}.{meth}` absent du vrai StripeClient — "
+                "aligner le fake (et le script) sur la surface réelle du SDK.")
 
 
 # ── Synchronisation des plans ────────────────────────────────────────────────
