@@ -322,3 +322,77 @@ def test_migration_grandfathers_only_accounts_without_verify_token(client):
         conn.commit()
     assert verified[old] is True   # grand-périsé
     assert verified[new] is False  # laissé en attente
+
+
+# ── V2-16 : un envoi d'email en échec ne doit JAMAIS annuler la requête ───────
+# Régression du bug de production (24/07) : l'email de vérification est envoyé en
+# tâche de fond ; une exception d'une BackgroundTask remonte dans la pile de
+# sortie de la requête et fait un ROLLBACK de la transaction de `get_conn`. Le
+# compte inscrit disparaissait alors qu'un 201 + JWT était déjà parti → le
+# `/me` suivant renvoyait 401 (« session expirée », éjection). Fix : l'envoi est
+# best-effort (exception avalée, jamais propagée) — le compte reste créé.
+
+class RaisingMailer:
+    """Mailer qui échoue à chaque envoi (domaine inexistant en prod)."""
+
+    def __init__(self) -> None:
+        self.attempts: list[str] = []
+
+    def send(self, to, email):
+        self.attempts.append(to)
+        import smtplib
+        raise smtplib.SMTPRecipientsRefused({to: (550, b"No such domain")})
+
+
+def test_register_survives_verification_email_failure():
+    """Inscription avec un mailer qui lève SMTPRecipientsRefused → le compte est
+    quand même créé (201 + JWT valable → /me = 200)."""
+    m = RaisingMailer()
+    app.dependency_overrides[get_mailer] = lambda: m
+    c = TestClient(app)
+    email = f"{uuid.uuid4()}@casaguide-test.com"
+    try:
+        r = c.post("/api/auth/register",
+                   json={"email": email, "password": "password123",
+                         "full_name": "Prop Test"})
+        assert r.status_code == 201, r.text
+        token = r.json()["access_token"]
+        # Le JWT donne bien accès au profil : le compte a bien été committé.
+        me = c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert me.status_code == 200, me.text
+        assert me.json()["email"] == email
+        # L'email a bien été tenté (best-effort) puis avalé.
+        assert m.attempts == [email]
+        # Et le compte est réellement en base (pas de rollback).
+        with _db() as conn:
+            row = conn.execute("SELECT id FROM owners WHERE email = %s",
+                               (email,)).fetchone()
+        assert row is not None
+    finally:
+        app.dependency_overrides.clear()
+        with _db() as conn:
+            conn.execute("DELETE FROM owners WHERE email = %s", (email,))
+            conn.commit()
+
+
+def test_forgot_survives_email_failure(client):
+    """Même classe de bug sur /forgot : un envoi qui échoue ne doit pas annuler
+    la création du jeton de réinitialisation (la réponse neutre 200 est déjà
+    partie ; le compte et le jeton doivent survivre)."""
+    owner = register(client)
+    m = RaisingMailer()
+    app.dependency_overrides[get_mailer] = lambda: m
+    try:
+        r = client.post("/api/auth/forgot", json={"email": owner["email"]})
+        assert r.status_code == 200
+        assert m.attempts == [owner["email"]]
+        # Le jeton de réinitialisation a bien été créé (transaction non annulée).
+        with _db() as conn:
+            n = conn.execute(
+                """SELECT count(*) FROM password_resets pr JOIN owners o
+                   ON o.id = pr.owner_id
+                   WHERE o.email = %s AND pr.purpose = 'reset'""",
+                (owner["email"],)).fetchone()[0]
+        assert n == 1
+    finally:
+        app.dependency_overrides[get_mailer] = lambda: client.mailer

@@ -2,6 +2,7 @@
 mot de passe oublié et vérification d'email (V2-08)."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
@@ -12,6 +13,8 @@ from ..config import settings
 from ..deps import Conn, CurrentOwner, Mailer
 from ..schemas import (ForgotIn, LoginIn, MessageOut, OwnerOut, RegisterIn,
                        ResetIn, TokenOut, VerifyIn)
+
+log = logging.getLogger("casaguide.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -37,13 +40,33 @@ def _issue_token(conn, owner_id: str, purpose: str) -> str:
     return raw
 
 
+def _send_email_bg(background: BackgroundTasks, mailer, to: str, email) -> None:
+    """Programme l'envoi d'un email en tâche de fond, TOUJOURS best-effort.
+
+    L'envoi ne doit **jamais** faire échouer la requête qui l'a déclenché. Une
+    exception levée par une `BackgroundTask` remonte dans la pile de sortie de la
+    requête et **annule la transaction** de la dépendance `get_conn` (rollback) :
+    un envoi SMTP échoué (domaine inexistant → `SMTPRecipientsRefused`) faisait
+    ainsi disparaître le compte tout juste inscrit alors qu'une réponse 201 (avec
+    JWT) était déjà partie — d'où l'« éjection avec session expirée » constatée
+    (V2-16). On avale donc toute exception ici (journalisée), comme pour /forgot
+    (envoi best-effort, non bloquant : cf. spec V2-08 « vérification non bloquante »)."""
+    def _run() -> None:
+        try:
+            mailer.send(to, email)
+        except Exception:  # noqa: BLE001 — best-effort : jamais bloquant, jamais de rollback
+            log.warning("Envoi d'email « %s » vers %s échoué (ignoré).",
+                        getattr(email, "subject", "?"), to, exc_info=True)
+    background.add_task(_run)
+
+
 def _send_verification(conn, owner, background: BackgroundTasks, mailer,
                        request: Request) -> None:
     """Émet un jeton de vérification et programme l'envoi de l'email (V2-08)."""
     raw = _issue_token(conn, str(owner["id"]), "verify")
     verify_url = f"{_public_base(request)}/#/verify/{raw}"
     email = emails.verify_email(verify_url, owner.get("full_name"))
-    background.add_task(mailer.send, owner["email"], email)
+    _send_email_bg(background, mailer, owner["email"], email)
 
 
 @router.post("/register", response_model=TokenOut,
@@ -112,8 +135,9 @@ def forgot_password(payload: ForgotIn, conn: Conn, mailer: Mailer,
             raw = _issue_token(conn, str(owner["id"]), "reset")
             reset_url = f"{_public_base(request)}/#/reset/{raw}"
             email = emails.reset_password_email(reset_url, owner.get("full_name"))
-            # L'envoi (lent) est différé → temps de réponse constant.
-            background.add_task(mailer.send, owner["email"], email)
+            # L'envoi (lent) est différé → temps de réponse constant. Best-effort :
+            # un échec SMTP ne doit pas annuler la création du jeton (V2-16).
+            _send_email_bg(background, mailer, owner["email"], email)
     return MessageOut(message=_NEUTRAL_MSG)
 
 
