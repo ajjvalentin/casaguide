@@ -37,20 +37,34 @@ CURRENCY = "eur"
 
 # ── Accès normalisés (fonctionne avec les objets Stripe ET les fakes de test) ─
 
-def _metadata(obj) -> dict:
-    """Metadata en dict simple, quel que soit le type d'objet (StripeObject ou
-    namespace de test) — `dict(...)` normalise les deux."""
+def _as_dict(value) -> dict:
+    """Normalise une valeur Stripe imbriquée (metadata, recurring…) en dict Python.
+
+    ATTENTION : un `StripeObject` **n'est pas** un `dict` (son MRO est
+    `[StripeObject, object]`), n'expose ni `.get`/`.items`/`.keys` (interceptés par
+    `__getattr__` → `AttributeError`) et n'implémente pas le protocole de mapping :
+    `dict(stripe_obj)` l'itère comme une séquence et lève **`KeyError: 0`**. On
+    passe donc par `.to_dict()` (fourni par tout StripeObject) ; repli `dict(...)`
+    pour un dict/namespace simple, `{}` pour None ou l'imprévu."""
+    if value is None:
+        return {}
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
     try:
-        return dict(obj.metadata or {})
-    except (AttributeError, TypeError):
+        return dict(value)
+    except (TypeError, ValueError, KeyError):
         return {}
 
 
+def _metadata(obj) -> dict:
+    """Metadata d'un objet Stripe en dict simple (jamais None)."""
+    return _as_dict(getattr(obj, "metadata", None))
+
+
 def _interval(price) -> str | None:
-    try:
-        return dict(price.recurring or {}).get("interval")
-    except (AttributeError, TypeError):
-        return None
+    """Intervalle de récurrence ('month', 'year'…) d'un Price, ou None."""
+    return _as_dict(getattr(price, "recurring", None)).get("interval")
 
 
 # ── Cœur testable (client Stripe injecté, aucune I/O directe hormis via lui) ──

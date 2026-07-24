@@ -33,13 +33,28 @@ import stripe_sync_products as sync  # noqa: E402
 
 
 # ── Faux client Stripe en mémoire (pour la synchronisation) ──────────────────
+#
+# Fidélité aux VRAIS objets Stripe (leçon du hotfix OPS-1) : les mocks d'origine
+# stockaient des `SimpleNamespace` dont `metadata`/`recurring` étaient de simples
+# `dict`. Or un `StripeObject` réel n'est pas un dict, n'a ni `.get`/`.items`, et
+# `dict(stripe_obj)` lève `KeyError: 0` — bug invisible en test, fatal en prod dès
+# que la liste de produits était NON vide. On construit donc ici de VRAIS
+# `stripe.StripeObject` (via `construct_from`), et `list()` renvoie un objet
+# exposant `.data` comme un `ListObject`. Toute régression du type d'accès aux
+# metadata re-planterait comme en conditions réelles.
+
+from stripe import StripeObject  # noqa: E402
+
 
 class _Collection:
-    """Imite `client.v1.products` / `client.v1.prices` : list/create/modify."""
+    """Imite `client.v1.products` / `client.v1.prices` : list/create/modify.
+
+    Les objets stockés sont de vrais `StripeObject` (fidélité aux internals :
+    accès attribut, `.to_dict()`, pas de `.get`, `dict()` qui lève)."""
 
     def __init__(self, prefix: str):
         self._prefix = prefix
-        self._store: list[SimpleNamespace] = []
+        self._store: list[StripeObject] = []
         self.creates = 0  # compteur pour asserter l'idempotence
 
     def list(self, params):
@@ -48,23 +63,23 @@ class _Collection:
         data = [o for o in self._store
                 if (active is None or o.active == active)
                 and (product is None or getattr(o, "product", None) == product)]
-        return SimpleNamespace(data=data)
+        # Un vrai `ListObject` est lui-même un StripeObject exposant `.data`.
+        return StripeObject.construct_from({"object": "list", "data": data}, "sk_test_x")
 
     def create(self, params):
         self.creates += 1
         oid = f"{self._prefix}_{len(self._store) + 1}"
-        obj = SimpleNamespace(id=oid, active=True, **params)
-        # Metadata en dict simple (comme un StripeObject normalisé par dict()).
-        obj.metadata = dict(params.get("metadata") or {})
+        obj = StripeObject.construct_from(
+            {"id": oid, "object": self._prefix, "active": True, **params}, "sk_test_x")
         self._store.append(obj)
         return obj
 
     def modify(self, oid, params):
-        for o in self._store:
+        for i, o in enumerate(self._store):
             if o.id == oid:
-                for k, v in params.items():
-                    setattr(o, k, v)
-                return o
+                merged = {**o.to_dict(), **params}
+                self._store[i] = StripeObject.construct_from(merged, "sk_test_x")
+                return self._store[i]
         raise KeyError(oid)
 
 
@@ -132,6 +147,33 @@ def test_sync_is_idempotent(conn):
     assert client.v1.products.creates == prod_creates
     assert client.v1.prices.creates == price_creates
     assert first == second
+
+
+def test_sync_reuses_existing_product_via_metadata(conn):
+    """Régression OPS-1 : en conditions réelles, `find_product` itère une liste de
+    produits NON vide et lit `metadata.plan_id` sur de vrais `StripeObject`.
+    L'ancien `dict(obj.metadata or {})` levait `KeyError: 0` dès le 2e plan (solo
+    OK, puis crash sur pro). On vérifie le comportement voulu : au re-run, le
+    product existant est RETROUVÉ par metadata (pas dupliqué) et le
+    `stripe_price_id` est écrit en base pour tous les plans payants."""
+    client = FakeStripeClient()
+    sync.sync_plans(client, conn, log=lambda *_: None)
+    products_after_first = len(client.v1.products._store)
+
+    # Re-run : chaque plan retrouve son Product (liste non vide) au lieu d'en créer.
+    for plan_id in ("solo", "pro"):
+        found = sync.find_product(client, plan_id)
+        assert found is not None
+        assert sync._metadata(found).get("plan_id") == plan_id
+
+    sync.sync_plans(client, conn, log=lambda *_: None)
+    assert len(client.v1.products._store) == products_after_first  # aucun doublon
+
+    # stripe_price_id écrit en base pour chaque plan payant.
+    for plan_id in ("solo", "pro"):
+        stored = conn.execute("SELECT stripe_price_id FROM plans WHERE id = %s",
+                              (plan_id,)).fetchone()["stripe_price_id"]
+        assert stored and stored.startswith("price_")
 
 
 def test_sync_price_change_creates_new_and_archives_old(conn):
