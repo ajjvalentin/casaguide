@@ -192,6 +192,13 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .okbox{background:#EAF4EF;border:1px solid #BEDFCE;color:#1E5E43;border-radius:10px;
        padding:12px 14px;font-size:14px;margin:12px 0}
 
+/* Encart informatif (retour de paiement Stripe, V2-05b) */
+.callout{display:flex;gap:11px;align-items:flex-start;border-radius:10px;
+         padding:12px 14px;font-size:14px}
+.callout [data-lucide]{flex:none;margin-top:1px}
+.callout-info{background:#EAF1F4;border:1px solid #BFD5DF;color:#1E4E5E}
+.callout-warn{background:#FBF3E0;border:1px solid #EAD9AE;color:#6B551E}
+
 /* ── Écran de connexion ───────────────────────────────────────────────────── */
 .auth-wrap{min-height:100vh;display:grid;place-items:center;padding:24px}
 .auth-card{width:100%;max-width:420px;padding:30px 28px}

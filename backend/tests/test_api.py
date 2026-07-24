@@ -13,10 +13,13 @@ Couvre notamment les invariants du CLAUDE.md :
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import sys
 import tempfile
+import time
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -41,9 +44,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # racine backend/
 
-from api import crypto, repo  # noqa: E402
+from api import billing_stripe, crypto, repo  # noqa: E402
+from api.config import settings as api_settings  # noqa: E402
 from api.deps import (  # noqa: E402
-    get_distance_computer, get_enrichment_runner, get_translation_runner)
+    get_distance_computer, get_enrichment_runner, get_stripe,
+    get_translation_runner)
 from api.main import app  # noqa: E402
 from enrich import pipeline, translate  # noqa: E402
 from enrich.overpass import haversine_m  # noqa: E402
@@ -1844,3 +1849,294 @@ def test_guide_poster_localised(client):
     assert r.status_code == 200 and "-fr.pdf" in r.headers.get("content-disposition", "")
     assert client.get(f"/api/properties/{pid}/guide-poster.pdf?lang=de",
                       headers=owner["headers"]).status_code == 422
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Facturation Stripe : Checkout & webhooks (V2-05b, volet 2)
+# ═════════════════════════════════════════════════════════════════════════════
+
+STRIPE_WEBHOOK_SECRET = "whsec_test_billing_0123456789abcdef0123456789abcd"
+
+
+class _FakeStripeGateway(billing_stripe.LiveStripeGateway):
+    """Passerelle de test : la vérification de signature webhook est celle du
+    vrai code (héritée, pur calcul HMAC), seules les opérations réseau sont
+    simulées → aucun appel réseau, mais les 400 de signature sont exercés pour
+    de vrai."""
+
+    def __init__(self):
+        super().__init__(api_key="sk_test_x", webhook_secret=STRIPE_WEBHOOK_SECRET)
+        self.checkout_calls: list[dict] = []
+        self.portal_calls: list[dict] = []
+
+    def get_or_create_customer(self, *, owner_id, email, existing_customer_id):
+        return existing_customer_id or f"cus_test_{owner_id[:8]}"
+
+    def create_checkout_session(self, *, customer_id, price_id, owner_id,
+                                success_url, cancel_url):
+        self.checkout_calls.append({
+            "customer_id": customer_id, "price_id": price_id,
+            "owner_id": owner_id, "success_url": success_url,
+            "cancel_url": cancel_url})
+        return "https://checkout.stripe.test/pay/cs_test_123"
+
+    def create_portal_session(self, *, customer_id, return_url):
+        self.portal_calls.append({"customer_id": customer_id,
+                                  "return_url": return_url})
+        return "https://billing.stripe.test/session/bps_test_123"
+
+
+@pytest.fixture()
+def billing(client):
+    """Active Stripe (fausse passerelle + secret webhook + prix synchronisés),
+    restaure tout en fin de test (non destructif)."""
+    gateway = _FakeStripeGateway()
+    app.dependency_overrides[get_stripe] = lambda: gateway
+    prev_secret = api_settings.stripe_webhook_secret
+    api_settings.stripe_webhook_secret = STRIPE_WEBHOOK_SECRET
+    with psycopg.connect(settings.db_dsn) as conn:
+        snapshot = {r[0]: r[1] for r in conn.execute(
+            "SELECT id, stripe_price_id FROM plans").fetchall()}
+        conn.execute("UPDATE plans SET stripe_price_id='price_test_solo' WHERE id='solo'")
+        conn.execute("UPDATE plans SET stripe_price_id='price_test_pro' WHERE id='pro'")
+        conn.commit()
+    yield client, gateway
+    api_settings.stripe_webhook_secret = prev_secret
+    with psycopg.connect(settings.db_dsn) as conn:
+        for pid, price in snapshot.items():
+            conn.execute("UPDATE plans SET stripe_price_id=%s WHERE id=%s", (price, pid))
+        conn.execute("DELETE FROM stripe_events WHERE id LIKE 'evt_test_%'")
+        conn.commit()
+
+
+def _owner_id(email: str) -> str:
+    with psycopg.connect(settings.db_dsn) as conn:
+        return str(conn.execute(
+            "SELECT id FROM owners WHERE email=%s", (email,)).fetchone()[0])
+
+
+def _sub_row(email: str) -> dict:
+    with psycopg.connect(settings.db_dsn, row_factory=__import__("psycopg").rows.dict_row) as conn:
+        return conn.execute(
+            """SELECT plan_id, status, stripe_customer_id, stripe_subscription_id,
+                      current_period_end
+               FROM subscriptions
+               WHERE owner_id=(SELECT id FROM owners WHERE email=%s)
+               ORDER BY created_at DESC LIMIT 1""", (email,)).fetchone()
+
+
+def _evt(event_id: str, etype: str, obj: dict) -> dict:
+    return {"id": event_id, "object": "event", "type": etype,
+            "data": {"object": obj}}
+
+
+def _subscription_obj(customer, sub_id, price_id, *, status="active",
+                      period_end=2_000_000_000):
+    return {"id": sub_id, "object": "subscription", "customer": customer,
+            "status": status, "current_period_end": period_end,
+            "items": {"object": "list",
+                      "data": [{"id": "si_1", "price": {"id": price_id}}]}}
+
+
+def _post_event(client, event: dict, *, valid_sig=True):
+    payload = json.dumps(event).encode()
+    if valid_sig:
+        ts = int(time.time())
+        sig = hmac.new(STRIPE_WEBHOOK_SECRET.encode(),
+                       f"{ts}.".encode() + payload, hashlib.sha256).hexdigest()
+        header = f"t={ts},v1={sig}"
+    else:
+        header = "t=1,v1=deadbeef"
+    return client.post("/api/stripe/webhook", content=payload,
+                       headers={"stripe-signature": header,
+                                "content-type": "application/json"})
+
+
+def _link_customer(client, email) -> tuple[str, str]:
+    """Simule la fin du Checkout (relie customer↔owner). Renvoie (owner_id, customer)."""
+    oid = _owner_id(email)
+    cust = f"cus_test_{oid[:8]}"
+    r = _post_event(client, _evt(
+        f"evt_test_link_{oid[:6]}", "checkout.session.completed",
+        {"object": "checkout.session", "customer": cust,
+         "client_reference_id": oid, "subscription": "sub_test_1",
+         "mode": "subscription"}))
+    assert r.status_code == 200, r.text
+    return oid, cust
+
+
+# ── Checkout ─────────────────────────────────────────────────────────────────
+
+def test_billing_checkout_creates_session_and_links_customer(billing):
+    client, gateway = billing
+    owner = register(client)
+    r = client.post("/api/billing/checkout", json={"plan": "solo"},
+                    headers=owner["headers"])
+    assert r.status_code == 200, r.text
+    assert r.json()["url"].startswith("https://checkout.stripe.test/")
+    call = gateway.checkout_calls[-1]
+    assert call["price_id"] == "price_test_solo"
+    assert "checkout=success" in call["success_url"]
+    assert "checkout=cancel" in call["cancel_url"]
+    # Le Customer est rattaché en base AVANT toute confirmation, mais le plan reste
+    # 'free' : le success_url ne modifie jamais l'abonnement (invariant 1).
+    row = _sub_row(owner["email"])
+    assert row["stripe_customer_id"]
+    assert row["plan_id"] == "free"
+
+
+def test_billing_checkout_rejects_free_and_unknown_plan(billing):
+    client, _ = billing
+    owner = register(client)
+    for bad in ("free", "gold"):
+        r = client.post("/api/billing/checkout", json={"plan": bad},
+                        headers=owner["headers"])
+        assert r.status_code == 422, (bad, r.status_code)
+
+
+def test_billing_checkout_503_when_plan_not_synced(billing):
+    client, _ = billing
+    owner = register(client)
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("UPDATE plans SET stripe_price_id=NULL WHERE id='solo'")
+        conn.commit()
+    r = client.post("/api/billing/checkout", json={"plan": "solo"},
+                    headers=owner["headers"])
+    assert r.status_code == 503
+
+
+def test_billing_checkout_503_when_stripe_disabled(billing):
+    client, _ = billing
+    app.dependency_overrides[get_stripe] = lambda: None
+    owner = register(client)
+    r = client.post("/api/billing/checkout", json={"plan": "pro"},
+                    headers=owner["headers"])
+    assert r.status_code == 503
+
+
+def test_billing_checkout_requires_auth(billing):
+    client, _ = billing
+    assert client.post("/api/billing/checkout",
+                       json={"plan": "solo"}).status_code == 401
+
+
+# ── Webhooks : la source de vérité ───────────────────────────────────────────
+
+def test_webhook_activates_solo_subscription(billing):
+    client, _ = billing
+    owner = register(client)
+    oid, cust = _link_customer(client, owner["email"])
+    r = _post_event(client, _evt(
+        "evt_test_sub1", "customer.subscription.created",
+        _subscription_obj(cust, "sub_test_1", "price_test_solo")))
+    assert r.status_code == 200 and r.json()["received"] is True
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert sub["plan"]["id"] == "solo" and sub["status"] == "active"
+    row = _sub_row(owner["email"])
+    assert row["stripe_subscription_id"] == "sub_test_1"
+    assert row["current_period_end"] is not None
+
+
+def test_webhook_is_idempotent(billing):
+    client, _ = billing
+    owner = register(client)
+    _, cust = _link_customer(client, owner["email"])
+    ev = _evt("evt_test_dup", "customer.subscription.updated",
+              _subscription_obj(cust, "sub_test_1", "price_test_pro"))
+    r1 = _post_event(client, ev)
+    r2 = _post_event(client, ev)
+    assert r1.json().get("duplicate") is not True
+    assert r2.json().get("duplicate") is True
+    # Traité une seule fois : une seule ligne stripe_events, plan = pro.
+    with psycopg.connect(settings.db_dsn) as conn:
+        n = conn.execute("SELECT count(*) FROM stripe_events WHERE id='evt_test_dup'"
+                         ).fetchone()[0]
+    assert n == 1
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["plan"]["id"] == "pro"
+
+
+def test_webhook_maps_status_past_due(billing):
+    client, _ = billing
+    owner = register(client)
+    _, cust = _link_customer(client, owner["email"])
+    r = _post_event(client, _evt(
+        "evt_test_pastdue", "customer.subscription.updated",
+        _subscription_obj(cust, "sub_test_1", "price_test_solo",
+                          status="past_due")))
+    assert r.status_code == 200
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert sub["status"] == "past_due" and sub["plan"]["id"] == "solo"
+
+
+def test_webhook_upgrade_solo_to_pro(billing):
+    client, _ = billing
+    owner = register(client)
+    _, cust = _link_customer(client, owner["email"])
+    _post_event(client, _evt("evt_test_up1", "customer.subscription.created",
+                _subscription_obj(cust, "sub_test_1", "price_test_solo")))
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["plan"]["id"] == "solo"
+    _post_event(client, _evt("evt_test_up2", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_pro")))
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["plan"]["id"] == "pro"
+
+
+def test_webhook_deleted_returns_to_free_without_data_loss(billing):
+    client, _ = billing
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    _, cust = _link_customer(client, owner["email"])
+    _post_event(client, _evt("evt_test_del1", "customer.subscription.created",
+                _subscription_obj(cust, "sub_test_1", "price_test_solo")))
+    # Annulation effective → retour au plan gratuit.
+    r = _post_event(client, _evt(
+        "evt_test_del2", "customer.subscription.deleted",
+        _subscription_obj(cust, "sub_test_1", "price_test_solo",
+                          status="canceled")))
+    assert r.status_code == 200
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert sub["plan"]["id"] == "free" and sub["status"] == "active"
+    # Aucune donnée supprimée : le logement existe toujours (invariant downgrade).
+    assert client.get(f"/api/properties/{prop['id']}",
+                      headers=owner["headers"]).status_code == 200
+    row = _sub_row(owner["email"])
+    assert row["stripe_subscription_id"] is None   # abonnement Stripe détaché
+
+
+def test_webhook_payment_failed_sets_past_due_keeping_plan(billing):
+    client, _ = billing
+    owner = register(client)
+    _, cust = _link_customer(client, owner["email"])
+    _post_event(client, _evt("evt_test_pf1", "customer.subscription.created",
+                _subscription_obj(cust, "sub_test_1", "price_test_solo")))
+    r = _post_event(client, _evt(
+        "evt_test_pf2", "invoice.payment_failed",
+        {"object": "invoice", "customer": cust}))
+    assert r.status_code == 200
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    # Accès conservé (plan solo), seul le statut bascule.
+    assert sub["status"] == "past_due" and sub["plan"]["id"] == "solo"
+
+
+def test_webhook_rejects_invalid_signature(billing):
+    client, _ = billing
+    r = _post_event(client, _evt("evt_test_bad", "checkout.session.completed",
+                    {"object": "checkout.session"}), valid_sig=False)
+    assert r.status_code == 400
+
+
+def test_webhook_unknown_event_is_acknowledged(billing):
+    client, _ = billing
+    r = _post_event(client, _evt("evt_test_unknown", "customer.updated",
+                    {"object": "customer", "id": "cus_x"}))
+    assert r.status_code == 200 and r.json()["received"] is True
+
+
+def test_webhook_503_without_secret(billing):
+    client, _ = billing
+    api_settings.stripe_webhook_secret = None
+    r = client.post("/api/stripe/webhook", content=b"{}",
+                    headers={"stripe-signature": "x"})
+    assert r.status_code == 503

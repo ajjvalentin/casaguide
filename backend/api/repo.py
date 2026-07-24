@@ -247,6 +247,17 @@ def update_subscription_from_stripe(conn, owner_id: str, *, plan_id: str,
         (plan_id, status, stripe_subscription_id, current_period_end, sub_id))
 
 
+def set_subscription_status(conn, owner_id: str, status: str) -> None:
+    """Met à jour le seul `status` de l'abonnement courant (échec de paiement →
+    'past_due'). Ne touche ni au plan ni au reste : l'accès n'est retiré qu'à
+    l'annulation effective (subscription.deleted → retour à 'free')."""
+    sub_id = _latest_subscription_id(conn, owner_id)
+    if sub_id is not None:
+        conn.execute(
+            "UPDATE subscriptions SET status = %s, updated_at = now() WHERE id = %s",
+            (status, sub_id))
+
+
 # ── Idempotence des webhooks Stripe (V2-05b) ─────────────────────────────────
 
 def stripe_event_begin(conn, event_id: str, event_type: str) -> bool:

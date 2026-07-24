@@ -86,6 +86,26 @@ class SubscriptionOut(BaseModel):
     plan: PlanOut
     status: str
     usage: UsageOut
+    # Client Stripe déjà rattaché ? (pilote l'affichage du bouton « Gérer mon
+    # abonnement » côté front — V2-05b). Absent tant qu'aucun paiement.
+    has_stripe_customer: bool = False
+
+
+# ── Paiement Stripe (V2-05b) ─────────────────────────────────────────────────
+
+class CheckoutIn(BaseModel):
+    """Demande de session Checkout pour un plan payant."""
+    plan: Literal["solo", "pro"]
+
+
+class CheckoutOut(BaseModel):
+    """URL de redirection vers le Checkout hébergé Stripe."""
+    url: str
+
+
+class PortalOut(BaseModel):
+    """URL de redirection vers le portail client Stripe (cartes, factures, annulation)."""
+    url: str
 
 
 # ── Logements ────────────────────────────────────────────────────────────────

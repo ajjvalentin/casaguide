@@ -31,6 +31,36 @@ function gauge(label, g, unit = "") {
       el("i", { style: { width: (unlimited ? 100 : pct) + "%", opacity: unlimited ? .35 : 1 } })));
 }
 
+/* Bandeau de retour de Checkout (V2-05b) : purement informatif. L'abonnement
+   n'est JAMAIS modifié par le success_url — la confirmation vient du webhook
+   Stripe (seule source de vérité). On lit ?checkout=success|cancel dans le hash. */
+function checkoutParam() {
+  const q = (location.hash.split("?")[1] || "");
+  return new URLSearchParams(q).get("checkout");
+}
+
+function checkoutBanner() {
+  const status = checkoutParam();
+  if (status === "success") {
+    return el("div", { class: "callout callout-info", style: { marginBottom: "18px" } },
+      icon("clock", 18),
+      el("div", {},
+        el("b", {}, "Paiement en cours de confirmation."),
+        el("div", { class: "muted", style: { fontSize: "13px", marginTop: "2px" } },
+          "Votre nouvelle offre s'activera dès réception de la confirmation de "
+          + "Stripe (quelques secondes). Actualisez la page si besoin.")));
+  }
+  if (status === "cancel") {
+    return el("div", { class: "callout callout-warn", style: { marginBottom: "18px" } },
+      icon("info", 18),
+      el("div", {},
+        el("b", {}, "Paiement annulé."),
+        el("div", { class: "muted", style: { fontSize: "13px", marginTop: "2px" } },
+          "Votre offre n'a pas changé — aucune donnée n'a été modifiée.")));
+  }
+  return null;
+}
+
 function featureLine(ok, text) {
   return el("li", { class: "feat " + (ok ? "on" : "off") },
     icon(ok ? "check" : "minus", 15), el("span", {}, text));
@@ -94,7 +124,7 @@ export async function renderSubscription(view) {
   const grid = el("div", { class: "plan-grid" }, ...plans.map((p) => planCard(p, sub.plan.id)));
 
   mount(view, el("div", { class: "page page-narrow" },
-    header, current,
+    header, checkoutBanner(), current,
     el("h2", { style: { fontSize: "18px", margin: "0 0 12px" } }, "Changer d'offre"),
     grid,
     el("p", { class: "muted", style: { fontSize: "13px", marginTop: "14px" } },

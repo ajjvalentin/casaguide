@@ -101,7 +101,9 @@ function renderRoute() {
   if (!getToken()) { renderLogin(appEl); return; }
 
   const view = ensureShell();
-  const seg = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  // On retire une éventuelle query (`?checkout=success`, V2-05b) avant de router :
+  // seul le chemin d'ancre décide de la vue ; la query est lue par la vue.
+  const seg = location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
 
   if (seg[0] === "abonnement") return void renderSubscription(view);
   if (!seg.length || seg[0] !== "properties") { navigate("#/properties"); return; }
