@@ -281,6 +281,35 @@ exposé, peer auth).
   retire. **Redirections front** (`js/redirect.js`) : `window.location.assign` est
   *unforgeable* (non stubable) → les vues passent par `redirect()`, remplaçable en
   test headless via **import map** (le harnais reste hors `frontend/`).
+- **Mocks Stripe non représentatifs (OPS-1)** : un `StripeObject` réel **n'est
+  pas** un `dict` (MRO `[StripeObject, object]`), n'expose ni `.get`/`.items`/
+  `.keys` (interceptés par `__getattr__` → `AttributeError`) et n'implémente pas
+  le protocole de mapping → **`dict(stripe_obj)` lève `KeyError: 0`** (il l'itère
+  comme une séquence). Pour lire des metadata/`recurring`, passer par
+  `.to_dict()` (voir `ops/stripe_sync_products.py` `_as_dict`), **jamais**
+  `dict(obj)` ni `obj.metadata.get(...)`. Ce bug était **invisible en test** : les
+  fakes originaux stockaient des `SimpleNamespace` dont `metadata` était un `dict`
+  simple → `dict()` marchait, alors qu'en prod le sync plantait dès que la liste
+  de produits était **non vide** (solo créé, puis crash sur pro). Règle : tout
+  fake d'objet Stripe doit se comporter comme la vraie lib — `tests/test_stripe.py`
+  construit désormais de **vrais** `stripe.StripeObject` (`construct_from`) et un
+  `list()` renvoyant un objet `.data` façon `ListObject`. Un mock plus « simple »
+  que le réel masque les bugs de contrat plutôt que de les révéler.
+- **Scripts `ops/` et `.env` (OPS-1)** : lancés à la main sur le serveur, ils
+  n'héritent **pas** de l'`EnvironmentFile` systemd → ils chargent `backend/.env`
+  eux-mêmes via `ops/opsenv.py` (option `--env-file`, `override=False`). **Ne
+  jamais** `source backend/.env` en bash : il contient des valeurs non-shell
+  (`CASAGUIDE_SMTP_FROM=Holaguia <no-reply@holaguia.com>` → les chevrons sont des
+  redirections, `source` explose). `opsenv.parse_env` conserve les valeurs à
+  espaces/chevrons littéralement.
+- **`deploy.sh` — détection pip (OPS-1)** : l'install des dépendances se décide en
+  comparant le hash de `requirements.txt` à un **stamp** écrit dans le venv
+  (`$VENV/.requirements.sha1`) **après** chaque pip réussi — **pas** le delta
+  avant/après `git pull`. Un pull no-op (code déjà présent) sur un venv périmé
+  déclencherait sinon un « pip ignoré » à tort (bug V2-05b : `stripe` ajouté mais
+  jamais installé → `ModuleNotFoundError` au restart). Garde-fou : échec du
+  healthcheck `/health` → inspection du journal + suggestion de remise à niveau du
+  venv. Ne pas revenir à une comparaison basée sur le pull.
 - **Service worker du guide (cache-busting)** : les fichiers de `frontend/guide/*`
   sont servis cache-first par `sw.js`. Toute modification d'un de ces fichiers
   DOIT s'accompagner de l'incrément de `VERSION` dans `frontend/guide/sw.js`,
