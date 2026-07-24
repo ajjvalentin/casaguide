@@ -102,6 +102,9 @@ export const api = {
   // Plans & abonnement (V2-05a)
   listPlans:       () => request("GET", "/api/plans", { auth: false }),
   getSubscription: () => request("GET", "/api/subscription"),
+  // Paiement Stripe (V2-05b) : renvoient une URL de redirection (Checkout / portail)
+  startCheckout:   (plan) => request("POST", "/api/billing/checkout", { body: { plan } }),
+  openBillingPortal: () => request("POST", "/api/billing/portal"),
 
   // Auth
   register: (b) => request("POST", "/api/auth/register", { body: b, auth: false }),

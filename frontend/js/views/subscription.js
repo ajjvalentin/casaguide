@@ -1,15 +1,17 @@
-/* « Mon abonnement » (#/abonnement, V2-05a, volet 3).
+/* « Mon abonnement » (#/abonnement, V2-05a puis V2-05b).
 
    Affiche le plan courant, les jauges d'utilisation (logements, enrichissements
    du mois, langues) et le catalogue des offres. Les prix viennent de l'API
-   (`/api/plans`), jamais codés en dur. Les boutons de changement de plan sont
-   inactifs (« paiement disponible prochainement ») : aucune collecte de paiement
-   dans cette version (Stripe = V2-05b). */
+   (`/api/plans`), jamais codés en dur.
 
-import { api } from "../api.js";
-import { el, icon, mount, loadingBlock, refreshIcons } from "../ui.js";
+   V2-05b : les boutons sont réels. « Passer en solo/pro » ouvre le Checkout
+   Stripe (redirection) ; « Gérer mon abonnement » (visible seulement si un
+   Customer Stripe existe) ouvre le portail client. L'abonnement n'est jamais
+   modifié côté client : la vérité vient du webhook (bandeau ?checkout=…). */
 
-const SOON = "Paiement disponible prochainement";
+import { api, ApiError } from "../api.js";
+import { el, icon, mount, loadingBlock, refreshIcons, toast } from "../ui.js";
+import { redirect } from "../redirect.js";
 
 function euros(cts) {
   if (!cts) return "Gratuit";
@@ -79,19 +81,65 @@ function planFeatures(plan) {
     featureLine(!!f.white_label, "Marque blanche complète"));
 }
 
-function planCard(plan, currentId) {
+/* Lance le Checkout d'un plan payant et redirige. Gère proprement le 503
+   (Stripe pas encore configuré côté serveur) sans jamais d'alert() brut. */
+async function startCheckout(planId, btn) {
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = "Redirection…";
+  try {
+    const { url } = await api.startCheckout(planId);
+    redirect(url);
+  } catch (err) {
+    btn.disabled = false; btn.textContent = prev;
+    const msg = err instanceof ApiError && err.status === 503
+      ? "Le paiement en ligne n'est pas encore activé. Réessayez bientôt."
+      : (err.message || "Impossible de démarrer le paiement.");
+    toast(msg, "err");
+  }
+}
+
+function planCard(plan, sub) {
+  const currentId = sub.plan.id;
   const isCurrent = plan.id === currentId;
-  const btn = isCurrent
-    ? el("button", { class: "btn btn-block", disabled: true }, icon("check", 16), "Votre offre")
-    : el("button", { class: "btn btn-block", disabled: true, title: SOON }, "Choisir " + plan.name);
-  const card = el("div", { class: "card plan-card" + (isCurrent ? " plan-current" : "") },
+  const isFree = plan.price_month_cts === 0;
+
+  let btn;
+  if (isCurrent) {
+    btn = el("button", { class: "btn btn-block", disabled: true },
+      icon("check", 16), "Votre offre");
+  } else if (isFree) {
+    // On ne « souscrit » pas le gratuit : on y revient via le portail (annulation).
+    btn = el("button", { class: "btn btn-block btn-ghost", disabled: true },
+      "Offre de départ");
+  } else {
+    btn = el("button", { class: "btn btn-block btn-primary" }, "Passer en " + plan.name);
+    btn.addEventListener("click", () => startCheckout(plan.id, btn));
+  }
+
+  return el("div", { class: "card plan-card" + (isCurrent ? " plan-current" : "") },
     isCurrent ? el("span", { class: "badge badge-published plan-tag" }, "Offre actuelle") : null,
     el("h3", { style: { margin: "0 0 2px" } }, plan.name),
     el("div", { class: "plan-price" }, euros(plan.price_month_cts)),
     planFeatures(plan),
-    btn,
-    isCurrent ? null : el("div", { class: "help", style: { textAlign: "center", marginTop: "6px" } }, SOON));
-  return card;
+    btn);
+}
+
+/* Bouton « Gérer mon abonnement » → portail client Stripe. Affiché seulement si
+   un Customer Stripe existe (un compte n'ayant jamais payé n'a rien à gérer). */
+function manageButton() {
+  const btn = el("button", { class: "btn btn-ghost" },
+    icon("credit-card", 16), "Gérer mon abonnement");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      const { url } = await api.openBillingPortal();
+      redirect(url);
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message || "Portail indisponible pour le moment.", "err");
+    }
+  });
+  return btn;
 }
 
 export async function renderSubscription(view) {
@@ -119,16 +167,20 @@ export async function renderSubscription(view) {
       el("div", { class: "plan-price", style: { margin: 0 } }, euros(sub.plan.price_month_cts))),
     gauge("Logements", u.properties),
     gauge("Enrichissements IA ce mois-ci", u.enrichments, "/ logement"),
-    gauge("Langues du guide", u.langs));
+    gauge("Langues du guide", u.langs),
+    // Portail Stripe : seulement pour un client déjà rattaché (a déjà payé).
+    sub.has_stripe_customer
+      ? el("div", { class: "row", style: { justifyContent: "flex-end", marginTop: "14px" } }, manageButton())
+      : null);
 
-  const grid = el("div", { class: "plan-grid" }, ...plans.map((p) => planCard(p, sub.plan.id)));
+  const grid = el("div", { class: "plan-grid" }, ...plans.map((p) => planCard(p, sub)));
 
   mount(view, el("div", { class: "page page-narrow" },
     header, checkoutBanner(), current,
     el("h2", { style: { fontSize: "18px", margin: "0 0 12px" } }, "Changer d'offre"),
     grid,
     el("p", { class: "muted", style: { fontSize: "13px", marginTop: "14px" } },
-      "Le paiement en ligne arrive bientôt. En attendant, contactez-nous pour "
-      + "passer à une offre supérieure — vos guides et vos données restent intacts.")));
+      "Paiement sécurisé par Stripe. Vous pouvez changer d'offre ou résilier à "
+      + "tout moment depuis le portail — vos guides et vos données restent intacts.")));
   refreshIcons();
 }

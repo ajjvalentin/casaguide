@@ -35,7 +35,8 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Cahier équipe d'entretien (M-13) | Schéma : `audience` (guest\|staff) sur `section_templates`, `staff_token` (128 bits) sur `properties` — schema.sql + `db/migrations/002`. Seed : chapitre « S » (5 sections staff). Page publique `GET /s/{staff_token}` (rendu `guide_page.render_staff`, variante sobre check-list, **accessible même en brouillon**, jamais de secrets/POI). Étanchéité guest↔staff dans les deux sens (invariant 7) |
 | Affiche QR imprimable (M-07) | `api/poster.py` (reportlab) → `GET /api/properties/{id}/guide-poster.pdf` (A5/A4, propriétaire uniquement) : nom du logement, QR du lien du guide, mot d'accueil FR/EN, identité sable/mer |
 | Auth transactionnel (V2-08) | **Fait** — mailer injectable (`deps.get_mailer` : `SmtpMailer` SSL Infomaniak + `ConsoleMailer` dev/tests), gabarits FR `api/emails.py`. **Mot de passe oublié** : `POST /api/auth/forgot` (200 constant anti-énumération, email en tâche de fond, cadence 2 min), `POST /api/auth/reset` (jeton 256 bits **haché SHA-256** en table `password_resets`, expiration 60 min, usage unique). **Vérification d'email** : lien à l'inscription (non bloquant), `POST /api/auth/verify-email` (idempotent), `POST /api/auth/resend-verification`. `owners.email_verified` exposé par `/me`. Migrations 005 (table) + 006 (grand-périsage des comptes existants). Front : routes publiques `#/forgot`, `#/reset/{token}`, `#/verify/{token}` (`js/views/reset.js`) + bandeau « vérifiez votre email » (`app.js`) — testé (22 tests + parcours headless) |
-| Plans & abonnements (V2-05a) | **Fait (volets 1-3)** — couche d'accès `api/plans.py` branchée sur le modèle existant `plans`/`subscriptions` (CdC §10) : `get_subscription` / `get_plan` (repli 'free' + warning si abonnement manquant, jamais None) / `check_quota(owner_id, resource)` pour `properties` \| `enrichments` \| `langs` (lit `max_properties`, `enrich_quota` mensuel/logement, `features`) / `cap_target_langs` (plafond langues, source comprise) / `wants_watermark`. Inscription crée toujours une ligne `subscriptions` (`plan_id`='free', **`status='active'`** — pas de logique d'essai). Migration 007 : rattrapage idempotent d'un abo 'free'. Attribution manuelle par email : `ops/set_plan.py`. **Application serveur (volet 2)** : refus **402 `quota_exceeded`** (helper `api/quota.py`, `detail={code,message FR}`) sur `POST /api/properties` (au-delà de `max_properties`) et `POST .../enrich` (au-delà de `enrich_quota`, **remplace l'ancien 429**) ; traductions **plafonnées** par `cap_target_langs` (le runner de traduction reçoit désormais `target_langs`, `deps.TranslationRunner`), plan gratuit → 0 cible → `/translate` renvoie 402, publication ne génère aucune traduction ; **watermark** « Créé avec Holaguia » dans le SSR du guide (`guide_page._watermark_html`, flag via `repo.get_plan_by_guide_token`) si `features.watermark`. **Downgrade non destructif** : aucune donnée/traduction supprimée, seule la création est bloquée. **UI back-office (volet 3)** : endpoints `GET /api/plans` (public, catalogue) + `GET /api/subscription` (auth : plan + jauges d'usage) → `routers/billing.py` ; inscription avec **choix d'offre** (gratuite présélectionnée, payantes « bientôt », prix depuis l'API) `views/login.js` ; page **« Mon abonnement »** `#/abonnement` (`views/subscription.js` : plan courant, jauges logements/enrichissements/langues, boutons de changement inactifs) ; refus quota interceptés côté front par `js/quota.js` (`handleQuotaError` → encart « changez d'offre », jamais d'`alert()`) dans création de logement, enrichissement, traduction. Aucun quota codé en dur (invariant 8) — testé (`tests/test_plans.py` 13 + intégration : quotas, downgrade lecture seule, watermark, `/plans` & `/subscription` ; parcours front vérifié en headless). *Suite : white-label du poster PDF (marque fixe aujourd'hui) ; paiement Stripe (V2-05b).* |
+| Plans & abonnements (V2-05a) | **Fait (volets 1-3)** — couche d'accès `api/plans.py` branchée sur le modèle existant `plans`/`subscriptions` (CdC §10) : `get_subscription` / `get_plan` (repli 'free' + warning si abonnement manquant, jamais None) / `check_quota(owner_id, resource)` pour `properties` \| `enrichments` \| `langs` (lit `max_properties`, `enrich_quota` mensuel/logement, `features`) / `cap_target_langs` (plafond langues, source comprise) / `wants_watermark`. Inscription crée toujours une ligne `subscriptions` (`plan_id`='free', **`status='active'`** — pas de logique d'essai). Migration 007 : rattrapage idempotent d'un abo 'free'. Attribution manuelle par email : `ops/set_plan.py`. **Application serveur (volet 2)** : refus **402 `quota_exceeded`** (helper `api/quota.py`, `detail={code,message FR}`) sur `POST /api/properties` (au-delà de `max_properties`) et `POST .../enrich` (au-delà de `enrich_quota`, **remplace l'ancien 429**) ; traductions **plafonnées** par `cap_target_langs` (le runner de traduction reçoit désormais `target_langs`, `deps.TranslationRunner`), plan gratuit → 0 cible → `/translate` renvoie 402, publication ne génère aucune traduction ; **watermark** « Créé avec Holaguia » dans le SSR du guide (`guide_page._watermark_html`, flag via `repo.get_plan_by_guide_token`) si `features.watermark`. **Downgrade non destructif** : aucune donnée/traduction supprimée, seule la création est bloquée. **UI back-office (volet 3)** : endpoints `GET /api/plans` (public, catalogue) + `GET /api/subscription` (auth : plan + jauges d'usage) → `routers/billing.py` ; inscription avec **choix d'offre** (gratuite présélectionnée, payantes « bientôt », prix depuis l'API) `views/login.js` ; page **« Mon abonnement »** `#/abonnement` (`views/subscription.js` : plan courant, jauges logements/enrichissements/langues, boutons de changement inactifs) ; refus quota interceptés côté front par `js/quota.js` (`handleQuotaError` → encart « changez d'offre », jamais d'`alert()`) dans création de logement, enrichissement, traduction. Aucun quota codé en dur (invariant 8) — testé (`tests/test_plans.py` 13 + intégration : quotas, downgrade lecture seule, watermark, `/plans` & `/subscription` ; parcours front vérifié en headless). *Suite : white-label du poster PDF (marque fixe aujourd'hui).* |
+| Facturation Stripe (V2-05b) | **Fait (dév/Test ; validation 4242 avec André en attente de ses clés Test)** — passerelle injectable `api/billing_stripe.py` (`StripeGateway`, `deps.get_stripe` → None sans clé → 503 propre, même motif que le mailer) ; `LiveStripeGateway` (StripeClient v1 ; `construct_event` = vérif signature + `json.loads`). **Checkout** `POST /api/billing/checkout` (auth ; plan solo/pro ; Customer rattaché **avant** la session → résolution owner par `customer_id` quel que soit l'ordre des webhooks ; price depuis `plans.stripe_price_id` ; 422 free/inconnu, 503 non synchronisé). **Webhook** `POST /api/stripe/webhook` (public, source de vérité — invariant 9) : `checkout.session.completed` (lien Customer), `customer.subscription.created/updated` (**autorité** : plan via price→plan, statut mappé, `current_period_end`), `.deleted` (retour `free` non destructif), `invoice.payment_failed` (`past_due`) ; dispatch `api/stripe_events.py` ; idempotence `stripe_events` (migration 008). **Portail** `POST /api/billing/portal` (409 sans Customer). **Sync** `ops/stripe_sync_products.py` (plans→Products/Prices, idempotent, archivage non destructif d'un ancien prix). Front : `#/abonnement` boutons réels (Checkout/portail via `js/redirect.js`, bandeau `?checkout=success|cancel`), chooser d'inscription payant → Checkout après création. Runbook `docs/stripe.md`. Testé (`tests/test_stripe.py` 8 + intégration `test_api.py` : checkout, idempotence, mapping statuts, upgrade, deleted→free, signature→400, portail ; parcours front headless 13/13). *Suite : mode Live (échange de clés + re-sync) ; facturation annuelle ; Stripe Tax.* |
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
 | Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v15) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}`. **Lisibilité (V2-09) faite** : TROIS onglets (Le logement / Urgences / Autour de vous, état dans le hash, `app.js initTabs`) + listes de lieux repliées (4 + « Voir les N autres », `initCategoryLists`) |
@@ -106,6 +107,16 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
    excédentaires deviennent lecture seule, jamais effacés. Tout passe par la
    couche `api/plans.py` (`get_plan` → repli 'free' + warning si abonnement
    manquant, jamais None ; `check_quota` ; `cap_target_langs` ; `wants_watermark`).
+9. **Facturation Stripe (V2-05b)** : le **webhook** (`POST /api/stripe/webhook`)
+   est la **seule source de vérité** de `subscriptions.status/plan_id/
+   current_period_end` — le `success_url` de Checkout ne modifie **jamais**
+   l'abonnement (le front n'affiche qu'un bandeau « confirmation en cours »).
+   Chaque webhook : **signature vérifiée** (400 sinon), **idempotence** via
+   `stripe_events` (un `event.id` déjà reçu est accusé mais non retraité). Les
+   **prix** vivent dans `plans.price_month_cts` et sont *synchronisés vers*
+   Stripe (`ops/stripe_sync_products.py`), jamais l'inverse ni en dur. Un retour
+   à `free` (annulation) reste **non destructif** (invariant 8). Sans clé Stripe,
+   `/api/billing/*` et le webhook répondent **503** (mode dégradé propre).
 
 ## Commandes
 
@@ -118,6 +129,7 @@ psql -d casaguide -f db/migrations/002_staff_cahier.sql   # audience + staff_tok
 psql -d casaguide -f db/migrations/003_pois_cuisine.sql   # colonne cuisine sur pois (M-16)
 psql -d casaguide -f db/migrations/004_wifi_networks.sql  # wifi_networks_enc (multi-wifi, M-15)
 psql -d casaguide -f db/migrations/007_backfill_free_subscriptions.sql # abo 'free' de rattrapage (V2-05a)
+psql -d casaguide -f db/migrations/008_stripe_billing.sql # stripe_events + plans.stripe_price_id (V2-05b)
 
 # Backend
 cd backend
@@ -157,7 +169,13 @@ transactionnels (V2-08)** : `CASAGUIDE_SMTP_HOST` / `CASAGUIDE_SMTP_PORT` (465) 
 Le mot de passe SMTP est renseigné à la main dans le `.env` du serveur (jamais
 committé). Options : `CASAGUIDE_AUTH_TOKEN_TTL_MIN` (60, validité des jetons
 réinit/vérif), `CASAGUIDE_FORGOT_MIN_INTERVAL_S` (120, cadence des demandes de
-réinitialisation par email).
+réinitialisation par email). **Facturation Stripe (V2-05b)** :
+`CASAGUIDE_STRIPE_SECRET_KEY` (clé secrète API — `sk_test_…` en Test, `sk_live_…`
+en prod ; absente → `/api/billing/*` et le webhook répondent 503, reste de l'app
+intact) et `CASAGUIDE_STRIPE_WEBHOOK_SECRET` (`whsec_…` de signature des webhooks
+— `stripe listen` en local, endpoint du Dashboard en prod ; absent → webhook 503).
+Les deux sont renseignés à la main dans le `.env` du serveur (jamais committés).
+Runbook complet : `docs/stripe.md`.
 
 ## Production (M-11) — **runbook complet : `docs/deploiement.md`**
 
@@ -236,6 +254,33 @@ exposé, peer auth).
   le plafond du plan est court-circuité. Plan gratuit → 0 cible → aucune
   traduction publiée, et **les traductions déjà en base ne sont jamais effacées**
   au downgrade (repli fr, invariant 1).
+- Facturation Stripe (V2-05b) : le webhook est la **seule** autorité d'état
+  (invariant 9) — ne jamais écrire `subscriptions.status/plan_id/
+  current_period_end` depuis le `success_url` ni un endpoint synchrone. Le
+  `customer_id` est rattaché à l'abonnement **au moment du Checkout** (avant la
+  session), pas au retour du webhook → la résolution owner par `customer_id`
+  marche quel que soit l'**ordre d'arrivée** des événements (subscription.updated
+  peut précéder checkout.session.completed). Le **plan** est fixé par les
+  événements `customer.subscription.created/updated` (via `price→plan`,
+  `repo.get_plan_by_stripe_price_id`), **pas** par `checkout.session.completed`
+  (le prix n'y figure pas). L'**idempotence** passe par `repo.stripe_event_begin`
+  (INSERT … ON CONFLICT DO NOTHING atomique) : si le traitement échoue et que la
+  transaction est annulée, la ligne `stripe_events` disparaît aussi → Stripe
+  rejouera (comportement voulu). **Signature** : `construct_event` vérifie via
+  `stripe.Webhook.construct_event` puis fait `json.loads` du payload brut (pas
+  d'accès aux internals de la lib — `StripeObject.get()` **lève** `AttributeError`,
+  ne jamais compter dessus). Un événement Stripe réel porte toujours un champ
+  top-level `"object": "event"` (la lib le lit) : tout payload de test doit
+  l'inclure. **`current_period_end`** a migré au niveau de l'item de facturation
+  dans les versions récentes de l'API — `stripe_events._period_end` lit les deux
+  emplacements. Les **prix** viennent de `plans` (invariant : jamais en dur) ;
+  changer un prix = éditer le seed + relancer `ops/stripe_sync_products.py`
+  (nouveau Price, ancien **archivé** non supprimé). L'accès aux quotas ne dépend
+  QUE de `plan_id` (jamais du `status`) : `past_due` conserve donc l'accès (grâce
+  le temps des relances), seule l'annulation (`subscription.deleted` → `free`) le
+  retire. **Redirections front** (`js/redirect.js`) : `window.location.assign` est
+  *unforgeable* (non stubable) → les vues passent par `redirect()`, remplaçable en
+  test headless via **import map** (le harnais reste hors `frontend/`).
 - **Service worker du guide (cache-busting)** : les fichiers de `frontend/guide/*`
   sont servis cache-first par `sw.js`. Toute modification d'un de ces fichiers
   DOIT s'accompagner de l'incrément de `VERSION` dans `frontend/guide/sw.js`,

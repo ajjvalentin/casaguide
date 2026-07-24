@@ -4,8 +4,9 @@
 
 import { api, ApiError } from "../api.js";
 import { setToken, setOwner } from "../store.js";
-import { el, icon, mount, refreshIcons } from "../ui.js";
+import { el, icon, mount, refreshIcons, toast } from "../ui.js";
 import { navigate } from "../nav.js";
+import { redirect } from "../redirect.js";
 
 export function renderLogin(root) {
   let mode = "login"; // 'login' | 'register'
@@ -30,23 +31,34 @@ export function renderLogin(root) {
   const companyF = field("Société (facultatif)", "company_name");
   const phoneF = field("Téléphone (facultatif)", "phone", "tel");
 
-  // Choix de l'offre à l'inscription (V2-05a) : offre gratuite présélectionnée ;
-  // les offres payantes sont affichées (prix depuis l'API) mais pas encore
-  // souscriptibles — aucune collecte de paiement (Stripe = V2-05b).
+  // Choix de l'offre à l'inscription (V2-05a/b) : offre gratuite présélectionnée.
+  // Les offres payantes sont désormais **souscriptibles** — après création du
+  // compte, on redirige vers le Checkout Stripe du plan choisi (V2-05b).
   const plansBox = el("div", { class: "signup-plans" });
   let plansLoaded = false;
+
+  function syncChoiceStyles() {
+    plansBox.querySelectorAll(".plan-choice").forEach((lbl) => {
+      const input = lbl.querySelector("input");
+      lbl.classList.toggle("on", input && input.checked);
+    });
+  }
 
   async function loadPlans() {
     if (plansLoaded) return;
     plansLoaded = true;
     try {
       const plans = await api.listPlans();
+      const choices = el("div", { class: "plan-choices" }, ...plans.map(planChoice));
+      choices.addEventListener("change", syncChoiceStyles);
       mount(plansBox,
         el("div", { class: "label" }, "Votre offre"),
-        el("div", { class: "plan-choices" }, ...plans.map(planChoice)),
+        choices,
         el("div", { class: "help" },
-          "L'offre gratuite vous permet de démarrer tout de suite. Le passage à "
-          + "une offre payante sera disponible prochainement."));
+          "Démarrez gratuitement, ou choisissez une offre payante : vous serez "
+          + "redirigé vers le paiement sécurisé Stripe après la création du compte "
+          + "(le compte reste gratuit si vous n'allez pas au bout)."));
+      syncChoiceStyles();
       refreshIcons();
     } catch (_) { /* non bloquant : l'inscription reste possible sur l'offre gratuite */ }
   }
@@ -59,15 +71,11 @@ export function renderLogin(root) {
 
   function planChoice(p) {
     const free = p.price_month_cts === 0;
-    return el("label", { class: "plan-choice" + (free ? " on" : " disabled") },
-      el("input", {
-        type: "radio", name: "plan", value: p.id,
-        ...(free ? { checked: true } : { disabled: true }),
-      }),
+    return el("label", { class: "plan-choice" },
+      el("input", { type: "radio", name: "plan", value: p.id, ...(free ? { checked: true } : {}) }),
       el("span", { class: "pc-body" },
         el("b", {}, p.name), " ",
-        el("span", { class: "pc-price" }, euros(p.price_month_cts)),
-        free ? null : el("span", { class: "pc-soon" }, "Bientôt")));
+        el("span", { class: "pc-price" }, euros(p.price_month_cts))));
   }
 
   function renderFields() {
@@ -129,6 +137,20 @@ export function renderLogin(root) {
       }
       setToken(tokenResp.access_token);
       setOwner(await api.me());
+      // Offre payante choisie à l'inscription → Checkout Stripe (V2-05b). Le
+      // compte reste gratuit si le paiement est abandonné (invariant 1 : seul le
+      // webhook change l'abonnement). Une indispo (503) n'empêche jamais l'entrée.
+      const chosen = fields.querySelector('input[name="plan"]:checked');
+      const planId = mode === "register" && chosen ? chosen.value : "free";
+      if (planId && planId !== "free") {
+        try {
+          const { url } = await api.startCheckout(planId);
+          redirect(url);
+          return;
+        } catch (_) {
+          toast("Compte créé. Vous pourrez souscrire depuis « Mon abonnement ».", "");
+        }
+      }
       navigate("#/properties");
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : "Une erreur est survenue.";

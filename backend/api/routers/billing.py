@@ -22,8 +22,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 from .. import billing_stripe, plans, repo, stripe_events
 from ..config import settings
 from ..deps import Conn, CurrentOwner, Stripe
-from ..schemas import (CheckoutIn, CheckoutOut, PlanOut, QuotaGaugeOut,
-                       SubscriptionOut, UsageOut)
+from ..schemas import (CheckoutIn, CheckoutOut, PlanOut, PortalOut,
+                       QuotaGaugeOut, SubscriptionOut, UsageOut)
 
 log = logging.getLogger("casaguide.billing")
 
@@ -118,6 +118,40 @@ def create_checkout(payload: CheckoutIn, conn: Conn, owner: CurrentOwner,
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Le service de paiement est momentanément indisponible.")
     return CheckoutOut(url=url)
+
+
+# ── Portail client Stripe (V2-05b, volet 3) ─────────────────────────────────
+
+@router.post("/billing/portal", response_model=PortalOut)
+def create_portal(conn: Conn, owner: CurrentOwner, gateway: Stripe,
+                  request: Request):
+    """Ouvre une session du portail client Stripe (moyens de paiement, factures,
+    annulation). 409 si le propriétaire n'a jamais eu de Customer Stripe (jamais
+    payé) — il n'y a alors rien à gérer."""
+    if gateway is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Le portail de facturation n'est pas disponible.")
+
+    owner_id = str(owner["id"])
+    sub = plans.get_subscription(conn, owner_id)
+    customer_id = sub.get("stripe_customer_id") if sub else None
+    if not customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Aucun abonnement payant à gérer pour l'instant.")
+
+    try:
+        url = gateway.create_portal_session(
+            customer_id=customer_id,
+            return_url=f"{_public_base(request)}/#/abonnement")
+    except billing_stripe.StripeError as exc:
+        log.error("Échec d'ouverture du portail Stripe (owner=%s) : %s",
+                  owner_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Le service de paiement est momentanément indisponible.")
+    return PortalOut(url=url)
 
 
 # ── Webhooks Stripe : la seule source de vérité (V2-05b, volet 2) ────────────

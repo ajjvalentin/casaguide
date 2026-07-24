@@ -2140,3 +2140,48 @@ def test_webhook_503_without_secret(billing):
     r = client.post("/api/stripe/webhook", content=b"{}",
                     headers={"stripe-signature": "x"})
     assert r.status_code == 503
+
+
+# ── Portail client (V2-05b, volet 3) ─────────────────────────────────────────
+
+def test_billing_portal_returns_url_when_customer_exists(billing):
+    client, gateway = billing
+    owner = register(client)
+    # Un Checkout crée d'abord le lien Customer.
+    client.post("/api/billing/checkout", json={"plan": "solo"},
+                headers=owner["headers"])
+    r = client.post("/api/billing/portal", headers=owner["headers"])
+    assert r.status_code == 200, r.text
+    assert r.json()["url"].startswith("https://billing.stripe.test/")
+    assert gateway.portal_calls[-1]["return_url"].endswith("#/abonnement")
+
+
+def test_billing_portal_409_without_customer(billing):
+    client, _ = billing
+    owner = register(client)   # jamais de Checkout → pas de Customer Stripe
+    r = client.post("/api/billing/portal", headers=owner["headers"])
+    assert r.status_code == 409
+
+
+def test_billing_portal_503_when_stripe_disabled(billing):
+    client, _ = billing
+    app.dependency_overrides[get_stripe] = lambda: None
+    owner = register(client)
+    r = client.post("/api/billing/portal", headers=owner["headers"])
+    assert r.status_code == 503
+
+
+def test_billing_portal_requires_auth(billing):
+    client, _ = billing
+    assert client.post("/api/billing/portal").status_code == 401
+
+
+def test_subscription_exposes_has_stripe_customer(billing):
+    client, _ = billing
+    owner = register(client)
+    before = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert before["has_stripe_customer"] is False
+    client.post("/api/billing/checkout", json={"plan": "solo"},
+                headers=owner["headers"])
+    after = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert after["has_stripe_customer"] is True
