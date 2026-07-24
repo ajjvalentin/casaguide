@@ -25,14 +25,22 @@ Le plan 'free' (prix 0) est ignoré : aucun Price Stripe (rien à facturer).
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
+from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
 
-DEFAULT_DSN = os.getenv("CASAGUIDE_DB", "postgresql:///casaguide")
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # ops/ (import opsenv)
+import opsenv  # noqa: E402
+
 CURRENCY = "eur"
+
+
+def _default_dsn() -> str:
+    return os.getenv("CASAGUIDE_DB", "postgresql:///casaguide")
 
 
 # ── Accès normalisés (fonctionne avec les objets Stripe ET les fakes de test) ─
@@ -156,10 +164,30 @@ def sync_plans(client, conn, *, log=print) -> dict[str, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Synchronise les plans payants (table plans) vers Stripe.")
+    parser.add_argument(
+        "--env-file",
+        help="chemin d'un .env à charger (défaut : backend/.env ; les variables "
+             "déjà exportées priment).")
+    parser.add_argument("--dsn", help="DSN PostgreSQL (défaut : CASAGUIDE_DB ou "
+                        "postgresql:///casaguide).")
+    args = parser.parse_args(argv)
+
+    # Volet 2 : les scripts ops/ chargent le .env eux-mêmes (pas d'EnvironmentFile
+    # systemd en exécution manuelle ; pas de `source` bash — chevrons du SMTP_FROM).
+    loaded = opsenv.load_env(args.env_file)
+    if loaded:
+        print(f"· configuration chargée depuis {loaded}")
+    elif args.env_file:
+        print(f"⚠ --env-file introuvable : {args.env_file} (repli sur "
+              "l'environnement).", file=sys.stderr)
+
     api_key = os.getenv("CASAGUIDE_STRIPE_SECRET_KEY")
     if not api_key:
         print("✗ CASAGUIDE_STRIPE_SECRET_KEY absente : impossible de synchroniser "
-              "(renseignez la clé sk_test_… ou sk_live_…).", file=sys.stderr)
+              "(renseignez la clé sk_test_… ou sk_live_… dans le .env ou "
+              "l'environnement).", file=sys.stderr)
         return 2
 
     import stripe  # import tardif : le script n'est utile que si stripe est là
@@ -168,8 +196,9 @@ def main(argv: list[str] | None = None) -> int:
     mode = "LIVE" if api_key.startswith("sk_live_") else "TEST"
     print(f"Synchronisation des plans vers Stripe (mode {mode})…")
 
+    dsn = args.dsn or _default_dsn()
     try:
-        conn = psycopg.connect(DEFAULT_DSN, row_factory=dict_row)
+        conn = psycopg.connect(dsn, row_factory=dict_row)
     except psycopg.OperationalError as exc:
         print(f"✗ connexion à la base impossible : {exc}", file=sys.stderr)
         return 1

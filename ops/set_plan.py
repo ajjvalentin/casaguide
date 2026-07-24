@@ -26,11 +26,17 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
 
-DEFAULT_DSN = os.getenv("CASAGUIDE_DB", "postgresql:///casaguide")
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # ops/ (import opsenv)
+import opsenv  # noqa: E402
+
+
+def _default_dsn() -> str:
+    return os.getenv("CASAGUIDE_DB", "postgresql:///casaguide")
 
 
 def _plan_exists(conn, plan_id: str) -> bool:
@@ -88,12 +94,27 @@ def main(argv: list[str] | None = None) -> int:
                         help="identifiant de plan (défaut : pro ; cf. table plans)")
     parser.add_argument("--status", default="active",
                         help="statut de l'abonnement écrit (défaut : active)")
-    parser.add_argument("--dsn", default=DEFAULT_DSN,
-                        help=f"DSN PostgreSQL (défaut : {DEFAULT_DSN})")
+    parser.add_argument("--dsn", default=None,
+                        help="DSN PostgreSQL (défaut : CASAGUIDE_DB ou "
+                             "postgresql:///casaguide).")
+    parser.add_argument("--env-file",
+                        help="chemin d'un .env à charger (défaut : backend/.env ; "
+                             "les variables déjà exportées priment).")
     args = parser.parse_args(argv)
 
+    # Volet 2 : charge le .env nous-mêmes (exécution manuelle sans EnvironmentFile
+    # systemd ; pas de `source` bash — chevrons du SMTP_FROM). AVANT de résoudre le
+    # DSN pour que CASAGUIDE_DB du .env soit pris en compte.
+    loaded = opsenv.load_env(args.env_file)
+    if loaded:
+        print(f"· configuration chargée depuis {loaded}")
+    elif args.env_file:
+        print(f"⚠ --env-file introuvable : {args.env_file} (repli sur "
+              "l'environnement).", file=sys.stderr)
+
+    dsn = args.dsn or _default_dsn()
     try:
-        conn = psycopg.connect(args.dsn, row_factory=dict_row)
+        conn = psycopg.connect(dsn, row_factory=dict_row)
     except psycopg.OperationalError as exc:
         print(f"✗ connexion à la base impossible : {exc}", file=sys.stderr)
         return 1
