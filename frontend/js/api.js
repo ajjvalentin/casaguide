@@ -7,9 +7,20 @@
    français exploitables par l'UI. */
 
 import { getToken } from "./store.js";
+import { messageFromDetail } from "./apierrors.js";
 
 let _onUnauthorized = null;
 export function setUnauthorizedHandler(fn) { _onUnauthorized = fn; }
+
+// Suppression temporaire de l'intercepteur de session (V2-16). Sur les routes
+// publiques (inscription / connexion) et au démarrage (sonde du jeton résiduel),
+// un 401 ne doit JAMAIS déclencher l'éjection « session expirée » : il est géré
+// localement (message sur le formulaire, nettoyage silencieux). Compteur ré-entrant.
+let _suppressDepth = 0;
+export function suppressUnauthorizedRedirect(on) {
+  _suppressDepth += on ? 1 : -1;
+  if (_suppressDepth < 0) _suppressDepth = 0;
+}
 
 export class ApiError extends Error {
   constructor(status, message, detail) {
@@ -30,7 +41,8 @@ function authHeaders(extra = {}, auth = true) {
 
 async function handleResponse(resp, auth) {
   if (resp.status === 401 && auth) {
-    if (_onUnauthorized) _onUnauthorized();
+    // Sur route publique / sonde de démarrage, on n'éjecte pas (V2-16).
+    if (_onUnauthorized && _suppressDepth === 0) _onUnauthorized();
     throw new ApiError(401, "Votre session a expiré. Reconnectez-vous.");
   }
   if (resp.status === 204) return null;
@@ -41,13 +53,11 @@ async function handleResponse(resp, auth) {
   }
   if (!resp.ok) {
     const detail = data && data.detail;
-    // `detail` peut être une chaîne (erreurs classiques) OU un objet structuré
-    // {code, message} (refus de quota 402, V2-05a). On expose toujours un
-    // message FR lisible + on conserve `detail` pour tester `detail.code`.
-    let msg;
-    if (typeof detail === "string") msg = detail;
-    else if (detail && typeof detail === "object" && detail.message) msg = detail.message;
-    else msg = `Erreur serveur (${resp.status}).`;
+    // `detail` peut être une chaîne (erreurs classiques), un objet {code,message}
+    // (refus de quota 402, V2-05a) OU une liste de validations Pydantic (422,
+    // V2-16). On expose toujours un message FR lisible + on conserve `detail`
+    // pour tester `detail.code` (quota).
+    const msg = messageFromDetail(resp.status, detail);
     throw new ApiError(resp.status, msg, detail);
   }
   return data;

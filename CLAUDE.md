@@ -369,9 +369,33 @@ exposé, peer auth).
   re-vérifierait les nouveaux comptes en attente à chaque déploiement. Bandeau de
   vérification côté front : n'apparaît que si `email_verified === false` **strict**
   (jamais sur un champ absent → évite les faux positifs sur un profil en cache
-  d'avant V2-08). Les emails partent en tâche de fond : une panne SMTP ne casse
-  jamais l'inscription ni la demande de réinitialisation (best-effort, comme tout
-  `BackgroundTasks` — ne survit pas à un redémarrage d'uvicorn).
+  d'avant V2-08). Les emails partent en tâche de fond via **`auth._send_email_bg`**
+  qui **avale toute exception** de l'envoi (best-effort, journalisée) — cf. piège
+  générique ci-dessous : sans ce garde-fou, une panne SMTP annulait l'inscription.
+  `BackgroundTasks` ne survit pas à un redémarrage d'uvicorn.
+- **Exception d'une `BackgroundTask` = ROLLBACK de la requête (V2-16)** : une
+  exception levée par une tâche `BackgroundTasks.add_task(...)` **remonte dans la
+  pile de sortie de la requête** et fait un **rollback de la transaction** de la
+  dépendance `get_conn` (`with db.connect() as conn`) — **y compris en FastAPI
+  0.139**, alors que la réponse (ex. `201` + JWT) est **déjà partie**. Symptôme
+  vécu en prod (24/07) : inscription avec email à domaine inexistant →
+  `SMTPRecipientsRefused` dans la tâche d'envoi → **owner jamais committé** malgré
+  le 201 → le `/me` suivant (jeton pourtant valide) renvoie 401 → éjection «
+  session expirée » (ou « compte non créé »). Règle : **toute** tâche de fond
+  déclenchée par une écriture DB doit être **best-effort** (try/except qui n'échoue
+  jamais) — jamais laisser une `add_task(mailer.send, …)` nue. Reproduit et couvert
+  par `test_auth_email.py::test_register_survives_verification_email_failure` (et
+  `…forgot…`). Côté front, le corollaire : ne jamais faire confiance à un `201`
+  seul ; le parcours pose le jeton **puis vérifie `/me`** avant tout appel
+  authentifié (`js/authflow.js submitAuth`), et un `401` sur une **route publique**
+  (inscription/connexion) ou la sonde de démarrage n'éjecte pas
+  (`api.suppressUnauthorizedRedirect`).
+- Erreurs de validation 422 lisibles (V2-16) : FastAPI renvoie un `detail`
+  **liste** `[{loc,msg,type}]` (pas une chaîne ni `{code,message}`). `js/apierrors.js
+  messageFromDetail(status, detail)` (module pur, testé hors navigateur) mappe
+  chaque champ vers un libellé FR (email/password/full_name/token) ; `api.js`
+  l'utilise dans `handleResponse`. Sans ce mapping, l'UI affichait « Erreur serveur
+  (422) ». Toute nouvelle erreur de champ à traduire s'ajoute dans `fieldLabel`.
 - Cohérence catégorie/tags OSM (M-01) : `overpass.category_matches` rejette les
   POI incohérents (agence/minimarket taggés `marketplace`, `office=*`,
   vétérinaire hors catégorie `veterinary`) ; aéroports limités aux aérodromes

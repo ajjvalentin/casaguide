@@ -8,7 +8,7 @@
      #/properties/:id/pois[/:filter] validation des suggestions (M-04),
                                      filtre initial optionnel (V2-11) */
 
-import { api, setUnauthorizedHandler } from "./api.js";
+import { api, setUnauthorizedHandler, suppressUnauthorizedRedirect } from "./api.js";
 import { getToken, getOwner, setOwner, clearSession } from "./store.js";
 import { el, icon, mount, clear, toast, refreshIcons } from "./ui.js";
 import { navigate } from "./nav.js";
@@ -119,9 +119,14 @@ function renderRoute() {
 async function boot() {
   setUnauthorizedHandler(() => { clearSession(); toast("Votre session a expiré.", "err"); renderRoute(); });
 
-  // Jeton présent mais profil non chargé (rechargement d'onglet) → valider
+  // Jeton présent mais profil non chargé (rechargement d'onglet) → valider.
+  // Un jeton RÉSIDUEL/périmé ne doit pas déclencher l'éjection « session
+  // expirée » (V2-16) : on encadre la sonde et on nettoie silencieusement.
   if (getToken() && !getOwner()) {
-    try { setOwner(await api.me()); } catch (_) { clearSession(); }
+    suppressUnauthorizedRedirect(true);
+    try { setOwner(await api.me()); }
+    catch (_) { clearSession(); }
+    finally { suppressUnauthorizedRedirect(false); }
   }
 
   window.addEventListener("hashchange", renderRoute);

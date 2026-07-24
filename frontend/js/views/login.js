@@ -2,11 +2,12 @@
    Erreurs applicatives affichées en français (email déjà pris, identifiants
    erronés). Le jeton est stocké par app.js après succès. */
 
-import { api, ApiError } from "../api.js";
+import { api, suppressUnauthorizedRedirect } from "../api.js";
 import { setToken, setOwner } from "../store.js";
 import { el, icon, mount, refreshIcons, toast } from "../ui.js";
 import { navigate } from "../nav.js";
 import { redirect } from "../redirect.js";
+import { submitAuth } from "../authflow.js";
 
 export function renderLogin(root) {
   let mode = "login"; // 'login' | 'register'
@@ -123,41 +124,34 @@ export function renderLogin(root) {
 
     submitBtn.disabled = true;
     submitBtn.textContent = "Un instant…";
-    try {
-      let tokenResp;
-      if (mode === "register") {
-        tokenResp = await api.register({
-          email, password,
-          full_name: nameF.input.value.trim(),
+
+    const chosen = fields.querySelector('input[name="plan"]:checked');
+    const planId = mode === "register" && chosen ? chosen.value : "free";
+    const credentials = mode === "register"
+      ? { email, password, full_name: nameF.input.value.trim(),
           company_name: companyF.input.value.trim() || null,
-          phone: phoneF.input.value.trim() || null,
-        });
-      } else {
-        tokenResp = await api.login({ email, password });
-      }
-      setToken(tokenResp.access_token);
-      setOwner(await api.me());
-      // Offre payante choisie à l'inscription → Checkout Stripe (V2-05b). Le
-      // compte reste gratuit si le paiement est abandonné (invariant 1 : seul le
-      // webhook change l'abonnement). Une indispo (503) n'empêche jamais l'entrée.
-      const chosen = fields.querySelector('input[name="plan"]:checked');
-      const planId = mode === "register" && chosen ? chosen.value : "free";
-      if (planId && planId !== "free") {
-        try {
-          const { url } = await api.startCheckout(planId);
-          redirect(url);
-          return;
-        } catch (_) {
-          toast("Compte créé. Vous pourrez souscrire depuis « Mon abonnement ».", "");
-        }
-      }
-      navigate("#/properties");
-    } catch (err) {
-      const msg = err instanceof ApiError ? err.message : "Une erreur est survenue.";
-      showError(msg);
+          phone: phoneF.input.value.trim() || null }
+      : { email, password };
+
+    // Tout l'enchaînement (création → jeton → /me → Checkout) est encadré par
+    // `submitAuth` : session posée/vérifiée avant le paiement, échec Checkout →
+    // « Mon abonnement » connecté, aucun 401 n'éjecte (route publique, V2-16).
+    const result = await submitAuth({
+      mode, planId, credentials,
+      deps: {
+        register: api.register, login: api.login, me: api.me,
+        startCheckout: api.startCheckout,
+        setToken, setOwner, redirect, navigate, toast,
+        suppress: suppressUnauthorizedRedirect,
+      },
+    });
+
+    if (result.outcome === "error") {
+      showError(result.message);
       submitBtn.disabled = false;
       renderFields();
     }
+    // "redirect" / "properties" / "abonnement" : la navigation a déjà eu lieu.
   }
 
   const card = el("div", { class: "card auth-card" },
