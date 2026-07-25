@@ -1,0 +1,10 @@
+# Déclencheur quotidien des relances de fin d'essai Holaguia — V2-18a
+[Unit]
+Description=Relances de fin d'essai Holaguia (quotidien, 09:15)
+
+[Timer]
+OnCalendar=*-*-* 09:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

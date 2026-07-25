@@ -73,8 +73,9 @@ def _send_verification(conn, owner, background: BackgroundTasks, mailer,
              status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterIn, conn: Conn, mailer: Mailer,
              background: BackgroundTasks, request: Request):
-    """Crée un compte propriétaire + un abonnement d'essai, renvoie un JWT.
-    Envoie un email de vérification (non bloquant : la connexion est immédiate)."""
+    """Crée un compte propriétaire + un abonnement d'ESSAI de 21 jours (V2-18a),
+    renvoie un JWT. Envoie un email de vérification (non bloquant : la connexion
+    est immédiate)."""
     if repo.get_owner_by_email(conn, payload.email):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
                             detail="Un compte existe déjà pour cet email")
@@ -88,7 +89,11 @@ def register(payload: RegisterIn, conn: Conn, mailer: Mailer,
             phone=payload.phone,
             locale=payload.locale,
         )
-        repo.create_subscription(conn, str(owner["id"]), settings.default_plan)
+        # Essai de 21 jours (V2-18a) : capacités Pro sauf export PDF ; à
+        # l'échéance, back-office en lecture seule (calculé à la lecture).
+        trial_ends = datetime.now(timezone.utc) + timedelta(days=plans.TRIAL_DAYS)
+        repo.create_subscription(conn, str(owner["id"]), plans.TRIAL_PLAN_ID,
+                                 status="trialing", trial_ends_at=trial_ends)
     except UniqueViolation:
         # Course entre deux inscriptions simultanées sur le même email
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,

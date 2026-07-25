@@ -119,3 +119,45 @@ def verify_email(verify_url: str, full_name: str | None = None) -> Email:
     )
     return Email(subject=subject, text=text, html=_shell(
         "Confirmez votre adresse email", body_html))
+
+
+def _days_label(days_left: int) -> str:
+    if days_left <= 1:
+        return "demain" if days_left == 1 else "aujourd'hui"
+    return f"dans {days_left} jours"
+
+
+def trial_reminder_email(days_left: int, dashboard_url: str,
+                         full_name: str | None = None) -> Email:
+    """Relance de fin d'essai (V2-18a) : J-7 / J-2. Ton sobre, sans alarmisme —
+    l'essai continue et les guides restent en ligne quoi qu'il arrive. `days_left`
+    est le nombre de jours restants (7 ou 2)."""
+    hello = _greeting(full_name)
+    when = _days_label(days_left)
+    subject = f"{_BRAND} — votre essai se termine {when}"
+
+    text = (
+        f"{hello}\n\n"
+        f"Votre essai {_BRAND} se termine {when}. Vos guides d'accueil resteront "
+        "en ligne, mais la modification de vos logements sera suspendue tant "
+        "qu'une offre n'est pas choisie.\n\n"
+        "Pour continuer à éditer vos guides sans interruption, choisissez votre "
+        "offre ici :\n\n"
+        f"{dashboard_url}\n\n"
+        "Rien n'est perdu : à tout moment, souscrire réactive immédiatement "
+        "l'accès complet à vos logements.\n\n"
+        f"— L'équipe {_BRAND}"
+    )
+
+    body_html = (
+        f'<p style="margin:0 0 12px;">{_html.escape(hello)}</p>'
+        f'<p style="margin:0 0 12px;">Votre essai {_html.escape(_BRAND)} se '
+        f"termine <strong>{_html.escape(when)}</strong>. Vos guides d'accueil "
+        "resteront en ligne, mais la modification de vos logements sera suspendue "
+        "tant qu'une offre n'est pas choisie.</p>"
+        f"{_button(dashboard_url, 'Choisir mon offre')}"
+        f'<p style="margin:0;font-size:14px;color:{_MUTED};">Rien n\'est perdu : '
+        "souscrire réactive immédiatement l'accès complet à vos logements.</p>"
+    )
+    return Email(subject=subject, text=text, html=_shell(
+        f"Votre essai se termine {when}", body_html))

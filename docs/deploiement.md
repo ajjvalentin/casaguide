@@ -199,6 +199,27 @@ sudo systemctl start casaguide-backup.service      # test immédiat
 ls -lh /opt/casaguide/backups/
 ```
 
+### 1.12 Relances de fin d'essai J-7 / J-2 (V2-18a)
+
+Timer systemd quotidien (09:15) qui envoie les emails de relance aux essais
+arrivant à échéance (`ops/send_trial_reminders.py`, idempotent : jamais deux fois
+la même relance). Best-effort : un échec SMTP n'affecte **rien** (les droits
+d'essai sont calculés à la lecture, pas par ce job).
+
+```bash
+sudo cp /opt/casaguide/ops/casaguide-trial-reminders.service /etc/systemd/system/
+sudo cp /opt/casaguide/ops/casaguide-trial-reminders.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now casaguide-trial-reminders.timer
+sudo systemctl list-timers casaguide-trial-reminders.timer --no-pager
+# Test à blanc (n'envoie ni ne stampe) :
+sudo -u casaguide /opt/casaguide/.venv/bin/python \
+    /opt/casaguide/ops/send_trial_reminders.py --dry-run
+```
+
+À installer **une fois** (les migrations 009/010 sont appliquées automatiquement
+par `deploy.sh`). Vérifier ensuite `journalctl -u casaguide-trial-reminders`.
+
 ---
 
 ## 2. Déploiement courant (à chaque mise à jour)

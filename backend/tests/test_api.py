@@ -243,11 +243,14 @@ def make_property(client, headers, **over) -> dict:
 
 def test_register_login_me(client):
     owner = register(client)
-    # /me renvoie le profil + le plan d'essai attribué
+    # /me renvoie le profil + l'essai de 21 jours attribué à l'inscription (V2-18a)
     me = client.get("/api/auth/me", headers=owner["headers"])
     assert me.status_code == 200
-    assert me.json()["email"] == owner["email"]
-    assert me.json()["plan_id"] == "free"
+    body = me.json()
+    assert body["email"] == owner["email"]
+    assert body["plan_id"] == "trial"
+    assert body["on_trial"] is True and body["trial_expired"] is False
+    assert body["trial_ends_at"] is not None
 
     # Connexion avec les mêmes identifiants
     r = client.post("/api/auth/login",
@@ -419,6 +422,7 @@ def test_enrich_quota_enforced(client):
     """Le plan gratuit autorise 1 enrichissement/mois (§5.2). Refus propre 402
     `quota_exceeded` au-delà (V2-05a)."""
     owner = register(client)
+    set_owner_plan(owner["email"], "free")          # plan gratuit historique (1/mois)
     prop = make_property(client, owner["headers"])
     pid = prop["id"]
     _enrich_and_wait(client, owner["headers"], pid)
@@ -1588,7 +1592,8 @@ def test_translate_excluded_from_enrich_quota(client):
 def test_property_quota_402_then_unlimited_on_pro(client):
     """Le plan gratuit plafonne à 1 logement (402 `quota_exceeded`) ; le passage
     en pro (max_properties NULL = illimité) débloque immédiatement la création."""
-    owner = register(client)                        # free : max_properties = 1
+    owner = register(client)
+    set_owner_plan(owner["email"], "free")          # free : max_properties = 1
     make_property(client, owner["headers"])         # 1er logement : OK (201)
     second = client.post("/api/properties", headers=owner["headers"],
                          json={"name": "Second", "address_line1": "Rue X",
@@ -1609,7 +1614,8 @@ def test_free_plan_publishes_no_translation(client):
     """Plan gratuit (langs=1) : publier ne génère AUCUNE traduction, /translate
     est refusé proprement (402), et le guide reste servi en français."""
     LAST_TRANSLATOR.calls.clear()
-    owner = register(client)                        # free : langs = 1 (FR seul)
+    owner = register(client)
+    set_owner_plan(owner["email"], "free")          # free : langs = 1 (FR seul)
     prop = make_property(client, owner["headers"])
     pid, token = prop["id"], prop["guide_token"]
     _publish_guide_with_content(client, owner["headers"], pid)
@@ -1716,10 +1722,11 @@ def test_subscription_reports_plan_and_usage(client):
     owner = register(client)
     make_property(client, owner["headers"])
     body = client.get("/api/subscription", headers=owner["headers"]).json()
-    assert body["plan"]["id"] == "free" and body["status"] == "active"
-    assert body["usage"]["properties"] == {"used": 1, "limit": 1}
-    assert body["usage"]["enrichments"]["limit"] == 1          # /logement/mois
-    assert body["usage"]["langs"]["limit"] == 1                # FR seul
+    # Inscription = essai 21 j (V2-18a) : capacités Pro (3 logements, langs 5).
+    assert body["plan"]["id"] == "trial" and body["status"] == "trialing"
+    assert body["usage"]["properties"] == {"used": 1, "limit": 3}
+    assert body["usage"]["enrichments"]["limit"] == 3          # /logement/mois
+    assert body["usage"]["langs"]["limit"] == 5
     # Passage pro : plafonds relevés (illimité pour les logements)
     set_owner_plan(owner["email"], "pro")
     body2 = client.get("/api/subscription", headers=owner["headers"]).json()
@@ -2002,7 +2009,7 @@ def _sub_row(email: str) -> dict:
     with psycopg.connect(settings.db_dsn, row_factory=__import__("psycopg").rows.dict_row) as conn:
         return conn.execute(
             """SELECT plan_id, status, stripe_customer_id, stripe_subscription_id,
-                      current_period_end
+                      current_period_end, trial_ends_at
                FROM subscriptions
                WHERE owner_id=(SELECT id FROM owners WHERE email=%s)
                ORDER BY created_at DESC LIMIT 1""", (email,)).fetchone()
@@ -2062,10 +2069,11 @@ def test_billing_checkout_creates_session_and_links_customer(billing):
     assert "checkout=success" in call["success_url"]
     assert "checkout=cancel" in call["cancel_url"]
     # Le Customer est rattaché en base AVANT toute confirmation, mais le plan reste
-    # 'free' : le success_url ne modifie jamais l'abonnement (invariant 1).
+    # inchangé ('trial' à l'inscription) : le success_url ne modifie jamais
+    # l'abonnement (invariant 9 — seul le webhook fait autorité).
     row = _sub_row(owner["email"])
     assert row["stripe_customer_id"]
-    assert row["plan_id"] == "free"
+    assert row["plan_id"] == "trial"
 
 
 def test_billing_checkout_rejects_free_and_unknown_plan(billing):
@@ -2118,6 +2126,58 @@ def test_webhook_activates_solo_subscription(billing):
     row = _sub_row(owner["email"])
     assert row["stripe_subscription_id"] == "sub_test_1"
     assert row["current_period_end"] is not None
+
+
+def test_webhook_paid_ends_trial_and_reactivates_writes(billing):
+    """Sortie d'essai par le paiement (V2-18a) : un essai EXPIRÉ (back-office en
+    lecture seule) qui souscrit voit, à réception du webhook, son `trial_ends_at`
+    purgé, son plan devenir payant et ses écritures RÉACTIVÉES."""
+    from datetime import datetime, timedelta, timezone
+    client, _ = billing
+    owner = register(client)
+    prop = make_property(client, owner["headers"])  # créé pendant l'essai
+
+    # Essai expiré → écriture refusée (403 trial_expired).
+    _set_subscription(owner["email"], plan_id="trial", status="trialing",
+                      trial_ends_at=datetime.now(timezone.utc) - timedelta(days=1))
+    blocked = client.post("/api/properties", headers=owner["headers"],
+                          json={"name": "Bloqué", "address_line1": "X",
+                                "city": "Y", "country_code": "ES"})
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"]["code"] == "trial_expired"
+
+    # Souscription payante via le webhook (seule autorité).
+    _, cust = _link_customer(client, owner["email"])
+    r = _post_event(client, _evt(
+        "evt_test_trial_exit", "customer.subscription.created",
+        _subscription_obj(cust, "sub_trial_exit", "price_test_solo")))
+    assert r.status_code == 200
+
+    row = _sub_row(owner["email"])
+    assert row["plan_id"] == "solo" and row["trial_ends_at"] is None
+    me = client.get("/api/auth/me", headers=owner["headers"]).json()
+    assert me["trial_expired"] is False and me["on_trial"] is False
+
+    # Écritures de nouveau autorisées.
+    ok = client.post("/api/properties", headers=owner["headers"],
+                     json={"name": "Réactivé", "address_line1": "X",
+                           "city": "Y", "country_code": "ES"})
+    assert ok.status_code == 201, ok.text
+    # Le logement d'essai n'a jamais été supprimé.
+    assert client.get(f"/api/properties/{prop['id']}",
+                      headers=owner["headers"]).status_code == 200
+
+
+def test_register_starts_21_day_trial(client):
+    """L'inscription démarre un essai de 21 jours (V2-18a) : plan 'trial',
+    statut 'trialing', échéance ≈ now + 21 j."""
+    from datetime import datetime, timezone
+    owner = register(client)
+    row = _sub_row(owner["email"])
+    assert row["plan_id"] == "trial" and row["status"] == "trialing"
+    assert row["trial_ends_at"] is not None
+    remaining = (row["trial_ends_at"] - datetime.now(timezone.utc)).total_seconds()
+    assert 20.5 * 86400 < remaining <= 21 * 86400   # ~21 jours
 
 
 def test_webhook_is_idempotent(billing):

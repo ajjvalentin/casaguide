@@ -148,6 +148,7 @@ psql -d casaguide -f db/migrations/004_wifi_networks.sql  # wifi_networks_enc (m
 psql -d casaguide -f db/migrations/007_backfill_free_subscriptions.sql # abo 'free' de rattrapage (V2-05a)
 psql -d casaguide -f db/migrations/008_stripe_billing.sql # stripe_events + plans.stripe_price_id (V2-05b)
 psql -d casaguide -f db/migrations/009_trial_model.sql   # subscriptions.trial_ends_at (essai 21 j, V2-18a)
+psql -d casaguide -f db/migrations/010_trial_reminders.sql # reminder_7d/2d_sent_at (relances essai, V2-18a)
 
 # Backend
 cd backend

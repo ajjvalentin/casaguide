@@ -55,17 +55,17 @@ def create_owner(conn, *, email: str, password_hash: str, full_name: str,
 
 
 def create_subscription(conn, owner_id: str, plan_id: str,
-                        status: str = "active") -> None:
-    """Attribue un abonnement au propriétaire (V2-05a).
+                        status: str = "active", trial_ends_at=None) -> None:
+    """Attribue un abonnement au propriétaire (V2-05a, V2-18a).
 
-    `status` par défaut 'active' : il n'existe aucune logique d'essai dans cette
-    mission, et le plan gratuit est un palier permanent — pas une période
-    d'essai (décision cohérente avec la migration 007). En V2-05b, le webhook
-    Stripe deviendra la seule source de vérité du `status` des plans payants."""
+    L'inscription pose désormais un ESSAI (`plan_id='trial'`, `status='trialing'`,
+    `trial_ends_at` = échéance) — cf. `routers/auth.register`. `trial_ends_at`
+    reste NULL hors essai (rattrapage 'free', comptes importés). En V2-05b le
+    webhook Stripe est la seule source de vérité du `status` des plans payants."""
     conn.execute(
-        """INSERT INTO subscriptions (owner_id, plan_id, status)
-           VALUES (%s, %s, %s)""",
-        (owner_id, plan_id, status),
+        """INSERT INTO subscriptions (owner_id, plan_id, status, trial_ends_at)
+           VALUES (%s, %s, %s, %s)""",
+        (owner_id, plan_id, status, trial_ends_at),
     )
 
 
@@ -230,20 +230,24 @@ def update_subscription_from_stripe(conn, owner_id: str, *, plan_id: str,
                                     current_period_end) -> None:
     """Applique l'état Stripe à l'abonnement courant (SEULE écriture d'autorité,
     depuis le handler de webhook). Ne supprime jamais de données : un retour à
-    'free' ne fait que rebasculer `plan_id` (invariant downgrade V2-05a)."""
+    'free' ne fait que rebasculer `plan_id` (invariant downgrade V2-05a).
+
+    Purge `trial_ends_at` (→ NULL) : toute décision Stripe (souscription payante,
+    annulation) fait SORTIR du régime d'essai (V2-18a) — l'essai ne s'applique
+    qu'à un abonnement 'trialing' non piloté par Stripe."""
     sub_id = _latest_subscription_id(conn, owner_id)
     if sub_id is None:  # filet : compte sans abonnement → on en crée un
         conn.execute(
             """INSERT INTO subscriptions
                    (owner_id, plan_id, status, stripe_subscription_id,
-                    current_period_end)
-               VALUES (%s, %s, %s, %s, %s)""",
+                    current_period_end, trial_ends_at)
+               VALUES (%s, %s, %s, %s, %s, NULL)""",
             (owner_id, plan_id, status, stripe_subscription_id, current_period_end))
         return
     conn.execute(
         """UPDATE subscriptions
            SET plan_id = %s, status = %s, stripe_subscription_id = %s,
-               current_period_end = %s, updated_at = now()
+               current_period_end = %s, trial_ends_at = NULL, updated_at = now()
            WHERE id = %s""",
         (plan_id, status, stripe_subscription_id, current_period_end, sub_id))
 
@@ -280,6 +284,43 @@ def stripe_event_mark_processed(conn, event_id: str) -> None:
     """Horodate la fin de traitement d'un événement (`processed_at`)."""
     conn.execute(
         "UPDATE stripe_events SET processed_at = now() WHERE id = %s", (event_id,))
+
+
+# ── Relances de fin d'essai (V2-18a, ops/send_trial_reminders.py) ────────────
+
+# Fenêtres de relance : jours restants → colonne d'idempotence dédiée.
+_REMINDER_COLUMNS = {7: "reminder_7d_sent_at", 2: "reminder_2d_sent_at"}
+
+
+def trials_due_for_reminder(conn, days: int, *, now=None) -> list[dict]:
+    """Essais en cours dont l'échéance tombe dans ≤ `days` jours et dont la
+    relance de cette fenêtre n'a pas encore été expédiée (idempotence). `now`
+    injectable (tests). Ne remonte que les essais non expirés (relancer un essai
+    déjà échu n'a pas de sens : l'accès est déjà en lecture seule)."""
+    col = _REMINDER_COLUMNS[days]   # KeyError si fenêtre non prévue (garde-fou)
+    return conn.execute(
+        f"""SELECT s.id AS subscription_id, s.trial_ends_at,
+                   o.email, o.full_name
+            FROM subscriptions s JOIN owners o ON o.id = s.owner_id
+            WHERE s.status = 'trialing'
+              AND s.trial_ends_at IS NOT NULL
+              AND s.trial_ends_at > COALESCE(%(now)s, now())
+              AND s.trial_ends_at <= COALESCE(%(now)s, now())
+                                     + make_interval(days => %(days)s)
+              AND s.{col} IS NULL
+            ORDER BY s.trial_ends_at""",
+        {"now": now, "days": days},
+    ).fetchall()
+
+
+def mark_trial_reminder_sent(conn, subscription_id: str, days: int, *,
+                             now=None) -> None:
+    """Stampe l'envoi de la relance de la fenêtre `days` (après un envoi RÉUSSI)
+    → jamais renvoyée. `now` injectable (tests)."""
+    col = _REMINDER_COLUMNS[days]
+    conn.execute(
+        f"UPDATE subscriptions SET {col} = COALESCE(%s, now()) WHERE id = %s",
+        (now, subscription_id))
 
 
 def published_langs(conn, property_id: str) -> list[str]:

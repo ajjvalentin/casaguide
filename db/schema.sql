@@ -47,6 +47,8 @@ CREATE TABLE subscriptions (
     status                 TEXT NOT NULL DEFAULT 'trialing',
                            -- trialing | active | past_due | canceled
     trial_ends_at          TIMESTAMPTZ,        -- échéance de l'essai (V2-18a ; NULL hors essai)
+    reminder_7d_sent_at    TIMESTAMPTZ,        -- relance d'essai J-7 expédiée (V2-18a, idempotence)
+    reminder_2d_sent_at    TIMESTAMPTZ,        -- relance d'essai J-2 expédiée (V2-18a, idempotence)
     current_period_end     TIMESTAMPTZ,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()

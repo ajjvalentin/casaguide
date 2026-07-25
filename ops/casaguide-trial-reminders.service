@@ -1,0 +1,21 @@
+# Relances de fin d'essai CasaGuide/Holaguia (J-7 / J-2) — V2-18a
+# Déclenchée par casaguide-trial-reminders.timer (quotidien).
+# Installation :
+#   sudo cp /opt/casaguide/ops/casaguide-trial-reminders.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-trial-reminders.timer
+#   (vérifier : systemctl list-timers | grep trial ; test manuel :
+#    sudo -u casaguide /opt/casaguide/.venv/bin/python \
+#        /opt/casaguide/ops/send_trial_reminders.py --dry-run)
+[Unit]
+Description=Relances de fin d'essai Holaguia (J-7 / J-2)
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=casaguide
+Group=casaguide
+# EnvironmentFile facultatif : le script charge aussi backend/.env lui-même (OPS-1).
+EnvironmentFile=-/opt/casaguide/backend/.env
+WorkingDirectory=/opt/casaguide/backend
+ExecStart=/opt/casaguide/.venv/bin/python /opt/casaguide/ops/send_trial_reminders.py
