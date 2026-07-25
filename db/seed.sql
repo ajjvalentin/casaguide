@@ -22,14 +22,22 @@ BEGIN;
 --
 -- Le plan 'free' est HISTORIQUE : conservé pour les comptes grand-périsés, mais
 -- retiré du chooser d'inscription (front). langs=1 → aucune traduction.
-INSERT INTO plans (id, name, max_properties, enrich_quota, price_month_cts, features) VALUES
-('trial', 'Essai 21 jours', 3,    3,  0,    '{"langs": 5, "watermark": true,  "stats": true,  "white_label": false, "pdf_export": false, "staff_preview": true}'),
-('free',  'Gratuit',        1,    1,  0,    '{"langs": 1, "watermark": true,  "stats": false, "white_label": false, "pdf_export": false}'),
-('solo',  'Solo',           3,    3,  790,  '{"langs": 5, "watermark": true,  "stats": true,  "white_label": false, "pdf_export": true}'),
-('pro',   'Pro',            NULL, 10, 2900, '{"langs": 5, "watermark": false, "stats": true,  "white_label": true,  "pdf_export": true}')
+-- Grille V2-18b (décisions 25/07) : Pro 24,00 €/6 logements + add-on 3,00 €/mois
+-- par logement supplémentaire (fin de l'illimité) ; Solo 7,90 €/3 (inchangé).
+-- Langues : plafond supprimé sur TOUS les plans (`langs`='all' → illimité, prépare
+-- V2-21). Guide équipe (`staff_guide`) : exclusif Pro (true), aperçu pendant
+-- l'essai ('preview'), fermé sur solo/free (les comptes existants gardent l'accès
+-- via subscriptions.staff_grandfathered, invariant 3). Watermark : essai/solo oui,
+-- pro non (échelle de marque, V2-18a).
+INSERT INTO plans (id, name, max_properties, enrich_quota, price_month_cts, addon_property_price_cts, features) VALUES
+('trial', 'Essai 21 jours', 3,    3,  0,    NULL, '{"langs": "all", "watermark": true,  "stats": true,  "white_label": false, "pdf_export": false, "staff_preview": true, "staff_guide": "preview"}'),
+('free',  'Gratuit',        1,    1,  0,    NULL, '{"langs": "all", "watermark": true,  "stats": false, "white_label": false, "pdf_export": false, "staff_guide": false}'),
+('solo',  'Solo',           3,    3,  790,  NULL, '{"langs": "all", "watermark": true,  "stats": true,  "white_label": false, "pdf_export": true,  "staff_guide": false}'),
+('pro',   'Pro',            6,    10, 2400, 300,  '{"langs": "all", "watermark": false, "stats": true,  "white_label": true,  "pdf_export": true,  "staff_guide": true}')
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name, max_properties = EXCLUDED.max_properties,
   enrich_quota = EXCLUDED.enrich_quota, price_month_cts = EXCLUDED.price_month_cts,
+  addon_property_price_cts = EXCLUDED.addon_property_price_cts,
   features = EXCLUDED.features;
 
 -- ============================================================================
@@ -73,7 +81,10 @@ INSERT INTO poi_categories (code, chapter, name_i18n, icon, map_color, default_r
 ('bus_stop',       'H', '{"fr":"Arrêt de bus","en":"Bus stop","es":"Parada de bus"}',                       'bus',             '#00695C', 1000),
 ('bus_station',    'H', '{"fr":"Gare routière","en":"Bus station","es":"Estación de autobuses"}',           'bus-front',       '#00695C', 20000),
 ('train_station',  'H', '{"fr":"Gare","en":"Train station","es":"Estación de tren"}',                       'train-front',     '#00695C', 15000),
-('airport',        'H', '{"fr":"Aéroport","en":"Airport","es":"Aeropuerto"}',                               'plane',           '#00695C', 100000)
+('airport',        'H', '{"fr":"Aéroport","en":"Airport","es":"Aeropuerto"}',                               'plane',           '#00695C', 100000),
+-- M-30 : carburant & recharge (voiture de location) — rayon court, chapitre Transports
+('fuel',            'H', '{"fr":"Station-service","en":"Petrol station","es":"Gasolinera"}',                 'fuel',            '#00695C', 10000),
+('charging_station','H', '{"fr":"Borne de recharge","en":"EV charging","es":"Punto de recarga"}',           'plug-zap',        '#00695C', 10000)
 ON CONFLICT (code) DO UPDATE SET
   chapter = EXCLUDED.chapter, name_i18n = EXCLUDED.name_i18n, icon = EXCLUDED.icon,
   map_color = EXCLUDED.map_color, default_radius_m = EXCLUDED.default_radius_m;
@@ -378,6 +389,11 @@ VALUES
  '{"fr":"Aéroports","en":"Airports","es":"Aeropuertos"}',
  '{"fr":"Aéroports accessibles et options de transfert."}',
  '{"poi_categories":["airport"]}', TRUE, FALSE),
+
+('H_fuel', 'H', 730, 'fuel',
+ '{"fr":"Carburant & recharge","en":"Fuel & charging","es":"Combustible y recarga"}',
+ '{"fr":"Stations-service et bornes de recharge électrique à proximité (utile en voiture de location)."}',
+ '{"poi_categories":["fuel","charging_station"]}', TRUE, FALSE),
 
 -- ─── I. INFORMATIONS ADMINISTRATIVES ────────────────────────────────────────
 ('I_tax', 'I', 810, 'receipt-euro',

@@ -72,6 +72,9 @@ class PlanOut(BaseModel):
     max_properties: int | None = None    # None = illimité
     enrich_quota: int
     price_month_cts: int
+    # Prix mensuel (centimes) d'un logement supplémentaire (add-on Pro, V2-18b) ;
+    # None si le plan n'a pas d'add-on.
+    addon_property_price_cts: int | None = None
     features: dict[str, Any] = {}
 
 

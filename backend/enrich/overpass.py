@@ -58,6 +58,8 @@ CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
     "airport":         [("aeroway", "aerodrome")],
     "parking":         [("amenity", "parking")],
     "rental":          [("amenity", "bicycle_rental"), ("amenity", "car_rental")],
+    "fuel":            [("amenity", "fuel")],               # M-30 : station-service
+    "charging_station": [("amenity", "charging_station")],  # M-30 : borne de recharge
 }
 
 # Sélecteurs Overpass dérivés des tags positifs (ex. '"amenity"="hospital"').

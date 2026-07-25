@@ -55,7 +55,7 @@ def my_subscription(conn: Conn, owner: CurrentOwner):
     usage = UsageOut(
         properties=QuotaGaugeOut(
             used=repo.count_properties(conn, owner_id),
-            limit=plan.get("max_properties")),
+            limit=ent["max_properties"]),   # base + add-ons (V2-18b)
         enrichments=QuotaGaugeOut(
             used=repo.count_owner_jobs_current_month(conn, owner_id),
             limit=plan.get("enrich_quota")),

@@ -787,7 +787,7 @@ def test_property_stats(client):
     s0 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"])
     assert s0.status_code == 200
     assert s0.json()["completion_pct"] == 0
-    assert s0.json()["sections_total"] == 45  # catalogue complet du seed
+    assert s0.json()["sections_total"] == 46  # catalogue complet du seed (M-30 : + H_fuel)
     assert s0.json()["pois_total"] == 0
 
     # Deux sections complétées puis enrichissement (4 POI suggérés)
@@ -799,7 +799,7 @@ def test_property_stats(client):
 
     s1 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
     assert s1["sections_done"] == 2
-    assert s1["completion_pct"] == round(2 / 45 * 100)
+    assert s1["completion_pct"] == round(2 / 46 * 100)
     assert s1["pois_total"] == 4 and s1["pois_suggested"] == 4
 
     # Un autre propriétaire n'accède pas aux indicateurs (isolation)
@@ -1354,15 +1354,15 @@ def test_property_stats_excludes_staff_sections(client):
     owner = register(client)
     prop = make_property(client, owner["headers"])
     pid = prop["id"]
-    # 45 sections voyageur au catalogue ; les 5 sections staff n'y comptent pas
+    # 46 sections voyageur au catalogue ; les 5 sections staff n'y comptent pas
     s0 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
-    assert s0["sections_total"] == 45
+    assert s0["sections_total"] == 46
 
     # Compléter une section staff ne change ni le total ni le pourcentage voyageur
     client.put(f"/api/properties/{pid}/sections/S_checklist", headers=owner["headers"],
                json={"content": {"tasks": [{"task": "x"}]}, "completed": True, "is_visible": True})
     s1 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
-    assert s1["sections_total"] == 45
+    assert s1["sections_total"] == 46
     assert s1["sections_done"] == 0 and s1["completion_pct"] == 0
 
 
@@ -1589,9 +1589,9 @@ def test_translate_excluded_from_enrich_quota(client):
 
 # ── V2-05a : plans & quotas appliqués côté serveur (volet 2) ─────────────────
 
-def test_property_quota_402_then_unlimited_on_pro(client):
+def test_property_quota_402_then_more_on_pro(client):
     """Le plan gratuit plafonne à 1 logement (402 `quota_exceeded`) ; le passage
-    en pro (max_properties NULL = illimité) débloque immédiatement la création."""
+    en Pro relève le plafond à 6 (grille V2-18b, l'add-on le monte au-delà)."""
     owner = register(client)
     set_owner_plan(owner["email"], "free")          # free : max_properties = 1
     make_property(client, owner["headers"])         # 1er logement : OK (201)
@@ -1603,34 +1603,35 @@ def test_property_quota_402_then_unlimited_on_pro(client):
     assert body["detail"]["code"] == "quota_exceeded"
     assert "offre" in body["detail"]["message"].lower()   # message FR affichable
 
-    set_owner_plan(owner["email"], "pro")           # illimité
+    set_owner_plan(owner["email"], "pro")           # 6 logements inclus
     ok = client.post("/api/properties", headers=owner["headers"],
                      json={"name": "Second", "address_line1": "Rue X",
                            "city": "Ville", "country_code": "ES"})
     assert ok.status_code == 201
 
 
-def test_free_plan_publishes_no_translation(client):
-    """Plan gratuit (langs=1) : publier ne génère AUCUNE traduction, /translate
-    est refusé proprement (402), et le guide reste servi en français."""
+def test_all_plans_publish_translations_langs_uncapped(client):
+    """Grille V2-18b : le plafond de langues est supprimé sur TOUS les plans
+    (`features.langs='all'`). Même le plan gratuit publie désormais ses
+    traductions, et /translate n'est plus refusé pour cause de plafond."""
     LAST_TRANSLATOR.calls.clear()
     owner = register(client)
-    set_owner_plan(owner["email"], "free")          # free : langs = 1 (FR seul)
+    set_owner_plan(owner["email"], "free")          # free : langs = 'all' désormais
     prop = make_property(client, owner["headers"])
     pid, token = prop["id"], prop["guide_token"]
     _publish_guide_with_content(client, owner["headers"], pid)
 
     p = client.get(f"/api/properties/{pid}", headers=owner["headers"]).json()
-    assert p["published_langs"] == []               # aucune langue publiée
-    assert LAST_TRANSLATOR.calls == []              # traducteur jamais sollicité
+    assert set(p["published_langs"]) == {"en", "es"}   # langues publiées
+    assert LAST_TRANSLATOR.calls != []                 # traducteur bien sollicité
 
+    # /translate accepté (plus de refus 402 par plafond de langues)
     r = client.post(f"/api/properties/{pid}/translate", headers=owner["headers"])
-    assert r.status_code == 402
-    assert r.json()["detail"]["code"] == "quota_exceeded"
+    assert r.status_code == 202
 
-    # Le guide reste servi : une langue non publiée retombe sur le français
+    # Le guide sert bien la version traduite
     es = client.get(f"/g/{token}?lang=es").text
-    assert 'lang="fr"' in es and "[es]" not in es
+    assert 'lang="es"' in es and "[es] " in es
 
 
 def test_downgrade_preserves_data_and_existing_translations(client):
@@ -1710,8 +1711,17 @@ def test_plans_catalogue_is_public_and_from_db(client):
     assert by_id["free"]["price_month_cts"] == 0
     assert by_id["trial"]["price_month_cts"] == 0
     assert by_id["trial"]["features"]["pdf_export"] is False   # verrou export (V2-14)
-    assert by_id["pro"]["max_properties"] is None        # illimité
-    assert by_id["solo"]["features"]["langs"] == 5
+    # Grille V2-18b : Pro plafonné à 6 logements (+ add-on 3 €/mois), fin de l'illimité.
+    assert by_id["pro"]["max_properties"] == 6
+    assert by_id["pro"]["addon_property_price_cts"] == 300
+    assert by_id["pro"]["price_month_cts"] == 2400
+    # Plafond de langues supprimé sur tous les plans (langs='all' → illimité).
+    assert by_id["solo"]["features"]["langs"] == "all"
+    assert by_id["free"]["features"]["langs"] == "all"
+    # Guide équipe : exclusif Pro (aperçu pendant l'essai).
+    assert by_id["pro"]["features"]["staff_guide"] is True
+    assert by_id["trial"]["features"]["staff_guide"] == "preview"
+    assert by_id["solo"]["features"]["staff_guide"] is False
     # ordre par prix croissant puis id (déterministe malgré les deux prix 0)
     assert [p["id"] for p in r.json()] == ["free", "trial", "solo", "pro"]
 
@@ -1722,19 +1732,19 @@ def test_subscription_reports_plan_and_usage(client):
     owner = register(client)
     make_property(client, owner["headers"])
     body = client.get("/api/subscription", headers=owner["headers"]).json()
-    # Inscription = essai 21 j (V2-18a) : capacités Pro (3 logements, langs 5).
+    # Inscription = essai 21 j (V2-18a) : 3 logements ; langues illimitées (V2-18b).
     assert body["plan"]["id"] == "trial" and body["status"] == "trialing"
     assert body["on_trial"] is True and body["trial_expired"] is False
     assert body["trial_ends_at"] is not None
     assert body["usage"]["properties"] == {"used": 1, "limit": 3}
     assert body["usage"]["enrichments"]["limit"] == 3          # /logement/mois
-    assert body["usage"]["langs"]["limit"] == 5
-    # Passage pro : plafonds relevés (illimité pour les logements)
+    assert body["usage"]["langs"]["limit"] is None             # illimité (grille V2-18b)
+    # Passage pro : 6 logements inclus (+ add-on), langues illimitées.
     set_owner_plan(owner["email"], "pro")
     body2 = client.get("/api/subscription", headers=owner["headers"]).json()
     assert body2["plan"]["id"] == "pro"
-    assert body2["usage"]["properties"]["limit"] is None
-    assert body2["usage"]["langs"]["limit"] == 5
+    assert body2["usage"]["properties"]["limit"] == 6
+    assert body2["usage"]["langs"]["limit"] is None
 
 
 # ── Essai : expiration → lecture seule (V2-18a) ──────────────────────────────

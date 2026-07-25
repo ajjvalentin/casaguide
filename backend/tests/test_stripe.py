@@ -100,14 +100,17 @@ def conn():
     """Connexion réelle : les plans du seed (solo/pro) sont la source de vérité.
     On restaure les `stripe_price_id` en fin de test (non destructif)."""
     c = psycopg.connect(settings.db_dsn, row_factory=dict_row)
-    snapshot = c.execute("SELECT id, stripe_price_id FROM plans").fetchall()
+    snapshot = c.execute(
+        "SELECT id, stripe_price_id, addon_stripe_price_id FROM plans").fetchall()
     try:
         yield c
     finally:
         c.rollback()
         for row in snapshot:
-            c.execute("UPDATE plans SET stripe_price_id = %s WHERE id = %s",
-                      (row["stripe_price_id"], row["id"]))
+            c.execute(
+                "UPDATE plans SET stripe_price_id = %s, addon_stripe_price_id = %s "
+                "WHERE id = %s",
+                (row["stripe_price_id"], row["addon_stripe_price_id"], row["id"]))
         c.commit()
         c.close()
 
@@ -145,11 +148,15 @@ def test_sync_creates_products_and_prices_and_stores_ids(conn):
     client = FakeStripeClient()
     result = sync.sync_plans(client, conn, log=lambda *_: None)
 
-    # Un Price pour chaque plan payant (free ignoré : prix 0).
+    # Un Price pour chaque plan payant (free ignoré : prix 0), plus les add-ons.
     paid = conn.execute(
-        "SELECT id, price_month_cts FROM plans WHERE price_month_cts > 0"
+        "SELECT id, price_month_cts, addon_property_price_cts FROM plans "
+        "WHERE price_month_cts > 0"
     ).fetchall()
-    assert set(result) == {p["id"] for p in paid}
+    expected_keys = {p["id"] for p in paid}
+    expected_keys |= {f"{p['id']}_addon" for p in paid
+                      if p["addon_property_price_cts"]}
+    assert set(result) == expected_keys
 
     # stripe_price_id écrit en base pour chaque plan payant, jamais pour 'free'.
     for p in paid:
@@ -160,13 +167,41 @@ def test_sync_creates_products_and_prices_and_stores_ids(conn):
         "SELECT stripe_price_id FROM plans WHERE id = 'free'").fetchone()
     assert free["stripe_price_id"] is None
 
-    # Le montant du Price provient de la base (price_month_cts), en EUR mensuel.
+    # Le montant de chaque Price provient de la base (plan ou add-on), EUR mensuel.
+    amounts = {p["id"]: p["price_month_cts"] for p in paid}
+    amounts |= {f"{p['id']}_addon": p["addon_property_price_cts"] for p in paid
+                if p["addon_property_price_cts"]}
     for pr in client.v1.prices._store:
         plan_id = pr.metadata["plan_id"]
-        expected = next(p["price_month_cts"] for p in paid if p["id"] == plan_id)
-        assert pr.unit_amount == expected
+        assert pr.unit_amount == amounts[plan_id]
         assert pr.currency == "eur"
         assert pr.recurring["interval"] == "month"
+
+
+def test_sync_addon_creates_price_and_stores_id(conn):
+    """L'add-on Pro (`addon_property_price_cts`) donne un Product/Price Stripe
+    dédié (metadata plan_id='pro_addon'), et `plans.addon_stripe_price_id` est
+    écrit. Idempotent (aucun doublon au re-run)."""
+    client = FakeStripeClient()
+    result = sync.sync_plans(client, conn, log=lambda *_: None)
+    assert "pro_addon" in result
+
+    stored = conn.execute(
+        "SELECT addon_stripe_price_id FROM plans WHERE id = 'pro'"
+    ).fetchone()["addon_stripe_price_id"]
+    assert stored == result["pro_addon"]
+
+    addon_price = next(p for p in client.v1.prices._store
+                       if p.metadata["plan_id"] == "pro_addon")
+    seeded = conn.execute(
+        "SELECT addon_property_price_cts FROM plans WHERE id = 'pro'").fetchone()
+    assert addon_price.unit_amount == seeded["addon_property_price_cts"]
+
+    # Idempotence : re-run → aucun Product/Price supplémentaire.
+    prod_creates, price_creates = client.v1.products.creates, client.v1.prices.creates
+    sync.sync_plans(client, conn, log=lambda *_: None)
+    assert client.v1.products.creates == prod_creates
+    assert client.v1.prices.creates == price_creates
 
 
 def test_sync_is_idempotent(conn):

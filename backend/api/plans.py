@@ -52,7 +52,7 @@ def get_subscription(conn, owner_id: str) -> dict | None:
     return conn.execute(
         """SELECT id, owner_id, plan_id, status, stripe_customer_id,
                   stripe_subscription_id, trial_ends_at, current_period_end,
-                  created_at, updated_at
+                  addon_qty, staff_grandfathered, created_at, updated_at
            FROM subscriptions
            WHERE owner_id = %s
            ORDER BY created_at DESC LIMIT 1""",
@@ -110,26 +110,37 @@ def is_trial_expired(sub: dict | None, *, now: datetime | None = None) -> bool:
 
 def effective_entitlements(conn, owner_id: str, *,
                            now: datetime | None = None) -> dict:
-    """Droits effectifs d'un propriétaire : plan courant + état d'essai.
+    """Droits effectifs d'un propriétaire : plan courant + état d'essai + add-ons.
 
     **Point d'entrée unique** des contrôles de droits (V2-18a) : `check_quota`,
-    le garde de lecture seule et le watermark s'y branchent. Renvoie toujours un
-    plan (jamais None, cf. `get_plan`).
+    le garde de lecture seule, le watermark et le gating staff s'y branchent.
+    Renvoie toujours un plan (jamais None, cf. `get_plan`).
 
     Clés : `plan` (dict), `on_trial` (essai en cours), `trial_expired` (essai
     échu → lecture seule), `read_only` (alias métier de trial_expired),
-    `trial_ends_at` (échéance ou None)."""
+    `trial_ends_at` (échéance ou None), `addon_qty` (logements supplémentaires
+    Stripe, V2-18b), `max_properties` (plafond EFFECTIF = base + add-ons, None si
+    illimité), `staff_grandfathered` (clause de grand-père), `staff_access`
+    (droit au guide équipe /s/)."""
     sub = get_subscription(conn, owner_id)
     plan = get_plan(conn, owner_id)
     ends = sub.get("trial_ends_at") if sub else None
     trialing = bool(sub and sub.get("status") == "trialing" and ends is not None)
     expired = is_trial_expired(sub, now=now)
+    addon_qty = int(sub.get("addon_qty") or 0) if sub else 0
+    grandfathered = bool(sub.get("staff_grandfathered")) if sub else False
+    base_props = plan.get("max_properties")
+    max_props = None if base_props is None else base_props + addon_qty
     return {
         "plan": plan,
         "on_trial": trialing and not expired,
         "trial_expired": expired,
         "read_only": expired,
         "trial_ends_at": ends,
+        "addon_qty": addon_qty,
+        "max_properties": max_props,
+        "staff_grandfathered": grandfathered,
+        "staff_access": staff_access(plan, grandfathered),
     }
 
 
@@ -154,15 +165,34 @@ def has_feature(plan: dict, name: str) -> bool:
 
 def wants_watermark(plan: dict) -> bool:
     """Le guide voyageur doit-il porter le pied de page « Créé avec Holaguia » ?
-    (plan gratuit → oui ; plans payants → non)."""
+    (essai/gratuit/solo → oui ; pro → non — échelle de marque, V2-18a)."""
     return has_feature(plan, "watermark")
 
 
-def max_langs(plan: dict) -> int:
-    """Nombre total de langues publiables (langue source comprise). Défaut : 1
-    (langue source seule) si le plan ne précise rien."""
+def staff_access(plan: dict, grandfathered: bool = False) -> bool:
+    """Le guide équipe (/s/) est-il accessible pour ce plan (V2-18b) ?
+
+    Exclusif Pro (`features.staff_guide == true`), avec aperçu pendant l'essai
+    (`'preview'`). Les comptes existants à la migration en gardent l'accès quel
+    que soit leur plan (`grandfathered`, invariant 3). Solo/gratuit fermés."""
+    flag = _features(plan).get("staff_guide")
+    return bool(grandfathered or flag is True or flag == "preview")
+
+
+# Sentinelle « toutes les langues » (grille V2-18b : plafond supprimé sur tous
+# les plans). En base, `features.langs == 'all'` ; côté code → illimité (None).
+LANGS_UNLIMITED = "all"
+
+
+def max_langs(plan: dict) -> int | None:
+    """Nombre total de langues publiables (langue source comprise), ou **None =
+    illimité** (grille V2-18b : `features.langs == 'all'`). Défaut : 1 (langue
+    source seule) si le plan ne précise rien."""
+    v = _features(plan).get("langs", 1)
+    if v == LANGS_UNLIMITED or v is None:
+        return None
     try:
-        return max(1, int(_features(plan).get("langs", 1)))
+        return max(1, int(v))
     except (TypeError, ValueError):
         return 1
 
@@ -170,10 +200,14 @@ def max_langs(plan: dict) -> int:
 def cap_target_langs(plan: dict, targets: list[str]) -> list[str]:
     """Restreint la liste des langues **cibles** de traduction au plafond du plan.
 
-    La langue source compte dans `features.langs` : un plan à `langs=1` (gratuit)
-    n'autorise donc **aucune** langue cible ; `langs=5` en autorise 4. On coupe la
-    liste (ordre d'entrée préservé) sans jamais lever d'erreur."""
-    allowed = max(0, max_langs(plan) - 1)
+    La langue source compte dans `features.langs` : un plan à `langs=1` n'autorise
+    **aucune** cible ; `langs=5` en autorise 4 ; `langs='all'` (illimité) les
+    autorise toutes. On coupe la liste (ordre d'entrée préservé) sans jamais lever
+    d'erreur."""
+    limit = max_langs(plan)
+    if limit is None:                       # illimité : toutes les cibles
+        return list(targets)
+    allowed = max(0, limit - 1)
     return list(targets[:allowed])
 
 
@@ -195,11 +229,12 @@ def check_quota(conn, owner_id: str, resource: str, *,
     façon refusée en amont par le garde de lecture seule (403 `trial_expired`) —
     ce module ne connaît pas FastAPI et ne lève pas d'exception.
     """
-    plan = effective_entitlements(conn, owner_id)["plan"]
+    ent = effective_entitlements(conn, owner_id)
+    plan = ent["plan"]
 
     if resource == "properties":
         used = repo.count_properties(conn, owner_id)
-        limit = plan.get("max_properties")   # None = illimité
+        limit = ent["max_properties"]        # base + add-ons (None = illimité)
         ok = limit is None or used < limit
         return QuotaResult(ok=ok, used=used, limit=limit, plan=plan)
 
@@ -212,12 +247,12 @@ def check_quota(conn, owner_id: str, resource: str, *,
         return QuotaResult(ok=ok, used=used, limit=limit, plan=plan)
 
     if resource == "langs":
-        limit = max_langs(plan)
+        limit = max_langs(plan)              # None = illimité (grille V2-18b)
         used = 1  # langue source, toujours publiée
         if property_id is not None:
             published = repo.published_langs(conn, property_id)
             used = 1 + len([l for l in published if l])
-        ok = used <= limit
+        ok = limit is None or used <= limit
         return QuotaResult(ok=ok, used=used, limit=limit, plan=plan)
 
     raise ValueError(f"ressource de quota inconnue : {resource!r}")

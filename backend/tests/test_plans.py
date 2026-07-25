@@ -110,12 +110,20 @@ def test_quota_properties_free_limited(conn):
     assert not q1.ok and q1.used == 1 and q1.remaining == 0
 
 
-def test_quota_properties_pro_unlimited(conn):
-    oid = _make_owner(conn, "pro")    # max_properties = NULL (illimité)
-    for _ in range(3):
+def test_quota_properties_pro_includes_addons(conn):
+    """Grille V2-18b : Pro = 6 logements inclus, plus l'add-on (`addon_qty`).
+    Le plafond effectif est `max_properties + addon_qty` (via effective_entitlements)."""
+    oid = _make_owner(conn, "pro")    # max_properties = 6, addon_qty = 0
+    for _ in range(6):
         _add_property(conn, oid)
     q = plans.check_quota(conn, oid, "properties")
-    assert q.ok and q.limit is None and q.remaining is None
+    assert not q.ok and q.used == 6 and q.limit == 6   # 6 inclus, plafond atteint
+
+    # 2 add-ons (écrits par le webhook) → plafond porté à 8
+    conn.execute("UPDATE subscriptions SET addon_qty = 2 WHERE owner_id = %s", (oid,))
+    conn.commit()
+    q2 = plans.check_quota(conn, oid, "properties")
+    assert q2.ok and q2.limit == 8 and q2.remaining == 2
 
 
 # ── Quotas : enrichissements (mensuel, par logement) ─────────────────────────
@@ -139,17 +147,22 @@ def test_quota_enrichments_requires_property_id(conn):
 
 # ── Langues : plafonnement des cibles (langue source comprise) ───────────────
 
-def test_cap_target_langs_free_allows_none(conn):
-    free = _seed_plan(conn, "free")   # langs = 1 → aucune cible
-    assert plans.max_langs(free) == 1
-    assert plans.cap_target_langs(free, ["en", "es"]) == []
+def test_cap_target_langs_unlimited_on_all_plans(conn):
+    """Grille V2-18b : `features.langs='all'` → illimité (max_langs None) sur tous
+    les plans, y compris le gratuit ; toutes les cibles passent."""
+    for plan_id in ("free", "solo", "pro", "trial"):
+        plan = _seed_plan(conn, plan_id)
+        assert plans.max_langs(plan) is None
+        six = ["en", "es", "de", "nl", "it", "pt"]
+        assert plans.cap_target_langs(plan, six) == six
 
 
-def test_cap_target_langs_paid_allows_up_to_limit(conn):
-    pro = _seed_plan(conn, "pro")     # langs = 5 → 4 cibles max
-    assert plans.cap_target_langs(pro, ["en", "es"]) == ["en", "es"]
-    six = ["en", "es", "de", "nl", "it", "pt"]
-    assert plans.cap_target_langs(pro, six) == six[:4]
+def test_cap_target_langs_still_caps_a_numeric_plan(conn):
+    """La mécanique de plafonnement reste valable pour un plan à `langs` numérique
+    (sécurité / futurs plans) : langs=2 → 1 cible max."""
+    plan = {"features": {"langs": 2}}
+    assert plans.max_langs(plan) == 2
+    assert plans.cap_target_langs(plan, ["en", "es", "de"]) == ["en"]
 
 
 def test_watermark_flag_follows_plan(conn):
@@ -207,6 +220,49 @@ def test_effective_entitlements_trial_expired_is_read_only(conn):
     assert ent["trial_expired"] is True and ent["read_only"] is True
     assert ent["on_trial"] is False
     assert plans.can_write(conn, oid, now=now) is False
+
+
+# ── Guide équipe : gating & grand-père (V2-18b) ──────────────────────────────
+
+def test_staff_access_follows_plan_and_grandfather(conn):
+    """`staff_access` : exclusif Pro (staff_guide=true), aperçu essai
+    ('preview'), fermé solo/free — sauf clause de grand-père (invariant 3)."""
+    assert plans.staff_access(_seed_plan(conn, "pro")) is True
+    assert plans.staff_access(_seed_plan(conn, "trial")) is True    # 'preview'
+    assert plans.staff_access(_seed_plan(conn, "solo")) is False
+    assert plans.staff_access(_seed_plan(conn, "free")) is False
+    # Grand-père : un compte solo/free existant garde l'accès quel que soit le plan.
+    assert plans.staff_access(_seed_plan(conn, "solo"), grandfathered=True) is True
+    assert plans.staff_access(_seed_plan(conn, "free"), grandfathered=True) is True
+
+
+def test_effective_entitlements_exposes_addons_and_staff(conn):
+    """`effective_entitlements` expose `addon_qty`, `max_properties` effectif et le
+    droit staff (point d'entrée unique des droits, V2-18b)."""
+    oid = _make_owner(conn, "pro")
+    conn.execute("UPDATE subscriptions SET addon_qty = 3, staff_grandfathered = FALSE "
+                 "WHERE owner_id = %s", (oid,))
+    conn.commit()
+    ent = plans.effective_entitlements(conn, oid)
+    assert ent["addon_qty"] == 3
+    assert ent["max_properties"] == 6 + 3          # base Pro + add-ons
+    assert ent["staff_access"] is True             # Pro
+    assert ent["staff_grandfathered"] is False
+
+
+def test_effective_entitlements_grandfathered_free_keeps_staff(conn):
+    """Un compte 'free' grand-périsé conserve l'accès au guide équipe (invariant 3)."""
+    oid = _make_owner(conn, "free")
+    conn.execute("UPDATE subscriptions SET staff_grandfathered = TRUE "
+                 "WHERE owner_id = %s", (oid,))
+    conn.commit()
+    ent = plans.effective_entitlements(conn, oid)
+    assert ent["staff_grandfathered"] is True and ent["staff_access"] is True
+    # Sans grand-père, le même plan 'free' n'y a pas droit.
+    conn.execute("UPDATE subscriptions SET staff_grandfathered = FALSE "
+                 "WHERE owner_id = %s", (oid,))
+    conn.commit()
+    assert plans.effective_entitlements(conn, oid)["staff_access"] is False
 
 
 def test_paid_plan_never_read_only_even_with_stale_trial_end(conn):

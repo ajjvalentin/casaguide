@@ -151,17 +151,70 @@ def sync_plan(client, conn, plan: dict, *, log=print) -> str:
     return price.id
 
 
+# Suffixe du « plan » Stripe de l'add-on (metadata plan_id) : le Product/Price
+# « logement supplémentaire » est distinct du plan principal (V2-18b).
+ADDON_SUFFIX = "_addon"
+
+
+def sync_addon(client, conn, plan: dict, *, log=print) -> str | None:
+    """Synchronise le Product/Price de l'add-on « logement supplémentaire » d'un
+    plan (V2-18b). Renvoie l'id du Price actif, ou None si le plan n'a pas
+    d'add-on (`addon_property_price_cts` NULL / 0).
+
+    Même patron idempotent que `sync_plan` : Product retrouvé par metadata
+    `plan_id='{plan}_addon'`, Price retrouvé par montant (ancien montant archivé,
+    jamais supprimé). Écrit `plans.addon_stripe_price_id`."""
+    amount = plan.get("addon_property_price_cts")
+    if not amount or amount <= 0:
+        return None
+    plan_id = plan["id"]
+    addon_plan_id = f"{plan_id}{ADDON_SUFFIX}"          # ex. 'pro_addon'
+    name = f"Holaguia {plan['name']} — Logement supplémentaire"
+
+    product = find_product(client, addon_plan_id)
+    if product is None:
+        product = client.v1.products.create({
+            "name": name, "metadata": {"plan_id": addon_plan_id}})
+        log(f"  ✓ Product add-on créé : {product.id} ({addon_plan_id})")
+    else:
+        client.v1.products.update(product.id, {"name": name})
+        log(f"  = Product add-on existant : {product.id} ({addon_plan_id})")
+
+    price = find_price(client, product.id, amount)
+    if price is None:
+        price = client.v1.prices.create({
+            "product": product.id, "unit_amount": amount, "currency": CURRENCY,
+            "recurring": {"interval": "month"},
+            "metadata": {"plan_id": addon_plan_id}})
+        log(f"  ✓ Price add-on créé : {price.id} "
+            f"({amount/100:.2f} {CURRENCY.upper()}/mois)")
+    else:
+        log(f"  = Price add-on existant : {price.id}")
+
+    archived = _archive_stale_prices(client, product.id, price.id)
+    if archived:
+        log(f"  ⤷ {archived} ancien(s) Price(s) add-on archivé(s) (montant obsolète)")
+
+    conn.execute("UPDATE plans SET addon_stripe_price_id = %s WHERE id = %s",
+                 (price.id, plan_id))
+    return price.id
+
+
 def sync_plans(client, conn, *, log=print) -> dict[str, str]:
-    """Synchronise tous les plans payants (prix > 0). Renvoie {plan_id: price_id}.
+    """Synchronise tous les plans payants (prix > 0) et leurs add-ons. Renvoie
+    {plan_id: price_id} (l'add-on d'un plan apparaît sous la clé '{plan}_addon').
     Testable : `client` est injecté (aucun appel réseau dans la suite de tests)."""
     plans = conn.execute(
-        "SELECT id, name, price_month_cts FROM plans "
+        "SELECT id, name, price_month_cts, addon_property_price_cts FROM plans "
         "WHERE price_month_cts > 0 ORDER BY price_month_cts"
     ).fetchall()
     result: dict[str, str] = {}
     for plan in plans:
         log(f"Plan « {plan['id']} » :")
         result[plan["id"]] = sync_plan(client, conn, plan, log=log)
+        addon_price = sync_addon(client, conn, plan, log=log)
+        if addon_price:
+            result[f"{plan['id']}{ADDON_SUFFIX}"] = addon_price
     conn.commit()
     return result
 
