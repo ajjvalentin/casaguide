@@ -22,8 +22,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 from .. import billing_stripe, plans, repo, stripe_events
 from ..config import settings
 from ..deps import Conn, CurrentOwner, Stripe
-from ..schemas import (CheckoutIn, CheckoutOut, PlanOut, PortalOut,
-                       QuotaGaugeOut, SubscriptionOut, UsageOut)
+from ..schemas import (AddonIn, AddonOut, CheckoutIn, CheckoutOut, PlanOut,
+                       PortalOut, QuotaGaugeOut, SubscriptionOut, UsageOut)
 
 log = logging.getLogger("casaguide.billing")
 
@@ -72,7 +72,8 @@ def my_subscription(conn: Conn, owner: CurrentOwner):
         has_stripe_customer=bool(sub and sub.get("stripe_customer_id")),
         on_trial=ent["on_trial"],
         trial_expired=ent["trial_expired"],
-        trial_ends_at=ent["trial_ends_at"])
+        trial_ends_at=ent["trial_ends_at"],
+        addon_qty=ent["addon_qty"])
 
 
 # ── Paiement : session Checkout (V2-05b, volet 2) ────────────────────────────
@@ -156,6 +157,49 @@ def create_portal(conn: Conn, owner: CurrentOwner, gateway: Stripe,
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Le service de paiement est momentanément indisponible.")
     return PortalOut(url=url)
+
+
+# ── Add-on « logement supplémentaire » (V2-18b) ──────────────────────────────
+
+@router.post("/billing/addons", response_model=AddonOut)
+def update_addons(payload: AddonIn, conn: Conn, owner: CurrentOwner,
+                  gateway: Stripe):
+    """Ajuste la quantité de logements supplémentaires (add-on Pro). Réservé à un
+    abonnement **Pro actif** (409 sinon). Met à jour l'item d'add-on de
+    l'abonnement Stripe (proration par défaut) et **n'écrit RIEN en base** : la
+    quantité effective revient par le webhook `customer.subscription.updated`
+    (seule autorité, invariant 1). Le front affiche « mise à jour en cours »
+    jusqu'au rafraîchissement post-webhook."""
+    if gateway is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Le paiement en ligne n'est pas disponible.")
+
+    owner_id = str(owner["id"])
+    plan = plans.get_plan(conn, owner_id)
+    sub = plans.get_subscription(conn, owner_id)
+    stripe_sub_id = sub.get("stripe_subscription_id") if sub else None
+    if plan["id"] != "pro" or not stripe_sub_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Les logements supplémentaires nécessitent un abonnement Pro actif.")
+    addon_price_id = plan.get("addon_stripe_price_id")
+    if not addon_price_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="L'option « logement supplémentaire » n'est pas encore disponible.")
+
+    try:
+        gateway.set_addon_quantity(subscription_id=stripe_sub_id,
+                                   addon_price_id=addon_price_id,
+                                   quantity=payload.quantity)
+    except billing_stripe.StripeError as exc:
+        log.error("Échec de mise à jour de l'add-on Stripe (owner=%s) : %s",
+                  owner_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Le service de paiement est momentanément indisponible.")
+    return AddonOut(requested_quantity=payload.quantity)
 
 
 # ── Webhooks Stripe : la seule source de vérité (V2-05b, volet 2) ────────────

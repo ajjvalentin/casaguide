@@ -190,6 +190,14 @@ def set_plan_stripe_price_id(conn, plan_id: str, price_id: str) -> None:
         "UPDATE plans SET stripe_price_id = %s WHERE id = %s", (price_id, plan_id))
 
 
+def get_plan_by_addon_stripe_price_id(conn, price_id: str) -> dict | None:
+    """Plan dont l'add-on « logement supplémentaire » porte ce Price Stripe (V2-18b,
+    résolution webhook de la quantité d'add-on). None si aucun plan ne le porte."""
+    return conn.execute(
+        "SELECT * FROM plans WHERE addon_stripe_price_id = %s", (price_id,)
+    ).fetchone()
+
+
 def get_subscription_by_customer_id(conn, customer_id: str) -> dict | None:
     """Abonnement rattaché à un Customer Stripe (résolution owner côté webhook).
     None si aucun abonnement ne porte ce `stripe_customer_id`."""
@@ -227,10 +235,15 @@ def set_subscription_customer(conn, owner_id: str, customer_id: str) -> None:
 def update_subscription_from_stripe(conn, owner_id: str, *, plan_id: str,
                                     status: str,
                                     stripe_subscription_id: str | None,
-                                    current_period_end) -> None:
+                                    current_period_end,
+                                    addon_qty: int = 0) -> None:
     """Applique l'état Stripe à l'abonnement courant (SEULE écriture d'autorité,
     depuis le handler de webhook). Ne supprime jamais de données : un retour à
-    'free' ne fait que rebasculer `plan_id` (invariant downgrade V2-05a).
+    'free' ne fait que rebasculer `plan_id` (invariant downgrade V2-05a) et
+    remettre `addon_qty` à 0.
+
+    `addon_qty` (V2-18b) est la quantité de logements supplémentaires lue dans les
+    items de l'abonnement Stripe : le webhook en est la SEULE source (invariant 1).
 
     Purge `trial_ends_at` (→ NULL) : toute décision Stripe (souscription payante,
     annulation) fait SORTIR du régime d'essai (V2-18a) — l'essai ne s'applique
@@ -240,16 +253,19 @@ def update_subscription_from_stripe(conn, owner_id: str, *, plan_id: str,
         conn.execute(
             """INSERT INTO subscriptions
                    (owner_id, plan_id, status, stripe_subscription_id,
-                    current_period_end, trial_ends_at)
-               VALUES (%s, %s, %s, %s, %s, NULL)""",
-            (owner_id, plan_id, status, stripe_subscription_id, current_period_end))
+                    current_period_end, addon_qty, trial_ends_at)
+               VALUES (%s, %s, %s, %s, %s, %s, NULL)""",
+            (owner_id, plan_id, status, stripe_subscription_id,
+             current_period_end, addon_qty))
         return
     conn.execute(
         """UPDATE subscriptions
            SET plan_id = %s, status = %s, stripe_subscription_id = %s,
-               current_period_end = %s, trial_ends_at = NULL, updated_at = now()
+               current_period_end = %s, addon_qty = %s, trial_ends_at = NULL,
+               updated_at = now()
            WHERE id = %s""",
-        (plan_id, status, stripe_subscription_id, current_period_end, sub_id))
+        (plan_id, status, stripe_subscription_id, current_period_end,
+         addon_qty, sub_id))
 
 
 def set_subscription_status(conn, owner_id: str, status: str) -> None:

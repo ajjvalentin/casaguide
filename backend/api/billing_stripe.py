@@ -52,6 +52,9 @@ class StripeGateway(Protocol):
     def create_portal_session(self, *, customer_id: str,
                               return_url: str) -> str: ...
 
+    def set_addon_quantity(self, *, subscription_id: str, addon_price_id: str,
+                           quantity: int) -> None: ...
+
     def construct_event(self, payload: bytes, sig_header: str) -> dict: ...
 
 
@@ -102,6 +105,38 @@ class LiveStripeGateway:
             "return_url": return_url,
         })
         return session.url
+
+    # ── Add-on « logement supplémentaire » : quantité de l'item d'abonnement ──
+    def set_addon_quantity(self, *, subscription_id: str, addon_price_id: str,
+                           quantity: int) -> None:
+        """Aligne la quantité de l'item d'add-on de l'abonnement Stripe sur
+        `quantity` (proration Stripe par défaut). Crée l'item à la première
+        demande, met à jour la quantité ensuite, le supprime à 0.
+
+        N'écrit RIEN en base : l'effet revient via le webhook
+        `customer.subscription.updated` (seule autorité, invariant 1). Surface
+        StripeClient vérifiée par introspection (OPS-1b) : `subscriptions.retrieve`,
+        `subscription_items.create/update/delete`."""
+        sub = self._client.v1.subscriptions.retrieve(subscription_id)
+        items = (getattr(sub, "items", None) or {})
+        data = getattr(items, "data", None) or []
+        existing = next(
+            (it for it in data
+             if getattr(getattr(it, "price", None), "id", None) == addon_price_id),
+            None)
+        if quantity <= 0:
+            if existing is not None:
+                self._client.v1.subscription_items.delete(existing.id)
+            return
+        if existing is not None:
+            self._client.v1.subscription_items.update(
+                existing.id, {"quantity": quantity})
+        else:
+            self._client.v1.subscription_items.create({
+                "subscription": subscription_id,
+                "price": addon_price_id,
+                "quantity": quantity,
+            })
 
     # ── Vérification de signature d'un webhook ───────────────────────────────
     def construct_event(self, payload: bytes, sig_header: str) -> dict:

@@ -60,11 +60,27 @@ def _period_end(subscription: dict):
     return datetime.fromtimestamp(int(ts), tz=timezone.utc)
 
 
-def _price_id(subscription: dict) -> str | None:
+def _resolve_plan_and_addons(conn, subscription: dict):
+    """Résout (plan principal, addon_qty) à partir de TOUS les items de
+    l'abonnement Stripe (V2-18b). Le plan vient de l'item dont le price est un
+    `plans.stripe_price_id` ; la quantité d'add-on est la somme des items dont le
+    price est un `plans.addon_stripe_price_id`. Renvoie (None, 0) si aucun item
+    ne correspond à un plan connu (prix non synchronisé)."""
     items = (subscription.get("items") or {}).get("data") or []
-    if not items:
-        return None
-    return ((items[0].get("price") or {}).get("id"))
+    plan = None
+    addon_qty = 0
+    for it in items:
+        price_id = (it.get("price") or {}).get("id")
+        if not price_id:
+            continue
+        main = repo.get_plan_by_stripe_price_id(conn, price_id)
+        if main is not None:
+            plan = main
+            continue
+        addon = repo.get_plan_by_addon_stripe_price_id(conn, price_id)
+        if addon is not None:
+            addon_qty += int(it.get("quantity") or 0)
+    return plan, addon_qty
 
 
 def _resolve_owner_by_customer(conn, customer_id: str | None) -> str | None:
@@ -103,17 +119,15 @@ def _on_subscription_upsert(conn, obj: dict) -> str:
         log.warning("subscription.upsert : owner introuvable (customer=%s)",
                     customer_id)
         return "unresolved"
-    price_id = _price_id(obj)
-    plan = repo.get_plan_by_stripe_price_id(conn, price_id) if price_id else None
+    plan, addon_qty = _resolve_plan_and_addons(conn, obj)
     if plan is None:
-        log.warning("subscription.upsert : prix inconnu %s (aucun plan) — ignoré",
-                    price_id)
+        log.warning("subscription.upsert : aucun prix connu dans les items — ignoré")
         return "unknown_price"
     status = map_status(obj.get("status", ""))
     repo.update_subscription_from_stripe(
         conn, owner_id, plan_id=plan["id"], status=status,
         stripe_subscription_id=obj.get("id"),
-        current_period_end=_period_end(obj))
+        current_period_end=_period_end(obj), addon_qty=addon_qty)
     return f"subscription_{status}"
 
 
@@ -127,7 +141,7 @@ def _on_subscription_deleted(conn, obj: dict) -> str:
         return "unresolved"
     repo.update_subscription_from_stripe(
         conn, owner_id, plan_id="free", status="active",
-        stripe_subscription_id=None, current_period_end=None)
+        stripe_subscription_id=None, current_period_end=None, addon_qty=0)
     return "downgraded_free"
 
 

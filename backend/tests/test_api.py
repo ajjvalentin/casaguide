@@ -1970,6 +1970,7 @@ class _FakeStripeGateway(billing_stripe.LiveStripeGateway):
         super().__init__(api_key="sk_test_x", webhook_secret=STRIPE_WEBHOOK_SECRET)
         self.checkout_calls: list[dict] = []
         self.portal_calls: list[dict] = []
+        self.addon_calls: list[dict] = []
 
     def get_or_create_customer(self, *, owner_id, email, existing_customer_id):
         return existing_customer_id or f"cus_test_{owner_id[:8]}"
@@ -1987,6 +1988,12 @@ class _FakeStripeGateway(billing_stripe.LiveStripeGateway):
                                   "return_url": return_url})
         return "https://billing.stripe.test/session/bps_test_123"
 
+    def set_addon_quantity(self, *, subscription_id, addon_price_id, quantity):
+        # Ne touche à rien : le webhook (simulé à part) est seul à écrire addon_qty.
+        self.addon_calls.append({"subscription_id": subscription_id,
+                                 "addon_price_id": addon_price_id,
+                                 "quantity": quantity})
+
 
 @pytest.fixture()
 def billing(client):
@@ -1997,16 +2004,22 @@ def billing(client):
     prev_secret = api_settings.stripe_webhook_secret
     api_settings.stripe_webhook_secret = STRIPE_WEBHOOK_SECRET
     with psycopg.connect(settings.db_dsn) as conn:
-        snapshot = {r[0]: r[1] for r in conn.execute(
-            "SELECT id, stripe_price_id FROM plans").fetchall()}
+        rows = conn.execute(
+            "SELECT id, stripe_price_id, addon_stripe_price_id FROM plans").fetchall()
+        snapshot = {r[0]: r[1] for r in rows}
+        addon_snapshot = {r[0]: r[2] for r in rows}
         conn.execute("UPDATE plans SET stripe_price_id='price_test_solo' WHERE id='solo'")
-        conn.execute("UPDATE plans SET stripe_price_id='price_test_pro' WHERE id='pro'")
+        conn.execute("UPDATE plans SET stripe_price_id='price_test_pro', "
+                     "addon_stripe_price_id='price_test_pro_addon' WHERE id='pro'")
         conn.commit()
     yield client, gateway
     api_settings.stripe_webhook_secret = prev_secret
     with psycopg.connect(settings.db_dsn) as conn:
         for pid, price in snapshot.items():
             conn.execute("UPDATE plans SET stripe_price_id=%s WHERE id=%s", (price, pid))
+        for pid, addon in addon_snapshot.items():
+            conn.execute("UPDATE plans SET addon_stripe_price_id=%s WHERE id=%s",
+                         (addon, pid))
         conn.execute("DELETE FROM stripe_events WHERE id LIKE 'evt_test_%'")
         conn.commit()
 
@@ -2033,11 +2046,16 @@ def _evt(event_id: str, etype: str, obj: dict) -> dict:
 
 
 def _subscription_obj(customer, sub_id, price_id, *, status="active",
-                      period_end=2_000_000_000):
+                      period_end=2_000_000_000, addon_price_id=None, addon_qty=0):
+    """Objet subscription Stripe réaliste. `addon_qty > 0` ajoute un SECOND item
+    (add-on « logement supplémentaire ») → payload multi-items (V2-18b)."""
+    items = [{"id": "si_1", "price": {"id": price_id}, "quantity": 1}]
+    if addon_price_id and addon_qty:
+        items.append({"id": "si_addon", "price": {"id": addon_price_id},
+                      "quantity": addon_qty})
     return {"id": sub_id, "object": "subscription", "customer": customer,
             "status": status, "current_period_end": period_end,
-            "items": {"object": "list",
-                      "data": [{"id": "si_1", "price": {"id": price_id}}]}}
+            "items": {"object": "list", "data": items}}
 
 
 def _post_event(client, event: dict, *, valid_sig=True):
@@ -2258,6 +2276,122 @@ def test_webhook_deleted_returns_to_free_without_data_loss(billing):
                       headers=owner["headers"]).status_code == 200
     row = _sub_row(owner["email"])
     assert row["stripe_subscription_id"] is None   # abonnement Stripe détaché
+
+
+# ── Add-on « logement supplémentaire » (V2-18b) ──────────────────────────────
+
+ADDON_PRICE = "price_test_pro_addon"
+
+
+def _go_pro(client, owner) -> str:
+    """Amène un compte à un abonnement Pro actif via le webhook. Renvoie le
+    customer Stripe."""
+    _, cust = _link_customer(client, owner["email"])
+    r = _post_event(client, _evt(
+        f"evt_test_pro_{owner['email'][:6]}", "customer.subscription.created",
+        _subscription_obj(cust, "sub_test_1", "price_test_pro")))
+    assert r.status_code == 200, r.text
+    return cust
+
+
+def test_webhook_reads_addon_qty_from_items_raises_property_limit(billing):
+    """Le webhook lit la quantité d'add-on dans les items de l'abonnement (seule
+    autorité, invariant 1) : Pro + 3 add-ons → addon_qty=3, plafond 6+3=9."""
+    client, _ = billing
+    owner = register(client)
+    cust = _go_pro(client, owner)
+    # Pro seul : plafond 6.
+    body = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert body["usage"]["properties"]["limit"] == 6 and body["addon_qty"] == 0
+
+    # Pro + 3 add-ons (payload multi-items).
+    r = _post_event(client, _evt(
+        "evt_test_addon3", "customer.subscription.updated",
+        _subscription_obj(cust, "sub_test_1", "price_test_pro",
+                          addon_price_id=ADDON_PRICE, addon_qty=3)))
+    assert r.status_code == 200
+    assert _sub_row(owner["email"])["plan_id"] == "pro"
+    with psycopg.connect(settings.db_dsn) as conn:
+        aq = conn.execute("SELECT addon_qty FROM subscriptions WHERE owner_id="
+                          "(SELECT id FROM owners WHERE email=%s) ORDER BY created_at "
+                          "DESC LIMIT 1", (owner["email"],)).fetchone()[0]
+    assert aq == 3
+    body2 = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert body2["addon_qty"] == 3 and body2["usage"]["properties"]["limit"] == 9
+
+
+def test_webhook_addon_decrease_and_removal_preserve_data(billing):
+    """Baisse puis suppression de l'add-on : addon_qty suit, l'excédent devient
+    LECTURE SEULE (402 à la création) sans qu'aucun logement ne soit supprimé."""
+    client, _ = billing
+    owner = register(client)
+    cust = _go_pro(client, owner)
+    # Monte à Pro + 2 add-ons (plafond 8), crée 8 logements.
+    _post_event(client, _evt("evt_test_a2", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_pro",
+                                  addon_price_id=ADDON_PRICE, addon_qty=2)))
+    for i in range(8):
+        make_property(client, owner["headers"], name=f"Logement {i}")
+    assert len(client.get("/api/properties", headers=owner["headers"]).json()) == 8
+
+    # Baisse à 1 add-on (plafond 7) : rien supprimé, création refusée (402).
+    _post_event(client, _evt("evt_test_a1", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_pro",
+                                  addon_price_id=ADDON_PRICE, addon_qty=1)))
+    props = client.get("/api/properties", headers=owner["headers"]).json()
+    assert len(props) == 8                                   # aucune donnée perdue
+    over = client.post("/api/properties", headers=owner["headers"],
+                       json={"name": "Trop", "address_line1": "X", "city": "Y",
+                             "country_code": "ES"})
+    assert over.status_code == 402
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert sub["addon_qty"] == 1 and sub["usage"]["properties"]["limit"] == 7
+
+    # Suppression complète (aucun item add-on) → addon_qty 0, plafond 6.
+    _post_event(client, _evt("evt_test_a0", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_pro")))
+    sub2 = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert sub2["addon_qty"] == 0 and sub2["usage"]["properties"]["limit"] == 6
+    assert len(client.get("/api/properties", headers=owner["headers"]).json()) == 8
+
+
+def test_addons_endpoint_requires_pro_active_and_writes_nothing(billing):
+    """POST /api/billing/addons : 409 hors Pro actif ; en Pro, appelle Stripe mais
+    n'écrit RIEN en base (le webhook est seul à poser addon_qty, invariant 1)."""
+    client, gateway = billing
+    owner = register(client)
+
+    # Compte en essai : pas de Pro actif → 409.
+    r = client.post("/api/billing/addons", json={"quantity": 2},
+                    headers=owner["headers"])
+    assert r.status_code == 409
+
+    # Passe Pro actif, puis demande 2 add-ons.
+    _go_pro(client, owner)
+    r2 = client.post("/api/billing/addons", json={"quantity": 2},
+                     headers=owner["headers"])
+    assert r2.status_code == 200, r2.text
+    assert r2.json() == {"requested_quantity": 2, "status": "pending"}
+    call = gateway.addon_calls[-1]
+    assert call["quantity"] == 2 and call["addon_price_id"] == ADDON_PRICE
+    assert call["subscription_id"] == "sub_test_1"
+    # Rien écrit en base tant que le webhook n'a pas confirmé.
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["addon_qty"] == 0
+
+    # Le webhook confirme → addon_qty devient 2.
+    _post_event(client, _evt("evt_test_ep", "customer.subscription.updated",
+                _subscription_obj("cus_test_"+_owner_id(owner["email"])[:8],
+                                  "sub_test_1", "price_test_pro",
+                                  addon_price_id=ADDON_PRICE, addon_qty=2)))
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["addon_qty"] == 2
+
+
+def test_addons_endpoint_requires_auth(billing):
+    client, _ = billing
+    assert client.post("/api/billing/addons",
+                       json={"quantity": 1}).status_code == 401
 
 
 def test_webhook_payment_failed_sets_past_due_keeping_plan(billing):

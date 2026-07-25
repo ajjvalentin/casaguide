@@ -102,6 +102,8 @@ class SubscriptionOut(BaseModel):
     on_trial: bool = False
     trial_expired: bool = False
     trial_ends_at: datetime | None = None
+    # Logements supplémentaires actifs (add-on Pro, V2-18b) — pilote le stepper.
+    addon_qty: int = 0
 
 
 # ── Paiement Stripe (V2-05b) ─────────────────────────────────────────────────
@@ -119,6 +121,19 @@ class CheckoutOut(BaseModel):
 class PortalOut(BaseModel):
     """URL de redirection vers le portail client Stripe (cartes, factures, annulation)."""
     url: str
+
+
+class AddonIn(BaseModel):
+    """Demande de quantité de logements supplémentaires (add-on Pro, V2-18b).
+    0 = supprimer l'add-on. Plafond souple pour éviter une faute de frappe."""
+    quantity: int = Field(ge=0, le=100)
+
+
+class AddonOut(BaseModel):
+    """Accusé de la demande d'add-on : la quantité DEMANDÉE et l'état « en cours »
+    (le webhook Stripe posera la quantité effective — seule autorité, invariant 1)."""
+    requested_quantity: int
+    status: str = "pending"
 
 
 # ── Logements ────────────────────────────────────────────────────────────────
