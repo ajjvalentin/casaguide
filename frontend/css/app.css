@@ -215,6 +215,12 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
                border-radius:10px;padding:10px 14px;margin:0 0 18px;font-size:13.5px}
 .verify-banner .vb-msg{flex:1;min-width:180px}
 .verify-banner .btn{flex:none}
+/* Bandeau global de lecture seule (essai expiré, V2-18a) — ton « alerte » sobre. */
+.readonly-banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+                 background:#FBF3E0;border:1px solid #EAD9AE;color:#6B551E;
+                 border-radius:10px;padding:10px 14px;margin:0 0 18px;font-size:13.5px}
+.readonly-banner .rb-msg{flex:1;min-width:200px}
+.readonly-banner .btn{flex:none}
 .auth-tabs{display:flex;gap:6px;background:#F1ECE2;border-radius:10px;padding:4px;margin:20px 0 22px}
 .auth-tabs button{flex:1;border:none;background:transparent;padding:8px;border-radius:8px;
                   font-weight:600;color:var(--muted)}
@@ -422,6 +428,9 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .plan-choice{display:flex;align-items:center;gap:10px;border:1px solid var(--line);
   border-radius:10px;padding:9px 12px;cursor:pointer}
 .plan-choice.on{border-color:var(--sea);background:#F4FAFB}
+/* Offre mise en avant (essai) : liseré discret même non sélectionnée. */
+.plan-choice.featured{border-color:var(--sea)}
+.plan-choice.featured .pc-price{color:var(--sea);font-weight:600}
 .plan-choice.disabled{opacity:.7;cursor:not-allowed}
 .plan-choice .pc-body{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .pc-price{color:var(--muted);font-size:13.5px}

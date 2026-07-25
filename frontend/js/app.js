@@ -30,7 +30,7 @@ function logout() {
 // Construit (une fois) la barre supérieure + le conteneur de vue, renvoie la vue.
 function ensureShell() {
   let viewEl = document.getElementById("app-view");
-  if (viewEl) { updateUserMenu(); updateVerifyBanner(); return viewEl; }
+  if (viewEl) { updateUserMenu(); updateVerifyBanner(); updateReadonlyBanner(); return viewEl; }
 
   const userMenu = el("div", { class: "usermenu", id: "usermenu" });
   const topbar = el("header", { class: "topbar" },
@@ -39,11 +39,31 @@ function ensureShell() {
     el("span", { class: "spacer" }),
     userMenu);
   const banner = el("div", { id: "verify-banner" });
+  const roBanner = el("div", { id: "readonly-banner" });
   viewEl = el("main", { id: "app-view" });
-  mount(appEl, topbar, banner, viewEl);
+  mount(appEl, topbar, roBanner, banner, viewEl);
   updateUserMenu();
   updateVerifyBanner();
+  updateReadonlyBanner();
   return viewEl;
+}
+
+// Bandeau global de lecture seule (V2-18a) : affiché quand l'essai est expiré
+// (owner.trial_expired === true, strict — jamais sur un champ absent). Les guides
+// restent en ligne ; seule l'édition est suspendue tant qu'une offre n'est pas
+// choisie. CTA vers #/abonnement (les refus 403 sont aussi interceptés par quota.js).
+function updateReadonlyBanner() {
+  const box = document.getElementById("readonly-banner");
+  if (!box) return;
+  const owner = getOwner();
+  if (!owner || owner.trial_expired !== true) { clear(box); return; }
+  mount(box, el("div", { class: "readonly-banner" },
+    icon("lock", 16),
+    el("span", { class: "rb-msg" },
+      "Votre essai est terminé — vos guides restent en ligne. Choisissez une "
+      + "offre pour reprendre la main sur vos logements."),
+    el("a", { class: "btn btn-sm btn-primary", href: "#/abonnement" },
+      icon("credit-card", 15), "Choisir mon offre")));
 }
 
 // Bandeau discret « vérifiez votre email » (V2-08). Affiché uniquement quand le

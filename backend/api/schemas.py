@@ -94,6 +94,11 @@ class SubscriptionOut(BaseModel):
     # Client Stripe déjà rattaché ? (pilote l'affichage du bouton « Gérer mon
     # abonnement » côté front — V2-05b). Absent tant qu'aucun paiement.
     has_stripe_customer: bool = False
+    # État d'essai (V2-18a) : pilote la page « Mon abonnement » (compte à rebours,
+    # bandeau d'expiration, CTA « Choisir mon offre »).
+    on_trial: bool = False
+    trial_expired: bool = False
+    trial_ends_at: datetime | None = None
 
 
 # ── Paiement Stripe (V2-05b) ─────────────────────────────────────────────────

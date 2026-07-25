@@ -19,18 +19,54 @@ function euros(cts) {
   return (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(".", ",")) + " € / mois";
 }
 
-/* Une jauge « libellé : used / limit » + barre. limit null = illimité. */
-function gauge(label, g, unit = "") {
+/* Une jauge « libellé : used / limit » + barre. limit null = illimité.
+   `text` (optionnel) remplace la valeur numérique (V2-17 : « Toutes les langues
+   disponibles » plutôt qu'un « X / 5 »). */
+function gauge(label, g, unit = "", text = null) {
   const unlimited = g.limit == null;
   const pct = unlimited ? 0 : Math.min(100, Math.round((g.used / Math.max(1, g.limit)) * 100));
   const full = !unlimited && g.used >= g.limit;
-  const value = unlimited ? `${g.used} · illimité` : `${g.used} / ${g.limit}${unit ? " " + unit : ""}`;
+  const value = text != null ? text
+    : (unlimited ? `${g.used} · illimité` : `${g.used} / ${g.limit}${unit ? " " + unit : ""}`);
+  const showBar = text == null;
   return el("div", { class: "usage-row" },
     el("div", { class: "row", style: { justifyContent: "space-between", fontSize: "13px", marginBottom: "4px" } },
       el("span", { class: "muted" }, label),
       el("b", { style: full ? { color: "var(--alert)" } : {} }, value)),
-    el("div", { class: "meter mini" },
-      el("i", { style: { width: (unlimited ? 100 : pct) + "%", opacity: unlimited ? .35 : 1 } })));
+    showBar ? el("div", { class: "meter mini" },
+      el("i", { style: { width: (unlimited ? 100 : pct) + "%", opacity: unlimited ? .35 : 1 } })) : null);
+}
+
+/* Jours restants d'un essai (arrondi au jour supérieur, jamais négatif). */
+function trialDaysLeft(sub) {
+  if (!sub.trial_ends_at) return 0;
+  const ms = new Date(sub.trial_ends_at).getTime() - Date.now();
+  return Math.max(0, Math.ceil(ms / 86400000));
+}
+
+/* Encart d'état d'essai : compte à rebours (en cours) ou fin d'essai (expiré). */
+function trialBlock(sub) {
+  if (sub.trial_expired) {
+    return el("div", { class: "callout callout-warn", style: { marginBottom: "18px" } },
+      icon("lock", 18),
+      el("div", {},
+        el("b", {}, "Votre essai est terminé."),
+        el("div", { class: "muted", style: { fontSize: "13px", marginTop: "2px" } },
+          "Vos guides restent en ligne (les QR déjà partagés fonctionnent). "
+          + "Choisissez une offre ci-dessous pour reprendre la main sur vos "
+          + "logements — aucune donnée n'est perdue.")));
+  }
+  if (sub.on_trial) {
+    const d = trialDaysLeft(sub);
+    return el("div", { class: "callout callout-info", style: { marginBottom: "18px" } },
+      icon("clock", 18),
+      el("div", {},
+        el("b", {}, `Essai gratuit — ${d} jour${d > 1 ? "s" : ""} restant${d > 1 ? "s" : ""}.`),
+        el("div", { class: "muted", style: { fontSize: "13px", marginTop: "2px" } },
+          "Vous profitez de toutes les fonctionnalités. Choisissez votre offre "
+          + "quand vous voulez — sans interruption de vos guides.")));
+  }
+  return null;
 }
 
 /* Bandeau de retour de Checkout (V2-05b) : purement informatif. L'abonnement
@@ -71,11 +107,15 @@ function featureLine(ok, text) {
 function planFeatures(plan) {
   const f = plan.features || {};
   const props = plan.max_properties == null ? "Logements illimités" : `${plan.max_properties} logement${plan.max_properties > 1 ? "s" : ""}`;
-  const langs = (f.langs || 1) <= 1 ? "Guide en 1 langue" : `Jusqu'à ${f.langs} langues par guide`;
+  // V2-17 : la promesse = la capacité réelle → « Toutes les langues disponibles »
+  // dès qu'un plan dépasse la langue source (jamais « Jusqu'à N langues »).
+  const multi = (f.langs || 1) > 1;
+  const langs = multi ? "Toutes les langues disponibles" : "Guide en 1 langue";
   return el("ul", { class: "feat-list" },
     featureLine(true, props),
     featureLine(true, `${plan.enrich_quota} enrichissement${plan.enrich_quota > 1 ? "s" : ""} IA / mois / logement`),
-    featureLine((f.langs || 1) > 1, langs),
+    featureLine(multi, langs),
+    featureLine(!!f.pdf_export, "Export PDF & guide hors-ligne"),
     featureLine(!f.watermark, f.watermark ? "Mention « Créé avec Holaguia »" : "Guide sans mention Holaguia"),
     featureLine(!!f.stats, "Statistiques de consultation"),
     featureLine(!!f.white_label, "Marque blanche complète"));
@@ -158,6 +198,12 @@ export async function renderSubscription(view) {
     el("div", { class: "eyebrow" }, "Espace propriétaire"),
     el("h1", { class: "page-title", style: { margin: "2px 0 0" } }, "Mon abonnement"));
 
+  // Langues : « Toutes les langues disponibles » dès que le plan dépasse 1 langue
+  // (V2-17) ; sinon la jauge numérique (offre gratuite historique, 1/1).
+  const langsGauge = (u.langs.limit != null && u.langs.limit <= 1)
+    ? gauge("Langues du guide", u.langs)
+    : gauge("Langues du guide", u.langs, "", "Toutes les langues disponibles");
+
   // Bloc « offre actuelle » + jauges d'utilisation
   const current = el("div", { class: "card", style: { marginBottom: "22px" } },
     el("div", { class: "row", style: { justifyContent: "space-between", alignItems: "baseline", marginBottom: "14px" } },
@@ -167,16 +213,20 @@ export async function renderSubscription(view) {
       el("div", { class: "plan-price", style: { margin: 0 } }, euros(sub.plan.price_month_cts))),
     gauge("Logements", u.properties),
     gauge("Enrichissements IA ce mois-ci", u.enrichments, "/ logement"),
-    gauge("Langues du guide", u.langs),
+    langsGauge,
     // Portail Stripe : seulement pour un client déjà rattaché (a déjà payé).
     sub.has_stripe_customer
       ? el("div", { class: "row", style: { justifyContent: "flex-end", marginTop: "14px" } }, manageButton())
       : null);
 
-  const grid = el("div", { class: "plan-grid" }, ...plans.map((p) => planCard(p, sub)));
+  // Grille « Changer d'offre » : uniquement les offres souscriptibles (payantes).
+  // L'essai et le gratuit historique ne figurent pas comme cibles (on ne « choisit »
+  // pas l'essai ; le gratuit n'est plus proposé).
+  const buyable = plans.filter((p) => p.price_month_cts > 0);
+  const grid = el("div", { class: "plan-grid" }, ...buyable.map((p) => planCard(p, sub)));
 
   mount(view, el("div", { class: "page page-narrow" },
-    header, checkoutBanner(), current,
+    header, checkoutBanner(), trialBlock(sub), current,
     el("h2", { style: { fontSize: "18px", margin: "0 0 12px" } }, "Changer d'offre"),
     grid,
     el("p", { class: "muted", style: { fontSize: "13px", marginTop: "14px" } },

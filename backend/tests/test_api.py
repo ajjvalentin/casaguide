@@ -1724,6 +1724,8 @@ def test_subscription_reports_plan_and_usage(client):
     body = client.get("/api/subscription", headers=owner["headers"]).json()
     # Inscription = essai 21 j (V2-18a) : capacités Pro (3 logements, langs 5).
     assert body["plan"]["id"] == "trial" and body["status"] == "trialing"
+    assert body["on_trial"] is True and body["trial_expired"] is False
+    assert body["trial_ends_at"] is not None
     assert body["usage"]["properties"] == {"used": 1, "limit": 3}
     assert body["usage"]["enrichments"]["limit"] == 3          # /logement/mois
     assert body["usage"]["langs"]["limit"] == 5

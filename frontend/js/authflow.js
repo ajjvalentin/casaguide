@@ -46,9 +46,10 @@ export async function submitAuth({ mode, planId, credentials, deps }) {
       return { outcome: "error", message: errMessage(err) };
     }
 
-    // Offre payante choisie à l'inscription → Checkout Stripe. Le compte reste
-    // gratuit si le paiement est abandonné (seul le webhook change l'abonnement).
-    if (mode === "register" && planId && planId !== "free") {
+    // Offre PAYANTE choisie à l'inscription → Checkout Stripe. L'essai (défaut) et
+    // le gratuit historique n'y passent pas : le compte démarre en essai 21 j et
+    // le paiement abandonné ne change rien (seul le webhook fait autorité, V2-18a).
+    if (mode === "register" && planId && planId !== "free" && planId !== "trial") {
       try {
         const { url } = await startCheckout(planId);
         redirect(url);

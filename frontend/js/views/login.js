@@ -49,19 +49,23 @@ export function renderLogin(root) {
     if (plansLoaded) return;
     plansLoaded = true;
     try {
-      const plans = await api.listPlans();
+      // Chooser (V2-18a) : essai en tête (présélectionné), offres payantes
+      // souscriptibles. Le gratuit historique ne figure PAS à l'inscription.
+      const plans = (await api.listPlans()).filter((p) => p.id !== "free");
       const choices = el("div", { class: "plan-choices" }, ...plans.map(planChoice));
       choices.addEventListener("change", syncChoiceStyles);
       mount(plansBox,
         el("div", { class: "label" }, "Votre offre"),
         choices,
         el("div", { class: "help" },
-          "Démarrez gratuitement, ou choisissez une offre payante : vous serez "
-          + "redirigé vers le paiement sécurisé Stripe après la création du compte "
-          + "(le compte reste gratuit si vous n'allez pas au bout)."));
+          "Démarrez par un essai gratuit de 21 jours — aucune carte requise. "
+          + "Vous pouvez aussi souscrire une offre payante dès maintenant (paiement "
+          + "sécurisé Stripe après la création du compte). Le watermark "
+          + "« Créé avec Holaguia » figure sur l'essai et l'offre Solo ; l'offre "
+          + "Pro est en marque blanche."));
       syncChoiceStyles();
       refreshIcons();
-    } catch (_) { /* non bloquant : l'inscription reste possible sur l'offre gratuite */ }
+    } catch (_) { /* non bloquant : l'inscription reste possible sur l'essai par défaut */ }
   }
 
   function euros(cts) {
@@ -71,12 +75,14 @@ export function renderLogin(root) {
   }
 
   function planChoice(p) {
-    const free = p.price_month_cts === 0;
-    return el("label", { class: "plan-choice" },
-      el("input", { type: "radio", name: "plan", value: p.id, ...(free ? { checked: true } : {}) }),
+    const trial = p.id === "trial";
+    const label = trial ? "Essai gratuit — 21 jours" : p.name;
+    const priceText = trial ? "toutes les fonctionnalités" : euros(p.price_month_cts);
+    return el("label", { class: "plan-choice" + (trial ? " featured" : "") },
+      el("input", { type: "radio", name: "plan", value: p.id, ...(trial ? { checked: true } : {}) }),
       el("span", { class: "pc-body" },
-        el("b", {}, p.name), " ",
-        el("span", { class: "pc-price" }, euros(p.price_month_cts))));
+        el("b", {}, label), " ",
+        el("span", { class: "pc-price" }, priceText)));
   }
 
   function renderFields() {
@@ -126,7 +132,7 @@ export function renderLogin(root) {
     submitBtn.textContent = "Un instant…";
 
     const chosen = fields.querySelector('input[name="plan"]:checked');
-    const planId = mode === "register" && chosen ? chosen.value : "free";
+    const planId = mode === "register" && chosen ? chosen.value : "trial";
     const credentials = mode === "register"
       ? { email, password, full_name: nameF.input.value.trim(),
           company_name: companyF.input.value.trim() || null,

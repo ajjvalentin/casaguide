@@ -48,7 +48,8 @@ def my_subscription(conn: Conn, owner: CurrentOwner):
     """Plan courant du propriétaire + jauges d'utilisation. Les limites viennent
     du plan (base), jamais du code (invariant 8)."""
     owner_id = str(owner["id"])
-    plan = plans.get_plan(conn, owner_id)
+    ent = plans.effective_entitlements(conn, owner_id)   # point d'entrée unique
+    plan = ent["plan"]
     sub = plans.get_subscription(conn, owner_id)
 
     usage = UsageOut(
@@ -68,7 +69,10 @@ def my_subscription(conn: Conn, owner: CurrentOwner):
         plan=PlanOut(**plan),
         status=(sub["status"] if sub else "active"),
         usage=usage,
-        has_stripe_customer=bool(sub and sub.get("stripe_customer_id")))
+        has_stripe_customer=bool(sub and sub.get("stripe_customer_id")),
+        on_trial=ent["on_trial"],
+        trial_expired=ent["trial_expired"],
+        trial_ends_at=ent["trial_ends_at"])
 
 
 # ── Paiement : session Checkout (V2-05b, volet 2) ────────────────────────────

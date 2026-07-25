@@ -54,6 +54,17 @@ test("inscription gratuite : jeton posé + /me vérifié + entrée back-office",
   assert.ok(state.maxSuppress >= 1, "intercepteur suspendu pendant le parcours");
 });
 
+test("inscription en essai : aucun Checkout, entrée back-office (V2-18a)", async () => {
+  const { deps, calls, state } = makeDeps();
+  const r = await submitAuth({
+    mode: "register", planId: "trial",
+    credentials: { email: "a@b.c", password: "password123", full_name: "A" }, deps,
+  });
+  assert.deepEqual(r, { outcome: "properties" });
+  assert.equal(state.redirected, null);            // l'essai ne passe pas par Stripe
+  assert.ok(!names(calls).includes("startCheckout"));
+});
+
 test("inscription payante : Checkout après jeton+/me, redirection obtenue", async () => {
   const { deps, calls, state } = makeDeps();
   const r = await submitAuth({

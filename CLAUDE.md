@@ -273,6 +273,19 @@ exposé, peer auth).
   le plafond du plan est court-circuité. Plan gratuit → 0 cible → aucune
   traduction publiée, et **les traductions déjà en base ne sont jamais effacées**
   au downgrade (repli fr, invariant 1).
+- Lecture seule d'essai côté front (V2-18a) : le refus d'écriture est un **403**
+  `detail={"code":"trial_expired","message":<FR>}` (même forme objet que le 402
+  quota). `js/quota.js` expose désormais `handlePlanLimit(err)` qui gère **les
+  deux** codes (`quota_exceeded` **et** `trial_expired`) → encart vers
+  `#/abonnement` ; `handleQuotaError` en est un **alias** (les vues existantes
+  marchent sans changement). Toute nouvelle action d'écriture doit passer son
+  erreur à `handlePlanLimit` avant tout `toast`. Le **bandeau global** de lecture
+  seule (`app.js updateReadonlyBanner`) s'affiche sur `owner.trial_expired ===
+  true` **strict** (jamais sur un champ absent — comme le bandeau de vérif email).
+  L'état d'essai vient de `/me` (`on_trial`/`trial_expired`/`trial_ends_at`) et de
+  `/api/subscription` (mêmes champs + compte à rebours). **V2-17** : partout où on
+  affichait « Jusqu'à 5 langues » / « X/5 », le front dit maintenant « Toutes les
+  langues disponibles » dès que `features.langs > 1` (promesse = capacité réelle).
 - Facturation Stripe (V2-05b) : le webhook est la **seule** autorité d'état
   (invariant 9) — ne jamais écrire `subscriptions.status/plan_id/
   current_period_end` depuis le `success_url` ni un endpoint synchrone. Le
