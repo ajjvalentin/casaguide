@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 os.environ.setdefault("CASAGUIDE_DB", "postgresql://localhost/casaguide")
@@ -152,8 +153,10 @@ def test_cap_target_langs_paid_allows_up_to_limit(conn):
 
 
 def test_watermark_flag_follows_plan(conn):
+    # V2-18a (décision 25/07) : watermark présent sur essai/gratuit/solo, absent pro.
+    assert plans.wants_watermark(_seed_plan(conn, "trial")) is True
     assert plans.wants_watermark(_seed_plan(conn, "free")) is True
-    assert plans.wants_watermark(_seed_plan(conn, "solo")) is False
+    assert plans.wants_watermark(_seed_plan(conn, "solo")) is True
     assert plans.wants_watermark(_seed_plan(conn, "pro")) is False
 
 
@@ -161,3 +164,57 @@ def test_unknown_resource_raises(conn):
     oid = _make_owner(conn, "free")
     with pytest.raises(ValueError):
         plans.check_quota(conn, oid, "bananas")
+
+
+# ── Modèle d'essai : expiration & droits effectifs (V2-18a) ──────────────────
+
+def _set_trial(conn, oid, ends, *, status="trialing", plan_id="trial"):
+    conn.execute(
+        """UPDATE subscriptions SET plan_id = %s, status = %s, trial_ends_at = %s
+           WHERE owner_id = %s""",
+        (plan_id, status, ends, oid))
+    conn.commit()
+
+
+def test_is_trial_expired_only_for_past_trialing():
+    """Pure : expiré ssi statut 'trialing' ET échéance dépassée. Un plan payant /
+    gratuit / sans échéance n'est jamais expiré (l'accès ne dépend que du plan)."""
+    now = datetime(2026, 7, 25, 12, 0, tzinfo=timezone.utc)
+    past = now - timedelta(days=1)
+    future = now + timedelta(days=5)
+    assert plans.is_trial_expired({"status": "trialing", "trial_ends_at": past}, now=now) is True
+    assert plans.is_trial_expired({"status": "trialing", "trial_ends_at": future}, now=now) is False
+    assert plans.is_trial_expired({"status": "trialing", "trial_ends_at": None}, now=now) is False
+    assert plans.is_trial_expired({"status": "active", "trial_ends_at": past}, now=now) is False
+    assert plans.is_trial_expired(None, now=now) is False
+
+
+def test_effective_entitlements_trial_active(conn):
+    oid = _make_owner(conn, "trial")
+    now = datetime(2026, 7, 25, tzinfo=timezone.utc)
+    _set_trial(conn, oid, now + timedelta(days=10))
+    ent = plans.effective_entitlements(conn, oid, now=now)
+    assert ent["plan"]["id"] == "trial"
+    assert ent["on_trial"] is True and ent["trial_expired"] is False
+    assert plans.can_write(conn, oid, now=now) is True
+
+
+def test_effective_entitlements_trial_expired_is_read_only(conn):
+    oid = _make_owner(conn, "trial")
+    now = datetime(2026, 7, 25, tzinfo=timezone.utc)
+    _set_trial(conn, oid, now - timedelta(days=1))
+    ent = plans.effective_entitlements(conn, oid, now=now)
+    assert ent["trial_expired"] is True and ent["read_only"] is True
+    assert ent["on_trial"] is False
+    assert plans.can_write(conn, oid, now=now) is False
+
+
+def test_paid_plan_never_read_only_even_with_stale_trial_end(conn):
+    """Sécurité : un plan payant (statut 'active') reste inscriptible même si une
+    vieille échéance d'essai traîne — l'expiration ne s'applique qu'à 'trialing'."""
+    oid = _make_owner(conn, "solo")
+    now = datetime(2026, 7, 25, tzinfo=timezone.utc)
+    _set_trial(conn, oid, now - timedelta(days=30), status="active", plan_id="solo")
+    ent = plans.effective_entitlements(conn, oid, now=now)
+    assert ent["trial_expired"] is False
+    assert plans.can_write(conn, oid, now=now) is True

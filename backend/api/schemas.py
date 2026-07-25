@@ -56,6 +56,11 @@ class OwnerOut(BaseModel):
     locale: str
     email_verified: bool = False
     plan_id: str | None = None
+    # État d'essai (V2-18a) : pilote la page « Mon abonnement » et le bandeau de
+    # lecture seule du back-office. `trial_expired` ⇒ écritures refusées (403).
+    on_trial: bool = False
+    trial_expired: bool = False
+    trial_ends_at: datetime | None = None
 
 
 # ── Plans & abonnement (V2-05a) ──────────────────────────────────────────────

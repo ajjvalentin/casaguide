@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from . import repo
 
@@ -50,7 +51,8 @@ def get_subscription(conn, owner_id: str) -> dict | None:
     """Abonnement courant (ligne la plus récente) du propriétaire, ou None."""
     return conn.execute(
         """SELECT id, owner_id, plan_id, status, stripe_customer_id,
-                  stripe_subscription_id, current_period_end, created_at, updated_at
+                  stripe_subscription_id, trial_ends_at, current_period_end,
+                  created_at, updated_at
            FROM subscriptions
            WHERE owner_id = %s
            ORDER BY created_at DESC LIMIT 1""",
@@ -76,6 +78,66 @@ def get_plan(conn, owner_id: str) -> dict:
                 "enrich_quota": 1, "price_month_cts": 0,
                 "features": {"langs": 1, "watermark": True}}
     return fallback
+
+
+# ── Essai & droits effectifs (V2-18a) ────────────────────────────────────────
+
+TRIAL_PLAN_ID = "trial"
+TRIAL_DAYS = 21
+
+
+def _now(now: datetime | None) -> datetime:
+    """Horloge injectable (tests). Toujours en UTC aware."""
+    return now if now is not None else datetime.now(timezone.utc)
+
+
+def is_trial_expired(sub: dict | None, *, now: datetime | None = None) -> bool:
+    """Vrai si l'abonnement est un essai arrivé à échéance.
+
+    L'expiration est calculée À LA LECTURE (invariant V2-18a) : un essai est
+    « expiré » ssi son statut est 'trialing' ET `trial_ends_at` est dépassé.
+    Jamais de job qui basculerait des lignes — pas d'état à maintenir, pas de
+    course. Un abonnement payant / gratuit / sans échéance n'est jamais expiré."""
+    if not sub or sub.get("status") != "trialing":
+        return False
+    ends = sub.get("trial_ends_at")
+    if ends is None:
+        return False
+    if ends.tzinfo is None:  # défensif : normalise en UTC aware
+        ends = ends.replace(tzinfo=timezone.utc)
+    return ends < _now(now)
+
+
+def effective_entitlements(conn, owner_id: str, *,
+                           now: datetime | None = None) -> dict:
+    """Droits effectifs d'un propriétaire : plan courant + état d'essai.
+
+    **Point d'entrée unique** des contrôles de droits (V2-18a) : `check_quota`,
+    le garde de lecture seule et le watermark s'y branchent. Renvoie toujours un
+    plan (jamais None, cf. `get_plan`).
+
+    Clés : `plan` (dict), `on_trial` (essai en cours), `trial_expired` (essai
+    échu → lecture seule), `read_only` (alias métier de trial_expired),
+    `trial_ends_at` (échéance ou None)."""
+    sub = get_subscription(conn, owner_id)
+    plan = get_plan(conn, owner_id)
+    ends = sub.get("trial_ends_at") if sub else None
+    trialing = bool(sub and sub.get("status") == "trialing" and ends is not None)
+    expired = is_trial_expired(sub, now=now)
+    return {
+        "plan": plan,
+        "on_trial": trialing and not expired,
+        "trial_expired": expired,
+        "read_only": expired,
+        "trial_ends_at": ends,
+    }
+
+
+def can_write(conn, owner_id: str, *, now: datetime | None = None) -> bool:
+    """Le propriétaire peut-il écrire (créer/éditer) ? Faux si l'essai est expiré
+    (back-office en lecture seule, V2-18a). Les lectures restent toujours servies
+    et aucune donnée n'est jamais supprimée (invariant 1)."""
+    return not effective_entitlements(conn, owner_id, now=now)["trial_expired"]
 
 
 # ── Fonctionnalités (features JSONB) ─────────────────────────────────────────
@@ -127,8 +189,13 @@ def check_quota(conn, owner_id: str, resource: str, *,
     - `langs`        : nombre de langues déjà publiées (source comprise) vs
       `features.langs` — informatif (jauges) ; le plafonnement effectif des
       traductions se fait via `cap_target_langs`.
+
+    Le plan est résolu via `effective_entitlements` (point d'entrée unique des
+    droits, V2-18a). NB : à l'expiration de l'essai, la création est de toute
+    façon refusée en amont par le garde de lecture seule (403 `trial_expired`) —
+    ce module ne connaît pas FastAPI et ne lève pas d'exception.
     """
-    plan = get_plan(conn, owner_id)
+    plan = effective_entitlements(conn, owner_id)["plan"]
 
     if resource == "properties":
         used = repo.count_properties(conn, owner_id)

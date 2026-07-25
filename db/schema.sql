@@ -46,6 +46,7 @@ CREATE TABLE subscriptions (
     stripe_subscription_id TEXT,
     status                 TEXT NOT NULL DEFAULT 'trialing',
                            -- trialing | active | past_due | canceled
+    trial_ends_at          TIMESTAMPTZ,        -- échéance de l'essai (V2-18a ; NULL hors essai)
     current_period_end     TIMESTAMPTZ,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()

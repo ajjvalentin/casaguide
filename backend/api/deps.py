@@ -11,6 +11,7 @@ from enrich import db, distance, geocode, pipeline, translate
 
 from . import billing_stripe as _billing_stripe
 from . import mailer as _mailer
+from . import plans as _plans
 from . import poi_search, repo, security
 from .config import settings
 
@@ -85,6 +86,34 @@ def owned_property(
 
 
 OwnedProperty = Annotated[dict, Depends(owned_property)]
+
+
+# ── Garde de lecture seule à l'expiration de l'essai (V2-18a) ────────────────
+
+TRIAL_EXPIRED = "trial_expired"
+_TRIAL_EXPIRED_MSG = (
+    "Votre essai gratuit est terminé. Vos guides restent en ligne, mais la "
+    "modification de vos logements est suspendue. Choisissez une offre pour "
+    "reprendre la main.")
+
+
+def require_write_access(conn: Conn, owner: CurrentOwner) -> None:
+    """Refuse toute écriture propriétaire quand l'essai est expiré (V2-18a).
+
+    Posé en `dependencies=[...]` sur les seules routes d'ÉCRITURE (création /
+    édition de logements, sections, POI, médias, secrets, enrichissement,
+    traduction) → **403 `trial_expired`** (`detail` objet, comme le 402
+    `quota_exceeded`, intercepté côté front). Les GET n'en dépendent pas : les
+    données, guides et médias restent servis (lecture seule non destructive,
+    invariant 1). Le Checkout / portail (porte de sortie) n'en dépendent pas non
+    plus. L'expiration est calculée à la lecture (`plans.can_write`)."""
+    if not _plans.can_write(conn, str(owner["id"])):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": TRIAL_EXPIRED, "message": _TRIAL_EXPIRED_MSG})
+
+
+WriteAccess = Annotated[None, Depends(require_write_access)]
 
 
 # ── Exécuteur du pipeline d'enrichissement (injectable pour les tests) ───────

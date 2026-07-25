@@ -153,9 +153,10 @@ def get_plan_by_id(conn, plan_id: str) -> dict | None:
 
 
 def list_plans(conn) -> list[dict]:
-    """Catalogue des plans (par prix croissant) — inscription & page abonnement."""
+    """Catalogue des plans (par prix croissant, puis id pour départager les deux
+    plans à 0 : 'free' et 'trial') — inscription & page abonnement."""
     return conn.execute(
-        "SELECT * FROM plans ORDER BY price_month_cts"
+        "SELECT * FROM plans ORDER BY price_month_cts, id"
     ).fetchall()
 
 

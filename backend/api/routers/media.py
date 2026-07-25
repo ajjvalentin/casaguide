@@ -7,12 +7,12 @@ des images (strip EXIF). Isolation multi-tenant : tout passe par `OwnedProperty`
 """
 from __future__ import annotations
 
-from fastapi import (APIRouter, File, Form, HTTPException, Query, Response,
-                     UploadFile, status)
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
+                     Response, UploadFile, status)
 
 from .. import media_files, repo, storage
 from ..config import settings
-from ..deps import Conn, OwnedProperty
+from ..deps import Conn, OwnedProperty, require_write_access
 from ..schemas import MediaCaptionIn, MediaOut, MediaReorderIn
 
 router = APIRouter(prefix="/api/properties/{property_id}/media", tags=["media"])
@@ -45,7 +45,8 @@ def list_media(conn: Conn, prop: OwnedProperty,
     return [_media_out(r, pid) for r in rows]
 
 
-@router.post("", response_model=MediaOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=MediaOut, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_write_access)])
 async def upload_media(
     conn: Conn, prop: OwnedProperty,
     file: UploadFile = File(...),
@@ -100,7 +101,8 @@ async def upload_media(
 
 
 # `/reorder` (POST) est distinct de `/{media_id}` : aucune ambiguïté de route.
-@router.post("/reorder", response_model=list[MediaOut])
+@router.post("/reorder", response_model=list[MediaOut],
+             dependencies=[Depends(require_write_access)])
 def reorder_media(payload: MediaReorderIn, conn: Conn, prop: OwnedProperty):
     """Applique un nouvel ordre d'affichage aux médias du logement."""
     pid = str(prop["id"])
@@ -125,7 +127,8 @@ def serve_media(media_id: str, conn: Conn, prop: OwnedProperty):
                     headers={"Cache-Control": "private, max-age=3600"})
 
 
-@router.patch("/{media_id}", response_model=MediaOut)
+@router.patch("/{media_id}", response_model=MediaOut,
+              dependencies=[Depends(require_write_access)])
 def update_media(media_id: str, payload: MediaCaptionIn, conn: Conn,
                  prop: OwnedProperty):
     """Modifie la légende d'un média."""
@@ -136,7 +139,8 @@ def update_media(media_id: str, payload: MediaCaptionIn, conn: Conn,
     return _media_out(repo.get_media_full(conn, pid, media_id), pid)
 
 
-@router.delete("/{media_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{media_id}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(require_write_access)])
 def delete_media(media_id: str, conn: Conn, prop: OwnedProperty):
     row = repo.delete_media(conn, str(prop["id"]), media_id)
     if not row:

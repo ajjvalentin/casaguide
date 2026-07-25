@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from psycopg.errors import UniqueViolation
 
-from .. import emails, repo, security
+from .. import emails, plans, repo, security
 from ..config import settings
 from ..deps import Conn, CurrentOwner, Mailer
 from ..schemas import (ForgotIn, LoginIn, MessageOut, OwnerOut, RegisterIn,
@@ -122,8 +122,13 @@ def login(payload: LoginIn, conn: Conn):
 
 
 @router.get("/me", response_model=OwnerOut)
-def me(owner: CurrentOwner):
-    return OwnerOut(**owner)
+def me(owner: CurrentOwner, conn: Conn):
+    # État d'essai (V2-18a) : exposé au front pour la page « Mon abonnement » et
+    # le bandeau global de lecture seule. Calculé à la lecture (jamais un job).
+    ent = plans.effective_entitlements(conn, str(owner["id"]))
+    return OwnerOut(**owner, on_trial=ent["on_trial"],
+                    trial_expired=ent["trial_expired"],
+                    trial_ends_at=ent["trial_ends_at"])
 
 
 # ── Mot de passe oublié (V2-08) ──────────────────────────────────────────────

@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import repo
 from ..deps import (Conn, DistanceComputer, NominatimSearcher, OwnedProperty,
-                    get_distance_computer, get_poi_searcher)
+                    get_distance_computer, get_poi_searcher,
+                    require_write_access)
 from ..schemas import PoiCandidateOut, PoiCreateIn, PoiEditIn, PoiStatusIn
 
 router = APIRouter(prefix="/api/properties/{property_id}/pois", tags=["pois"])
@@ -49,7 +50,8 @@ def search_pois(conn: Conn, prop: OwnedProperty,
     return searcher(q, prop.get("lat"), prop.get("lon"))
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_write_access)])
 def create_poi(payload: PoiCreateIn, conn: Conn, prop: OwnedProperty,
                computer: Annotated[DistanceComputer, Depends(get_distance_computer)]):
     """Crée un POI saisi par le propriétaire (source='owner', status='approved').
@@ -80,19 +82,19 @@ def _require_poi(conn, property_id: str, poi_id: str) -> dict:
     return poi
 
 
-@router.post("/{poi_id}/approve")
+@router.post("/{poi_id}/approve", dependencies=[Depends(require_write_access)])
 def approve_poi(poi_id: str, conn: Conn, prop: OwnedProperty):
     _require_poi(conn, str(prop["id"]), poi_id)
     return repo.set_poi_status(conn, str(prop["id"]), poi_id, "approved")
 
 
-@router.post("/{poi_id}/reject")
+@router.post("/{poi_id}/reject", dependencies=[Depends(require_write_access)])
 def reject_poi(poi_id: str, conn: Conn, prop: OwnedProperty):
     _require_poi(conn, str(prop["id"]), poi_id)
     return repo.set_poi_status(conn, str(prop["id"]), poi_id, "rejected")
 
 
-@router.post("/{poi_id}/status")
+@router.post("/{poi_id}/status", dependencies=[Depends(require_write_access)])
 def set_poi_status(poi_id: str, payload: PoiStatusIn, conn: Conn, prop: OwnedProperty):
     """Positionne le statut d'un POI (annulation réversible d'un Approuver/Rejeter,
     M-23 : restaure le statut précédent, y compris 'suggested')."""
@@ -100,7 +102,7 @@ def set_poi_status(poi_id: str, payload: PoiStatusIn, conn: Conn, prop: OwnedPro
     return repo.set_poi_status(conn, str(prop["id"]), poi_id, payload.status)
 
 
-@router.patch("/{poi_id}")
+@router.patch("/{poi_id}", dependencies=[Depends(require_write_access)])
 def edit_poi(poi_id: str, payload: PoiEditIn, conn: Conn, prop: OwnedProperty):
     """Édite un POI (nom, description, commentaire…) et le passe en 'edited'."""
     _require_poi(conn, str(prop["id"]), poi_id)

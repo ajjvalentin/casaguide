@@ -117,6 +117,23 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
    Stripe (`ops/stripe_sync_products.py`), jamais l'inverse ni en dur. Un retour
    à `free` (annulation) reste **non destructif** (invariant 8). Sans clé Stripe,
    `/api/billing/*` et le webhook répondent **503** (mode dégradé propre).
+10. **Modèle d'essai (V2-18a)** : toute inscription démarre un **essai de 21 jours**
+    (`plan_id='trial'`, `status='trialing'`, `subscriptions.trial_ends_at`), aux
+    capacités Pro **sauf** l'export PDF/hors-ligne (`features.pdf_export=false`,
+    verrou prêt pour V2-14). **Rien n'est jamais supprimé** à l'expiration :
+    lecture seule = refus des **écritures** (403 `detail.code='trial_expired'`,
+    garde `deps.require_write_access` sur les seules routes d'écriture), jamais
+    des lectures ; guides `/g` et `/s` restent servis (avec watermark). **L'expiration
+    est calculée à la LECTURE** (`plans.is_trial_expired` : `status='trialing'` +
+    `trial_ends_at < now`), **jamais** par un job qui basculerait des lignes (pas
+    d'état à maintenir, pas de course). **Point d'entrée unique** des droits :
+    `plans.effective_entitlements(conn, owner_id)` (→ `plan`, `on_trial`,
+    `trial_expired`, `read_only`) ; `check_quota`, le garde de lecture seule et
+    `/me` s'y branchent. Le **watermark** « Créé avec Holaguia » est présent sur
+    **essai + solo**, absent **pro** seulement (échelle de marque, décision 25/07).
+    Souscrire (webhook plan payant → `status='active'`) sort du régime d'essai et
+    réactive les écritures. La définition du plan `trial` vit **en base** (seed),
+    aucun droit codé en dur (invariant 8).
 
 ## Commandes
 
@@ -130,6 +147,7 @@ psql -d casaguide -f db/migrations/003_pois_cuisine.sql   # colonne cuisine sur 
 psql -d casaguide -f db/migrations/004_wifi_networks.sql  # wifi_networks_enc (multi-wifi, M-15)
 psql -d casaguide -f db/migrations/007_backfill_free_subscriptions.sql # abo 'free' de rattrapage (V2-05a)
 psql -d casaguide -f db/migrations/008_stripe_billing.sql # stripe_events + plans.stripe_price_id (V2-05b)
+psql -d casaguide -f db/migrations/009_trial_model.sql   # subscriptions.trial_ends_at (essai 21 j, V2-18a)
 
 # Backend
 cd backend

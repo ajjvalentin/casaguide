@@ -16,7 +16,7 @@ from enrich.settings import settings as enrich_settings
 from .. import plans, repo
 from ..deps import (
     Conn, CurrentOwner, EnrichmentRunner, OwnedProperty, TranslationRunner,
-    get_enrichment_runner, get_translation_runner,
+    get_enrichment_runner, get_translation_runner, require_write_access,
 )
 from ..quota import quota_exceeded
 from ..schemas import EnrichIn, JobOut
@@ -48,7 +48,8 @@ def schedule_translation(background, conn, prop: dict, runner: TranslationRunner
     return job_id
 
 
-@router.post("/enrich", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/enrich", status_code=status.HTTP_202_ACCEPTED,
+             dependencies=[Depends(require_write_access)])
 def trigger_enrich(
     payload: EnrichIn,
     background: BackgroundTasks,
@@ -75,7 +76,8 @@ def trigger_enrich(
     return {"job_id": job_id, "status": "accepted"}
 
 
-@router.post("/translate", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/translate", status_code=status.HTTP_202_ACCEPTED,
+             dependencies=[Depends(require_write_access)])
 def trigger_translation(
     background: BackgroundTasks,
     conn: Conn,

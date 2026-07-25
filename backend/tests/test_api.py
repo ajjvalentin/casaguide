@@ -783,7 +783,7 @@ def test_property_stats(client):
     s0 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"])
     assert s0.status_code == 200
     assert s0.json()["completion_pct"] == 0
-    assert s0.json()["sections_total"] == 44  # catalogue complet du seed
+    assert s0.json()["sections_total"] == 45  # catalogue complet du seed
     assert s0.json()["pois_total"] == 0
 
     # Deux sections complétées puis enrichissement (4 POI suggérés)
@@ -795,7 +795,7 @@ def test_property_stats(client):
 
     s1 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
     assert s1["sections_done"] == 2
-    assert s1["completion_pct"] == round(2 / 44 * 100)
+    assert s1["completion_pct"] == round(2 / 45 * 100)
     assert s1["pois_total"] == 4 and s1["pois_suggested"] == 4
 
     # Un autre propriétaire n'accède pas aux indicateurs (isolation)
@@ -1350,15 +1350,15 @@ def test_property_stats_excludes_staff_sections(client):
     owner = register(client)
     prop = make_property(client, owner["headers"])
     pid = prop["id"]
-    # 44 sections voyageur au catalogue ; les 5 sections staff n'y comptent pas
+    # 45 sections voyageur au catalogue ; les 5 sections staff n'y comptent pas
     s0 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
-    assert s0["sections_total"] == 44
+    assert s0["sections_total"] == 45
 
     # Compléter une section staff ne change ni le total ni le pourcentage voyageur
     client.put(f"/api/properties/{pid}/sections/S_checklist", headers=owner["headers"],
                json={"content": {"tasks": [{"task": "x"}]}, "completed": True, "is_visible": True})
     s1 = client.get(f"/api/properties/{pid}/stats", headers=owner["headers"]).json()
-    assert s1["sections_total"] == 44
+    assert s1["sections_total"] == 45
     assert s1["sections_done"] == 0 and s1["completion_pct"] == 0
 
 
@@ -1667,21 +1667,30 @@ def test_downgrade_preserves_data_and_existing_translations(client):
                           headers=owner["headers"]).json()["published_langs"]) == {"en", "es"}
 
 
-def test_watermark_present_on_free_absent_on_paid(client):
-    """Le pied de page « Créé avec Holaguia » n'apparaît que sur le plan gratuit
-    (features.watermark) ; il disparaît dès le passage à une offre payante."""
-    owner = register(client)                        # free → watermark
+def test_watermark_present_on_trial_and_solo_absent_on_pro(client):
+    """Le pied de page « Créé avec Holaguia » apparaît sur ESSAI et SOLO
+    (features.watermark, décision 25/07 — le watermark est l'échelle de la
+    marque) ; seul PRO en est exempt. La marque disparaît uniquement en Pro."""
+    owner = register(client)
     prop = make_property(client, owner["headers"])
     pid, token = prop["id"], prop["guide_token"]
     _publish_guide_with_content(client, owner["headers"], pid)
 
-    free_html = client.get(f"/g/{token}").text
-    assert "Créé avec Holaguia" in free_html
-    assert 'class="watermark"' in free_html
+    # Essai (plan 'trial' → watermark)
+    set_owner_plan(owner["email"], "trial")
+    trial_html = client.get(f"/g/{token}").text
+    assert "Créé avec Holaguia" in trial_html
+    assert 'class="watermark"' in trial_html
 
-    set_owner_plan(owner["email"], "solo")          # payant → pas de watermark
-    paid_html = client.get(f"/g/{token}").text
-    assert "Créé avec Holaguia" not in paid_html
+    # Solo (payant mais avec watermark désormais)
+    set_owner_plan(owner["email"], "solo")
+    solo_html = client.get(f"/g/{token}").text
+    assert "Créé avec Holaguia" in solo_html
+
+    # Pro (marque blanche du pied de page)
+    set_owner_plan(owner["email"], "pro")
+    pro_html = client.get(f"/g/{token}").text
+    assert "Créé avec Holaguia" not in pro_html
 
 
 def test_plans_catalogue_is_public_and_from_db(client):
@@ -1690,12 +1699,15 @@ def test_plans_catalogue_is_public_and_from_db(client):
     r = client.get("/api/plans")
     assert r.status_code == 200
     by_id = {p["id"]: p for p in r.json()}
-    assert set(by_id) == {"free", "solo", "pro"}
+    # V2-18a : le catalogue expose aussi le plan d'essai ('trial', non achetable).
+    assert set(by_id) == {"trial", "free", "solo", "pro"}
     assert by_id["free"]["price_month_cts"] == 0
+    assert by_id["trial"]["price_month_cts"] == 0
+    assert by_id["trial"]["features"]["pdf_export"] is False   # verrou export (V2-14)
     assert by_id["pro"]["max_properties"] is None        # illimité
     assert by_id["solo"]["features"]["langs"] == 5
-    # ordre par prix croissant
-    assert [p["id"] for p in r.json()] == ["free", "solo", "pro"]
+    # ordre par prix croissant puis id (déterministe malgré les deux prix 0)
+    assert [p["id"] for p in r.json()] == ["free", "trial", "solo", "pro"]
 
 
 def test_subscription_reports_plan_and_usage(client):
@@ -1714,6 +1726,77 @@ def test_subscription_reports_plan_and_usage(client):
     assert body2["plan"]["id"] == "pro"
     assert body2["usage"]["properties"]["limit"] is None
     assert body2["usage"]["langs"]["limit"] == 5
+
+
+# ── Essai : expiration → lecture seule (V2-18a) ──────────────────────────────
+
+def _set_subscription(email, *, plan_id, status, trial_ends_at=None):
+    """Écrit directement l'abonnement d'un compte de test (essai en cours/expiré,
+    plan payant…). L'expiration est calculée à la lecture — il suffit de poser
+    un `trial_ends_at` passé sur un abonnement 'trialing'."""
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            """UPDATE subscriptions SET plan_id = %s, status = %s, trial_ends_at = %s
+               WHERE owner_id = (SELECT id FROM owners WHERE email = %s)""",
+            (plan_id, status, trial_ends_at, email))
+        conn.commit()
+
+
+def test_expired_trial_is_read_only_but_keeps_serving(client):
+    """À l'expiration de l'essai : back-office en LECTURE SEULE (écritures → 403
+    `trial_expired`), mais les lectures et le guide voyageur restent servis
+    (rien n'est supprimé, invariant V2-18a). Souscrire réactive les écritures."""
+    from datetime import datetime, timedelta, timezone
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)  # guide en ligne
+
+    # Expiration de l'essai (échéance dans le passé).
+    _set_subscription(owner["email"], plan_id="trial", status="trialing",
+                      trial_ends_at=datetime.now(timezone.utc) - timedelta(days=1))
+
+    # /me reflète l'expiration (pilote le bandeau front).
+    me = client.get("/api/auth/me", headers=owner["headers"]).json()
+    assert me["trial_expired"] is True and me["on_trial"] is False
+
+    # Lectures TOUJOURS servies.
+    assert client.get("/api/properties", headers=owner["headers"]).status_code == 200
+    assert client.get(f"/api/properties/{pid}", headers=owner["headers"]).status_code == 200
+    assert client.get(f"/api/properties/{pid}/sections",
+                      headers=owner["headers"]).status_code == 200
+    # Guide voyageur maintenu en ligne AVEC watermark (le guide devient la pub).
+    g = client.get(f"/g/{token}")
+    assert g.status_code == 200 and "Créé avec Holaguia" in g.text
+
+    # Écritures REFUSÉES en 403 `trial_expired` (detail objet, comme le quota).
+    def _assert_blocked(resp):
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"]["code"] == "trial_expired"
+
+    _assert_blocked(client.post("/api/properties", headers=owner["headers"],
+                                json={"name": "Autre", "address_line1": "X",
+                                      "city": "Y", "country_code": "ES"}))
+    _assert_blocked(client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                                 json={"status": "draft"}))
+    _assert_blocked(client.put(f"/api/properties/{pid}/sections/A_checkin",
+                               headers=owner["headers"],
+                               json={"content": {}, "completed": True}))
+    _assert_blocked(client.post(f"/api/properties/{pid}/enrich",
+                                headers=owner["headers"], json={"trigger": "manual"}))
+    _assert_blocked(client.delete(f"/api/properties/{pid}", headers=owner["headers"]))
+
+    # Le logement n'a PAS été supprimé (la lecture le retrouve intact).
+    assert client.get(f"/api/properties/{pid}",
+                      headers=owner["headers"]).status_code == 200
+
+    # Souscrire (webhook simulé : plan payant, statut actif) réactive les écritures.
+    _set_subscription(owner["email"], plan_id="solo", status="active",
+                      trial_ends_at=None)
+    r = client.post("/api/properties", headers=owner["headers"],
+                    json={"name": "Réactivé", "address_line1": "X", "city": "Y",
+                          "country_code": "ES"})
+    assert r.status_code == 201, r.text
 
 
 # ── Fiche du logement éditable : (re)géocodage explicite (M-24) ──────────────

@@ -8,13 +8,25 @@
 BEGIN;
 
 -- ============================================================================
--- 1. PLANS D’ABONNEMENT (§10 — montants indicatifs, à affiner)
+-- 1. PLANS D’ABONNEMENT (§10) — source de vérité des quotas (invariant 8)
 -- ============================================================================
-
+-- Modèle d'essai (V2-18a, décisions du 25/07) : l'inscription démarre un ESSAI
+-- de 21 jours ('trial') aux capacités Pro (3 logements, quota d'essai, toutes
+-- les langues, aperçu staff, stats) SAUF l'export PDF/hors-ligne (`pdf_export`,
+-- verrou prêt pour V2-14). Le plan 'trial' n'est PAS achetable (prix 0, aucun
+-- stripe_price_id → jamais synchronisé, Checkout le refuse en 422).
+--
+-- Watermark « Créé avec Holaguia » : présent sur ESSAI et SOLO, absent sur PRO
+-- (le watermark est l'échelle de la marque — décision du 25/07 soir). Aucun
+-- client réel en Solo (mode Test) → pas de clause de grand-père nécessaire.
+--
+-- Le plan 'free' est HISTORIQUE : conservé pour les comptes grand-périsés, mais
+-- retiré du chooser d'inscription (front). langs=1 → aucune traduction.
 INSERT INTO plans (id, name, max_properties, enrich_quota, price_month_cts, features) VALUES
-('free', 'Essai gratuit', 1,    1,  0,    '{"langs": 1, "watermark": true,  "stats": false, "white_label": false}'),
-('solo', 'Solo',          3,    3,  790,  '{"langs": 5, "watermark": false, "stats": true,  "white_label": false}'),
-('pro',  'Pro',           NULL, 10, 2900, '{"langs": 5, "watermark": false, "stats": true,  "white_label": true}')
+('trial', 'Essai 21 jours', 3,    3,  0,    '{"langs": 5, "watermark": true,  "stats": true,  "white_label": false, "pdf_export": false, "staff_preview": true}'),
+('free',  'Gratuit',        1,    1,  0,    '{"langs": 1, "watermark": true,  "stats": false, "white_label": false, "pdf_export": false}'),
+('solo',  'Solo',           3,    3,  790,  '{"langs": 5, "watermark": true,  "stats": true,  "white_label": false, "pdf_export": true}'),
+('pro',   'Pro',            NULL, 10, 2900, '{"langs": 5, "watermark": false, "stats": true,  "white_label": true,  "pdf_export": true}')
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name, max_properties = EXCLUDED.max_properties,
   enrich_quota = EXCLUDED.enrich_quota, price_month_cts = EXCLUDED.price_month_cts,

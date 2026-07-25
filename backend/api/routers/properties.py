@@ -14,7 +14,7 @@ from ..quota import quota_exceeded
 from ..deps import (
     Conn, CurrentOwner, DistanceComputer, Geocoder, OwnedProperty,
     TranslationRunner, get_distance_computer, get_geocoder,
-    get_translation_runner,
+    get_translation_runner, require_write_access,
 )
 from ..schemas import (
     GeocodeOut, PropertyIn, PropertyOut, PropertyStatsOut, PropertyUpdate,
@@ -41,7 +41,8 @@ def list_properties(conn: Conn, owner: CurrentOwner):
     return repo.list_properties(conn, str(owner["id"]))
 
 
-@router.post("", response_model=PropertyOut, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=PropertyOut, status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_write_access)])
 def create_property(payload: PropertyIn, conn: Conn, owner: CurrentOwner):
     # Limite de logements selon le plan (§10, V2-05a) — refus propre 402.
     q = plans.check_quota(conn, str(owner["id"]), "properties")
@@ -59,7 +60,8 @@ def get_property(prop: OwnedProperty):
     return prop
 
 
-@router.patch("/{property_id}", response_model=PropertyOut)
+@router.patch("/{property_id}", response_model=PropertyOut,
+              dependencies=[Depends(require_write_access)])
 def update_property(
     payload: PropertyUpdate, conn: Conn, owner: CurrentOwner,
     prop: OwnedProperty, background: BackgroundTasks,
@@ -79,7 +81,8 @@ def update_property(
     return updated
 
 
-@router.delete("/{property_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{property_id}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(require_write_access)])
 def delete_property(conn: Conn, owner: CurrentOwner, prop: OwnedProperty):
     repo.delete_property(conn, str(owner["id"]), str(prop["id"]))
     return None
@@ -93,7 +96,8 @@ def property_stats(conn: Conn, prop: OwnedProperty):
 
 # ── Repositionnement du logement : recalcul des distances (§5.1, M-05) ───────
 
-@router.post("/{property_id}/recompute-distances", response_model=RecomputeOut)
+@router.post("/{property_id}/recompute-distances", response_model=RecomputeOut,
+             dependencies=[Depends(require_write_access)])
 def recompute_distances(
     conn: Conn, prop: OwnedProperty,
     computer: Annotated[DistanceComputer, Depends(get_distance_computer)],
@@ -129,7 +133,8 @@ def _recompute_distances(conn, prop: dict, computer: DistanceComputer) -> int:
 
 # ── (Re)géocodage explicite de l'adresse (§5.1, M-24) ────────────────────────
 
-@router.post("/{property_id}/geocode", response_model=GeocodeOut)
+@router.post("/{property_id}/geocode", response_model=GeocodeOut,
+             dependencies=[Depends(require_write_access)])
 def geocode_property(
     conn: Conn, owner: CurrentOwner, prop: OwnedProperty,
     geocoder: Annotated[Geocoder, Depends(get_geocoder)],
@@ -209,7 +214,8 @@ def _incoming_networks(payload: SecretsIn) -> list[dict]:
     return []
 
 
-@router.put("/{property_id}/secrets", response_model=SecretsOut)
+@router.put("/{property_id}/secrets", response_model=SecretsOut,
+            dependencies=[Depends(require_write_access)])
 def set_secrets(payload: SecretsIn, conn: Conn, prop: OwnedProperty):
     if not crypto.is_configured():
         raise HTTPException(
@@ -259,7 +265,8 @@ def list_sections(conn: Conn, prop: OwnedProperty):
     }
 
 
-@router.put("/{property_id}/sections/{template_code}")
+@router.put("/{property_id}/sections/{template_code}",
+            dependencies=[Depends(require_write_access)])
 def upsert_section(template_code: str, payload: SectionUpsertIn, conn: Conn,
                    prop: OwnedProperty):
     if not repo.section_template_exists(conn, template_code):
