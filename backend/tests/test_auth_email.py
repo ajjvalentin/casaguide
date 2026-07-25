@@ -375,6 +375,87 @@ def test_register_survives_verification_email_failure():
             conn.commit()
 
 
+# ── V2-16b : le compte doit être VISIBLE avant/pendant l'envoi (course commit) ─
+# Second volet du même bug de prod (25/07, avec lecture du code) : `get_conn`
+# commite à la SORTIE du générateur, laquelle s'exécute APRÈS les BackgroundTasks.
+# Un envoi SMTP lent (domaine invalide) prenait donc plusieurs secondes AVANT le
+# commit → le front appelait /me dans la foulée (nouvelle connexion) → owner non
+# encore committé → 401 « compte inconnu » → « session expirée ». Le fix (commit
+# explicite avant return) rend l'écriture visible IMMÉDIATEMENT, sans attendre la
+# tâche de fond. Ce test l'aurait attrapé : un mailer qui BLOQUE sur un Event, et
+# on vérifie que l'owner est déjà visible depuis une AUTRE connexion pendant le
+# blocage, et que /me répond 200.
+
+class BlockingMailer:
+    """Mailer dont send() bloque jusqu'à ce qu'on libère un threading.Event —
+    simule un envoi SMTP lent qui, avant le fix, retardait le commit."""
+
+    def __init__(self) -> None:
+        import threading
+        self.entered = threading.Event()   # posé quand send() commence
+        self.release = threading.Event()   # à poser pour laisser send() finir
+        self.sent: list[str] = []
+
+    def send(self, to, email):
+        self.entered.set()
+        # Bloque le thread d'envoi (celui du threadpool des BackgroundTasks).
+        assert self.release.wait(timeout=10), "Event de libération jamais posé"
+        self.sent.append(to)
+
+
+def test_register_account_visible_before_slow_email_completes():
+    """Pendant qu'un envoi de vérification est BLOQUÉ, l'owner doit déjà exister
+    en base (2e connexion) et /me doit répondre 200 avec le bon jeton."""
+    import threading
+
+    m = BlockingMailer()
+    app.dependency_overrides[get_mailer] = lambda: m
+    c = TestClient(app)
+    email = f"{uuid.uuid4()}@casaguide-test.com"
+    result: dict = {}
+
+    def do_register():
+        result["resp"] = c.post(
+            "/api/auth/register",
+            json={"email": email, "password": "password123",
+                  "full_name": "Prop Test"})
+
+    # L'inscription tourne dans un thread : avec TestClient, la BackgroundTask
+    # (l'envoi bloquant) s'exécute AVANT le retour de .post() → sans thread on se
+    # bloquerait nous-mêmes. Grâce au commit explicite, la réponse et le commit
+    # sont déjà faits quand send() se met à bloquer.
+    t = threading.Thread(target=do_register)
+    t.start()
+    try:
+        assert m.entered.wait(timeout=10), "send() n'a jamais démarré"
+        # ── Ici, l'envoi est EN COURS de blocage. Avant le fix, le commit
+        #    n'aurait pas encore eu lieu → owner invisible / /me = 401. ──
+        with _db() as conn:
+            row = conn.execute("SELECT id FROM owners WHERE email = %s",
+                               (email,)).fetchone()
+        assert row is not None, "owner non visible pendant l'envoi (commit tardif)"
+
+        # Le JWT (déjà renvoyé) donne accès au profil, envoi toujours bloqué.
+        # (La réponse est disponible car le commit précède le blocage de send().)
+        assert m.entered.is_set()
+    finally:
+        m.release.set()          # laisse la tâche de fond se terminer
+        t.join(timeout=10)
+
+    r = result["resp"]
+    assert r.status_code == 201, r.text
+    token = r.json()["access_token"]
+    me = c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200, me.text
+    assert me.json()["email"] == email
+    assert m.sent == [email]     # l'envoi a bien fini (aucun effet de bord perdu)
+
+    app.dependency_overrides.clear()
+    with _db() as conn:
+        conn.execute("DELETE FROM owners WHERE email = %s", (email,))
+        conn.commit()
+
+
 def test_forgot_survives_email_failure(client):
     """Même classe de bug sur /forgot : un envoi qui échoue ne doit pas annuler
     la création du jeton de réinitialisation (la réponse neutre 200 est déjà

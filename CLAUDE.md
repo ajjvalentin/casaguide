@@ -390,6 +390,27 @@ exposé, peer auth).
   authentifié (`js/authflow.js submitAuth`), et un `401` sur une **route publique**
   (inscription/connexion) ou la sonde de démarrage n'éjecte pas
   (`api.suppressUnauthorizedRedirect`).
+- **BackgroundTasks retardent le commit de `get_conn` (V2-16b)** : suite directe
+  du piège V2-16. Les `BackgroundTasks` s'exécutent **DANS le contexte de
+  `get_conn`**, entre le return de l'endpoint et la sortie du générateur — donc
+  le **commit** du `with db.connect() as conn` a lieu **APRÈS** elles. Une tâche
+  d'envoi SMTP **lente** (domaine invalide/lent : plusieurs secondes avant
+  d'échouer, même avalée) retarde donc la **VISIBILITÉ** des écritures de la
+  requête, alors que la réponse (`201` + JWT) est déjà partie. Symptôme prod
+  (25/07) : `register` renvoie 201, le front pose le jeton et appelle `/me` dans
+  la foulée (**nouvelle connexion**) → owner pas encore committé → 401 « compte
+  inconnu » → « session expirée » (journal : `register 201` puis `me 401` la même
+  seconde ; le compte apparaît en base quelques secondes plus tard). Règle :
+  **toute route qui ÉCRIT en DB PUIS programme une tâche de fond doit
+  `conn.commit()` EXPLICITEMENT avant `return`** — jamais compter sur le commit
+  du gestionnaire de contexte, qui attend la fin des tâches. Appliqué à
+  `register`, `forgot`, `resend-verification` (`routers/auth.py`) ; le commit du
+  contexte devient un no-op. Couvert par
+  `test_auth_email.py::test_register_account_visible_before_slow_email_completes`
+  (mailer qui BLOQUE sur un `threading.Event` : l'owner doit être visible depuis
+  une 2e connexion pendant le blocage). NB : distinct de V2-16 (best-effort
+  contre le *rollback*) — ici on corrige le *retard* de commit ; les deux gardes
+  sont nécessaires ensemble.
 - Erreurs de validation 422 lisibles (V2-16) : FastAPI renvoie un `detail`
   **liste** `[{loc,msg,type}]` (pas une chaîne ni `{code,message}`). `js/apierrors.js
   messageFromDetail(status, detail)` (module pur, testé hors navigateur) mappe

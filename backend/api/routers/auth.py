@@ -97,6 +97,15 @@ def register(payload: RegisterIn, conn: Conn, mailer: Mailer,
     owner_row = {"id": owner["id"], "email": payload.email,
                  "full_name": payload.full_name}
     _send_verification(conn, owner_row, background, mailer, request)
+    # V2-16b : commit EXPLICITE avant de renvoyer le JWT. Le commit de `get_conn`
+    # a lieu à la sortie du générateur, laquelle s'exécute APRÈS les
+    # BackgroundTasks (même cycle de vie que le rollback V2-16). L'envoi SMTP de
+    # vérification (lent — jusqu'à plusieurs secondes vers un domaine
+    # invalide/lent) retarderait donc la VISIBILITÉ du compte : le front pose le
+    # jeton et appelle /me dans la foulée (nouvelle connexion) → owner non encore
+    # committé → 401 « compte inconnu » → « session expirée ». On rend l'écriture
+    # visible immédiatement ; le commit du gestionnaire de contexte devient no-op.
+    conn.commit()
     return TokenOut(access_token=security.create_access_token(str(owner["id"])))
 
 
@@ -138,6 +147,11 @@ def forgot_password(payload: ForgotIn, conn: Conn, mailer: Mailer,
             # L'envoi (lent) est différé → temps de réponse constant. Best-effort :
             # un échec SMTP ne doit pas annuler la création du jeton (V2-16).
             _send_email_bg(background, mailer, owner["email"], email)
+    # V2-16b : commit explicite avant return (cf. register). L'email est envoyé
+    # en tâche de fond ; le commit du contexte, lui, n'aurait lieu qu'APRÈS elle
+    # → le jeton de réinitialisation ne serait visible qu'une fois l'envoi (lent)
+    # terminé. No-op si aucune écriture (compte inconnu ou cadence).
+    conn.commit()
     return MessageOut(message=_NEUTRAL_MSG)
 
 
@@ -187,4 +201,5 @@ def resend_verification(owner: CurrentOwner, conn: Conn, mailer: Mailer,
     if owner.get("email_verified"):
         return MessageOut(message="Votre adresse email est déjà vérifiée.")
     _send_verification(conn, owner, background, mailer, request)
+    conn.commit()  # V2-16b : rendre le jeton de vérification visible avant l'envoi (cf. register)
     return MessageOut(message="Un nouvel email de vérification vient de partir.")
