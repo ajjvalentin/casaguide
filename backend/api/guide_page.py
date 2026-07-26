@@ -1098,6 +1098,36 @@ def render_staff(prop: dict, sections: list[dict], token: str) -> str:
 </html>"""
 
 
+def render_staff_locked(prop: dict) -> str:
+    """Cahier équipe indisponible : le plan du propriétaire n'inclut pas le guide
+    équipe (réservé à l'offre Pro, V2-18b). Page sobre et digne — un membre de
+    l'équipe peut tomber dessus : aucun message d'erreur brut, jamais de secret.
+    Jamais indexé."""
+    name = _esc(prop.get("name") or "Ce logement")
+    return f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#334049">
+<title>Cahier équipe indisponible</title>
+<link rel="stylesheet" href="{versioned('/guide/guide.css')}">
+</head>
+<body class="staff-page">
+<div class="wrap notfound">
+  <div class="nf-card">
+    <div class="nf-emoji">🧹</div>
+    <h1>Cahier de l'équipe indisponible</h1>
+    <p>Le guide de l'équipe d'entretien de « {name} » est disponible avec
+       l'offre&nbsp;Pro. Demandez à votre hôte d'activer l'offre Pro pour
+       accéder au cahier de préparation.</p>
+  </div>
+</div>
+</body>
+</html>"""
+
+
 def render_not_found() -> str:
     """Page 404 propre : token inconnu ou logement non publié (on ne révèle rien)."""
     return """<!DOCTYPE html>

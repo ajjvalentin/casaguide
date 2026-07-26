@@ -243,7 +243,9 @@ export async function renderEditor(view, pid) {
       if (!(hasSecrets && !secretsAvailable)) toast("Section enregistrée.", "ok");
       refreshMeter(); renderSidebar();
     } catch (err) {
-      toast(err.message || "Enregistrement impossible.", "err");
+      // Refus lié au plan (essai expiré, quota, cahier équipe réservé au Pro —
+      // staff_locked) → encart d'upsell propre plutôt qu'un toast brut (V2-18b).
+      if (!handleQuotaError(err)) toast(err.message || "Enregistrement impossible.", "err");
     } finally {
       saveBtn.disabled = false; mount(saveBtn, icon("save", 17), "Enregistrer");
     }

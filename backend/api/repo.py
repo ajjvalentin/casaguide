@@ -532,6 +532,15 @@ def section_template_exists(conn, template_code: str) -> bool:
     ).fetchone() is not None
 
 
+def section_template_audience(conn, template_code: str) -> str | None:
+    """Audience d'un gabarit de section ('guest' | 'staff'), ou None si inconnu.
+    Sert au gating du cahier équipe réservé à l'offre Pro (V2-18b)."""
+    row = conn.execute(
+        "SELECT audience FROM section_templates WHERE code = %s", (template_code,)
+    ).fetchone()
+    return row["audience"] if row else None
+
+
 def get_section_id(conn, property_id: str, template_code: str) -> str | None:
     """Identifiant de la section instanciée pour ce logement (None si non créée)."""
     row = conn.execute(
@@ -1137,7 +1146,7 @@ def get_property_by_staff_token(conn, token: str) -> dict | None:
     """Logement désigné par son staff_token (tout statut, y compris 'draft').
     None si le token est inconnu — on ne révèle pas l'existence d'un logement."""
     return conn.execute(
-        """SELECT id, name, city, region, country_code, status
+        """SELECT id, owner_id, name, city, region, country_code, status
            FROM properties
            WHERE staff_token = %s""",
         (token,),

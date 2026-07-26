@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 
 QUOTA_EXCEEDED = "quota_exceeded"
+STAFF_LOCKED = "staff_locked"
 
 
 def quota_exceeded(message: str) -> HTTPException:
@@ -21,4 +22,14 @@ def quota_exceeded(message: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
         detail={"code": QUOTA_EXCEEDED, "message": message},
+    )
+
+
+def staff_locked(message: str) -> HTTPException:
+    """Refus 402 spécifique au guide équipe réservé à l'offre Pro (V2-18b). Même
+    forme d'objet que `quota_exceeded` → intercepté côté front par `handlePlanLimit`
+    (encart « passez à l'offre Pro »)."""
+    return HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail={"code": STAFF_LOCKED, "message": message},
     )

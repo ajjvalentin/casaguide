@@ -22,14 +22,20 @@ function hasCode(err, code) {
 
 export function isQuotaError(err) { return hasCode(err, "quota_exceeded"); }
 export function isTrialExpiredError(err) { return hasCode(err, "trial_expired"); }
+export function isStaffLockedError(err) { return hasCode(err, "staff_locked"); }
 
 /* Encart commun. Renvoie true si l'erreur relève du plan (et affiche l'encart),
-   false sinon → l'appelant traite alors l'erreur normalement. */
+   false sinon → l'appelant traite alors l'erreur normalement. Gère trois codes :
+   quota_exceeded (402), trial_expired (403), staff_locked (402, cahier équipe
+   réservé à l'offre Pro — V2-18b). */
 export function handlePlanLimit(err) {
   const trial = isTrialExpiredError(err);
-  if (!trial && !isQuotaError(err)) return false;
+  const staff = isStaffLockedError(err);
+  if (!trial && !staff && !isQuotaError(err)) return false;
 
-  const title = trial ? "Votre essai est terminé" : "Limite de votre offre atteinte";
+  const title = trial ? "Votre essai est terminé"
+    : staff ? "Réservé à l'offre Pro"
+    : "Limite de votre offre atteinte";
   const note = trial
     ? "Vos guides restent en ligne. Choisissez une offre pour reprendre la main "
       + "sur vos logements — aucune donnée n'est perdue."
@@ -37,7 +43,7 @@ export function handlePlanLimit(err) {
       + "cette action.";
 
   const seePlans = el("button", { class: "btn btn-primary" },
-    trial ? "Choisir mon offre" : "Voir les offres");
+    trial ? "Choisir mon offre" : staff ? "Passer à l'offre Pro" : "Voir les offres");
   const close = el("button", { class: "btn btn-ghost" }, "Fermer");
   const m = openModal({
     title,

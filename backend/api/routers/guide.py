@@ -328,6 +328,12 @@ def staff_cahier_page(staff_token: str, conn: Conn):
         return HTMLResponse(guide_page.render_not_found(), status_code=404,
                             headers=_NOINDEX)
     prop, sections = loaded
+    # Gating V2-18b : le cahier équipe est réservé à l'offre Pro (aperçu pendant
+    # l'essai, grand-père pour les comptes existants). Sinon, page sobre d'upsell
+    # (jamais d'erreur brute — un membre du staff peut tomber dessus).
+    if not plans.effective_entitlements(conn, str(prop["owner_id"]))["staff_access"]:
+        return HTMLResponse(guide_page.render_staff_locked(prop),
+                            headers=_public_headers(no_store=True))
     html = guide_page.render_staff(prop, sections, staff_token)
     return HTMLResponse(html, headers=_public_headers(no_store=True))
 
@@ -335,7 +341,14 @@ def staff_cahier_page(staff_token: str, conn: Conn):
 @router.get("/s/{staff_token}/media/{media_id}")
 def staff_media_file(staff_token: str, media_id: str, conn: Conn):
     """Sert un média d'un cahier 'staff' — uniquement une section 'staff' visible.
-    404 sinon, sans rien révéler (jamais un média 'guest' ni de section masquée)."""
+    404 sinon, sans rien révéler (jamais un média 'guest' ni de section masquée).
+    Gating Pro (V2-18b) : si le plan n'inclut pas le guide équipe, 404 (on ne
+    révèle rien de plus que la page verrouillée)."""
+    prop = repo.get_property_by_staff_token(conn, staff_token)
+    if prop and not plans.effective_entitlements(
+            conn, str(prop["owner_id"]))["staff_access"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Média introuvable")
     row = repo.get_staff_media(conn, staff_token, media_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,

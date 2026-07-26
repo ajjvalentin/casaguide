@@ -12,11 +12,22 @@
 import { api, ApiError } from "../api.js";
 import { el, icon, mount, loadingBlock, refreshIcons, toast } from "../ui.js";
 import { redirect } from "../redirect.js";
+import { handlePlanLimit } from "../quota.js";
+
+function amount(cts) {
+  const n = cts / 100;
+  return (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(".", ",")) + " €";
+}
 
 function euros(cts) {
   if (!cts) return "Gratuit";
-  const n = cts / 100;
-  return (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(".", ",")) + " € / mois";
+  return amount(cts) + " / mois";
+}
+
+/* Un plan est-il multilingue ? Grille V2-18b : `features.langs === 'all'`
+   (illimité) ou un entier > 1. Ne jamais comparer 'all' numériquement. */
+function isMultilingual(f) {
+  return f.langs === "all" || (Number(f.langs) || 1) > 1;
 }
 
 /* Une jauge « libellé : used / limit » + barre. limit null = illimité.
@@ -106,19 +117,89 @@ function featureLine(ok, text) {
 
 function planFeatures(plan) {
   const f = plan.features || {};
-  const props = plan.max_properties == null ? "Logements illimités" : `${plan.max_properties} logement${plan.max_properties > 1 ? "s" : ""}`;
-  // V2-17 : la promesse = la capacité réelle → « Toutes les langues disponibles »
-  // dès qu'un plan dépasse la langue source (jamais « Jusqu'à N langues »).
-  const multi = (f.langs || 1) > 1;
+  const props = plan.max_properties == null
+    ? "Logements illimités"
+    : `${plan.max_properties} logement${plan.max_properties > 1 ? "s" : ""} inclus`;
+  // Add-on « logement supplémentaire » (V2-18b, Pro) : mentionné honnêtement.
+  const addon = plan.addon_property_price_cts
+    ? `${amount(plan.addon_property_price_cts)} / mois par logement supplémentaire`
+    : null;
+  // V2-17/V2-18b : la promesse = la capacité réelle → « Toutes les langues
+  // disponibles » dès qu'un plan dépasse la langue source (jamais « Jusqu'à N »).
+  const multi = isMultilingual(f);
   const langs = multi ? "Toutes les langues disponibles" : "Guide en 1 langue";
+  // Guide équipe : exclusif Pro (aperçu pendant l'essai).
+  const staff = f.staff_guide === true || f.staff_guide === "preview";
+  const staffLabel = f.staff_guide === "preview"
+    ? "Guide de l'équipe d'entretien (aperçu)"
+    : "Guide de l'équipe d'entretien";
   return el("ul", { class: "feat-list" },
     featureLine(true, props),
+    addon ? featureLine(true, addon) : null,
     featureLine(true, `${plan.enrich_quota} enrichissement${plan.enrich_quota > 1 ? "s" : ""} IA / mois / logement`),
     featureLine(multi, langs),
+    featureLine(staff, staffLabel),
     featureLine(!!f.pdf_export, "Export PDF & guide hors-ligne"),
     featureLine(!f.watermark, f.watermark ? "Mention « Créé avec Holaguia »" : "Guide sans mention Holaguia"),
     featureLine(!!f.stats, "Statistiques de consultation"),
     featureLine(!!f.white_label, "Marque blanche complète"));
+}
+
+/* Stepper « Logements supplémentaires » (add-on Pro, V2-18b). Affiché pour un
+   abonnement Pro actif : quantité courante, +/-, impact tarifaire, confirmation.
+   La quantité effective revient par le webhook → on affiche « mise à jour en
+   cours » et on invite à actualiser (le front ne modifie jamais l'abonnement). */
+function addonStepper(sub) {
+  if (sub.plan.id !== "pro" || !sub.plan.addon_property_price_cts) return null;
+  const base = sub.plan.price_month_cts;
+  const unit = sub.plan.addon_property_price_cts;
+  const included = sub.plan.max_properties || 0;
+  const initial = sub.addon_qty || 0;
+  let qty = initial;
+
+  const qtyEl = el("b", { style: { fontSize: "18px", minWidth: "28px", textAlign: "center" } }, String(qty));
+  const impact = el("div", { class: "muted", style: { fontSize: "13px", marginTop: "6px" } });
+  const statusEl = el("div", { class: "muted", style: { fontSize: "13px", marginTop: "8px" } });
+  const minus = el("button", { class: "btn btn-ghost btn-icon", "aria-label": "Retirer" }, "−");
+  const plus = el("button", { class: "btn btn-ghost btn-icon", "aria-label": "Ajouter" }, "+");
+  const confirm = el("button", { class: "btn btn-primary" }, "Confirmer");
+
+  function refresh() {
+    qtyEl.textContent = String(qty);
+    minus.disabled = qty <= 0;
+    confirm.disabled = qty === initial;
+    impact.textContent = qty === initial
+      ? `Total actuel : ${euros(base + qty * unit)} (${included + qty} logements).`
+      : `Votre abonnement passera à ${euros(base + qty * unit)} `
+        + `(${included + qty} logements).`;
+  }
+  minus.addEventListener("click", () => { if (qty > 0) { qty--; refresh(); } });
+  plus.addEventListener("click", () => { qty++; refresh(); });
+  confirm.addEventListener("click", async () => {
+    confirm.disabled = true; minus.disabled = plus.disabled = true;
+    statusEl.textContent = "Mise à jour en cours…";
+    try {
+      await api.updateAddons(qty);
+      statusEl.textContent = "Demande envoyée : la modification sera confirmée par "
+        + "Stripe dans quelques secondes. Actualisez la page pour voir la nouvelle "
+        + "quantité.";
+      plus.disabled = false;
+    } catch (err) {
+      minus.disabled = qty <= 0; plus.disabled = false; refresh();
+      statusEl.textContent = "";
+      if (!handlePlanLimit(err)) toast(err.message || "Modification impossible.", "err");
+    }
+  });
+  refresh();
+
+  return el("div", { class: "card", style: { marginBottom: "22px" } },
+    el("h2", { style: { margin: "0 0 4px", fontSize: "18px" } }, "Logements supplémentaires"),
+    el("p", { class: "muted", style: { fontSize: "13px", margin: "0 0 12px" } },
+      `Votre offre Pro inclut ${included} logements. Ajoutez-en autant que `
+      + `nécessaire à ${amount(unit)} / mois chacun.`),
+    el("div", { class: "row", style: { alignItems: "center", gap: "12px" } },
+      minus, qtyEl, plus),
+    impact, statusEl);
 }
 
 /* Lance le Checkout d'un plan payant et redirige. Gère proprement le 503
@@ -219,14 +300,17 @@ export async function renderSubscription(view) {
       ? el("div", { class: "row", style: { justifyContent: "flex-end", marginTop: "14px" } }, manageButton())
       : null);
 
-  // Grille « Changer d'offre » : uniquement les offres souscriptibles (payantes).
-  // L'essai et le gratuit historique ne figurent pas comme cibles (on ne « choisit »
-  // pas l'essai ; le gratuit n'est plus proposé).
-  const buyable = plans.filter((p) => p.price_month_cts > 0);
+  // Grille « Changer d'offre » : les offres payantes, plus le gratuit UNIQUEMENT
+  // pour un compte déjà en plan free (grand-périsé) — un essai ne « descend »
+  // jamais vers le gratuit, son après-essai est la lecture seule (V2-18b, constat).
+  // L'essai n'est jamais une cible (on ne « choisit » pas l'essai).
+  const buyable = plans.filter((p) =>
+    p.price_month_cts > 0 || (p.id === "free" && sub.plan.id === "free"));
   const grid = el("div", { class: "plan-grid" }, ...buyable.map((p) => planCard(p, sub)));
 
   mount(view, el("div", { class: "page page-narrow" },
     header, checkoutBanner(), trialBlock(sub), current,
+    addonStepper(sub),
     el("h2", { style: { fontSize: "18px", margin: "0 0 12px" } }, "Changer d'offre"),
     grid,
     el("p", { class: "muted", style: { fontSize: "13px", marginTop: "14px" } },

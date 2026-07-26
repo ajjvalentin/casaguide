@@ -115,6 +115,9 @@ export const api = {
   // Paiement Stripe (V2-05b) : renvoient une URL de redirection (Checkout / portail)
   startCheckout:   (plan) => request("POST", "/api/billing/checkout", { body: { plan } }),
   openBillingPortal: () => request("POST", "/api/billing/portal"),
+  // Add-on « logement supplémentaire » (V2-18b) : demande la quantité ; la valeur
+  // effective revient par le webhook (le front affiche « mise à jour en cours »).
+  updateAddons:    (quantity) => request("POST", "/api/billing/addons", { body: { quantity } }),
 
   // Auth
   register: (b) => request("POST", "/api/auth/register", { body: b, auth: false }),

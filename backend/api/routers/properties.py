@@ -10,7 +10,7 @@ from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from .. import crypto, plans, poster, repo, wifi
 from ..config import settings
-from ..quota import quota_exceeded
+from ..quota import quota_exceeded, staff_locked
 from ..deps import (
     Conn, CurrentOwner, DistanceComputer, Geocoder, OwnedProperty,
     TranslationRunner, get_distance_computer, get_geocoder,
@@ -268,10 +268,18 @@ def list_sections(conn: Conn, prop: OwnedProperty):
 @router.put("/{property_id}/sections/{template_code}",
             dependencies=[Depends(require_write_access)])
 def upsert_section(template_code: str, payload: SectionUpsertIn, conn: Conn,
-                   prop: OwnedProperty):
-    if not repo.section_template_exists(conn, template_code):
+                   owner: CurrentOwner, prop: OwnedProperty):
+    audience = repo.section_template_audience(conn, template_code)
+    if audience is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail=f"Section inconnue : {template_code}")
+    # Cahier équipe (audience='staff') : réservé à l'offre Pro (aperçu pendant
+    # l'essai, grand-père pour les comptes existants) — V2-18b.
+    if audience == "staff" and not plans.effective_entitlements(
+            conn, str(owner["id"]))["staff_access"]:
+        raise staff_locked(
+            "Le guide de l'équipe d'entretien est réservé à l'offre Pro. "
+            "Passez à l'offre Pro pour préparer et partager le cahier de ménage.")
     return repo.upsert_section(
         conn, str(prop["id"]), template_code,
         content=payload.content, body_md=payload.body_md,

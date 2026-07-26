@@ -1348,6 +1348,74 @@ def test_staff_media_watertight(client):
     assert data["media"] == []
 
 
+def _set_grandfather(email: str, value: bool) -> None:
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            """UPDATE subscriptions SET staff_grandfathered = %s
+               WHERE owner_id = (SELECT id FROM owners WHERE email = %s)""",
+            (value, email))
+        conn.commit()
+
+
+def test_staff_guide_gated_to_pro_with_grandfather(client):
+    """Gating V2-18b : le cahier /s/ est servi sous essai (aperçu) et Pro, verrouillé
+    sous solo/gratuit — sauf clause de grand-père (invariant 3). Jamais d'erreur
+    brute : une page sobre d'upsell (pas un 500)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, staff_token = prop["id"], prop["staff_token"]
+    client.put(f"/api/properties/{pid}/sections/S_checklist", headers=owner["headers"],
+               json={"content": {"tasks": [{"task": "Aérer"}]}, "is_visible": True})
+
+    # Essai (à l'inscription) : aperçu → cahier servi.
+    r = client.get(f"/s/{staff_token}")
+    assert r.status_code == 200 and "Aérer" in r.text
+
+    # Solo : verrouillé (page sobre, jamais de contenu du cahier).
+    set_owner_plan(owner["email"], "solo")
+    _set_grandfather(owner["email"], False)
+    locked = client.get(f"/s/{staff_token}")
+    assert locked.status_code == 200
+    assert "offre" in locked.text.lower() and "Pro" in locked.text
+    assert "Aérer" not in locked.text
+
+    # Pro : de nouveau servi.
+    set_owner_plan(owner["email"], "pro")
+    assert "Aérer" in client.get(f"/s/{staff_token}").text
+
+    # Gratuit grand-périsé : servi malgré le plan (invariant 3).
+    set_owner_plan(owner["email"], "free")
+    _set_grandfather(owner["email"], True)
+    assert "Aérer" in client.get(f"/s/{staff_token}").text
+
+
+def test_staff_section_edit_gated_to_pro(client):
+    """L'édition d'une section du cahier équipe suit le même droit : refus 402
+    `staff_locked` (intercepté par handlePlanLimit côté front) sous solo, autorisé
+    sous Pro / grand-père. Les sections voyageur ne sont jamais bloquées."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+
+    set_owner_plan(owner["email"], "solo")
+    _set_grandfather(owner["email"], False)
+    r = client.put(f"/api/properties/{pid}/sections/S_checklist",
+                   headers=owner["headers"],
+                   json={"content": {"tasks": [{"task": "x"}]}, "is_visible": True})
+    assert r.status_code == 402 and r.json()["detail"]["code"] == "staff_locked"
+    # Une section voyageur reste éditable sous solo (pas de gating staff).
+    g = client.put(f"/api/properties/{pid}/sections/A_checkin",
+                   headers=owner["headers"], json={"content": {"checkin_from": "16:00"}})
+    assert g.status_code == 200
+
+    # Grand-père → l'édition staff repasse.
+    _set_grandfather(owner["email"], True)
+    r2 = client.put(f"/api/properties/{pid}/sections/S_checklist",
+                    headers=owner["headers"],
+                    json={"content": {"tasks": [{"task": "y"}]}, "is_visible": True})
+    assert r2.status_code == 200
+
+
 def test_property_stats_excludes_staff_sections(client):
     """La complétude du guide (dashboard) ne compte QUE les sections voyageur :
     compléter une section staff ne fait pas bouger le pourcentage voyageur."""
