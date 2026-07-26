@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Harnais abonnement — stepper add-on (V2-18c)</title>
+<!-- Harnais headless : rend « Mon abonnement » d'un Pro actif avec add-on, avec
+     un fetch simulé (aucune requête réseau). Le verdict est posé dans #result et
+     lu par frontend-tests/subscription.test.mjs. Ce fichier vit hors de frontend/
+     (jamais servi publiquement en statique). -->
+<div id="app"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { renderSubscription } from "/frontend/js/views/subscription.js";
+
+// Catalogue et abonnement fictifs : Pro actif + 1 add-on → le stepper est monté
+// (il n'apparaît que pour un Pro actif portant addon_property_price_cts).
+const PLANS = [
+  { id: "free", name: "Gratuit", price_month_cts: 0, max_properties: 1,
+    features: { langs: "all", pdf_export: false } },
+  { id: "pro", name: "Pro", price_month_cts: 2400, max_properties: 6,
+    addon_property_price_cts: 300,
+    features: { langs: "all", pdf_export: true, staff_guide: true } },
+];
+const SUB = {
+  plan: PLANS[1],
+  addon_qty: 1,
+  has_stripe_customer: true,
+  usage: {
+    properties:  { used: 7, limit: 7 },
+    enrichments: { used: 0, limit: 3 },
+    langs:       { used: 3, limit: null },
+  },
+};
+
+window.fetch = async (path) => {
+  const body =
+    path === "/api/plans" ? PLANS :
+    path === "/api/subscription" ? SUB :
+    (() => { throw new Error("fetch inattendu : " + path); })();
+  return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+};
+
+const out = document.getElementById("result");
+try {
+  await renderSubscription(document.getElementById("app"));
+
+  // On teste le composant SUR SON ARBRE RENDU (querySelector), jamais via une
+  // référence interne : c'est précisément une référence câblée mais non montée
+  // qui a laissé passer V2-18c (bouton « Confirmer » absent du DOM).
+  const card = [...document.querySelectorAll(".card")]
+    .find((c) => /Logements supplémentaires/.test(c.textContent));
+  if (!card) throw new Error("carte add-on absente du rendu");
+
+  const confirm = card.querySelector("button.btn-primary");
+  if (!confirm) throw new Error("bouton Confirmer non monté dans le DOM");
+  if (!/Confirmer/.test(confirm.textContent))
+    throw new Error("libellé inattendu : " + confirm.textContent);
+
+  // À l'ouverture (quantité == add-on courant), le bouton est désactivé…
+  if (!confirm.disabled)
+    throw new Error("Confirmer devrait être désactivé à l'ouverture");
+
+  // …et s'active dès que la quantité change (clic sur « + »).
+  const plus = [...card.querySelectorAll("button")].find((b) => b.textContent.trim() === "+");
+  if (!plus) throw new Error("bouton « + » absent");
+  plus.click();
+  if (confirm.disabled)
+    throw new Error("Confirmer devrait s'activer après changement de quantité");
+
+  out.textContent = "PASS";
+} catch (e) {
+  out.textContent = "FAIL: " + ((e && e.message) || e);
+}
+</script>

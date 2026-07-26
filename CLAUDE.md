@@ -361,6 +361,24 @@ exposé, peer auth).
   construit désormais de **vrais** `stripe.StripeObject` (`construct_from`) et un
   `list()` renvoyant un objet `.data` façon `ListObject`. Un mock plus « simple »
   que le réel masque les bugs de contrat plutôt que de les révéler.
+- **Tests représentatifs — un composant se teste sur son ARBRE RENDU (V2-18c)** :
+  corollaire front du piège OPS-1. Un composant DOM se vérifie via son sous-arbre
+  effectivement **monté** (`querySelector` sur le rendu), **jamais** via une
+  référence JS interne à un élément. Bug vécu (V2-18c) : `subscription.js
+  addonStepper` **créait et câblait** le bouton « Confirmer » (listener, états
+  `disabled`) mais le `return` **ne l'insérait pas** dans l'arbre → stepper sans
+  moyen de confirmer en prod. Le test « headless » d'alors tenait la **référence**
+  au bouton (câblée, donc verte) au lieu de le **chercher dans le DOM rendu** : un
+  élément non monté restait « vert ». Règle : après avoir rendu le composant,
+  localiser chaque élément interactif par `querySelector`/texte sur le nœud
+  retourné et asserter sa présence **et** son comportement (ici : désactivé à
+  l'ouverture, actif après changement de quantité). Couvert par
+  `frontend-tests/subscription.test.mjs` (harnais Chrome headless
+  `subscription-harness.html`, fetch simulé, verdict lu dans le DOM dumpé) — hors
+  `frontend/` (jamais servi publiquement). NB : sur ce build (macOS,
+  `--headless=new`), `--dump-dom` **écrit** le DOM sur stdout mais **ne quitte pas**
+  proprement → le runner lit le flux et **tue** Chrome dès le verdict présent (ne
+  jamais attendre la sortie du process, sinon 60 s de timeout et stdout perdu).
 - **Noms de méthodes Stripe à vérifier contre le SDK réel (OPS-1b)** : le
   contrat à respecter n'est pas que le *comportement* des objets — c'est aussi la
   **surface** (noms de méthodes). Sur l'interface `StripeClient` (`client.v1.*`),

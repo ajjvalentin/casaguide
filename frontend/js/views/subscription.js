@@ -199,7 +199,9 @@ function addonStepper(sub) {
       + `nécessaire à ${amount(unit)} / mois chacun.`),
     el("div", { class: "row", style: { alignItems: "center", gap: "12px" } },
       minus, qtyEl, plus),
-    impact, statusEl);
+    impact,
+    el("div", { style: { marginTop: "12px" } }, confirm),
+    statusEl);
 }
 
 /* Lance le Checkout d'un plan payant et redirige. Gère proprement le 503
