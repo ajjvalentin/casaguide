@@ -35,7 +35,9 @@ CREATE TABLE plans (
     enrich_quota    INT NOT NULL,                  -- enrichissements IA / mois / logement
     price_month_cts INT NOT NULL,                  -- prix en centimes
     features        JSONB NOT NULL DEFAULT '{}',   -- flags : multilingue, stats, marque blanche…
-    stripe_price_id TEXT                            -- Price Stripe synchronisé (V2-05b, NULL pour 'free')
+    stripe_price_id TEXT,                           -- Price Stripe synchronisé (V2-05b, NULL pour 'free')
+    addon_property_price_cts INT,                   -- add-on « logement supplémentaire » (V2-18b ; NULL = pas d'add-on)
+    addon_stripe_price_id    TEXT                   -- Price Stripe de l'add-on (V2-18b, écrit par le sync)
 );
 
 CREATE TABLE subscriptions (
@@ -49,6 +51,8 @@ CREATE TABLE subscriptions (
     trial_ends_at          TIMESTAMPTZ,        -- échéance de l'essai (V2-18a ; NULL hors essai)
     reminder_7d_sent_at    TIMESTAMPTZ,        -- relance d'essai J-7 expédiée (V2-18a, idempotence)
     reminder_2d_sent_at    TIMESTAMPTZ,        -- relance d'essai J-2 expédiée (V2-18a, idempotence)
+    addon_qty              INT NOT NULL DEFAULT 0,   -- logements supplémentaires (V2-18b ; écrit SEULEMENT par le webhook)
+    staff_grandfathered    BOOL NOT NULL DEFAULT false, -- grand-père du guide équipe (V2-18b ; true = comptes migrés avant V2-18b)
     current_period_end     TIMESTAMPTZ,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()

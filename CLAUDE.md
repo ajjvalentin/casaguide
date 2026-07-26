@@ -32,7 +32,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | `backend/api/` | API FastAPI — auth JWT, CRUD logements + secrets chiffrés, sections, déclenchement du pipeline (tâche de fond), validation des POI, **médias par section** (upload/liste/service/ordre, M-12), `/stats`, `/recompute-distances`, **traductions (M-09)** : `POST /{id}/translate` (tâche de fond, trigger='translate', hors quota) + `GET /{id}/translation-status`, **guide voyageur (M-08/M-09)** : `GET /g/{token}[?lang=]` sert une **page HTML** localisée (rendu serveur `api/guide_page.py`), `GET /g/{token}/data[?lang=]` le JSON (`charset=utf-8`), `GET /g/{token}/secrets` (wifi/boîte à clés, mode 'link'), `/g/{token}/media/{id}`, `/g/{token}/manifest.webmanifest`, `/guide/sw.js` — testé (51 tests d'intégration/unitaires verts) |
 | `frontend/` | Back-office propriétaire — SPA statique (M-03/M-04/M-05/M-06/M-07/M-09/M-12) : connexion, Mes logements, éditeur de guide (formulaire dynamique + secrets + complétude + **photos & documents par section** + **aperçu/QR wifi + téléchargement PNG, M-06** + **groupe « Équipe d'entretien » (sections staff) avec lien `/s`, M-13** + **bouton « QR à imprimer » PDF, M-07** + **bouton « Traductions » avec état à jour/périmé, M-09**), validation des POI (carte Leaflet), éditeur de position, **choix d'offre à l'inscription + page « Mon abonnement » (#/abonnement, V2-05a)** — servie par FastAPI |
 | Multilingue guide (M-09) | **Fait** — traductions FR→EN/ES **générées et stockées** (`enrich/translate.py`, tables `section_translations`/`poi_translations` + `is_stale`), jamais à la volée (invariant 4). Modèle dédié `CASAGUIDE_TRANSLATE_MODEL` (Haiku). Seuls les champs texte + `body_md` + descriptions/coups de cœur POI sont traduits (jamais heures/booléens/URLs/secrets). (Re)traduction ciblée à la (re)publication et via `/translate`. Guide localisé côté serveur (`?lang=`), repli élégant sur le fr, sélecteur de langue. Coûts dans `api_costs` (operation='translate') |
-| Cahier équipe d'entretien (M-13) | Schéma : `audience` (guest\|staff) sur `section_templates`, `staff_token` (128 bits) sur `properties` — schema.sql + `db/migrations/002`. Seed : chapitre « S » (5 sections staff). Page publique `GET /s/{staff_token}` (rendu `guide_page.render_staff`, variante sobre check-list, **accessible même en brouillon**, jamais de secrets/POI). Étanchéité guest↔staff dans les deux sens (invariant 7) |
+| Cahier équipe d'entretien (M-13) | Schéma : `audience` (guest\|staff) sur `section_templates`, `staff_token` (128 bits) sur `properties` — schema.sql + `db/migrations/002`. Seed : chapitre « S » (5 sections staff). Page publique `GET /s/{staff_token}` (rendu `guide_page.render_staff`, variante sobre check-list, **accessible même en brouillon**, jamais de secrets/POI). Étanchéité guest↔staff dans les deux sens (invariant 7). **Exclusif Pro depuis V2-18b** (aperçu essai, grand-père comptes existants ; page d'upsell `render_staff_locked` + édition 402 `staff_locked` sinon — invariant 11) |
 | Affiche QR imprimable (M-07) | `api/poster.py` (reportlab) → `GET /api/properties/{id}/guide-poster.pdf` (A5/A4, propriétaire uniquement) : nom du logement, QR du lien du guide, mot d'accueil FR/EN, identité sable/mer |
 | Auth transactionnel (V2-08) | **Fait** — mailer injectable (`deps.get_mailer` : `SmtpMailer` SSL Infomaniak + `ConsoleMailer` dev/tests), gabarits FR `api/emails.py`. **Mot de passe oublié** : `POST /api/auth/forgot` (200 constant anti-énumération, email en tâche de fond, cadence 2 min), `POST /api/auth/reset` (jeton 256 bits **haché SHA-256** en table `password_resets`, expiration 60 min, usage unique). **Vérification d'email** : lien à l'inscription (non bloquant), `POST /api/auth/verify-email` (idempotent), `POST /api/auth/resend-verification`. `owners.email_verified` exposé par `/me`. Migrations 005 (table) + 006 (grand-périsage des comptes existants). Front : routes publiques `#/forgot`, `#/reset/{token}`, `#/verify/{token}` (`js/views/reset.js`) + bandeau « vérifiez votre email » (`app.js`) — testé (22 tests + parcours headless) |
 | Plans & abonnements (V2-05a) | **Fait (volets 1-3)** — couche d'accès `api/plans.py` branchée sur le modèle existant `plans`/`subscriptions` (CdC §10) : `get_subscription` / `get_plan` (repli 'free' + warning si abonnement manquant, jamais None) / `check_quota(owner_id, resource)` pour `properties` \| `enrichments` \| `langs` (lit `max_properties`, `enrich_quota` mensuel/logement, `features`) / `cap_target_langs` (plafond langues, source comprise) / `wants_watermark`. Inscription crée toujours une ligne `subscriptions` (`plan_id`='free', **`status='active'`** — pas de logique d'essai). Migration 007 : rattrapage idempotent d'un abo 'free'. Attribution manuelle par email : `ops/set_plan.py`. **Application serveur (volet 2)** : refus **402 `quota_exceeded`** (helper `api/quota.py`, `detail={code,message FR}`) sur `POST /api/properties` (au-delà de `max_properties`) et `POST .../enrich` (au-delà de `enrich_quota`, **remplace l'ancien 429**) ; traductions **plafonnées** par `cap_target_langs` (le runner de traduction reçoit désormais `target_langs`, `deps.TranslationRunner`), plan gratuit → 0 cible → `/translate` renvoie 402, publication ne génère aucune traduction ; **watermark** « Créé avec Holaguia » dans le SSR du guide (`guide_page._watermark_html`, flag via `repo.get_plan_by_guide_token`) si `features.watermark`. **Downgrade non destructif** : aucune donnée/traduction supprimée, seule la création est bloquée. **UI back-office (volet 3)** : endpoints `GET /api/plans` (public, catalogue) + `GET /api/subscription` (auth : plan + jauges d'usage) → `routers/billing.py` ; inscription avec **choix d'offre** (gratuite présélectionnée, payantes « bientôt », prix depuis l'API) `views/login.js` ; page **« Mon abonnement »** `#/abonnement` (`views/subscription.js` : plan courant, jauges logements/enrichissements/langues, boutons de changement inactifs) ; refus quota interceptés côté front par `js/quota.js` (`handleQuotaError` → encart « changez d'offre », jamais d'`alert()`) dans création de logement, enrichissement, traduction. Aucun quota codé en dur (invariant 8) — testé (`tests/test_plans.py` 13 + intégration : quotas, downgrade lecture seule, watermark, `/plans` & `/subscription` ; parcours front vérifié en headless). *Suite : white-label du poster PDF (marque fixe aujourd'hui).* |
@@ -134,6 +134,27 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
     Souscrire (webhook plan payant → `status='active'`) sort du régime d'essai et
     réactive les écritures. La définition du plan `trial` vit **en base** (seed),
     aucun droit codé en dur (invariant 8).
+11. **Grille, add-on logements & gating staff (V2-18b)** : la grille vit **en base**
+    (invariant 8) — Pro 24 €/**6 logements inclus** + **add-on 3 €/mois par
+    logement** (`plans.addon_property_price_cts`), fin de l'illimité. Le quota
+    logements effectif = `max_properties + subscriptions.addon_qty`, exposé par
+    `plans.effective_entitlements` (`max_properties` effectif). **`addon_qty`
+    n'est écrit QUE par le webhook** `customer.subscription.updated` (lecture de
+    **tous** les items — plan via le price principal, add-on via
+    `plans.addon_stripe_price_id`) : l'endpoint `POST /api/billing/addons` demande
+    à Stripe (proration) mais **n'écrit rien** (l'UI demande, Stripe dispose, le
+    webhook écrit — corollaire de l'invariant 9). Une **baisse/suppression**
+    d'add-on ne supprime **jamais** de logement (excédent en lecture seule, comme
+    invariant 8). Le **plafond de langues est supprimé** (`features.langs='all'` →
+    illimité, `plans.max_langs` renvoie `None`) sur **tous** les plans. Le **guide
+    équipe `/s/`** est **exclusif Pro** (`features.staff_guide` : `true` pro,
+    `'preview'` essai, `false` solo/free), avec **clause de grand-père**
+    (`subscriptions.staff_grandfathered=true` pour tous les comptes existant à la
+    migration 011) — décidé par `plans.staff_access(plan, grandfathered)` via
+    `effective_entitlements['staff_access']`. Hors droit : `/s/` sert une page
+    sobre d'upsell (jamais d'erreur brute, jamais de secret) et l'édition d'une
+    section `audience='staff'` répond **402 `staff_locked`** (`quota.staff_locked`,
+    même forme objet, intercepté par `handlePlanLimit`).
 
 ## Commandes
 
@@ -149,6 +170,7 @@ psql -d casaguide -f db/migrations/007_backfill_free_subscriptions.sql # abo 'fr
 psql -d casaguide -f db/migrations/008_stripe_billing.sql # stripe_events + plans.stripe_price_id (V2-05b)
 psql -d casaguide -f db/migrations/009_trial_model.sql   # subscriptions.trial_ends_at (essai 21 j, V2-18a)
 psql -d casaguide -f db/migrations/010_trial_reminders.sql # reminder_7d/2d_sent_at (relances essai, V2-18a)
+psql -d casaguide -f db/migrations/011_grille_addons_staff.sql # add-on + staff_grandfathered (grille V2-18b)
 
 # Backend
 cd backend
@@ -283,9 +305,21 @@ exposé, peer auth).
   seule (`app.js updateReadonlyBanner`) s'affiche sur `owner.trial_expired ===
   true` **strict** (jamais sur un champ absent — comme le bandeau de vérif email).
   L'état d'essai vient de `/me` (`on_trial`/`trial_expired`/`trial_ends_at`) et de
-  `/api/subscription` (mêmes champs + compte à rebours). **V2-17** : partout où on
-  affichait « Jusqu'à 5 langues » / « X/5 », le front dit maintenant « Toutes les
-  langues disponibles » dès que `features.langs > 1` (promesse = capacité réelle).
+  `/api/subscription` (mêmes champs + compte à rebours). **V2-17/V2-18b** : partout
+  où on affichait « Jusqu'à 5 langues » / « X/5 », le front dit « Toutes les langues
+  disponibles ». Depuis V2-18b `features.langs='all'` (illimité) → **ne jamais**
+  comparer `langs` numériquement (`'all' > 1` est `false` en JS !) : passer par
+  `subscription.js isMultilingual` (`langs==='all' || Number(langs)>1`).
+- Grille & add-on côté front (V2-18b) : `js/quota.js handlePlanLimit` gère
+  désormais **trois** codes (`quota_exceeded` 402, `trial_expired` 403,
+  `staff_locked` 402) → toute action d'écriture (dont l'enregistrement d'une
+  section, staff comprise) doit y passer avant tout `toast`. Le **stepper**
+  d'add-on (`views/subscription.js addonStepper`) n'apparaît que pour un **Pro
+  actif** ; il **demande** la quantité à `POST /api/billing/addons` puis affiche
+  « mise à jour en cours » (jamais de mutation locale de l'abonnement : le webhook
+  est seul à poser `addon_qty`, invariant 11) et invite à actualiser. La carte
+  **Gratuit** de « Changer d'offre » ne s'affiche **que** pour un compte déjà
+  `plan.id==='free'` (un essai ne « descend » jamais vers le gratuit).
 - Facturation Stripe (V2-05b) : le webhook est la **seule** autorité d'état
   (invariant 9) — ne jamais écrire `subscriptions.status/plan_id/
   current_period_end` depuis le `success_url` ni un endpoint synchrone. Le

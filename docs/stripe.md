@@ -99,6 +99,39 @@ relances). Voir la [doc cartes de test Stripe](https://stripe.com/docs/testing).
 
 ---
 
+## 3 bis. Validation de la grille V2-18b (add-on, staff) — à dérouler avec André
+
+Grille V2-18b : **Pro 24,00 € / 6 logements** + **add-on 3,00 €/mois par logement
+supplémentaire** (item d'abonnement Stripe à quantité) ; guide équipe `/s/`
+**exclusif Pro**. Prérequis : produits **re-synchronisés** (`ops/stripe_sync_products.py`
+→ nouveau Price Pro 24 € **et** Price add-on `pro_addon`), `stripe listen` actif.
+
+> **Invariant clé** : le **webhook** est la seule autorité de `addon_qty` (l'UI
+> demande, Stripe dispose, le webhook écrit). Une baisse d'add-on ne supprime
+> **jamais** de logement — l'excédent passe en lecture seule (402 à la création).
+
+1. **Essai → Pro.** Compte jetable → essai 21 j. « Mon abonnement » → **« Passer
+   en Pro »** → Checkout `4242` → webhook → offre **Pro**, jauge logements
+   **`X / 6`**.
+2. **Add-on +2.** Dans « Mon abonnement », section **« Logements supplémentaires »**
+   → **`+`** deux fois → l'impact affiche **« passera à 30,00 € / mois (8
+   logements) »** → **Confirmer**. `stripe listen` montre
+   `customer.subscription.updated` (2 items). **Actualiser** : `addon_qty=2`,
+   jauge **`X / 8`**. Vérifier la **facture/portail** Stripe à **30 €/mois**.
+3. **Baisse à 0.** Ramener le stepper à **0** → Confirmer → webhook → retour
+   **24 €/mois**, jauge **`X / 6`**. Si plus de 6 logements existaient, la
+   création est refusée (**402**) mais **aucun n'est supprimé** (les vérifier
+   présents).
+4. **Gating staff.** Compte **Solo** (ou Pro annulé → free non grand-périsé) :
+   ouvrir `/s/{staff_token}` → page sobre **« Cahier de l'équipe indisponible…
+   offre Pro »** (jamais d'erreur brute) ; éditer une section staff au back-office
+   → encart **« Réservé à l'offre Pro »**. Compte **Pro** ou **fondateur
+   grand-périsé** : `/s/` **accessible** normalement.
+5. **M-30.** Enrichir un logement réel : vérifier que **stations-service** et
+   **bornes de recharge** remontent dans les POI (chapitre Transports).
+
+---
+
 ## 4. Déploiement en production (toujours en mode Test au début)
 
 Sur le serveur (`ssh` → `/opt/casaguide`), après `git pull` :
@@ -138,7 +171,17 @@ sudo -u casaguide CASAGUIDE_STRIPE_SECRET_KEY=sk_test_... \
     /opt/casaguide/.venv/bin/python /opt/casaguide/ops/stripe_sync_products.py
 ```
 
-Retester le parcours `4242` **en production** (toujours en mode Test).
+> **V2-18b — re-sync OBLIGATOIRE.** Après un déploiement portant la nouvelle
+> grille (migration 011 + seed), ce script est **indispensable** : il crée le
+> **nouveau Price Pro à 24 €** (l'ancien 29 € est archivé, non supprimé) et le
+> **Price de l'add-on** « logement supplémentaire » (metadata `plan_id=pro_addon`),
+> et écrit `plans.stripe_price_id` / `plans.addon_stripe_price_id`. Sans lui,
+> `/api/billing/checkout` et `/api/billing/addons` restent en **503** (offre non
+> synchronisée). Les abonnés Test existants restent sur l'ancien Price 29 €
+> (sans conséquence en mode Test ; en Live ce cas n'existera pas encore).
+
+Retester le parcours `4242` **en production** (toujours en mode Test), puis la
+grille V2-18b (voir §3 bis).
 
 ---
 
