@@ -370,7 +370,7 @@ export async function renderEditor(view, pid) {
       const blob = await api.posterBlob(pid, { size, lang });
       const url = URL.createObjectURL(blob);
       const suffix = lang ? `-${lang}` : "";
-      const a = el("a", { href: url, download: `casaguide-qr-${property.name || pid}${suffix}.pdf` });
+      const a = el("a", { href: url, download: `holaguia-qr-${property.name || pid}${suffix}.pdf` });
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
       toast("Affiche QR téléchargée.", "ok");

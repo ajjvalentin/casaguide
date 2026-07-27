@@ -179,7 +179,7 @@ def guide_poster(request: Request, prop: OwnedProperty,
     pdf = poster.build_guide_poster(
         property_name=prop["name"], guide_url=guide_url,
         city=prop.get("city"), size=size, lang=lang)
-    filename = f"casaguide-qr-{_slug(prop['name'])}-{lang}.pdf"
+    filename = f"holaguia-qr-{_slug(prop['name'])}-{lang}.pdf"
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'})

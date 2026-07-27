@@ -2,7 +2,8 @@
 
 ## Projet
 
-**CasaGuide** — SaaS multi-propriétaires de guides d'accueil numériques pour
+**Holaguia** (marque commerciale, `holaguia.com`, société HOLAQUETALIMMO SL) —
+SaaS multi-propriétaires de guides d'accueil numériques pour
 logements de vacances. Un propriétaire saisit l'adresse de son logement et
 complète une checklist pré-définie ; un pipeline IA pré-remplit les sections
 « environnement » (hôpital, commerces, restaurants, urgences…) qu'il valide ;
@@ -12,6 +13,18 @@ lien/QR code.
 **Référence fonctionnelle : `docs/cahier_des_charges.md`** (v1.0). Les codes
 §4, §5, §8… dans les commentaires du code renvoient à ce document. Le lire
 avant toute évolution fonctionnelle.
+
+**Marque vs. nom technique (M-29).** Le produit s'appelle **Holaguia** (H
+majuscule, sans accent — jamais « HolaGuia » ni « Holaguía »). C'est le seul
+nom qu'un humain doit voir : back-office, guides `/g` et `/s`, PWA, emails,
+PDF, cartes de partage, docs. En revanche `casaguide` est le **nom technique
+historique** et **reste inchangé partout où il est invisible** — préfixe
+`CASAGUIDE_` des variables d'env, `casaguide_token` du sessionStorage,
+`casaguide:lang`, nom du cache SW `casaguide-guide-v*`, chemins `/opt/casaguide`,
+utilisateur/base/service systemd, nom du dépôt. **Ne pas « corriger » ces
+occurrences techniques** : les renommer n'apporte rien et crée un risque de
+migration pour zéro valeur. Le watermark « Créé avec Holaguia » et le code de
+marque `emails._BRAND = "Holaguia"` sont les références d'orthographe.
 
 ## État actuel (juillet 2026)
 

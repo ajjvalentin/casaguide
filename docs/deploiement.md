@@ -1,4 +1,4 @@
-# Déploiement production CasaGuide (M-11)
+# Déploiement production Holaguia (M-11)
 
 Runbook du déploiement sur VPS Infomaniak (Ubuntu 24.04, UE). Architecture
 volontairement **simple, sans Docker** pour le MVP : PostgreSQL local, API

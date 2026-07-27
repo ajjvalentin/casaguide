@@ -150,7 +150,7 @@ def build_guide_poster(*, property_name: str, guide_url: str,
     # Pied de page (identité)
     c.setFillColor(_SEA)
     c.setFont("Helvetica-Bold", 9)
-    c.drawCentredString(cx, m + 8 * mm, "CasaGuide")
+    c.drawCentredString(cx, m + 8 * mm, "Holaguia")
 
     c.showPage()
     c.save()

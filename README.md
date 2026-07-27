@@ -1,4 +1,8 @@
-# CasaGuide
+# Holaguia
+
+> Marque commerciale : **Holaguia** (holaguia.com, HOLAQUETALIMMO SL).
+> `casaguide` reste le nom technique historique (dépôt, base, préfixe
+> `CASAGUIDE_`, chemins `/opt/casaguide`) — à ne pas « corriger ».
 
 SaaS de guides d'accueil numériques pour logements de vacances : checklist
 guidée pour le propriétaire, enrichissement automatique par IA à partir de
