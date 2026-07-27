@@ -347,6 +347,23 @@ exposé, peer auth).
   retire. **Redirections front** (`js/redirect.js`) : `window.location.assign` est
   *unforgeable* (non stubable) → les vues passent par `redirect()`, remplaçable en
   test headless via **import map** (le harnais reste hors `frontend/`).
+- **Checkout = ENTRER dans le payant, jamais y rester (V2-18d)** : un abonné
+  **payant déjà actif** ne repasse **jamais** par `POST /api/billing/checkout`
+  (mode subscription → il créerait un **second** abonnement Stripe, double
+  facturation, temps déjà payé ignoré). Garde serveur : checkout renvoie **409
+  `already_subscribed`** si `plans.has_active_paid_subscription` (statut
+  active/past_due + `stripe_subscription_id` + prix>0). Le changement d'offre d'un
+  abonné actif passe par `POST /api/billing/change-plan` qui **modifie
+  l'abonnement Stripe EXISTANT** (`subscriptions.update` — swap du price
+  principal, suppression des items d'add-on si la cible n'en a pas, proration
+  `create_prorations` → le temps payé est crédité). Comme l'add-on (invariant
+  11) : l'endpoint **demande** à Stripe et **n'écrit RIEN** en base ; `plan_id`/
+  `addon_qty` reviennent par le webhook `customer.subscription.updated` (seule
+  autorité, invariant 9). Corollaire front (`subscription.js`) : `isPaidActive`
+  route les boutons « Passer en X » vers `change-plan` (+ `confirmDialog` de
+  proration) et **Checkout uniquement** pour essai/free ; l'en-tête « Offre
+  actuelle » affiche le **total effectif** (`base + addon_qty × unité`), pas le
+  prix de base.
 - **Mocks Stripe non représentatifs (OPS-1)** : un `StripeObject` réel **n'est
   pas** un `dict` (MRO `[StripeObject, object]`), n'expose ni `.get`/`.items`/
   `.keys` (interceptés par `__getattr__` → `AttributeError`) et n'implémente pas

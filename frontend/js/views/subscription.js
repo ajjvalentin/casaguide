@@ -10,7 +10,7 @@
    modifié côté client : la vérité vient du webhook (bandeau ?checkout=…). */
 
 import { api, ApiError } from "../api.js";
-import { el, icon, mount, loadingBlock, refreshIcons, toast } from "../ui.js";
+import { el, icon, mount, loadingBlock, refreshIcons, toast, confirmDialog } from "../ui.js";
 import { redirect } from "../redirect.js";
 import { handlePlanLimit } from "../quota.js";
 
@@ -22,6 +22,25 @@ function amount(cts) {
 function euros(cts) {
   if (!cts) return "Gratuit";
   return amount(cts) + " / mois";
+}
+
+/* Total mensuel EFFECTIF d'un abonnement : prix de base + add-ons × unité
+   (V2-18d, micro-cavalier) — l'en-tête « Offre actuelle » doit refléter ce que
+   le client paie réellement (ex. Pro 24 € + 2 add-ons = 30 €), pas le seul prix
+   de base. */
+function effectiveMonthlyCts(sub) {
+  const base = sub.plan.price_month_cts || 0;
+  const unit = sub.plan.addon_property_price_cts || 0;
+  return base + (sub.addon_qty || 0) * unit;
+}
+
+/* Un abonné payant est-il déjà actif ? (V2-18d) Un changement d'offre se fait
+   alors in-place (proration Stripe) plutôt que par un nouveau Checkout — qui
+   créerait un doublon d'abonnement. Miroir de `plans.has_active_paid_subscription`. */
+function isPaidActive(sub) {
+  return sub.plan.price_month_cts > 0
+    && (sub.status === "active" || sub.status === "past_due")
+    && sub.has_stripe_customer;
 }
 
 /* Un plan est-il multilingue ? Grille V2-18b : `features.langs === 'all'`
@@ -221,6 +240,31 @@ async function startCheckout(planId, btn) {
   }
 }
 
+/* Change l'offre d'un abonné payant DÉJÀ actif (V2-18d) : confirmation explicite
+   mentionnant la proration, puis appel de /billing/change-plan (modifie
+   l'abonnement Stripe existant). L'abonnement n'est jamais muté côté client — la
+   vérité vient du webhook → on affiche « mise à jour en cours » et on invite à
+   actualiser. */
+async function startChangePlan(plan, btn) {
+  const ok = await confirmDialog(
+    `Votre abonnement passera immédiatement à l'offre ${plan.name} `
+    + `(${euros(plan.price_month_cts)}). Le temps déjà payé sur votre offre `
+    + `actuelle sera crédité automatiquement (proration Stripe).`,
+    { title: "Changer d'offre", okLabel: "Confirmer le changement" });
+  if (!ok) return;
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = "Mise à jour…";
+  try {
+    await api.changePlan(plan.id);
+    btn.textContent = "Mise à jour en cours…";
+    toast("Changement demandé : votre offre sera mise à jour dans quelques "
+      + "secondes. Actualisez la page pour la voir.", "ok");
+  } catch (err) {
+    btn.disabled = false; btn.textContent = prev;
+    if (!handlePlanLimit(err)) toast(err.message || "Changement impossible.", "err");
+  }
+}
+
 function planCard(plan, sub) {
   const currentId = sub.plan.id;
   const isCurrent = plan.id === currentId;
@@ -236,7 +280,10 @@ function planCard(plan, sub) {
       "Offre de départ");
   } else {
     btn = el("button", { class: "btn btn-block btn-primary" }, "Passer en " + plan.name);
-    btn.addEventListener("click", () => startCheckout(plan.id, btn));
+    // Abonné payant actif → changement in-place (proration) ; sinon (essai/free)
+    // → Checkout pour entrer dans le payant.
+    btn.addEventListener("click", () =>
+      isPaidActive(sub) ? startChangePlan(plan, btn) : startCheckout(plan.id, btn));
   }
 
   return el("div", { class: "card plan-card" + (isCurrent ? " plan-current" : "") },
@@ -293,7 +340,7 @@ export async function renderSubscription(view) {
       el("div", {},
         el("div", { class: "muted", style: { fontSize: "13px" } }, "Offre actuelle"),
         el("h2", { style: { margin: "2px 0 0" } }, sub.plan.name)),
-      el("div", { class: "plan-price", style: { margin: 0 } }, euros(sub.plan.price_month_cts))),
+      el("div", { class: "plan-price", style: { margin: 0 } }, euros(effectiveMonthlyCts(sub)))),
     gauge("Logements", u.properties),
     gauge("Enrichissements IA ce mois-ci", u.enrichments, "/ logement"),
     langsGauge,

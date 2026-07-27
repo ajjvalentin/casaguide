@@ -22,8 +22,9 @@ from fastapi import APIRouter, HTTPException, Request, status
 from .. import billing_stripe, plans, repo, stripe_events
 from ..config import settings
 from ..deps import Conn, CurrentOwner, Stripe
-from ..schemas import (AddonIn, AddonOut, CheckoutIn, CheckoutOut, PlanOut,
-                       PortalOut, QuotaGaugeOut, SubscriptionOut, UsageOut)
+from ..schemas import (AddonIn, AddonOut, ChangePlanIn, ChangePlanOut,
+                       CheckoutIn, CheckoutOut, PlanOut, PortalOut,
+                       QuotaGaugeOut, SubscriptionOut, UsageOut)
 
 log = logging.getLogger("casaguide.billing")
 
@@ -101,6 +102,16 @@ def create_checkout(payload: CheckoutIn, conn: Conn, owner: CurrentOwner,
             detail="Cette offre n'est pas encore disponible au paiement.")
 
     owner_id = str(owner["id"])
+    # Un abonné payant déjà actif ne repasse JAMAIS par le Checkout (risque de
+    # double abonnement / double facturation) : il change d'offre in-place via
+    # /billing/change-plan (V2-18d). Le webhook reste seule autorité ; on ne fait
+    # que LIRE l'état local pour refuser proprement.
+    if plans.has_active_paid_subscription(conn, owner_id) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "already_subscribed",
+                    "message": "Vous avez déjà un abonnement payant actif. "
+                               "Utilisez « changer d'offre » pour le modifier."})
     sub = plans.get_subscription(conn, owner_id)
     existing_customer = sub.get("stripe_customer_id") if sub else None
     base = _public_base(request)
@@ -200,6 +211,64 @@ def update_addons(payload: AddonIn, conn: Conn, owner: CurrentOwner,
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Le service de paiement est momentanément indisponible.")
     return AddonOut(requested_quantity=payload.quantity)
+
+
+# ── Changement d'offre in-place d'un abonné payant actif (V2-18d) ────────────
+
+@router.post("/billing/change-plan", response_model=ChangePlanOut)
+def change_plan(payload: ChangePlanIn, conn: Conn, owner: CurrentOwner,
+                gateway: Stripe):
+    """Change l'offre d'un abonné **payant déjà actif** (409 sinon) en modifiant
+    l'abonnement Stripe EXISTANT (proration : le temps déjà payé est crédité) —
+    jamais un nouveau Checkout, qui créerait un doublon. Un passage vers une offre
+    sans add-on (solo) supprime les items d'add-on. **N'écrit RIEN en base** : le
+    webhook `customer.subscription.updated` posera plan_id/addon_qty (invariant
+    9). Le front affiche « mise à jour en cours » jusqu'au rafraîchissement."""
+    if gateway is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Le paiement en ligne n'est pas disponible.")
+
+    owner_id = str(owner["id"])
+    sub = plans.has_active_paid_subscription(conn, owner_id)
+    if sub is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "not_subscribed",
+                    "message": "Aucun abonnement payant actif à modifier."})
+    current = plans.get_plan(conn, owner_id)
+
+    target = repo.get_plan_by_id(conn, payload.plan)
+    if target is None or target["price_month_cts"] <= 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="Offre payante invalide.")
+    if target["id"] == current["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "already_on_plan",
+                    "message": "Vous êtes déjà sur cette offre."})
+    new_price_id = target.get("stripe_price_id")
+    if not new_price_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cette offre n'est pas encore disponible au paiement.")
+
+    # L'add-on n'existe que sur Pro : on identifie ses items par le price d'add-on
+    # du plan courant, et on les retire si la cible n'a pas d'add-on (solo).
+    addon_price_id = current.get("addon_stripe_price_id")
+    remove_addon = not target.get("addon_property_price_cts")
+    try:
+        gateway.change_plan(subscription_id=sub["stripe_subscription_id"],
+                            new_price_id=new_price_id,
+                            addon_price_id=addon_price_id,
+                            remove_addon=remove_addon)
+    except billing_stripe.StripeError as exc:
+        log.error("Échec du changement d'offre Stripe (owner=%s) : %s",
+                  owner_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Le service de paiement est momentanément indisponible.")
+    return ChangePlanOut(target_plan=target["id"])
 
 
 # ── Webhooks Stripe : la seule source de vérité (V2-05b, volet 2) ────────────

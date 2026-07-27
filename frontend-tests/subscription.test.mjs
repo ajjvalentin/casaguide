@@ -56,18 +56,14 @@ function findChrome() {
   return null;
 }
 
-test("le bouton « Confirmer » du stepper add-on est monté dans le DOM (V2-18c)", async (t) => {
-  const chrome = findChrome();
-  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
-
-  const server = await startServer();
-  const { port } = server.address();
+/* Lance un harnais dans Chrome headless et renvoie le verdict lu dans #result.
+   `--dump-dom` écrit le DOM sur stdout mais NE QUITTE PAS proprement sur ce build
+   (macOS, headless=new) : on lit le flux et on tue Chrome dès que le verdict est
+   dans le DOM, sans attendre la sortie du process. */
+async function runHarness(chrome, port, harness) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "casaguide-chrome-"));
   try {
-    const url = `http://127.0.0.1:${port}/frontend-tests/subscription-harness.html`;
-    // `--dump-dom` écrit le DOM sur stdout mais NE QUITTE PAS proprement sur ce
-    // build (macOS, headless=new) : on lit le flux et on tue Chrome dès que le
-    // verdict est dans le DOM, sans attendre la sortie du process.
+    const url = `http://127.0.0.1:${port}/frontend-tests/${harness}`;
     const child = spawn(chrome, [
       "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
       "--no-first-run", "--disable-extensions", `--user-data-dir=${profile}`,
@@ -75,7 +71,7 @@ test("le bouton « Confirmer » du stepper add-on est monté dans le DOM (V2-18c
     ], { stdio: ["ignore", "pipe", "ignore"] });
 
     let dom = "";
-    const verdict = await new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       const deadline = setTimeout(() => reject(new Error("délai dépassé (aucun verdict)")), 45000);
       const finish = (v) => { clearTimeout(deadline); resolve(v); };
       child.stdout.on("data", (chunk) => {
@@ -89,11 +85,33 @@ test("le bouton « Confirmer » du stepper add-on est monté dans le DOM (V2-18c
         finish(m ? m[1].trim() : "");
       });
     }).finally(() => { child.kill("SIGKILL"); });
+  } finally {
+    fs.rmSync(profile, { recursive: true, force: true });
+  }
+}
 
+test("le bouton « Confirmer » du stepper add-on est monté dans le DOM (V2-18c)", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const server = await startServer();
+  try {
+    const verdict = await runHarness(chrome, server.address().port, "subscription-harness.html");
     assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
     assert.equal(verdict, "PASS", `harnais en échec : ${verdict}`);
   } finally {
     server.close();
-    fs.rmSync(profile, { recursive: true, force: true });
+  }
+});
+
+test("« Passer en Solo » d'un abonné payant actif → confirmation puis change-plan (V2-18d)", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const server = await startServer();
+  try {
+    const verdict = await runHarness(chrome, server.address().port, "changeplan-harness.html");
+    assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
+    assert.equal(verdict, "PASS", `harnais en échec : ${verdict}`);
+  } finally {
+    server.close();
   }
 });

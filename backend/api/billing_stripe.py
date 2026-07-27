@@ -55,6 +55,9 @@ class StripeGateway(Protocol):
     def set_addon_quantity(self, *, subscription_id: str, addon_price_id: str,
                            quantity: int) -> None: ...
 
+    def change_plan(self, *, subscription_id: str, new_price_id: str,
+                    addon_price_id: str | None, remove_addon: bool) -> None: ...
+
     def construct_event(self, payload: bytes, sig_header: str) -> dict: ...
 
 
@@ -137,6 +140,36 @@ class LiveStripeGateway:
                 "price": addon_price_id,
                 "quantity": quantity,
             })
+
+    # ── Changement d'offre d'un abonné payant actif (V2-18d) ─────────────────
+    def change_plan(self, *, subscription_id: str, new_price_id: str,
+                    addon_price_id: str | None, remove_addon: bool) -> None:
+        """Bascule l'abonnement Stripe EXISTANT vers `new_price_id` (proration
+        Stripe par défaut : le temps déjà payé est crédité). Le price principal
+        (item dont le price n'est PAS l'add-on) est échangé ; si la cible n'a pas
+        d'add-on (`remove_addon`), les items d'add-on sont supprimés.
+
+        N'écrit RIEN en base : l'effet revient via le webhook
+        `customer.subscription.updated` (seule autorité, invariant 9). Surface
+        StripeClient vérifiée par introspection (OPS-1b) : `subscriptions.retrieve`
+        et `subscriptions.update` (jamais `modify`)."""
+        sub = self._client.v1.subscriptions.retrieve(subscription_id)
+        items = getattr(sub, "items", None) or {}
+        data = getattr(items, "data", None) or []
+        updates: list[dict] = []
+        for it in data:
+            price_id = getattr(getattr(it, "price", None), "id", None)
+            is_addon = addon_price_id is not None and price_id == addon_price_id
+            if is_addon:
+                if remove_addon:
+                    updates.append({"id": it.id, "deleted": True})
+            else:
+                # Item du plan principal → échange du price (proration).
+                updates.append({"id": it.id, "price": new_price_id})
+        self._client.v1.subscriptions.update(subscription_id, {
+            "items": updates,
+            "proration_behavior": "create_prorations",
+        })
 
     # ── Vérification de signature d'un webhook ───────────────────────────────
     def construct_event(self, payload: bytes, sig_header: str) -> dict:

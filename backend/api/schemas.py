@@ -136,6 +136,20 @@ class AddonOut(BaseModel):
     status: str = "pending"
 
 
+class ChangePlanIn(BaseModel):
+    """Changement d'offre pour un abonné payant **déjà actif** (V2-18d). Modifie
+    l'abonnement Stripe EXISTANT (proration) au lieu d'ouvrir un nouveau Checkout."""
+    plan: Literal["solo", "pro"]
+
+
+class ChangePlanOut(BaseModel):
+    """Accusé du changement d'offre : l'offre cible demandée, en attente de la
+    confirmation du webhook `customer.subscription.updated` (seule autorité,
+    invariant 9). Le front affiche « mise à jour en cours » jusque-là."""
+    target_plan: str
+    status: str = "pending"
+
+
 # ── Logements ────────────────────────────────────────────────────────────────
 
 class PropertyIn(BaseModel):

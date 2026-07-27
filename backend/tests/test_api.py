@@ -2039,6 +2039,7 @@ class _FakeStripeGateway(billing_stripe.LiveStripeGateway):
         self.checkout_calls: list[dict] = []
         self.portal_calls: list[dict] = []
         self.addon_calls: list[dict] = []
+        self.change_plan_calls: list[dict] = []
 
     def get_or_create_customer(self, *, owner_id, email, existing_customer_id):
         return existing_customer_id or f"cus_test_{owner_id[:8]}"
@@ -2061,6 +2062,14 @@ class _FakeStripeGateway(billing_stripe.LiveStripeGateway):
         self.addon_calls.append({"subscription_id": subscription_id,
                                  "addon_price_id": addon_price_id,
                                  "quantity": quantity})
+
+    def change_plan(self, *, subscription_id, new_price_id, addon_price_id,
+                    remove_addon):
+        # Ne touche à rien : le webhook (simulé à part) pose plan_id/addon_qty.
+        self.change_plan_calls.append({"subscription_id": subscription_id,
+                                       "new_price_id": new_price_id,
+                                       "addon_price_id": addon_price_id,
+                                       "remove_addon": remove_addon})
 
 
 @pytest.fixture()
@@ -2460,6 +2469,139 @@ def test_addons_endpoint_requires_auth(billing):
     client, _ = billing
     assert client.post("/api/billing/addons",
                        json={"quantity": 1}).status_code == 401
+
+
+# ── Changement d'offre in-place d'un abonné payant actif (V2-18d) ────────────
+
+def _go_solo(client, owner) -> str:
+    """Amène un compte à un abonnement Solo actif via le webhook. Renvoie le
+    customer Stripe."""
+    _, cust = _link_customer(client, owner["email"])
+    r = _post_event(client, _evt(
+        f"evt_test_solo_{owner['email'][:6]}", "customer.subscription.created",
+        _subscription_obj(cust, "sub_test_1", "price_test_solo")))
+    assert r.status_code == 200, r.text
+    return cust
+
+
+def test_checkout_blocked_for_active_paid_subscriber(billing):
+    """Garde V2-18d : un abonné payant DÉJÀ actif ne repasse jamais par le
+    Checkout (risque de double abonnement) → 409 `already_subscribed`. Il doit
+    passer par /billing/change-plan."""
+    client, _ = billing
+    owner = register(client)
+    _go_solo(client, owner)
+    r = client.post("/api/billing/checkout", json={"plan": "pro"},
+                    headers=owner["headers"])
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "already_subscribed"
+
+
+def test_change_plan_requires_active_paid_subscription(billing):
+    """change-plan est réservé à un abonné payant actif : un compte en essai
+    (jamais souscrit) reçoit 409 `not_subscribed`."""
+    client, _ = billing
+    owner = register(client)
+    r = client.post("/api/billing/change-plan", json={"plan": "pro"},
+                    headers=owner["headers"])
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "not_subscribed"
+
+
+def test_change_plan_pro_to_solo_swaps_price_and_removes_addons(billing):
+    """Pro (+2 add-ons) → Solo : l'endpoint demande à Stripe le swap du price
+    principal ET la suppression des add-ons (solo n'en a pas), sans RIEN écrire en
+    base. Le webhook consécutif pose l'état final ; l'excédent de logements passe
+    en lecture seule sans qu'aucun ne soit supprimé (invariant 8/11)."""
+    client, gateway = billing
+    owner = register(client)
+    cust = _go_pro(client, owner)
+    # Pro + 2 add-ons (plafond 8), 5 logements créés.
+    _post_event(client, _evt("evt_test_cp_a2", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_pro",
+                                  addon_price_id=ADDON_PRICE, addon_qty=2)))
+    for i in range(5):
+        make_property(client, owner["headers"], name=f"Logement {i}")
+    assert len(client.get("/api/properties", headers=owner["headers"]).json()) == 5
+
+    # Demande de bascule vers Solo (l'abonnement n'est PAS muté en base ici).
+    r = client.post("/api/billing/change-plan", json={"plan": "solo"},
+                    headers=owner["headers"])
+    assert r.status_code == 200, r.text
+    assert r.json() == {"target_plan": "solo", "status": "pending"}
+    call = gateway.change_plan_calls[-1]
+    assert call["subscription_id"] == "sub_test_1"
+    assert call["new_price_id"] == "price_test_solo"
+    assert call["addon_price_id"] == ADDON_PRICE
+    assert call["remove_addon"] is True
+    # Rien écrit tant que le webhook n'a pas confirmé : toujours Pro + 2 add-ons.
+    body = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert body["plan"]["id"] == "pro" and body["addon_qty"] == 2
+
+    # Webhook consécutif : Solo sans item d'add-on → plan solo, addon_qty 0.
+    _post_event(client, _evt("evt_test_cp_solo", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_solo")))
+    final = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert final["plan"]["id"] == "solo" and final["addon_qty"] == 0
+    assert final["usage"]["properties"]["limit"] == 3
+
+    # Excédent (5 > 3) : lecture seule, rien supprimé.
+    assert len(client.get("/api/properties", headers=owner["headers"]).json()) == 5
+    over = client.post("/api/properties", headers=owner["headers"],
+                       json={"name": "Trop", "address_line1": "X", "city": "Y",
+                             "country_code": "ES"})
+    assert over.status_code == 402
+    assert over.json()["detail"]["code"] == "quota_exceeded"
+
+
+def test_change_plan_solo_to_pro_swaps_price_and_keeps_addon(billing):
+    """Solo → Pro : swap du price principal, add-ons conservés (remove_addon=False).
+    Le webhook consécutif pose le plan Pro."""
+    client, gateway = billing
+    owner = register(client)
+    _go_solo(client, owner)
+    r = client.post("/api/billing/change-plan", json={"plan": "pro"},
+                    headers=owner["headers"])
+    assert r.status_code == 200, r.text
+    call = gateway.change_plan_calls[-1]
+    assert call["new_price_id"] == "price_test_pro"
+    assert call["remove_addon"] is False
+    # Solo n'a pas d'add-on → addon_price_id du plan courant est None (aucun item
+    # à retirer de toute façon).
+    assert call["addon_price_id"] is None
+
+    cust = f"cus_test_{_owner_id(owner['email'])[:8]}"
+    _post_event(client, _evt("evt_test_cp_pro", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_pro")))
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["plan"]["id"] == "pro"
+
+
+def test_change_plan_same_plan_rejected(billing):
+    """Basculer vers l'offre déjà en cours est refusé (409 `already_on_plan`)."""
+    client, _ = billing
+    owner = register(client)
+    _go_solo(client, owner)
+    r = client.post("/api/billing/change-plan", json={"plan": "solo"},
+                    headers=owner["headers"])
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "already_on_plan"
+
+
+def test_change_plan_requires_auth(billing):
+    client, _ = billing
+    assert client.post("/api/billing/change-plan",
+                       json={"plan": "pro"}).status_code == 401
+
+
+def test_change_plan_503_when_stripe_disabled(billing):
+    client, _ = billing
+    owner = register(client)
+    _go_solo(client, owner)
+    app.dependency_overrides[get_stripe] = lambda: None
+    r = client.post("/api/billing/change-plan", json={"plan": "pro"},
+                    headers=owner["headers"])
+    assert r.status_code == 503
 
 
 def test_webhook_payment_failed_sets_past_due_keeping_plan(billing):

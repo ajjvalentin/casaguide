@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Harnais abonnement — changement d'offre in-place (V2-18d)</title>
+<!-- Harnais headless : rend « Mon abonnement » d'un abonné Pro ACTIF, avec un
+     fetch simulé (aucune requête réseau). Vérifie que « Passer en Solo » ouvre
+     une confirmation (proration) puis appelle /api/billing/change-plan — jamais
+     le Checkout — et que l'en-tête affiche le TOTAL effectif (base + add-ons).
+     Le verdict est posé dans #result et lu par frontend-tests/subscription.test.mjs.
+     Ce fichier vit hors de frontend/ (jamais servi publiquement en statique). -->
+<div id="app"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { renderSubscription } from "/frontend/js/views/subscription.js";
+
+const PLANS = [
+  { id: "free", name: "Gratuit", price_month_cts: 0, max_properties: 1,
+    features: { langs: "all", pdf_export: false } },
+  { id: "solo", name: "Solo", price_month_cts: 790, max_properties: 3,
+    features: { langs: "all", pdf_export: true, staff_guide: false } },
+  { id: "pro", name: "Pro", price_month_cts: 2400, max_properties: 6,
+    addon_property_price_cts: 300,
+    features: { langs: "all", pdf_export: true, staff_guide: true } },
+];
+// Abonné Pro ACTIF + 2 add-ons → total effectif 24 € + 2×3 € = 30 €.
+const SUB = {
+  plan: PLANS[2],
+  status: "active",
+  addon_qty: 2,
+  has_stripe_customer: true,
+  usage: {
+    properties:  { used: 5, limit: 8 },
+    enrichments: { used: 0, limit: 10 },
+    langs:       { used: 3, limit: null },
+  },
+};
+
+const calls = [];
+window.fetch = async (path, opts = {}) => {
+  calls.push({ path, method: (opts.method || "GET"), body: opts.body });
+  const body =
+    path === "/api/plans" ? PLANS :
+    path === "/api/subscription" ? SUB :
+    path === "/api/billing/change-plan" ? { target_plan: "solo", status: "pending" } :
+    path === "/api/billing/checkout" ? { url: "https://checkout.test/BAD" } :
+    (() => { throw new Error("fetch inattendu : " + path); })();
+  return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+};
+
+function waitFor(pred, desc, tries = 120) {
+  return new Promise((resolve, reject) => {
+    const tick = (n) => {
+      let v; try { v = pred(); } catch (e) { return reject(e); }
+      if (v) return resolve(v);
+      if (n <= 0) return reject(new Error("délai dépassé : " + desc));
+      setTimeout(() => tick(n - 1), 16);
+    };
+    tick(tries);
+  });
+}
+
+const out = document.getElementById("result");
+(async () => {
+  try {
+    await renderSubscription(document.getElementById("app"));
+
+    // 1) En-tête « Offre actuelle » : total EFFECTIF (30 €), pas le prix de base (24 €).
+    const priceTxt = document.querySelector(".card .plan-price").textContent;
+    if (!/30\s*€/.test(priceTxt))
+      throw new Error("total effectif attendu (30 €), obtenu : " + priceTxt);
+
+    // 2) Carte Solo → bouton « Passer en Solo » (abonné payant actif).
+    const soloCard = [...document.querySelectorAll(".plan-card")]
+      .find((c) => /Passer en Solo/.test(c.textContent));
+    if (!soloCard) throw new Error("carte Solo / bouton « Passer en Solo » absent");
+    const btn = [...soloCard.querySelectorAll("button")]
+      .find((b) => /Passer en Solo/.test(b.textContent));
+    btn.click();
+
+    // 3) Une confirmation (proration) s'ouvre AVANT tout appel réseau.
+    const confirmBtn = await waitFor(() =>
+      [...document.querySelectorAll(".modal-foot button")]
+        .find((b) => /Confirmer le changement/.test(b.textContent)),
+      "bouton de confirmation");
+    if (calls.some((c) => c.path === "/api/billing/change-plan"))
+      throw new Error("change-plan appelé AVANT confirmation");
+
+    // 4) Confirmation → appel de /api/billing/change-plan (jamais le Checkout).
+    confirmBtn.click();
+    await waitFor(() => calls.some((c) => c.path === "/api/billing/change-plan"),
+      "appel change-plan");
+    const call = calls.find((c) => c.path === "/api/billing/change-plan");
+    if (call.method !== "POST") throw new Error("méthode inattendue : " + call.method);
+    if (!/"plan"\s*:\s*"solo"/.test(String(call.body)))
+      throw new Error("corps inattendu : " + call.body);
+    if (calls.some((c) => c.path === "/api/billing/checkout"))
+      throw new Error("Checkout appelé à tort pour un abonné payant actif");
+
+    out.textContent = "PASS";
+  } catch (e) {
+    out.textContent = "FAIL: " + ((e && e.message) || e);
+  }
+})();
+</script>

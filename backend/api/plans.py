@@ -144,6 +144,30 @@ def effective_entitlements(conn, owner_id: str, *,
     }
 
 
+# Statuts d'un abonnement Stripe qui laissent l'accès payant ouvert (V2-18d) :
+# 'active' et 'past_due' (grâce pendant les relances). 'canceled'/'trialing' non.
+_PAID_ACTIVE_STATUSES = ("active", "past_due")
+
+
+def has_active_paid_subscription(conn, owner_id: str) -> dict | None:
+    """Abonnement Stripe **payant et actif** du propriétaire, ou None (V2-18d).
+
+    « Payant actif » = plan à prix > 0, statut 'active'/'past_due', ET un
+    `stripe_subscription_id` réel (donc modifiable côté Stripe). Sert à la fois à
+    interdire un second Checkout (409 `already_subscribed`) et à autoriser un
+    changement d'offre in-place (`/billing/change-plan`). L'essai ('trialing') et
+    le gratuit ne comptent pas."""
+    sub = get_subscription(conn, owner_id)
+    if not sub or sub.get("status") not in _PAID_ACTIVE_STATUSES:
+        return None
+    if not sub.get("stripe_subscription_id"):
+        return None
+    plan = get_plan(conn, owner_id)
+    if plan.get("price_month_cts", 0) <= 0:
+        return None
+    return sub
+
+
 def can_write(conn, owner_id: str, *, now: datetime | None = None) -> bool:
     """Le propriétaire peut-il écrire (créer/éditer) ? Faux si l'essai est expiré
     (back-office en lecture seule, V2-18a). Les lectures restent toujours servies
