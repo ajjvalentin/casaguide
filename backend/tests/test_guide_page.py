@@ -186,6 +186,67 @@ def test_owner_favourites_lead_their_category():
     assert "❤ Notre préféré !" in html
 
 
+# ── V2-24 : mode de trajet par catégorie + boutons d'itinéraire par POI ──────
+
+def _catpoi(code, *, walk=None, drive=None, mode=None, lat=37.9, lon=-0.74):
+    return {"id": code, "category_code": code, "chapter": "C",
+            "category_name": {"fr": code}, "map_color": "#2E7D32",
+            "name": code.title(), "lat": lat, "lon": lon, "cuisine": None,
+            "walk_min": walk, "dist_walk_m": (walk or 0) * 70,
+            "drive_min": drive, "travel_mode": mode, "owner_comment": None,
+            "description_md": None, "opening_hours": None,
+            "phone": None, "website": None}
+
+
+def test_fmt_dist_driving_mode_always_shows_car_even_when_close():
+    # Station-service à 3 min à pied : on y va quand même EN VOITURE (V2-24).
+    n, u = guide_page._fmt_dist(_catpoi("fuel", walk=3, drive=2, mode="driving"), "fr")
+    assert n == "2" and u == "min en voiture"
+
+
+def test_fmt_dist_driving_mode_falls_back_to_walk_when_no_car_time():
+    # POI ancien sans temps voiture : repli propre sur le temps à pied.
+    n, u = guide_page._fmt_dist(_catpoi("fuel", walk=5, drive=None, mode="driving"), "fr")
+    assert n == "5" and u == "min à pied"
+
+
+def test_fmt_dist_walking_mode_keeps_walk_in_the_30_45_band():
+    # Plage à 38 min : l'auto basculerait en voiture (>30), 'walking' garde à pied.
+    n, u = guide_page._fmt_dist(_catpoi("beach", walk=38, drive=9, mode="walking"), "fr")
+    assert n == "38" and u == "min à pied"
+
+
+def test_fmt_dist_walking_mode_switches_to_car_when_absurdly_far():
+    # Plage à 90 min à pied : rester cohérent → voiture.
+    n, u = guide_page._fmt_dist(_catpoi("beach", walk=90, drive=14, mode="walking"), "fr")
+    assert n == "14" and u == "min en voiture"
+
+
+def test_fmt_dist_null_mode_keeps_historical_auto():
+    # Sans mode : à pied si ≤ 30, sinon voiture (comportement M-01 inchangé).
+    assert guide_page._fmt_dist(_catpoi("bakery", walk=10, drive=3), "fr") == ("10", "min à pied")
+    assert guide_page._fmt_dist(_catpoi("mall", walk=42, drive=8), "fr") == ("8", "min en voiture")
+
+
+def test_itinerary_buttons_on_every_poi_with_localised_apple_label():
+    html = guide_page._render_pois([_catpoi("bakery", walk=6, lat=38.28, lon=-0.55)], "fr")
+    assert '<div class="poi-nav">' in html
+    assert "https://www.google.com/maps/dir/?api=1&destination=38.28,-0.55" in html
+    assert "https://waze.com/ul?ll=38.28,-0.55&navigate=yes" in html
+    assert "https://maps.apple.com/?daddr=38.28,-0.55" in html
+    assert ">Google Maps<" in html and ">Waze<" in html
+    assert ">Plans<" in html                    # libellé Apple localisé FR
+    html_en = guide_page._render_pois([_catpoi("bakery", walk=6)], "en")
+    assert ">Apple Maps<" in html_en            # libellé Apple localisé EN
+    html_es = guide_page._render_pois([_catpoi("bakery", walk=6)], "es")
+    assert ">Mapas<" in html_es                 # libellé Apple localisé ES
+
+
+def test_no_itinerary_block_without_coordinates():
+    html = guide_page._render_pois([_catpoi("bakery", walk=6, lat=None, lon=None)], "fr")
+    assert '<div class="poi-nav">' not in html
+
+
 # ── M-14 : itinéraires « en un tap » dans A_arrival ──────────────────────────
 
 _ARRIVAL_SCHEMA = {

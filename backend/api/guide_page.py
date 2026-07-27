@@ -134,6 +134,7 @@ _UI: dict[str, dict[str, str]] = {
         "show_more": "Voir les {n} autres", "show_less": "Réduire",
         "nav_to_home": "Itinéraire vers le logement", "open_in": "Ouvrir dans",
         "nav_take_me": "Me guider vers le logement", "view_route": "Voir l'itinéraire",
+        "go_there": "Y aller", "maps_apple": "Plans",
         "address": "Adresse", "gps": "Coordonnées GPS",
         "copy": "Copier", "copied": "Copié ✓",
         "title_suffix": "Guide du logement", "home": "Votre logement",
@@ -158,6 +159,7 @@ _UI: dict[str, dict[str, str]] = {
         "show_more": "Show {n} more", "show_less": "Show less",
         "nav_to_home": "Directions to the property", "open_in": "Open in",
         "nav_take_me": "Take me to the property", "view_route": "View route",
+        "go_there": "Get directions", "maps_apple": "Apple Maps",
         "address": "Address", "gps": "GPS coordinates",
         "copy": "Copy", "copied": "Copied ✓",
         "title_suffix": "Property guide", "home": "Your accommodation",
@@ -182,6 +184,7 @@ _UI: dict[str, dict[str, str]] = {
         "show_more": "Ver {n} más", "show_less": "Reducir",
         "nav_to_home": "Cómo llegar al alojamiento", "open_in": "Abrir en",
         "nav_take_me": "Llévame al alojamiento", "view_route": "Ver ruta",
+        "go_there": "Cómo llegar", "maps_apple": "Mapas",
         "address": "Dirección", "gps": "Coordenadas GPS",
         "copy": "Copiar", "copied": "Copiado ✓",
         "title_suffix": "Guía del alojamiento", "home": "Tu alojamiento",
@@ -302,13 +305,32 @@ def _bold(text: str) -> str:
 
 # ── Distance « voyageur » : à pied si ≤ 30 min, sinon voiture (§M-01) ─────────
 
+# Au-delà de ce temps à pied, une catégorie 'walking' (ex. plage) bascule quand
+# même en voiture : rester cohérent (une plage à 90 min ne se fait pas à pied).
+_WALK_MODE_MAX = 45
+
+
 def _fmt_dist(poi: dict, lang: str = "fr") -> tuple[str, str]:
+    """Distance « voyageur » (V2-24). Le mode de trajet préféré de la catégorie
+    (`travel_mode`) prime sur l'auto :
+      - 'driving'  : toujours en voiture, avec la distance (ex. station-service —
+        on y va en voiture même à 400 m) ;
+      - 'walking'  : à pied tant que raisonnable (≤ `_WALK_MODE_MAX`), sinon voiture ;
+      - None        : auto historique (à pied si ≤ 30 min, sinon voiture).
+    Repli propre si le temps du mode demandé manque (POI ancien)."""
     walk = poi.get("walk_min")
     drive = poi.get("drive_min")
+    mode = poi.get("travel_mode")
+    if mode == "driving" and drive is not None:
+        return str(drive), _t(lang, "drive")
+    if mode == "walking" and walk is not None and (drive is None or walk <= _WALK_MODE_MAX):
+        return str(walk), _t(lang, "walk")
     if walk is not None and walk <= 30:
         return str(walk), _t(lang, "walk")
     if drive is not None:
         return str(drive), _t(lang, "drive")
+    if walk is not None:
+        return str(walk), _t(lang, "walk")
     return "–", ""
 
 
@@ -586,6 +608,27 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
 
 # ── POI d'un chapitre, groupés par catégorie, triés par distance ─────────────
 
+def _itinerary_links(lat: Any, lon: Any, lang: str = "fr") -> str:
+    """Boutons d'itinéraire vers un POI (V2-24) : Google Maps / Waze / Apple Maps.
+    Simples liens profonds ouverts par le voyageur (`target=_blank`) → aucun
+    chargement automatique, aucun SDK : l'invariant 4 (zéro appel externe côté
+    voyageur) reste intact."""
+    if lat is None or lon is None:
+        return ""
+    dest = _esc(_latlon(lat, lon))
+    google = f"https://www.google.com/maps/dir/?api=1&destination={dest}"
+    waze = f"https://waze.com/ul?ll={dest}&navigate=yes"
+    apple = f"https://maps.apple.com/?daddr={dest}"
+    links = (
+        f'<a class="route-link" href="{google}" target="_blank" rel="noopener">Google Maps</a>'
+        f'<a class="route-link" href="{waze}" target="_blank" rel="noopener">Waze</a>'
+        f'<a class="route-link" href="{apple}" target="_blank" rel="noopener">'
+        f'{_esc(_t(lang, "maps_apple"))}</a>'
+    )
+    return (f'<div class="poi-nav">'
+            f'<span class="nav-lbl">{_esc(_t(lang, "go_there"))}</span>{links}</div>')
+
+
 def _render_pois(pois: list[dict], lang: str = "fr") -> str:
     if not pois:
         return ""
@@ -620,15 +663,15 @@ def _render_pois(pois: list[dict], lang: str = "fr") -> str:
                 meta.append(f'<a href="tel:{_tel(p["phone"])}">{_t(lang, "call")}</a>')
             if p.get("website"):
                 meta.append(f'<a href="{_esc(p["website"])}" target="_blank" rel="noopener nofollow">{_t(lang, "website")}</a>')
-            if p.get("lat") is not None and p.get("lon") is not None:
-                meta.append(f'<a href="https://www.google.com/maps/dir/?api=1&destination={p["lat"]},{p["lon"]}"'
-                            f' target="_blank" rel="noopener">{_t(lang, "route")}</a>')
             meta_html = f'<div class="meta">{"".join(meta)}</div>' if meta else ""
+            # Itinéraire (V2-24) : Google Maps / Waze / Apple Maps sur TOUS les POI
+            # géolocalisés (remplace l'ancien lien Google unique).
+            nav_html = _itinerary_links(p.get("lat"), p.get("lon"), lang)
             cards.append(
                 f'<div class="poi-card"{cuisine_attr} style="border-left-color:{color}">'
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
                 f'<div class="poi-body"><h4>{_esc(p["name"])}{cuisine_tag}</h4>{comment}'
-                f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}</div></div>')
+                f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}{nav_html}</div></div>')
         n = len(lst)
         head = f'<h4 class="cat-title">{cat_name} · {n}</h4>'
         group = f'<div class="poi-group" data-cat="{_esc(code)}">{"".join(cards)}</div>'
@@ -901,7 +944,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                   "chapter": p["chapter"], "color": p.get("map_color"),
                   "category": _i18n(p.get("category_name"), lang, p["category_code"]),
                   "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
-                  "phone": p.get("phone")}
+                  "travel_mode": p.get("travel_mode"), "phone": p.get("phone")}
                  for p in around_pois
                  if p.get("lat") is not None and p.get("lon") is not None],
     }

@@ -52,10 +52,20 @@ export function t(i18n, fallback = "") {
   return i18n.fr || i18n.en || i18n.es || fallback;
 }
 
-/** Distance « voyageur » : à pied si ≤ 30 min, sinon en voiture (cf. §M-01). */
+// Au-delà de ce temps à pied, une catégorie 'walking' (plage) bascule en voiture.
+const WALK_MODE_MAX = 45;
+
+/** Distance « voyageur » (V2-24) : le mode de trajet préféré de la catégorie
+ * (`travel_mode`) prime sur l'auto — 'driving' toujours voiture, 'walking' à pied
+ * tant que raisonnable, sinon à pied si ≤ 30 min puis voiture (cf. §M-01). */
 export function fmtDist(p) {
+  const mode = p.travel_mode;
+  if (mode === "driving" && p.drive_min != null) return { n: p.drive_min, u: "min en voiture" };
+  if (mode === "walking" && p.walk_min != null && (p.drive_min == null || p.walk_min <= WALK_MODE_MAX))
+    return { n: p.walk_min, u: "min à pied" };
   if (p.walk_min != null && p.walk_min <= 30) return { n: p.walk_min, u: "min à pied" };
   if (p.drive_min != null) return { n: p.drive_min, u: "min en voiture" };
+  if (p.walk_min != null) return { n: p.walk_min, u: "min à pied" };
   return { n: "–", u: "" };
 }
 

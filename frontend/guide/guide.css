@@ -181,6 +181,13 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .hours{font-size:12px;color:var(--muted);margin-top:4px}
 .meta{margin-top:6px;font-size:13px;display:flex;gap:14px;flex-wrap:wrap}
 .meta a{color:var(--sea);font-weight:500}
+/* Itinéraire par POI (V2-24) : Google Maps / Waze / Apple Maps — sobre, sous les
+   coordonnées. Simples liens (ouverts par le voyageur), aucun appel automatique. */
+.poi-nav{margin-top:8px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.poi-nav .nav-lbl{font-size:11.5px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+.route-link{font-size:12.5px;font-weight:600;color:var(--sea);text-decoration:none;
+            border:1px solid var(--line);border-radius:999px;padding:4px 11px;white-space:nowrap;
+            background:var(--shell)}
 
 /* ── Itinéraires « en un tap » (M-14) : aéroport / gare → logement ───────── */
 /* ── Adresse & GPS copiables (M-19) ──────────────────────────────────────── */

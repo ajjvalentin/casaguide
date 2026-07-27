@@ -204,6 +204,7 @@ psql -d casaguide -f db/migrations/009_trial_model.sql   # subscriptions.trial_e
 psql -d casaguide -f db/migrations/010_trial_reminders.sql # reminder_7d/2d_sent_at (relances essai, V2-18a)
 psql -d casaguide -f db/migrations/011_grille_addons_staff.sql # add-on + staff_grandfathered (grille V2-18b)
 psql -d casaguide -f db/migrations/012_scheduled_plan_change.sql # downgrade programmé (scheduled_plan_id/_change_at, V2-18e)
+psql -d casaguide -f db/migrations/013_poi_travel_mode.sql # mode de trajet par catégorie (poi_categories.travel_mode, V2-24)
 
 # Backend
 cd backend
@@ -742,6 +743,29 @@ exposé, peer auth).
   hôte n'est visible (repli en cartes POI classiques, jamais de perte). Tout
   dérive de `properties.geom` + POI approuvés/édités : zéro saisie, zéro appel
   externe au rendu (invariant 4).
+- Mode de trajet par catégorie + itinéraire par POI (V2-24) : `poi_categories.
+  travel_mode` (`'driving'` | `'walking'` | NULL) porté par le **seed** (invariant 8 :
+  jamais en dur) — `fuel`/`charging_station` → `'driving'` (toujours en voiture,
+  même à 400 m : véhicule de location) ; `beach` → `'walking'` ; NULL = auto
+  historique (à pied si ≤ 30 min, sinon voiture). **UN seul point de vérité de
+  l'affichage** dupliqué en 3 endroits qu'il faut garder cohérents :
+  `guide_page._fmt_dist` (SSR), `frontend/js/ui.js fmtDist` (back-office) et
+  `frontend/guide/app.js fmtDist` (popups carte) — mode `'walking'` avec un
+  **plafond `_WALK_MODE_MAX` (45 min)** au-delà duquel on rebascule en voiture
+  (une plage à 90 min ne se fait pas à pied) ; repli propre si le temps du mode
+  demandé manque (POI ancien → l'autre temps ; le prochain enrichissement ou
+  `POST /recompute-distances` comble). Le mode ne touche JAMAIS les distances
+  stockées, seulement l'affichage. `travel_mode` est porté par `repo.guide_pois`
+  et `repo._POI_SELECT` (join `poi_categories`) **et** injecté dans `map_data`.
+  **Boutons d'itinéraire sur TOUS les POI géolocalisés** (`_itinerary_links` →
+  `.poi-nav` / `.route-link`) : Google Maps (`/maps/dir/?api=1&destination=lat,lon`),
+  Waze (`waze.com/ul?ll=lat,lon&navigate=yes`), Apple Maps (`maps.apple.com/
+  ?daddr=lat,lon`) — libellé Apple **localisé** (`maps_apple` : Plans/Apple Maps/
+  Mapas), heading `go_there`. Simples liens `target=_blank` déclenchés par le
+  voyageur → **invariant 4 intact** (aucun chargement/SDK auto). Ne pas confondre
+  avec les **blocs de trajet** M-14 (airport/train → planification depuis le lieu,
+  affordance distincte). Toute modif de `guide/*` (app.js, guide.css) → **bumper
+  `sw.js VERSION`** (ici v15 → v16).
 - Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
   _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
   en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`

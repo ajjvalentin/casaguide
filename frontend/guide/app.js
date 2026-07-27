@@ -14,10 +14,18 @@ let GUIDE = { property: {}, pois: [] };
 try { GUIDE = JSON.parse(document.getElementById("guide-data")?.textContent || "{}"); }
 catch (_) { /* données de carte absentes : la page reste utilisable */ }
 
-/* Distance « voyageur » : à pied si ≤ 30 min, sinon en voiture (§M-01). */
+/* Distance « voyageur » (V2-24) : le mode préféré de la catégorie (travel_mode)
+   prime sur l'auto — 'driving' toujours voiture, 'walking' à pied tant que
+   raisonnable, sinon à pied si ≤ 30 min puis voiture (§M-01). */
+const WALK_MODE_MAX = 45;
 function fmtDist(p) {
+  const mode = p.travel_mode;
+  if (mode === "driving" && p.drive_min != null) return `${p.drive_min} min en voiture`;
+  if (mode === "walking" && p.walk_min != null && (p.drive_min == null || p.walk_min <= WALK_MODE_MAX))
+    return `${p.walk_min} min à pied`;
   if (p.walk_min != null && p.walk_min <= 30) return `${p.walk_min} min à pied`;
   if (p.drive_min != null) return `${p.drive_min} min en voiture`;
+  if (p.walk_min != null) return `${p.walk_min} min à pied`;
   return "";
 }
 function tel(raw) { return (String(raw).trim().startsWith("+") ? "+" : "") + String(raw).replace(/\D/g, ""); }

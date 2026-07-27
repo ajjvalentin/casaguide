@@ -216,7 +216,10 @@ CREATE TABLE poi_categories (
     name_i18n  JSONB NOT NULL,
     icon       TEXT,
     map_color  TEXT,
-    default_radius_m INT NOT NULL    -- rayon de recherche par défaut (pharmacie 2000, hôpital 25000…)
+    default_radius_m INT NOT NULL,   -- rayon de recherche par défaut (pharmacie 2000, hôpital 25000…)
+    travel_mode TEXT                 -- mode de trajet préféré (V2-24) : 'driving' (toujours voiture, ex. station-service),
+                                     -- 'walking' (à pied si raisonnable, ex. plage), NULL = auto selon distance
+      CHECK (travel_mode IN ('driving', 'walking'))
 );
 
 CREATE TABLE pois (

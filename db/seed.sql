@@ -89,6 +89,16 @@ ON CONFLICT (code) DO UPDATE SET
   chapter = EXCLUDED.chapter, name_i18n = EXCLUDED.name_i18n, icon = EXCLUDED.icon,
   map_color = EXCLUDED.map_color, default_radius_m = EXCLUDED.default_radius_m;
 
+-- Mode de trajet préféré par catégorie (V2-24). Idempotent : réappliqué à chaque
+-- seed (l'INSERT ci-dessus ne touche pas travel_mode). 'driving' = toujours en
+-- voiture avec distance (véhicule de location : on va à la station-service en
+-- voiture même à 400 m) ; 'walking' = à pied tant que raisonnable (plage) ;
+-- NULL = comportement historique (à pied si ≤ 30 min, sinon voiture).
+UPDATE poi_categories SET travel_mode = 'driving'
+  WHERE code IN ('fuel', 'charging_station');
+UPDATE poi_categories SET travel_mode = 'walking'
+  WHERE code = 'beach';
+
 -- ============================================================================
 -- 3. CATALOGUE DES SECTIONS — la checklist complète du §4
 --    field_schema :

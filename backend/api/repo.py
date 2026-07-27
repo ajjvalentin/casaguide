@@ -707,7 +707,7 @@ def list_categories(conn) -> list[dict]:
 # depuis le seed) : partagée par la liste et la relecture d'un POI unique.
 _POI_SELECT = (
     "SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name, "
-    "c.icon AS category_icon, c.map_color, "
+    "c.icon AS category_icon, c.map_color, c.travel_mode, "
     "p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon, "
     "p.address, p.phone, p.website, p.opening_hours, p.cuisine, p.description_md, "
     "p.owner_comment, p.price_level, "
@@ -996,7 +996,7 @@ def guide_pois(conn, property_id: str) -> list[dict]:
     avec la catégorie (icône/couleur du seed). Distances déjà en base."""
     return conn.execute(
         """SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name,
-                  c.icon AS category_icon, c.map_color,
+                  c.icon AS category_icon, c.map_color, c.travel_mode,
                   p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon,
                   p.address, p.phone, p.website, p.opening_hours, p.cuisine,
                   p.description_md, p.owner_comment, p.price_level,
