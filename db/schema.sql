@@ -54,6 +54,8 @@ CREATE TABLE subscriptions (
     addon_qty              INT NOT NULL DEFAULT 0,   -- logements supplémentaires (V2-18b ; écrit SEULEMENT par le webhook)
     staff_grandfathered    BOOL NOT NULL DEFAULT false, -- grand-père du guide équipe (V2-18b ; true = comptes migrés avant V2-18b)
     current_period_end     TIMESTAMPTZ,
+    scheduled_plan_id      TEXT REFERENCES plans(id),  -- offre programmée à l'échéance (V2-18e ; NULL = aucune ; écrit SEULEMENT par le webhook)
+    scheduled_change_at    TIMESTAMPTZ,                -- date d'effet du changement programmé (V2-18e ; fin de période)
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );

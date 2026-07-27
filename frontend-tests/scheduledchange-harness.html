@@ -1,0 +1,113 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Harnais abonnement — bandeau de changement programmé + annulation (V2-18e)</title>
+<!-- Harnais headless : rend « Mon abonnement » d'un abonné Pro ACTIF pour qui un
+     DOWNGRADE vers Solo est déjà PROGRAMMÉ (scheduled_change). Vérifie que le
+     bandeau persistant affiche l'offre cible + la date (« Solo … 2033 »), que le
+     bouton « Annuler le changement programmé » est monté, et qu'il appelle
+     /api/billing/cancel-scheduled-change (après confirmation) — jamais le Checkout.
+     La carte Solo doit par ailleurs afficher « Programmée » (désactivée).
+     Le verdict est posé dans #result et lu par frontend-tests/subscription.test.mjs.
+     Ce fichier vit hors de frontend/ (jamais servi publiquement en statique). -->
+<div id="app"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { renderSubscription } from "/frontend/js/views/subscription.js";
+
+const PLANS = [
+  { id: "free", name: "Gratuit", price_month_cts: 0, max_properties: 1,
+    features: { langs: "all", pdf_export: false } },
+  { id: "solo", name: "Solo", price_month_cts: 790, max_properties: 3,
+    features: { langs: "all", pdf_export: true, staff_guide: false } },
+  { id: "pro", name: "Pro", price_month_cts: 2400, max_properties: 6,
+    addon_property_price_cts: 300,
+    features: { langs: "all", pdf_export: true, staff_guide: true } },
+];
+// Abonné Pro ACTIF avec un downgrade Solo DÉJÀ programmé au 18/05/2033.
+const SUB = {
+  plan: PLANS[2],
+  status: "active",
+  addon_qty: 0,
+  has_stripe_customer: true,
+  current_period_end: "2033-05-18T12:00:00Z",
+  scheduled_change: { plan: "solo", plan_name: "Solo", effective_at: "2033-05-18T12:00:00Z" },
+  usage: {
+    properties:  { used: 2, limit: 6 },
+    enrichments: { used: 0, limit: 10 },
+    langs:       { used: 3, limit: null },
+  },
+};
+
+const calls = [];
+window.fetch = async (path, opts = {}) => {
+  calls.push({ path, method: (opts.method || "GET"), body: opts.body });
+  const body =
+    path === "/api/plans" ? PLANS :
+    path === "/api/subscription" ? SUB :
+    path === "/api/billing/cancel-scheduled-change" ? { status: "pending" } :
+    path === "/api/billing/checkout" ? { url: "https://checkout.test/BAD" } :
+    path === "/api/billing/change-plan" ? { target_plan: "solo", status: "pending", direction: "downgrade" } :
+    (() => { throw new Error("fetch inattendu : " + path); })();
+  return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+};
+
+function waitFor(pred, desc, tries = 120) {
+  return new Promise((resolve, reject) => {
+    const tick = (n) => {
+      let v; try { v = pred(); } catch (e) { return reject(e); }
+      if (v) return resolve(v);
+      if (n <= 0) return reject(new Error("délai dépassé : " + desc));
+      setTimeout(() => tick(n - 1), 16);
+    };
+    tick(tries);
+  });
+}
+
+const out = document.getElementById("result");
+(async () => {
+  try {
+    await renderSubscription(document.getElementById("app"));
+
+    // 1) Bandeau de changement programmé : offre cible + date (2033).
+    const banner = [...document.querySelectorAll(".callout")]
+      .find((c) => /Changement programmé/.test(c.textContent));
+    if (!banner) throw new Error("bandeau « Changement programmé » absent");
+    if (!/Solo/.test(banner.textContent) || !/2033/.test(banner.textContent))
+      throw new Error("offre/date manquante dans le bandeau : " + banner.textContent);
+
+    // 2) La carte Solo doit indiquer « Programmée » (désactivée), pas « Passer en Solo ».
+    const soloCard = [...document.querySelectorAll(".plan-card")]
+      .find((c) => /\bSolo\b/.test(c.querySelector("h3")?.textContent || ""));
+    if (!soloCard) throw new Error("carte Solo absente");
+    const soloBtn = soloCard.querySelector("button");
+    if (!/Programmée/.test(soloBtn.textContent) || !soloBtn.disabled)
+      throw new Error("la carte Solo devrait afficher « Programmée » (désactivée) : "
+        + soloBtn.textContent);
+
+    // 3) Bouton d'annulation monté dans le DOM (vérif sur l'arbre RENDU, V2-18c).
+    const cancelBtn = [...banner.querySelectorAll("button")]
+      .find((b) => /Annuler le changement programmé/.test(b.textContent));
+    if (!cancelBtn) throw new Error("bouton « Annuler le changement programmé » non monté");
+
+    // 4) Clic → confirmation → appel de cancel-scheduled-change (jamais le Checkout).
+    cancelBtn.click();
+    const confirmBtn = await waitFor(() =>
+      [...document.querySelectorAll(".modal-foot button")]
+        .find((b) => /Oui, annuler/.test(b.textContent)),
+      "bouton de confirmation d'annulation");
+    if (calls.some((c) => c.path === "/api/billing/cancel-scheduled-change"))
+      throw new Error("cancel appelé AVANT confirmation");
+    confirmBtn.click();
+    await waitFor(() => calls.some((c) => c.path === "/api/billing/cancel-scheduled-change"),
+      "appel cancel-scheduled-change");
+    const call = calls.find((c) => c.path === "/api/billing/cancel-scheduled-change");
+    if (call.method !== "POST") throw new Error("méthode inattendue : " + call.method);
+    if (calls.some((c) => c.path === "/api/billing/checkout"))
+      throw new Error("Checkout appelé à tort");
+
+    out.textContent = "PASS";
+  } catch (e) {
+    out.textContent = "FAIL: " + ((e && e.message) || e);
+  }
+})();
+</script>

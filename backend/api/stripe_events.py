@@ -11,6 +11,8 @@ JSON simple) et applique l'effet en base.
   - customer.subscription.created/updated → plan + statut + fin de période (autorité)
   - customer.subscription.deleted     → retour au plan 'free' (non destructif)
   - invoice.payment_failed            → statut 'past_due' (accès conservé, grâce)
+  - subscription_schedule.created/updated → downgrade programmé (offre + date, V2-18e)
+  - subscription_schedule.released/canceled/completed/aborted → efface le programmé
 
 Invariants : aucune donnée n'est jamais supprimée (un retour à 'free' ne fait que
 rebasculer `plan_id`) ; le prix ne pilote que le mapping price→plan, jamais un
@@ -90,6 +92,46 @@ def _resolve_owner_by_customer(conn, customer_id: str | None) -> str | None:
     return str(sub["owner_id"]) if sub else None
 
 
+def _phase_main_plan(conn, phase: dict):
+    """Plan principal d'une phase de Subscription Schedule (V2-18e) : le premier
+    item dont le price est un `plans.stripe_price_id` connu. None si aucun (prix
+    non synchronisé)."""
+    for it in (phase.get("items") or []):
+        price = it.get("price")
+        price_id = price if isinstance(price, str) else (price or {}).get("id")
+        if not price_id:
+            continue
+        plan = repo.get_plan_by_stripe_price_id(conn, price_id)
+        if plan is not None:
+            return plan
+    return None
+
+
+def _resolve_scheduled_change(conn, schedule: dict, *, now: datetime | None = None):
+    """Résout le downgrade programmé (offre cible, date d'effet) à partir d'un
+    objet Subscription Schedule (V2-18e). On cherche la **prochaine phase future**
+    (start_date > maintenant, la plus proche) et on en déduit le plan principal.
+
+    Renvoie (plan_id, effective_at) si un changement programmé existe, sinon
+    (None, None) — cas d'un schedule sans phase future (déjà basculé / libéré /
+    prix inconnu)."""
+    ref = (now or datetime.now(timezone.utc)).timestamp()
+    upcoming = None
+    for phase in (schedule.get("phases") or []):
+        start = phase.get("start_date")
+        if start is None or start <= ref:
+            continue
+        if upcoming is None or start < upcoming.get("start_date"):
+            upcoming = phase
+    if upcoming is None:
+        return None, None
+    plan = _phase_main_plan(conn, upcoming)
+    if plan is None:
+        return None, None
+    effective_at = datetime.fromtimestamp(int(upcoming["start_date"]), tz=timezone.utc)
+    return plan["id"], effective_at
+
+
 # ── Handlers ─────────────────────────────────────────────────────────────────
 
 def _on_checkout_completed(conn, obj: dict) -> str:
@@ -112,13 +154,18 @@ def _on_checkout_completed(conn, obj: dict) -> str:
 
 def _on_subscription_upsert(conn, obj: dict) -> str:
     """Création/mise à jour d'abonnement : écriture d'AUTORITÉ (plan, statut,
-    fin de période)."""
+    fin de période).
+
+    V2-18e : si le plan APPLIQUÉ correspond au changement programmé, la bascule a
+    pris effet (transition de phase du schedule) → on efface le programmé pour que
+    le bandeau back-office disparaisse sans attendre l'événement `.released`."""
     customer_id = obj.get("customer")
-    owner_id = _resolve_owner_by_customer(conn, customer_id)
-    if not owner_id:
+    sub_row = repo.get_subscription_by_customer_id(conn, customer_id)
+    if not sub_row:
         log.warning("subscription.upsert : owner introuvable (customer=%s)",
                     customer_id)
         return "unresolved"
+    owner_id = str(sub_row["owner_id"])
     plan, addon_qty = _resolve_plan_and_addons(conn, obj)
     if plan is None:
         log.warning("subscription.upsert : aucun prix connu dans les items — ignoré")
@@ -128,6 +175,8 @@ def _on_subscription_upsert(conn, obj: dict) -> str:
         conn, owner_id, plan_id=plan["id"], status=status,
         stripe_subscription_id=obj.get("id"),
         current_period_end=_period_end(obj), addon_qty=addon_qty)
+    if sub_row.get("scheduled_plan_id") == plan["id"]:
+        repo.clear_scheduled_change(conn, owner_id)   # bascule effectuée
     return f"subscription_{status}"
 
 
@@ -142,6 +191,7 @@ def _on_subscription_deleted(conn, obj: dict) -> str:
     repo.update_subscription_from_stripe(
         conn, owner_id, plan_id="free", status="active",
         stripe_subscription_id=None, current_period_end=None, addon_qty=0)
+    repo.clear_scheduled_change(conn, owner_id)   # plus rien à programmer (V2-18e)
     return "downgraded_free"
 
 
@@ -157,12 +207,48 @@ def _on_payment_failed(conn, obj: dict) -> str:
     return "past_due"
 
 
+def _on_schedule_upsert(conn, obj: dict) -> str:
+    """Création/mise à jour d'un Subscription Schedule (V2-18e) : mémorise le
+    downgrade programmé (offre cible + date d'effet) pour le bandeau back-office.
+    Purement informatif — n'affecte ni `plan_id` ni l'accès (invariant 12). Si le
+    schedule n'a plus de phase future (déjà basculé / prix inconnu), on efface."""
+    owner_id = _resolve_owner_by_customer(conn, obj.get("customer"))
+    if not owner_id:
+        log.warning("subscription_schedule.upsert : owner introuvable (customer=%s)",
+                    obj.get("customer"))
+        return "unresolved"
+    plan_id, effective_at = _resolve_scheduled_change(conn, obj)
+    if plan_id and effective_at:
+        repo.set_scheduled_change(conn, owner_id, plan_id, effective_at)
+        return "scheduled"
+    repo.clear_scheduled_change(conn, owner_id)
+    return "schedule_cleared"
+
+
+def _on_schedule_ended(conn, obj: dict) -> str:
+    """Fin d'un Subscription Schedule (release/cancel/complete/abort, V2-18e) :
+    efface le downgrade programmé (annulé, ou pris en compte). Non destructif."""
+    owner_id = _resolve_owner_by_customer(conn, obj.get("customer"))
+    if not owner_id:
+        log.warning("subscription_schedule.ended : owner introuvable (customer=%s)",
+                    obj.get("customer"))
+        return "unresolved"
+    repo.clear_scheduled_change(conn, owner_id)
+    return "schedule_cleared"
+
+
 _HANDLERS = {
     "checkout.session.completed": _on_checkout_completed,
     "customer.subscription.created": _on_subscription_upsert,
     "customer.subscription.updated": _on_subscription_upsert,
     "customer.subscription.deleted": _on_subscription_deleted,
     "invoice.payment_failed": _on_payment_failed,
+    "subscription_schedule.created": _on_schedule_upsert,
+    "subscription_schedule.updated": _on_schedule_upsert,
+    "subscription_schedule.released": _on_schedule_ended,
+    "subscription_schedule.canceled": _on_schedule_ended,
+    "subscription_schedule.completed": _on_schedule_ended,
+    "subscription_schedule.aborted": _on_schedule_ended,
 }
 
 

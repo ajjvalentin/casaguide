@@ -130,6 +130,34 @@ supplémentaire** (item d'abonnement Stripe à quantité) ; guide équipe `/s/`
 5. **M-30.** Enrichir un logement réel : vérifier que **stations-service** et
    **bornes de recharge** remontent dans les POI (chapitre Transports).
 
+### Changement d'offre : upgrade immédiat / downgrade programmé (V2-18e)
+
+> **Politique** (invariant 12) : **upgrade** (offre plus chère) = **immédiat**
+> avec prorata ; **downgrade** (offre moins chère) = **à l'échéance**
+> (`current_period_end`), **annulable** tant qu'il n'a pas pris effet. L'endpoint
+> **ne modifie jamais l'abonnement en base** — le **webhook** (schedule +
+> transition) est seule autorité. Prérequis : les six événements
+> `subscription_schedule.*` **activés** sur l'endpoint webhook.
+
+1. **Upgrade Solo → Pro (immédiat).** Compte **Solo actif** → « Mon abonnement »
+   → **« Passer en Pro »** → le dialogue annonce **« démarre immédiatement…
+   prorata jusqu'au <date> »** → Confirmer. `stripe listen` montre
+   `customer.subscription.updated` (price Pro). **Actualiser** : offre **Pro**
+   tout de suite ; facture de prorata visible au portail.
+2. **Downgrade Pro → Solo (programmé).** Compte **Pro actif** → **« Passer en
+   Solo »** → le dialogue annonce **« reste active jusqu'au <date>… Solo prendra
+   le relais »** → Confirmer. `stripe listen` montre `subscription_schedule.
+   created/updated`. **Actualiser** : l'offre **reste Pro**, un **bandeau
+   « Changement programmé : Solo à partir du <date> »** apparaît, la carte Solo
+   affiche **« Programmée »**. Rien n'est facturé, l'accès Pro est conservé.
+3. **Annulation du programmé.** Sur le bandeau → **« Annuler le changement
+   programmé »** → confirmer. `stripe listen` montre `subscription_schedule.
+   released`. **Actualiser** : le bandeau disparaît, toujours **Pro**.
+4. **Prise d'effet à l'échéance** (avancer l'horloge de test Stripe, ou attendre) :
+   à `current_period_end`, `customer.subscription.updated` bascule sur Solo →
+   offre **Solo**, add-ons retirés, bandeau effacé. Si plus de 3 logements
+   existaient, l'excédent passe en **lecture seule** (402), **aucun supprimé**.
+
 ---
 
 ## 4. Déploiement en production (toujours en mode Test au début)
@@ -154,7 +182,14 @@ Dashboard Stripe (mode Test) → **Développeurs → Webhooks → Ajouter un end
 - **URL** : `https://holaguia.com/api/stripe/webhook`
 - **Événements** : `checkout.session.completed`,
   `customer.subscription.created`, `customer.subscription.updated`,
-  `customer.subscription.deleted`, `invoice.payment_failed`.
+  `customer.subscription.deleted`, `invoice.payment_failed`,
+  `subscription_schedule.created`, `subscription_schedule.updated`,
+  `subscription_schedule.released`, `subscription_schedule.canceled`,
+  `subscription_schedule.completed`, `subscription_schedule.aborted`.
+  > Les six événements `subscription_schedule.*` (V2-18e) alimentent le **bandeau
+  > de changement d'offre programmé** (downgrade à l'échéance) et son effacement.
+  > Sans eux, le downgrade fonctionne côté Stripe mais le bandeau back-office
+  > n'apparaît jamais. `stripe listen` les transmet déjà en local (aucune option).
 
 Copier le **secret de signature** de l'endpoint (`whsec_…`) dans `.env`
 (`CASAGUIDE_STRIPE_WEBHOOK_SECRET`), puis redémarrer le service :

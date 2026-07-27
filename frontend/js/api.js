@@ -118,9 +118,11 @@ export const api = {
   // Add-on « logement supplémentaire » (V2-18b) : demande la quantité ; la valeur
   // effective revient par le webhook (le front affiche « mise à jour en cours »).
   updateAddons:    (quantity) => request("POST", "/api/billing/addons", { body: { quantity } }),
-  // Changement d'offre in-place d'un abonné payant actif (V2-18d) : modifie
-  // l'abonnement Stripe existant (proration) au lieu d'un nouveau Checkout.
+  // Changement d'offre in-place d'un abonné payant actif (V2-18d/e) : upgrade
+  // immédiat (proration) ou downgrade programmé à l'échéance (jamais un Checkout).
   changePlan:      (plan) => request("POST", "/api/billing/change-plan", { body: { plan } }),
+  // Annule un downgrade programmé encore non pris en compte (V2-18e).
+  cancelScheduledChange: () => request("POST", "/api/billing/cancel-scheduled-change"),
 
   // Auth
   register: (b) => request("POST", "/api/auth/register", { body: b, auth: false }),

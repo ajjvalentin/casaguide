@@ -67,6 +67,32 @@ function gauge(label, g, unit = "", text = null) {
       el("i", { style: { width: (unlimited ? 100 : pct) + "%", opacity: unlimited ? .35 : 1 } })) : null);
 }
 
+/* Date lisible en français (« 27 juillet 2026 »), ou repli sobre si absente
+   (V2-18e : dialogues et bandeau de changement d'offre). */
+function formatDateFR(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  try {
+    return d.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+  } catch (_) {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+/* Formule « le <date> » ou, à défaut, « au terme de votre période en cours »
+   (pour « démarrera <…> »). */
+function periodEndPhrase(sub) {
+  const d = formatDateFR(sub.current_period_end);
+  return d ? "le " + d : "au terme de votre période en cours";
+}
+
+/* Formule « au <date> » / « au terme… », à coller après « jusqu' ». */
+function untilPhrase(sub) {
+  const d = formatDateFR(sub.current_period_end);
+  return d ? "au " + d : "au terme de votre période en cours";
+}
+
 /* Jours restants d'un essai (arrondi au jour supérieur, jamais négatif). */
 function trialDaysLeft(sub) {
   if (!sub.trial_ends_at) return 0;
@@ -240,29 +266,82 @@ async function startCheckout(planId, btn) {
   }
 }
 
-/* Change l'offre d'un abonné payant DÉJÀ actif (V2-18d) : confirmation explicite
-   mentionnant la proration, puis appel de /billing/change-plan (modifie
-   l'abonnement Stripe existant). L'abonnement n'est jamais muté côté client — la
-   vérité vient du webhook → on affiche « mise à jour en cours » et on invite à
-   actualiser. */
-async function startChangePlan(plan, btn) {
-  const ok = await confirmDialog(
-    `Votre abonnement passera immédiatement à l'offre ${plan.name} `
-    + `(${euros(plan.price_month_cts)}). Le temps déjà payé sur votre offre `
-    + `actuelle sera crédité automatiquement (proration Stripe).`,
-    { title: "Changer d'offre", okLabel: "Confirmer le changement" });
+/* Change l'offre d'un abonné payant DÉJÀ actif (V2-18d/e). Le SENS décide de la
+   politique et du discours (dates réelles, jamais de jargon nu) :
+     - UPGRADE (offre plus chère) : effet IMMÉDIAT, différence au prorata jusqu'à
+       la fin de la période en cours.
+     - DOWNGRADE (offre moins chère) : effet À L'ÉCHÉANCE — l'offre actuelle court
+       jusqu'à la fin de période, la nouvelle démarre à cette date.
+   L'abonnement n'est jamais muté côté client — la vérité vient du webhook → on
+   affiche « mise à jour en cours » / « changement programmé » et on invite à
+   actualiser (le bandeau apparaîtra au rafraîchissement). */
+async function startChangePlan(plan, btn, sub) {
+  const isDowngrade = plan.price_month_cts < sub.plan.price_month_cts;
+  const until = untilPhrase(sub);       // « au 27 juillet 2026 » / « au terme… »
+  const message = isDowngrade
+    ? `Votre offre ${sub.plan.name} reste active jusqu'${until}. `
+      + `L'offre ${plan.name} (${euros(plan.price_month_cts)}) prendra le relais à `
+      + `cette date — aucun paiement supplémentaire d'ici là.`
+    : `L'offre ${plan.name} (${euros(plan.price_month_cts)}) démarre immédiatement. `
+      + `La différence est facturée au prorata jusqu'${until} `
+      + `(fin de votre période en cours).`;
+  const ok = await confirmDialog(message, {
+    title: isDowngrade ? "Programmer le changement" : "Changer d'offre",
+    okLabel: "Confirmer le changement" });
   if (!ok) return;
   const prev = btn.textContent;
-  btn.disabled = true; btn.textContent = "Mise à jour…";
+  btn.disabled = true; btn.textContent = isDowngrade ? "Programmation…" : "Mise à jour…";
   try {
     await api.changePlan(plan.id);
-    btn.textContent = "Mise à jour en cours…";
-    toast("Changement demandé : votre offre sera mise à jour dans quelques "
-      + "secondes. Actualisez la page pour la voir.", "ok");
+    btn.textContent = isDowngrade ? "Changement programmé" : "Mise à jour en cours…";
+    toast(isDowngrade
+      ? `Changement programmé : l'offre ${plan.name} démarrera ${periodEndPhrase(sub)}. `
+        + `Actualisez la page pour voir le rappel.`
+      : "Changement demandé : votre offre sera mise à jour dans quelques "
+        + "secondes. Actualisez la page pour la voir.", "ok");
   } catch (err) {
     btn.disabled = false; btn.textContent = prev;
     if (!handlePlanLimit(err)) toast(err.message || "Changement impossible.", "err");
   }
+}
+
+/* Bandeau persistant d'un downgrade PROGRAMMÉ (V2-18e) : « <offre> à partir du
+   <date> » + bouton « Annuler le changement programmé ». L'annulation passe par
+   /billing/cancel-scheduled-change ; la vérité vient du webhook → on invite à
+   actualiser (jamais de mutation locale de l'abonnement). */
+function scheduledChangeBanner(sub) {
+  const sc = sub.scheduled_change;
+  if (!sc) return null;
+  const dateTxt = formatDateFR(sc.effective_at);
+  const suffix = dateTxt ? ` à partir du ${dateTxt}` : " à la fin de votre période en cours";
+
+  const cancelBtn = el("button", { class: "btn btn-ghost btn-sm" },
+    icon("x", 15), "Annuler le changement programmé");
+  cancelBtn.addEventListener("click", async () => {
+    const ok = await confirmDialog(
+      `Annuler le passage à l'offre ${sc.plan_name}${suffix} ? Votre offre `
+      + `actuelle sera conservée, sans changement.`,
+      { title: "Annuler le changement programmé", okLabel: "Oui, annuler" });
+    if (!ok) return;
+    cancelBtn.disabled = true;
+    try {
+      await api.cancelScheduledChange();
+      toast("Annulation demandée : le changement sera retiré dans quelques "
+        + "secondes. Actualisez la page.", "ok");
+    } catch (err) {
+      cancelBtn.disabled = false;
+      if (!handlePlanLimit(err)) toast(err.message || "Annulation impossible.", "err");
+    }
+  });
+
+  return el("div", { class: "callout callout-info", style: { marginBottom: "18px" } },
+    icon("calendar-clock", 18),
+    el("div", {},
+      el("b", {}, `Changement programmé : ${sc.plan_name}${suffix}.`),
+      el("div", { class: "muted", style: { fontSize: "13px", marginTop: "2px" } },
+        "Votre offre actuelle reste active jusqu'à cette date — aucun paiement "
+        + "supplémentaire d'ici là."),
+      el("div", { style: { marginTop: "8px" } }, cancelBtn)));
 }
 
 function planCard(plan, sub) {
@@ -270,20 +349,27 @@ function planCard(plan, sub) {
   const isCurrent = plan.id === currentId;
   const isFree = plan.price_month_cts === 0;
 
+  // Cette offre est-elle déjà PROGRAMMÉE (downgrade à l'échéance, V2-18e) ?
+  const scheduledHere = sub.scheduled_change && sub.scheduled_change.plan === plan.id;
+
   let btn;
   if (isCurrent) {
     btn = el("button", { class: "btn btn-block", disabled: true },
       icon("check", 16), "Votre offre");
+  } else if (scheduledHere) {
+    // Déjà programmée : on l'indique (l'annulation se fait via le bandeau).
+    btn = el("button", { class: "btn btn-block btn-ghost", disabled: true },
+      icon("calendar-clock", 16), "Programmée");
   } else if (isFree) {
     // On ne « souscrit » pas le gratuit : on y revient via le portail (annulation).
     btn = el("button", { class: "btn btn-block btn-ghost", disabled: true },
       "Offre de départ");
   } else {
     btn = el("button", { class: "btn btn-block btn-primary" }, "Passer en " + plan.name);
-    // Abonné payant actif → changement in-place (proration) ; sinon (essai/free)
-    // → Checkout pour entrer dans le payant.
+    // Abonné payant actif → changement in-place (upgrade immédiat / downgrade
+    // programmé) ; sinon (essai/free) → Checkout pour entrer dans le payant.
     btn.addEventListener("click", () =>
-      isPaidActive(sub) ? startChangePlan(plan, btn) : startCheckout(plan.id, btn));
+      isPaidActive(sub) ? startChangePlan(plan, btn, sub) : startCheckout(plan.id, btn));
   }
 
   return el("div", { class: "card plan-card" + (isCurrent ? " plan-current" : "") },
@@ -358,7 +444,7 @@ export async function renderSubscription(view) {
   const grid = el("div", { class: "plan-grid" }, ...buyable.map((p) => planCard(p, sub)));
 
   mount(view, el("div", { class: "page page-narrow" },
-    header, checkoutBanner(), trialBlock(sub), current,
+    header, checkoutBanner(), scheduledChangeBanner(sub), trialBlock(sub), current,
     addonStepper(sub),
     el("h2", { style: { fontSize: "18px", margin: "0 0 12px" } }, "Changer d'offre"),
     grid,

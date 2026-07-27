@@ -39,6 +39,17 @@ StripeError = stripe.StripeError
 SignatureError = stripe.SignatureVerificationError
 
 
+def _phase_price_id(item) -> str | None:
+    """Id du Price d'un item de phase de Subscription Schedule (V2-18e). Dans les
+    phases de schedule, `item.price` est déjà l'id (chaîne) ; on tolère aussi un
+    objet Price (`.id`) par robustesse — un StripeObject réel n'est PAS un dict
+    (OPS-1), donc on n'accède qu'aux attributs."""
+    price = getattr(item, "price", None)
+    if isinstance(price, str):
+        return price
+    return getattr(price, "id", None)
+
+
 class StripeGateway(Protocol):
     """Interface minimale utilisée par les routers de facturation."""
 
@@ -57,6 +68,11 @@ class StripeGateway(Protocol):
 
     def change_plan(self, *, subscription_id: str, new_price_id: str,
                     addon_price_id: str | None, remove_addon: bool) -> None: ...
+
+    def schedule_downgrade(self, *, subscription_id: str,
+                           new_price_id: str) -> None: ...
+
+    def cancel_scheduled_change(self, *, subscription_id: str) -> None: ...
 
     def construct_event(self, payload: bytes, sig_header: str) -> dict: ...
 
@@ -170,6 +186,60 @@ class LiveStripeGateway:
             "items": updates,
             "proration_behavior": "create_prorations",
         })
+
+    # ── Downgrade PROGRAMMÉ à l'échéance (V2-18e) ─────────────────────────────
+    def schedule_downgrade(self, *, subscription_id: str,
+                           new_price_id: str) -> None:
+        """Programme une bascule vers `new_price_id` à la FIN de la période en
+        cours (pas d'effet immédiat, pas de prorata : le temps déjà payé reste
+        acquis). Utilise un **Subscription Schedule** : phase 1 = l'offre actuelle
+        jusqu'à `current_period_end`, phase 2 = la nouvelle offre (seule, sans
+        add-on → les items d'add-on tombent à l'échéance). `end_behavior=release`
+        rend la main à un abonnement normal une fois la bascule effectuée.
+
+        N'écrit RIEN en base : la programmation (offre cible + date) revient par
+        le webhook `subscription_schedule.created/updated`, et la bascule
+        effective par `customer.subscription.updated` à l'échéance (seule
+        autorité, invariants 9/12). Surface StripeClient vérifiée par
+        introspection (OPS-1b) : `subscriptions.retrieve`,
+        `subscription_schedules.create/retrieve/update`."""
+        sub = self._client.v1.subscriptions.retrieve(subscription_id)
+        schedule_id = getattr(sub, "schedule", None)
+        if schedule_id:
+            # Un schedule existe déjà (re-programmation) : on le réutilise.
+            schedule = self._client.v1.subscription_schedules.retrieve(schedule_id)
+        else:
+            schedule = self._client.v1.subscription_schedules.create(
+                {"from_subscription": subscription_id})
+        phases = getattr(schedule, "phases", None) or []
+        if not phases:
+            raise StripeError("schedule sans phase courante")
+        current = phases[0]
+        cur_items = [{"price": _phase_price_id(it),
+                      "quantity": getattr(it, "quantity", 1) or 1}
+                     for it in (getattr(current, "items", None) or [])]
+        self._client.v1.subscription_schedules.update(schedule.id, {
+            "end_behavior": "release",
+            "proration_behavior": "none",   # downgrade : jamais de prorata
+            "phases": [
+                {"items": cur_items,
+                 "start_date": getattr(current, "start_date", None),
+                 "end_date": getattr(current, "end_date", None)},
+                {"items": [{"price": new_price_id, "quantity": 1}]},
+            ],
+        })
+
+    def cancel_scheduled_change(self, *, subscription_id: str) -> None:
+        """Annule un downgrade programmé encore non pris en compte : libère le
+        Subscription Schedule (`release`) → l'abonnement reste sur l'offre en
+        cours, la phase future est écartée. Sans schedule attaché, no-op.
+
+        N'écrit RIEN en base : l'effacement revient par le webhook
+        `subscription_schedule.released` (invariant 12)."""
+        sub = self._client.v1.subscriptions.retrieve(subscription_id)
+        schedule_id = getattr(sub, "schedule", None)
+        if schedule_id:
+            self._client.v1.subscription_schedules.release(schedule_id)
 
     # ── Vérification de signature d'un webhook ───────────────────────────────
     def construct_event(self, payload: bytes, sig_header: str) -> dict:

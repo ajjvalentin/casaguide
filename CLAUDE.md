@@ -155,6 +155,25 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
     sobre d'upsell (jamais d'erreur brute, jamais de secret) et l'édition d'une
     section `audience='staff'` répond **402 `staff_locked`** (`quota.staff_locked`,
     même forme objet, intercepté par `handlePlanLimit`).
+12. **Changement d'offre : sens = politique (V2-18e)**. Le SENS du changement
+    tranche, comparé sur le **prix de base** de l'offre (jamais le total effectif
+    avec add-ons) : **UPGRADE** (cible plus chère) = effet **IMMÉDIAT** avec
+    prorata (`gateway.change_plan`, comportement V2-18d) ; **DOWNGRADE** (cible
+    moins chère) = effet **À L'ÉCHÉANCE** (`gateway.schedule_downgrade` via un
+    **Subscription Schedule** Stripe : phase 1 = offre courante + add-ons jusqu'à
+    `current_period_end`, phase 2 = nouvelle offre **sans add-on**). Un downgrade
+    programmé est **annulable** tant qu'il n'a pas pris effet
+    (`/billing/cancel-scheduled-change` → `subscription_schedules.release`). Comme
+    l'add-on (inv. 11), ces endpoints **demandent** à Stripe et **n'écrivent RIEN**
+    en base : `subscriptions.scheduled_plan_id` / `scheduled_change_at` (bandeau
+    back-office) sont posés **EXCLUSIVEMENT par le webhook** — événements
+    `subscription_schedule.created/updated` (programmation), `.released/.canceled/
+    .completed/.aborted` (effacement), et la **transition de phase** qui arrive par
+    `customer.subscription.updated` à l'échéance (le plan appliqué == le programmé
+    → effacement, seule autorité, invariants 9/12). Ces deux colonnes sont
+    **purement informatives** : l'accès aux quotas ne dépend QUE de `plan_id`
+    (un downgrade programmé garde l'accès Pro jusqu'à la bascule ; l'excédent
+    devient alors lecture seule, jamais supprimé — inv. 8).
 
 ## Commandes
 
@@ -171,6 +190,7 @@ psql -d casaguide -f db/migrations/008_stripe_billing.sql # stripe_events + plan
 psql -d casaguide -f db/migrations/009_trial_model.sql   # subscriptions.trial_ends_at (essai 21 j, V2-18a)
 psql -d casaguide -f db/migrations/010_trial_reminders.sql # reminder_7d/2d_sent_at (relances essai, V2-18a)
 psql -d casaguide -f db/migrations/011_grille_addons_staff.sql # add-on + staff_grandfathered (grille V2-18b)
+psql -d casaguide -f db/migrations/012_scheduled_plan_change.sql # downgrade programmé (scheduled_plan_id/_change_at, V2-18e)
 
 # Backend
 cd backend
@@ -364,6 +384,33 @@ exposé, peer auth).
   proration) et **Checkout uniquement** pour essai/free ; l'en-tête « Offre
   actuelle » affiche le **total effectif** (`base + addon_qty × unité`), pas le
   prix de base.
+- **Downgrade programmé à l'échéance (V2-18e)** : un `change-plan` **n'est plus
+  toujours immédiat** (cf. invariant 12). Le router route selon le SENS (prix de
+  base cible vs actuel) : upgrade → `gateway.change_plan` (immédiat, prorata) ;
+  downgrade → `gateway.schedule_downgrade` (Subscription Schedule, effet à
+  `current_period_end`). **Ne jamais** faire un swap immédiat sur un downgrade
+  (le client perdrait le temps déjà payé) ni écrire `scheduled_plan_id` hors du
+  webhook. Côté webhook, `subscription_schedule.*` + la transition
+  (`customer.subscription.updated` dont le plan appliqué == le programmé) posent
+  ET effacent les colonnes `scheduled_*` — un `.released` (annulation ou
+  complétion) efface aussi. Le `stripe_events` handler résout la **prochaine
+  phase future** (`start_date > now`, la plus proche) : dans une phase de
+  schedule, `item.price` est un **id (chaîne)**, pas un objet — le parser
+  (`stripe_events._phase_main_plan`, gateway `_phase_price_id`) tolère les deux
+  mais ne suppose jamais un objet. `effective_at`/`current_period_end` viennent
+  de la base (posés par le webhook), jamais recalculés côté endpoint. Côté front
+  (`subscription.js`) : `startChangePlan(plan, btn, sub)` choisit le discours
+  (dates réelles FR via `formatDateFR`/`untilPhrase`) selon
+  `plan.price_month_cts < sub.plan.price_month_cts` ; `scheduledChangeBanner`
+  affiche le rappel persistant + « Annuler le changement programmé »
+  (`api.cancelScheduledChange`) ; la carte de l'offre programmée montre
+  « Programmée » (désactivée). **Live Stripe non exercé par les tests** (comme
+  tout le code réseau Stripe : fakes injectés) → surface vérifiée par
+  introspection (OPS-1b : `subscription_schedules.{create,retrieve,update,
+  release}`, `subscriptions.{retrieve,update}`), validation 4242 en Test avec
+  André en attente. **Ne jamais** deviner le mécanisme Stripe d'un downgrade « au
+  fil de l'eau » (un `subscriptions.update` immédiat sans prorata ne repousse pas
+  l'échéance — il faut un schedule).
 - **Mocks Stripe non représentatifs (OPS-1)** : un `StripeObject` réel **n'est
   pas** un `dict` (MRO `[StripeObject, object]`), n'expose ni `.get`/`.items`/
   `.keys` (interceptés par `__getattr__` → `AttributeError`) et n'implémente pas

@@ -2040,6 +2040,8 @@ class _FakeStripeGateway(billing_stripe.LiveStripeGateway):
         self.portal_calls: list[dict] = []
         self.addon_calls: list[dict] = []
         self.change_plan_calls: list[dict] = []
+        self.schedule_downgrade_calls: list[dict] = []
+        self.cancel_scheduled_calls: list[dict] = []
 
     def get_or_create_customer(self, *, owner_id, email, existing_customer_id):
         return existing_customer_id or f"cus_test_{owner_id[:8]}"
@@ -2070,6 +2072,15 @@ class _FakeStripeGateway(billing_stripe.LiveStripeGateway):
                                        "new_price_id": new_price_id,
                                        "addon_price_id": addon_price_id,
                                        "remove_addon": remove_addon})
+
+    def schedule_downgrade(self, *, subscription_id, new_price_id):
+        # Ne touche à rien : le webhook (schedule + transition) pose le programmé.
+        self.schedule_downgrade_calls.append({"subscription_id": subscription_id,
+                                              "new_price_id": new_price_id})
+
+    def cancel_scheduled_change(self, *, subscription_id):
+        # Ne touche à rien : le webhook `subscription_schedule.released` efface.
+        self.cancel_scheduled_calls.append({"subscription_id": subscription_id})
 
 
 @pytest.fixture()
@@ -2133,6 +2144,33 @@ def _subscription_obj(customer, sub_id, price_id, *, status="active",
     return {"id": sub_id, "object": "subscription", "customer": customer,
             "status": status, "current_period_end": period_end,
             "items": {"object": "list", "data": items}}
+
+
+# Bornes de phases : la phase courante commence dans le PASSÉ, la phase future
+# (downgrade programmé) dans le FUTUR lointain (> maintenant) → détectée comme
+# « à venir » quel que soit le moment du test (V2-18e).
+_PHASE_PAST = 1_600_000_000     # 2020
+_PHASE_BOUNDARY = 2_000_000_000  # 2033 (fin de période courante = début phase 2)
+_PHASE_FUTURE_END = 2_100_000_000
+
+
+def _schedule_obj(customer, sub_id, *, current_price, next_price,
+                  addon_price_id=None, addon_qty=0, next_start=_PHASE_BOUNDARY):
+    """Objet Subscription Schedule réaliste (V2-18e) : phase 1 = offre courante
+    (+ add-ons éventuels) jusqu'à la frontière, phase 2 = offre programmée. Dans
+    une phase de schedule, `item.price` est l'id (chaîne)."""
+    cur_items = [{"price": current_price, "quantity": 1}]
+    if addon_price_id and addon_qty:
+        cur_items.append({"price": addon_price_id, "quantity": addon_qty})
+    return {
+        "id": "sub_sched_test_1", "object": "subscription_schedule",
+        "customer": customer, "subscription": sub_id, "status": "active",
+        "phases": [
+            {"start_date": _PHASE_PAST, "end_date": next_start, "items": cur_items},
+            {"start_date": next_start, "end_date": _PHASE_FUTURE_END,
+             "items": [{"price": next_price, "quantity": 1}]},
+        ],
+    }
 
 
 def _post_event(client, event: dict, *, valid_sig=True):
@@ -2508,11 +2546,11 @@ def test_change_plan_requires_active_paid_subscription(billing):
     assert r.json()["detail"]["code"] == "not_subscribed"
 
 
-def test_change_plan_pro_to_solo_swaps_price_and_removes_addons(billing):
-    """Pro (+2 add-ons) → Solo : l'endpoint demande à Stripe le swap du price
-    principal ET la suppression des add-ons (solo n'en a pas), sans RIEN écrire en
-    base. Le webhook consécutif pose l'état final ; l'excédent de logements passe
-    en lecture seule sans qu'aucun ne soit supprimé (invariant 8/11)."""
+def test_downgrade_pro_to_solo_takes_effect_at_period_end_read_only_excess(billing):
+    """Pro (+2 add-ons) → Solo est un DOWNGRADE : PROGRAMMÉ à l'échéance (V2-18e),
+    jamais immédiat. L'endpoint demande la programmation à Stripe sans RIEN écrire
+    (toujours Pro d'ici là) ; à la transition de phase (webhook Solo), l'excédent
+    de logements passe en lecture seule sans qu'aucun ne soit supprimé (inv. 8/12)."""
     client, gateway = billing
     owner = register(client)
     cust = _go_pro(client, owner)
@@ -2524,21 +2562,21 @@ def test_change_plan_pro_to_solo_swaps_price_and_removes_addons(billing):
         make_property(client, owner["headers"], name=f"Logement {i}")
     assert len(client.get("/api/properties", headers=owner["headers"]).json()) == 5
 
-    # Demande de bascule vers Solo (l'abonnement n'est PAS muté en base ici).
+    # Demande de bascule vers Solo : PROGRAMMÉE (pas de swap immédiat, rien en base).
     r = client.post("/api/billing/change-plan", json={"plan": "solo"},
                     headers=owner["headers"])
     assert r.status_code == 200, r.text
-    assert r.json() == {"target_plan": "solo", "status": "pending"}
-    call = gateway.change_plan_calls[-1]
+    assert r.json()["direction"] == "downgrade"
+    assert r.json()["target_plan"] == "solo"
+    call = gateway.schedule_downgrade_calls[-1]
     assert call["subscription_id"] == "sub_test_1"
     assert call["new_price_id"] == "price_test_solo"
-    assert call["addon_price_id"] == ADDON_PRICE
-    assert call["remove_addon"] is True
-    # Rien écrit tant que le webhook n'a pas confirmé : toujours Pro + 2 add-ons.
+    assert gateway.change_plan_calls == []          # jamais de swap immédiat
+    # Rien écrit tant que la transition n'a pas eu lieu : toujours Pro + 2 add-ons.
     body = client.get("/api/subscription", headers=owner["headers"]).json()
     assert body["plan"]["id"] == "pro" and body["addon_qty"] == 2
 
-    # Webhook consécutif : Solo sans item d'add-on → plan solo, addon_qty 0.
+    # À l'échéance : la phase bascule → webhook Solo sans item d'add-on.
     _post_event(client, _evt("evt_test_cp_solo", "customer.subscription.updated",
                 _subscription_obj(cust, "sub_test_1", "price_test_solo")))
     final = client.get("/api/subscription", headers=owner["headers"]).json()
@@ -2602,6 +2640,168 @@ def test_change_plan_503_when_stripe_disabled(billing):
     r = client.post("/api/billing/change-plan", json={"plan": "pro"},
                     headers=owner["headers"])
     assert r.status_code == 503
+
+
+# ── Changement d'offre : dates explicites & downgrade à l'échéance (V2-18e) ──
+
+def test_subscription_exposes_current_period_end(billing):
+    """La page abonnement expose la fin de période payée (date de référence des
+    dialogues de changement d'offre, V2-18e)."""
+    client, _ = billing
+    owner = register(client)
+    _go_solo(client, owner)   # webhook pose current_period_end
+    body = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert body["current_period_end"] is not None
+    assert body["scheduled_change"] is None   # rien de programmé au départ
+
+
+def test_upgrade_solo_to_pro_is_immediate_with_proration(billing):
+    """UPGRADE (solo→pro, prix cible > actuel) : effet IMMÉDIAT via change_plan
+    (proration), JAMAIS de programmation. Réponse `direction='upgrade'`,
+    `effective_at=None`."""
+    client, gateway = billing
+    owner = register(client)
+    _go_solo(client, owner)
+    r = client.post("/api/billing/change-plan", json={"plan": "pro"},
+                    headers=owner["headers"])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["direction"] == "upgrade" and body["effective_at"] is None
+    assert body["target_plan"] == "pro"
+    # Modification immédiate de l'abonnement Stripe, aucune programmation.
+    assert len(gateway.change_plan_calls) == 1
+    assert gateway.schedule_downgrade_calls == []
+    assert gateway.change_plan_calls[-1]["new_price_id"] == "price_test_pro"
+
+
+def test_downgrade_pro_to_solo_is_scheduled_at_period_end(billing):
+    """DOWNGRADE (pro→solo, prix cible < actuel) : programmé À L'ÉCHÉANCE via
+    schedule_downgrade — JAMAIS de swap immédiat. Réponse `direction='downgrade'`
+    + `effective_at` (fin de période). Rien ne change en base : toujours Pro."""
+    client, gateway = billing
+    owner = register(client)
+    cust = _go_pro(client, owner)
+    _post_event(client, _evt("evt_test_e_a2", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_pro",
+                                  addon_price_id=ADDON_PRICE, addon_qty=2)))
+
+    r = client.post("/api/billing/change-plan", json={"plan": "solo"},
+                    headers=owner["headers"])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["direction"] == "downgrade" and body["target_plan"] == "solo"
+    assert body["effective_at"] is not None       # fin de période en cours
+    # Programmation Stripe, aucun swap immédiat.
+    assert len(gateway.schedule_downgrade_calls) == 1
+    assert gateway.change_plan_calls == []
+    assert gateway.schedule_downgrade_calls[-1]["new_price_id"] == "price_test_solo"
+    assert gateway.schedule_downgrade_calls[-1]["subscription_id"] == "sub_test_1"
+    # Rien n'a changé en base : toujours Pro + 2 add-ons (le webhook fait autorité).
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert sub["plan"]["id"] == "pro" and sub["addon_qty"] == 2
+
+
+def test_schedule_webhook_records_scheduled_change(billing):
+    """Le webhook `subscription_schedule.updated` mémorise l'offre programmée +
+    sa date d'effet, exposées sur /api/subscription (V2-18e, invariant 12)."""
+    client, _ = billing
+    owner = register(client)
+    cust = _go_pro(client, owner)
+
+    r = _post_event(client, _evt(
+        "evt_test_e_sched", "subscription_schedule.updated",
+        _schedule_obj(cust, "sub_test_1", current_price="price_test_pro",
+                      next_price="price_test_solo")))
+    assert r.status_code == 200, r.text
+
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    sc = sub["scheduled_change"]
+    assert sc is not None
+    assert sc["plan"] == "solo" and sc["plan_name"] == "Solo"
+    assert sc["effective_at"] is not None
+    # L'accès n'a PAS changé : toujours Pro jusqu'à l'échéance (invariant 12).
+    assert sub["plan"]["id"] == "pro"
+
+
+def test_scheduled_change_cleared_on_transition_at_period_end(billing):
+    """À l'échéance, la bascule de phase arrive par `customer.subscription.updated`
+    (offre Solo) : le plan devient Solo ET le changement programmé est effacé
+    (bandeau retiré) — même avant l'événement `.released` (V2-18e)."""
+    client, _ = billing
+    owner = register(client)
+    cust = _go_pro(client, owner)
+    # Programmation.
+    _post_event(client, _evt("evt_test_e_s1", "subscription_schedule.updated",
+                _schedule_obj(cust, "sub_test_1", current_price="price_test_pro",
+                              next_price="price_test_solo")))
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["scheduled_change"] is not None
+
+    # Transition : l'abonnement reflète désormais Solo (sans add-on).
+    _post_event(client, _evt("evt_test_e_s2", "customer.subscription.updated",
+                _subscription_obj(cust, "sub_test_1", "price_test_solo")))
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert sub["plan"]["id"] == "solo" and sub["addon_qty"] == 0
+    assert sub["scheduled_change"] is None      # programmé consommé
+
+
+def test_scheduled_change_cleared_on_schedule_release(billing):
+    """L'événement `subscription_schedule.released` (annulation Stripe) efface le
+    changement programmé sans rien détruire d'autre (V2-18e)."""
+    client, _ = billing
+    owner = register(client)
+    cust = _go_pro(client, owner)
+    _post_event(client, _evt("evt_test_e_r1", "subscription_schedule.updated",
+                _schedule_obj(cust, "sub_test_1", current_price="price_test_pro",
+                              next_price="price_test_solo")))
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["scheduled_change"] is not None
+
+    _post_event(client, _evt("evt_test_e_r2", "subscription_schedule.released",
+                {"object": "subscription_schedule", "customer": cust,
+                 "subscription": "sub_test_1", "phases": []}))
+    sub = client.get("/api/subscription", headers=owner["headers"]).json()
+    assert sub["scheduled_change"] is None and sub["plan"]["id"] == "pro"
+
+
+def test_cancel_scheduled_change_calls_stripe_and_writes_nothing(billing):
+    """POST /api/billing/cancel-scheduled-change : demande la libération du
+    schedule à Stripe mais n'écrit RIEN (le webhook `.released` efface). 409 s'il
+    n'y a aucun changement programmé (V2-18e, invariant 12)."""
+    client, gateway = billing
+    owner = register(client)
+    cust = _go_pro(client, owner)
+
+    # Aucun changement programmé → 409 `no_scheduled_change`.
+    r0 = client.post("/api/billing/cancel-scheduled-change", headers=owner["headers"])
+    assert r0.status_code == 409, r0.text
+    assert r0.json()["detail"]["code"] == "no_scheduled_change"
+
+    # Programme un downgrade, puis annule.
+    _post_event(client, _evt("evt_test_e_c1", "subscription_schedule.updated",
+                _schedule_obj(cust, "sub_test_1", current_price="price_test_pro",
+                              next_price="price_test_solo")))
+    r = client.post("/api/billing/cancel-scheduled-change", headers=owner["headers"])
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "pending"}
+    assert gateway.cancel_scheduled_calls[-1]["subscription_id"] == "sub_test_1"
+    # Rien effacé en base tant que le webhook n'a pas confirmé : toujours programmé.
+    assert client.get("/api/subscription",
+                      headers=owner["headers"]).json()["scheduled_change"] is not None
+
+
+def test_cancel_scheduled_change_requires_active_paid_subscription(billing):
+    """Sans abonnement payant actif (essai) : 409 `not_subscribed`."""
+    client, _ = billing
+    owner = register(client)
+    r = client.post("/api/billing/cancel-scheduled-change", headers=owner["headers"])
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "not_subscribed"
+
+
+def test_cancel_scheduled_change_requires_auth(billing):
+    client, _ = billing
+    assert client.post("/api/billing/cancel-scheduled-change").status_code == 401
 
 
 def test_webhook_payment_failed_sets_past_due_keeping_plan(billing):

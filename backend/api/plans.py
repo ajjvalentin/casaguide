@@ -52,7 +52,8 @@ def get_subscription(conn, owner_id: str) -> dict | None:
     return conn.execute(
         """SELECT id, owner_id, plan_id, status, stripe_customer_id,
                   stripe_subscription_id, trial_ends_at, current_period_end,
-                  addon_qty, staff_grandfathered, created_at, updated_at
+                  addon_qty, staff_grandfathered, scheduled_plan_id,
+                  scheduled_change_at, created_at, updated_at
            FROM subscriptions
            WHERE owner_id = %s
            ORDER BY created_at DESC LIMIT 1""",

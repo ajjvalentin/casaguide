@@ -22,9 +22,10 @@ from fastapi import APIRouter, HTTPException, Request, status
 from .. import billing_stripe, plans, repo, stripe_events
 from ..config import settings
 from ..deps import Conn, CurrentOwner, Stripe
-from ..schemas import (AddonIn, AddonOut, ChangePlanIn, ChangePlanOut,
-                       CheckoutIn, CheckoutOut, PlanOut, PortalOut,
-                       QuotaGaugeOut, SubscriptionOut, UsageOut)
+from ..schemas import (AddonIn, AddonOut, CancelScheduledOut, ChangePlanIn,
+                       ChangePlanOut, CheckoutIn, CheckoutOut, PlanOut,
+                       PortalOut, QuotaGaugeOut, ScheduledChangeOut,
+                       SubscriptionOut, UsageOut)
 
 log = logging.getLogger("casaguide.billing")
 
@@ -66,6 +67,16 @@ def my_subscription(conn: Conn, owner: CurrentOwner):
             used=1 + repo.max_published_langs_count(conn, owner_id),
             limit=plans.max_langs(plan)),
     )
+    # Downgrade programmé à l'échéance (V2-18e) : offre cible + date d'effet,
+    # posés par le webhook (invariant 12). On enrichit du nom lisible de l'offre.
+    scheduled = None
+    if sub and sub.get("scheduled_plan_id"):
+        target = repo.get_plan_by_id(conn, sub["scheduled_plan_id"])
+        scheduled = ScheduledChangeOut(
+            plan=sub["scheduled_plan_id"],
+            plan_name=(target["name"] if target else sub["scheduled_plan_id"]),
+            effective_at=sub.get("scheduled_change_at"))
+
     return SubscriptionOut(
         plan=PlanOut(**plan),
         status=(sub["status"] if sub else "active"),
@@ -74,7 +85,9 @@ def my_subscription(conn: Conn, owner: CurrentOwner):
         on_trial=ent["on_trial"],
         trial_expired=ent["trial_expired"],
         trial_ends_at=ent["trial_ends_at"],
-        addon_qty=ent["addon_qty"])
+        addon_qty=ent["addon_qty"],
+        current_period_end=(sub.get("current_period_end") if sub else None),
+        scheduled_change=scheduled)
 
 
 # ── Paiement : session Checkout (V2-05b, volet 2) ────────────────────────────
@@ -219,11 +232,19 @@ def update_addons(payload: AddonIn, conn: Conn, owner: CurrentOwner,
 def change_plan(payload: ChangePlanIn, conn: Conn, owner: CurrentOwner,
                 gateway: Stripe):
     """Change l'offre d'un abonné **payant déjà actif** (409 sinon) en modifiant
-    l'abonnement Stripe EXISTANT (proration : le temps déjà payé est crédité) —
-    jamais un nouveau Checkout, qui créerait un doublon. Un passage vers une offre
-    sans add-on (solo) supprime les items d'add-on. **N'écrit RIEN en base** : le
-    webhook `customer.subscription.updated` posera plan_id/addon_qty (invariant
-    9). Le front affiche « mise à jour en cours » jusqu'au rafraîchissement."""
+    l'abonnement Stripe EXISTANT — jamais un nouveau Checkout, qui créerait un
+    doublon. Le SENS décide de la politique (V2-18e, invariant 12) :
+
+    - **UPGRADE** (offre cible plus chère) : effet **IMMÉDIAT** avec prorata
+      (`change_plan`, le temps déjà payé est crédité).
+    - **DOWNGRADE** (offre cible moins chère) : effet **À L'ÉCHÉANCE**
+      (`schedule_downgrade`) — le plan courant reste actif jusqu'à
+      `current_period_end`, la nouvelle offre (sans add-on) démarre à cette date.
+
+    **N'écrit RIEN en base** : le webhook posera plan_id/addon_qty (à l'échéance
+    pour un downgrade) et le changement programmé (invariants 9/12). Le front
+    affiche « mise à jour en cours » / « changement programmé » jusqu'au
+    rafraîchissement."""
     if gateway is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -253,22 +274,69 @@ def change_plan(payload: ChangePlanIn, conn: Conn, owner: CurrentOwner,
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Cette offre n'est pas encore disponible au paiement.")
 
-    # L'add-on n'existe que sur Pro : on identifie ses items par le price d'add-on
-    # du plan courant, et on les retire si la cible n'a pas d'add-on (solo).
-    addon_price_id = current.get("addon_stripe_price_id")
-    remove_addon = not target.get("addon_property_price_cts")
+    # Sens du changement : le prix de BASE de l'offre (jamais le total effectif
+    # avec add-ons) tranche upgrade vs downgrade — cohérent avec le front.
+    is_downgrade = target["price_month_cts"] < current.get("price_month_cts", 0)
     try:
-        gateway.change_plan(subscription_id=sub["stripe_subscription_id"],
-                            new_price_id=new_price_id,
-                            addon_price_id=addon_price_id,
-                            remove_addon=remove_addon)
+        if is_downgrade:
+            # À l'échéance : le plan courant (et ses add-ons) court jusqu'à la fin
+            # de période, la nouvelle offre (sans add-on) démarre ensuite.
+            gateway.schedule_downgrade(
+                subscription_id=sub["stripe_subscription_id"],
+                new_price_id=new_price_id)
+        else:
+            # Immédiat avec prorata. L'add-on n'existe que sur Pro : on retire ses
+            # items si la cible n'en a pas (jamais le cas d'un upgrade, garde-fou).
+            gateway.change_plan(
+                subscription_id=sub["stripe_subscription_id"],
+                new_price_id=new_price_id,
+                addon_price_id=current.get("addon_stripe_price_id"),
+                remove_addon=not target.get("addon_property_price_cts"))
     except billing_stripe.StripeError as exc:
         log.error("Échec du changement d'offre Stripe (owner=%s) : %s",
                   owner_id, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Le service de paiement est momentanément indisponible.")
-    return ChangePlanOut(target_plan=target["id"])
+    return ChangePlanOut(
+        target_plan=target["id"],
+        direction="downgrade" if is_downgrade else "upgrade",
+        effective_at=(sub.get("current_period_end") if is_downgrade else None))
+
+
+@router.post("/billing/cancel-scheduled-change", response_model=CancelScheduledOut)
+def cancel_scheduled_change(conn: Conn, owner: CurrentOwner, gateway: Stripe):
+    """Annule un downgrade **programmé** encore non pris en compte (V2-18e). Libère
+    le Subscription Schedule côté Stripe (l'offre en cours est conservée).
+    **N'écrit RIEN en base** : l'effacement du programmé revient par le webhook
+    `subscription_schedule.released` (seule autorité, invariant 12)."""
+    if gateway is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Le paiement en ligne n'est pas disponible.")
+
+    owner_id = str(owner["id"])
+    sub = plans.has_active_paid_subscription(conn, owner_id)
+    if sub is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "not_subscribed",
+                    "message": "Aucun abonnement payant actif à modifier."})
+    if not sub.get("scheduled_plan_id"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "no_scheduled_change",
+                    "message": "Aucun changement d'offre programmé à annuler."})
+    try:
+        gateway.cancel_scheduled_change(
+            subscription_id=sub["stripe_subscription_id"])
+    except billing_stripe.StripeError as exc:
+        log.error("Échec de l'annulation du changement programmé Stripe "
+                  "(owner=%s) : %s", owner_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Le service de paiement est momentanément indisponible.")
+    return CancelScheduledOut()
 
 
 # ── Webhooks Stripe : la seule source de vérité (V2-05b, volet 2) ────────────

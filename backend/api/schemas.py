@@ -90,6 +90,14 @@ class UsageOut(BaseModel):
     langs: QuotaGaugeOut                 # langues publiées (source comprise) vs plafond
 
 
+class ScheduledChangeOut(BaseModel):
+    """Changement d'offre PROGRAMMÉ à l'échéance (downgrade, V2-18e). Alimente le
+    bandeau « <offre> à partir du JJ/MM — Annuler ». La vérité vient du webhook."""
+    plan: str                            # id de l'offre cible (ex. 'solo')
+    plan_name: str                       # nom lisible de l'offre cible
+    effective_at: datetime | None = None # date d'effet (fin de période en cours)
+
+
 class SubscriptionOut(BaseModel):
     plan: PlanOut
     status: str
@@ -104,6 +112,11 @@ class SubscriptionOut(BaseModel):
     trial_ends_at: datetime | None = None
     # Logements supplémentaires actifs (add-on Pro, V2-18b) — pilote le stepper.
     addon_qty: int = 0
+    # Fin de la période payée en cours (V2-18e) : date de référence des dialogues
+    # de changement d'offre (prorata jusqu'au…, downgrade à partir du…).
+    current_period_end: datetime | None = None
+    # Downgrade programmé à l'échéance (V2-18e), ou None si aucun.
+    scheduled_change: ScheduledChangeOut | None = None
 
 
 # ── Paiement Stripe (V2-05b) ─────────────────────────────────────────────────
@@ -144,9 +157,22 @@ class ChangePlanIn(BaseModel):
 
 class ChangePlanOut(BaseModel):
     """Accusé du changement d'offre : l'offre cible demandée, en attente de la
-    confirmation du webhook `customer.subscription.updated` (seule autorité,
-    invariant 9). Le front affiche « mise à jour en cours » jusque-là."""
+    confirmation du webhook (seule autorité, invariants 9/12). Le front affiche
+    « mise à jour en cours » jusque-là.
+
+    `direction` (V2-18e) : 'upgrade' (effet IMMÉDIAT, prorata) ou 'downgrade'
+    (effet À L'ÉCHÉANCE). `effective_at` = date d'effet d'un downgrade (fin de
+    période) ; None pour un upgrade (immédiat)."""
     target_plan: str
+    status: str = "pending"
+    direction: Literal["upgrade", "downgrade"] = "upgrade"
+    effective_at: datetime | None = None
+
+
+class CancelScheduledOut(BaseModel):
+    """Accusé de l'annulation d'un changement programmé (V2-18e) : la demande est
+    envoyée à Stripe, l'effacement effectif revient par le webhook
+    `subscription_schedule.released` (seule autorité, invariant 12)."""
     status: str = "pending"
 
 

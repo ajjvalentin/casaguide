@@ -1,10 +1,11 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Harnais abonnement — changement d'offre in-place (V2-18d)</title>
+<title>Harnais abonnement — downgrade programmé à l'échéance (V2-18d/e)</title>
 <!-- Harnais headless : rend « Mon abonnement » d'un abonné Pro ACTIF, avec un
-     fetch simulé (aucune requête réseau). Vérifie que « Passer en Solo » ouvre
-     une confirmation (proration) puis appelle /api/billing/change-plan — jamais
-     le Checkout — et que l'en-tête affiche le TOTAL effectif (base + add-ons).
+     fetch simulé (aucune requête réseau). Pro→Solo est un DOWNGRADE (V2-18e) :
+     vérifie que « Passer en Solo » ouvre une confirmation mentionnant la DATE
+     d'échéance (« reste active jusqu'au … »), puis appelle /api/billing/change-plan
+     — jamais le Checkout — et que l'en-tête affiche le TOTAL effectif (base + add-ons).
      Le verdict est posé dans #result et lu par frontend-tests/subscription.test.mjs.
      Ce fichier vit hors de frontend/ (jamais servi publiquement en statique). -->
 <div id="app"></div>
@@ -22,11 +23,14 @@ const PLANS = [
     features: { langs: "all", pdf_export: true, staff_guide: true } },
 ];
 // Abonné Pro ACTIF + 2 add-ons → total effectif 24 € + 2×3 € = 30 €.
+// current_period_end à midi UTC 2033 → date locale stable (« … 2033 ») partout.
 const SUB = {
   plan: PLANS[2],
   status: "active",
   addon_qty: 2,
   has_stripe_customer: true,
+  current_period_end: "2033-05-18T12:00:00Z",
+  scheduled_change: null,
   usage: {
     properties:  { used: 5, limit: 8 },
     enrichments: { used: 0, limit: 10 },
@@ -76,13 +80,19 @@ const out = document.getElementById("result");
       .find((b) => /Passer en Solo/.test(b.textContent));
     btn.click();
 
-    // 3) Une confirmation (proration) s'ouvre AVANT tout appel réseau.
+    // 3) Une confirmation s'ouvre AVANT tout appel réseau, avec la DATE d'échéance
+    //    d'un downgrade (« reste active jusqu'au … 2033 »).
     const confirmBtn = await waitFor(() =>
       [...document.querySelectorAll(".modal-foot button")]
         .find((b) => /Confirmer le changement/.test(b.textContent)),
       "bouton de confirmation");
     if (calls.some((c) => c.path === "/api/billing/change-plan"))
       throw new Error("change-plan appelé AVANT confirmation");
+    const dialogTxt = document.querySelector(".modal-body").textContent;
+    if (!/reste active jusqu'au/.test(dialogTxt))
+      throw new Error("discours de downgrade attendu, obtenu : " + dialogTxt);
+    if (!/2033/.test(dialogTxt))
+      throw new Error("date d'échéance absente du dialogue : " + dialogTxt);
 
     // 4) Confirmation → appel de /api/billing/change-plan (jamais le Checkout).
     confirmBtn.click();

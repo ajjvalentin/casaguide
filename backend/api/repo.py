@@ -203,7 +203,7 @@ def get_subscription_by_customer_id(conn, customer_id: str) -> dict | None:
     None si aucun abonnement ne porte ce `stripe_customer_id`."""
     return conn.execute(
         """SELECT id, owner_id, plan_id, status, stripe_customer_id,
-                  stripe_subscription_id, current_period_end
+                  stripe_subscription_id, current_period_end, scheduled_plan_id
            FROM subscriptions WHERE stripe_customer_id = %s
            ORDER BY created_at DESC LIMIT 1""",
         (customer_id,),
@@ -277,6 +277,37 @@ def set_subscription_status(conn, owner_id: str, status: str) -> None:
         conn.execute(
             "UPDATE subscriptions SET status = %s, updated_at = now() WHERE id = %s",
             (status, sub_id))
+
+
+# ── Changement d'offre programmé à l'échéance (V2-18e) ───────────────────────
+
+def set_scheduled_change(conn, owner_id: str, plan_id: str, effective_at) -> None:
+    """Mémorise un downgrade programmé (offre cible + date d'effet) sur
+    l'abonnement courant. Écrit EXCLUSIVEMENT par le webhook Stripe (événements
+    `subscription_schedule.*`, invariant 12) — purement informatif (bandeau
+    back-office). N'affecte JAMAIS `plan_id` ni l'accès (qui reste celui de
+    l'offre en cours jusqu'à l'échéance)."""
+    sub_id = _latest_subscription_id(conn, owner_id)
+    if sub_id is not None:
+        conn.execute(
+            """UPDATE subscriptions
+               SET scheduled_plan_id = %s, scheduled_change_at = %s,
+                   updated_at = now()
+               WHERE id = %s""",
+            (plan_id, effective_at, sub_id))
+
+
+def clear_scheduled_change(conn, owner_id: str) -> None:
+    """Efface un downgrade programmé (annulation, prise d'effet, ou annulation
+    Stripe). Écrit EXCLUSIVEMENT par le webhook (invariant 12)."""
+    sub_id = _latest_subscription_id(conn, owner_id)
+    if sub_id is not None:
+        conn.execute(
+            """UPDATE subscriptions
+               SET scheduled_plan_id = NULL, scheduled_change_at = NULL,
+                   updated_at = now()
+               WHERE id = %s""",
+            (sub_id,))
 
 
 # ── Idempotence des webhooks Stripe (V2-05b) ─────────────────────────────────

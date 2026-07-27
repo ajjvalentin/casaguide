@@ -103,12 +103,25 @@ test("le bouton « Confirmer » du stepper add-on est monté dans le DOM (V2-18c
   }
 });
 
-test("« Passer en Solo » d'un abonné payant actif → confirmation puis change-plan (V2-18d)", async (t) => {
+test("« Passer en Solo » (downgrade) → confirmation datée puis change-plan (V2-18d/e)", async (t) => {
   const chrome = findChrome();
   if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
   const server = await startServer();
   try {
     const verdict = await runHarness(chrome, server.address().port, "changeplan-harness.html");
+    assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
+    assert.equal(verdict, "PASS", `harnais en échec : ${verdict}`);
+  } finally {
+    server.close();
+  }
+});
+
+test("bandeau de changement programmé + annulation (V2-18e)", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const server = await startServer();
+  try {
+    const verdict = await runHarness(chrome, server.address().port, "scheduledchange-harness.html");
     assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
     assert.equal(verdict, "PASS", `harnais en échec : ${verdict}`);
   } finally {
