@@ -40,16 +40,34 @@ def versioned(path: str) -> str:
     return f"{path}{sep}v={asset_version()}"
 
 
+# Extensions immuables de fait (images, polices) : cache long, aucun busting
+# nécessaire (icônes PWA versionnées par ailleurs via le service worker, jamais
+# critiques). Tout le reste — code (JS/MJS/CSS), HTML, manifeste — revalide.
+_LONG_CACHE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico",
+                   ".woff", ".woff2", ".ttf", ".otf")
+
+
 class RevalidatingStaticFiles(StaticFiles):
-    """`StaticFiles` forçant la revalidation navigateur (`Cache-Control: no-cache`).
+    """`StaticFiles` forçant la revalidation navigateur du CODE (`Cache-Control:
+    no-cache, must-revalidate`).
 
     Sans cet entête, Starlette laisse le navigateur appliquer un cache heuristique
     → risque d'assets JS/CSS périmés servis après un déploiement (symptôme du
-    14/07 : back-office en page blanche sur un module ES obsolète). Avec
-    `no-cache`, chaque requête revalide (ETag) : 304 quand rien n'a bougé (léger),
-    200 avec le nouveau contenu sinon."""
+    14/07 : back-office en page blanche sur un module ES obsolète ; généralisé le
+    27/07 — OPS-2 : le `?v=<sha>` ne couvre que le point d'entrée, les **imports ES
+    relatifs** (`views/*.js`, `components/*.js`…) restaient en cache). Avec
+    `no-cache, must-revalidate`, chaque requête revalide (ETag fourni par
+    Starlette) : 304 quand rien n'a bougé (coût négligeable, fichiers petits),
+    200 avec le nouveau contenu sinon → un module modifié est TOUJOURS re-servi.
+
+    Les images et polices (`_LONG_CACHE_EXT`) sont au contraire en cache long
+    (30 j) : immuables ou peu critiques, inutile de les revalider à chaque vue."""
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
         resp = await super().get_response(path, scope)
-        resp.headers.setdefault("Cache-Control", "no-cache")
+        ext = os.path.splitext(path)[1].lower()
+        if ext in _LONG_CACHE_EXT:
+            resp.headers.setdefault("Cache-Control", "public, max-age=2592000")
+        else:
+            resp.headers.setdefault("Cache-Control", "no-cache, must-revalidate")
         return resp

@@ -1,5 +1,6 @@
 # ============================================================================
-# CasaGuide — reverse proxy Caddy (M-11, bascule domaine M-27, marque M-28)
+# Holaguia — reverse proxy Caddy (M-11, bascule domaine M-27, marque M-28,
+# cache-busting modules ES OPS-2)
 # ----------------------------------------------------------------------------
 # Installation :
 #   sudo cp /opt/casaguide/ops/Caddyfile /etc/caddy/Caddyfile
@@ -53,6 +54,18 @@
 # ─── Adresse canonique du produit ───────────────────────────────────────────
 holaguia.com {
 	encode zstd gzip
+
+	# OPS-2 (27/07) — cache-busting des modules ES. Le `?v=<sha>` ne busteur que
+	# le point d'entrée : les imports ES relatifs (`js/views/*.js`,
+	# `js/components/*.js`…) restaient en cache navigateur après déploiement
+	# (un hotfix déployé, invisible). L'app pose déjà `Cache-Control: no-cache,
+	# must-revalidate` sur le code (RevalidatingStaticFiles) ; on le GARANTIT au
+	# bord — défense en profondeur si les statiques venaient à être servis
+	# autrement (file_server, régression de montage). Coût nul : petits fichiers,
+	# 304 sur ETag. Les images/polices/uploads conservent leur cache long.
+	@code path *.js *.mjs *.css
+	header @code Cache-Control "no-cache, must-revalidate"
+
 	reverse_proxy 127.0.0.1:8000
 	import securite
 	log {

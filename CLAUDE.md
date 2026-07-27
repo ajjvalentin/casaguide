@@ -281,6 +281,22 @@ exposé, peer auth).
   en `Cache-Control: no-cache` (`RevalidatingStaticFiles`), SHA injecté dans le
   nom des caches du service worker (`/guide/sw.js`, placeholder `__ASSET_VERSION__`).
   Chaque déploiement invalide caches navigateur **et** SW sans intervention.
+- **Cache des modules ES importés relativement (OPS-2, 27/07)** : le `?v=<sha>` ne
+  buste QUE le point d'entrée (`app.js`) — un `import './views/x.js'` ne porte
+  aucune query, donc un module modifié pouvait rester en cache navigateur après
+  déploiement (constat prod : hotfix V2-18c invisible malgré la bonne version).
+  **Remède = en-têtes HTTP** : `RevalidatingStaticFiles` sépare désormais le
+  **code** (JS/MJS/CSS/HTML/manifeste → `Cache-Control: no-cache, must-revalidate`,
+  revalidation ETag systématique, 304 si inchangé) des **images/polices**
+  (`_LONG_CACHE_EXT` → `public, max-age=2592000`). Les statiques passant par
+  FastAPI (Caddy ne fait que `reverse_proxy`), l'en-tête y est posé ; le
+  `Caddyfile` le **garantit aussi au bord** (matcher `@code path *.js *.mjs *.css`
+  → même en-tête, défense en profondeur). Les uploads (`routers/media.py`)
+  gardent leur `private, max-age=3600`. **Ne jamais** revenir à un cache long sur
+  le code ni retirer l'ETag. Vérif post-déploiement :
+  `curl -sI https://holaguia.com/js/views/subscription.js | grep -i cache`
+  → `Cache-Control: no-cache, must-revalidate`. Couvert par
+  `test_api.py::test_es_modules_revalidate` / `test_static_images_cache_long`.
 - **Sauvegardes** : timer systemd nocturne (`ops/casaguide-backup.*`, `pg_dump -Fc`
   + médias, rotation 14 j) ; restauration `ops/casaguide-restore.sh` **avec sudo**
   (postgis non « trusted » → extension recréée par `postgres`), testée en base témoin.

@@ -1209,6 +1209,29 @@ def test_static_assets_revalidate(client):
     r = client.get("/css/app.css")
     assert r.status_code == 200
     assert "no-cache" in r.headers.get("Cache-Control", "")
+    assert r.headers.get("ETag")  # validateur présent pour les 304
+
+
+def test_es_modules_revalidate(client):
+    """OPS-2 : les modules ES importés relativement (jamais couverts par ?v=sha)
+    revalident bien (no-cache) — un hotfix déployé n'est jamais masqué par le
+    cache navigateur."""
+    for path in ("/js/views/subscription.js", "/js/components/dynform.js",
+                 "/guide/app.js"):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        cc = r.headers.get("Cache-Control", "")
+        assert "no-cache" in cc and "must-revalidate" in cc, (path, cc)
+        assert r.headers.get("ETag"), path
+
+
+def test_static_images_cache_long(client):
+    """Les images/polices (immuables ou peu critiques) restent en cache long :
+    inutile de les revalider à chaque vue (OPS-2 : distinct du code)."""
+    r = client.get("/guide/icon-192.png")
+    assert r.status_code == 200
+    cc = r.headers.get("Cache-Control", "")
+    assert "max-age=2592000" in cc and "no-cache" not in cc
 
 
 def test_service_worker_carries_deploy_version(client, monkeypatch):
