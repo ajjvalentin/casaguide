@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="CasaGuide API",
+    title="Holaguia API",
     version="0.1.0",
     summary="Guides d'accueil numériques pour logements de vacances",
     lifespan=lifespan,

@@ -80,7 +80,7 @@ def build_og_image(property_name: str, subtitle: str = "",
     d.text((cx - ew / 2, 118), eyebrow, font=f_eye, fill=_SEA)
 
     # Nom du logement (titre, taille adaptée au nombre de lignes)
-    name = (property_name or "CasaGuide").strip()
+    name = (property_name or "Holaguia").strip()
     size = 84
     f_title = _font(size, bold=True)
     lines = _wrap(d, name, f_title, inner)
@@ -105,7 +105,7 @@ def build_og_image(property_name: str, subtitle: str = "",
     # Filet + signature
     d.line([(cx - 60, _H - 108), (cx + 60, _H - 108)], fill=_LINE, width=2)
     f_sig = _font(30, bold=True)
-    sig = "CasaGuide"
+    sig = "Holaguia"
     sgw = d.textlength(sig, font=f_sig)
     d.text((cx - sgw / 2, _H - 88), sig, font=f_sig, fill=_SEA)
 

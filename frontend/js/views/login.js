@@ -161,7 +161,7 @@ export function renderLogin(root) {
   }
 
   const card = el("div", { class: "card auth-card" },
-    el("a", { class: "brand", href: "#/" }, el("span", { class: "mark" }, icon("map-pinned", 20)), "CasaGuide"),
+    el("a", { class: "brand", href: "#/" }, el("span", { class: "mark" }, icon("map-pinned", 20)), "Holaguia"),
     el("p", { class: "muted", style: { textAlign: "center", margin: "2px 0 0", fontSize: "14px" } },
       "Espace propriétaire — vos guides d'accueil"),
     tabs, form);

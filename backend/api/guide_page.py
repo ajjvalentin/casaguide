@@ -139,7 +139,7 @@ _UI: dict[str, dict[str, str]] = {
         "title_suffix": "Guide du logement", "home": "Votre logement",
         "share_desc": "Tout pour votre séjour : arrivée, wifi, urgences, commerces, "
                       "restaurants et carte du quartier.",
-        "footer": "Guide propulsé par CasaGuide — données OpenStreetMap. Bon séjour !",
+        "footer": "Guide propulsé par Holaguia — données OpenStreetMap. Bon séjour !",
         "watermark": "Créé avec Holaguia",
     },
     "en": {
@@ -163,7 +163,7 @@ _UI: dict[str, dict[str, str]] = {
         "title_suffix": "Property guide", "home": "Your accommodation",
         "share_desc": "Everything for your stay: check-in, wifi, emergencies, shops, "
                       "restaurants and a map of the area.",
-        "footer": "Guide powered by CasaGuide — OpenStreetMap data. Enjoy your stay!",
+        "footer": "Guide powered by Holaguia — OpenStreetMap data. Enjoy your stay!",
         "watermark": "Created with Holaguia",
     },
     "es": {
@@ -187,7 +187,7 @@ _UI: dict[str, dict[str, str]] = {
         "title_suffix": "Guía del alojamiento", "home": "Tu alojamiento",
         "share_desc": "Todo para tu estancia: llegada, wifi, urgencias, comercios, "
                       "restaurantes y mapa del barrio.",
-        "footer": "Guía con tecnología de CasaGuide — datos de OpenStreetMap. ¡Feliz estancia!",
+        "footer": "Guía con tecnología de Holaguia — datos de OpenStreetMap. ¡Feliz estancia!",
         "watermark": "Creado con Holaguia",
     },
 }
@@ -801,7 +801,7 @@ def _og_tags(*, title: str, desc: str, url: str, image: str | None,
     WhatsApp/iMessage/e-mail. `noindex` est conservé par ailleurs (§8)."""
     tags = [
         '<meta property="og:type" content="website">',
-        '<meta property="og:site_name" content="CasaGuide">',
+        '<meta property="og:site_name" content="Holaguia">',
         f'<meta property="og:title" content="{_esc(title)}">',
         f'<meta property="og:description" content="{_esc(desc)}">',
         f'<meta property="og:locale" content="{_esc(locale)}">',
@@ -1005,8 +1005,8 @@ def build_manifest(prop: dict, token: str) -> dict:
     précis (multi-tenant), le nom reprend celui du logement."""
     base = f"/g/{token}"
     return {
-        "name": f"{prop.get('name') or 'CasaGuide'} — Guide du logement",
-        "short_name": (prop.get("name") or "CasaGuide")[:24],
+        "name": f"{prop.get('name') or 'Holaguia'} — Guide du logement",
+        "short_name": (prop.get("name") or "Holaguia")[:24],
         "description": "Votre guide d'accueil : arrivée, wifi, urgences, "
                        "commerces, restaurants et carte du quartier.",
         "lang": prop.get("default_lang") or "fr",
@@ -1092,7 +1092,7 @@ def render_staff(prop: dict, sections: list[dict], token: str) -> str:
     {draft_note}
   </header>
   <main id="content">{body}</main>
-  <footer>Cahier interne CasaGuide — réservé à l'équipe de préparation.</footer>
+  <footer>Cahier interne Holaguia — réservé à l'équipe de préparation.</footer>
 </div>
 </body>
 </html>"""

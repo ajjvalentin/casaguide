@@ -16,7 +16,7 @@ function authCard(...children) {
   return el("div", { class: "auth-wrap" },
     el("div", { class: "card auth-card" },
       el("a", { class: "brand", href: "#/login" },
-        el("span", { class: "mark" }, icon("map-pinned", 20)), "CasaGuide"),
+        el("span", { class: "mark" }, icon("map-pinned", 20)), "Holaguia"),
       ...children));
 }
 

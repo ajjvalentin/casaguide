@@ -35,7 +35,7 @@ function ensureShell() {
   const userMenu = el("div", { class: "usermenu", id: "usermenu" });
   const topbar = el("header", { class: "topbar" },
     el("a", { class: "brand", href: "#/properties" },
-      el("span", { class: "mark" }, icon("map-pinned", 18)), "CasaGuide"),
+      el("span", { class: "mark" }, icon("map-pinned", 18)), "Holaguia"),
     el("span", { class: "spacer" }),
     userMenu);
   const banner = el("div", { id: "verify-banner" });
