@@ -27,6 +27,7 @@ import unicodedata
 from typing import Any
 
 from .assets import versioned
+from .poi_icons import category_icon_svg, category_rank
 
 # Locale Open Graph par langue (M-25) : repli fr_FR.
 _OG_LOCALE = {"fr": "fr_FR", "en": "en_GB", "es": "es_ES"}
@@ -129,6 +130,7 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Tranquillité du voisinage", "numbers": "Tous les numéros utiles",
         "filter": "Filtrer par thème", "lang": "Langue",
         "cuisine_filter": "Filtrer par cuisine",
+        "services_grid": "Services autour de vous",
         "tabs": "Espaces du guide", "tab_home": "Le logement",
         "tab_emergency": "Urgences", "tab_around": "Autour de vous",
         "show_more": "Voir les {n} autres", "show_less": "Réduire",
@@ -154,6 +156,7 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Neighbourhood quiet", "numbers": "All useful numbers",
         "filter": "Filter by theme", "lang": "Language",
         "cuisine_filter": "Filter by cuisine",
+        "services_grid": "Services around you",
         "tabs": "Guide sections", "tab_home": "The home",
         "tab_emergency": "Emergencies", "tab_around": "Around you",
         "show_more": "Show {n} more", "show_less": "Show less",
@@ -179,6 +182,7 @@ _UI: dict[str, dict[str, str]] = {
         "noise": "Tranquilidad del vecindario", "numbers": "Todos los números útiles",
         "filter": "Filtrar por tema", "lang": "Idioma",
         "cuisine_filter": "Filtrar por cocina",
+        "services_grid": "Servicios a tu alrededor",
         "tabs": "Espacios de la guía", "tab_home": "El alojamiento",
         "tab_emergency": "Emergencias", "tab_around": "A tu alrededor",
         "show_more": "Ver {n} más", "show_less": "Reducir",
@@ -629,14 +633,20 @@ def _itinerary_links(lat: Any, lon: Any, lang: str = "fr") -> str:
             f'<span class="nav-lbl">{_esc(_t(lang, "go_there"))}</span>{links}</div>')
 
 
-def _render_pois(pois: list[dict], lang: str = "fr") -> str:
+def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
+    """Rend les POI d'un chapitre en blocs `.cat` (un par catégorie). `tab_hash`
+    (V2-12 : « autour », « logement »…) préfixe l'`id` d'ancre de chaque bloc
+    (`id="autour/{code}"`) → cible des tuiles de la grille de services et des
+    liens profonds, fonctionnelle même sans JS."""
     if not pois:
         return ""
     by_cat: dict[str, list[dict]] = {}
     for p in pois:
         by_cat.setdefault(p["category_code"], []).append(p)
     blocks: list[str] = []
-    for code, lst in by_cat.items():
+    # Ordre des catégories = celui du seed (V2-12) → cohérent avec la grille de
+    # services (mêmes tuiles, même ordre) et avec l'intention du catalogue.
+    for code, lst in sorted(by_cat.items(), key=lambda kv: category_rank(kv[0])):
         # Coups de cœur (owner_comment) en tête de leur catégorie (M-16), puis
         # tri par distance à pied.
         lst.sort(key=lambda p: (
@@ -686,9 +696,46 @@ def _render_pois(pois: list[dict], lang: str = "fr") -> str:
                     f'data-more-tpl="{_esc(tpl)}" data-less="{_esc(_t(lang, "show_less"))}">'
                     f'{_esc(tpl.format(n=n - _POI_VISIBLE))}</button>')
         chips = _render_cuisine_chips(lst, lang) if is_resto else ""
-        blocks.append(f'<div class="cat" data-cat="{_esc(code)}">'
+        # Ancre profonde (V2-12) : id = « {onglet}/{code} » → cible des tuiles de
+        # la grille (`#autour/{code}`) et lien natif fonctionnel sans JS.
+        anchor = f' id="{_esc(tab_hash)}/{_esc(code)}"' if tab_hash else ""
+        blocks.append(f'<div class="cat" data-cat="{_esc(code)}"{anchor}>'
                       f'{head}{chips}{group}{more}</div>')
     return "".join(blocks)
+
+
+def _render_service_grid(pois: list[dict], lang: str = "fr") -> str:
+    """Grille de pictogrammes en tête de « Autour de vous » (V2-12).
+
+    Une tuile par catégorie ayant ≥1 POI retenu : grande icône du seed
+    (`poi_categories.icon`, rendue en SVG inline par `poi_icons`), nom localisé
+    et compte. C'est la **navigation principale** de l'onglet : chaque tuile est
+    un lien d'ancre `#autour/{code}` vers le bloc de la catégorie (dont l'`id`
+    est justement `autour/{code}`) → fonctionne même sans JS ; l'enrichissement
+    client (app.js) résout l'onglet + le défilement doux + le retour arrière.
+
+    Ordre : celui du seed (`poi_icons.category_rank`), cohérent avec le reste du
+    guide. Aucune tuile si aucun POI (repli : rien, la carte/les listes suffisent)."""
+    if not pois:
+        return ""
+    groups: dict[str, list[dict]] = {}
+    for p in pois:
+        groups.setdefault(p["category_code"], []).append(p)
+    tiles: list[str] = []
+    for code, lst in sorted(groups.items(), key=lambda kv: category_rank(kv[0])):
+        name = _esc(_i18n(lst[0].get("category_name"), lang, code))
+        icon = category_icon_svg(code, lst[0].get("category_icon"))
+        count = len(lst)
+        color = _esc(lst[0].get("map_color") or "#0E5A73")
+        tiles.append(
+            f'<a class="svc-tile" href="#{_TAB_HASH["around"]}/{_esc(code)}" '
+            f'data-cat="{_esc(code)}" style="--svc-accent:{color}" '
+            f'aria-label="{name} : {count}">'
+            f'<span class="svc-ic">{icon}</span>'
+            f'<span class="svc-name">{name}</span>'
+            f'<span class="svc-count">{count}</span></a>')
+    return (f'<nav class="svc-grid" aria-label="{_esc(_t(lang, "services_grid"))}">'
+            f'{"".join(tiles)}</nav>')
 
 
 def _render_cuisine_chips(restaurants: list[dict], lang: str) -> str:
@@ -910,6 +957,9 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
     # dont sections et POI vont au même espace produit UN bloc ; le chapitre C
     # (sections → « logement », commerces → « autour ») produit deux blocs.
     panels: dict[str, list[str]] = {"home": [], "emergency": [], "around": []}
+    # POI réellement rendus en cartes dans « Autour de vous » (V2-12) : sert de
+    # source à la grille de services (mêmes POI, même ordre → tuiles ↔ blocs 1:1).
+    around_card_pois: list[dict] = []
     for ch in _CHAPTER_ORDER:
         poi_tab = _POI_TAB.get(ch, "home")
         default_tab = _SECTION_TAB.get(ch, "home")
@@ -921,7 +971,10 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
             sec_by_tab.setdefault(tab, []).append(
                 _render_section(s, contact, prop.get("tourism_license"),
                                 area_facts, arrival_ctx, lang))
-        pois_html = _render_pois(_chapter_card_pois(ch), lang)
+        chapter_card_pois = _chapter_card_pois(ch)
+        if poi_tab == "around":
+            around_card_pois.extend(chapter_card_pois)
+        pois_html = _render_pois(chapter_card_pois, lang, tab_hash=_TAB_HASH[poi_tab])
         for tab in _TAB_ORDER:
             inner = list(sec_by_tab.get(tab, []))
             if tab == poi_tab and pois_html:
@@ -959,6 +1012,13 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                           _chapter_name(ch, lang))
         chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(chip_name)}</button>')
     around_inner: list[str] = []
+    # Grille de services (V2-12) EN TÊTE de l'onglet, avant la carte : c'est la
+    # navigation principale (sur mobile en plein soleil, une grille d'icônes bat
+    # dix intitulés texte). La carte + les puces de filtre restent la couche
+    # d'exploration en dessous, les listes le niveau 2.
+    grid_html = _render_service_grid(around_card_pois, lang)
+    if grid_html:
+        around_inner.append(grid_html)
     if has_map:
         around_inner.append('<div id="map"></div>')
     if around_chapters:

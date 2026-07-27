@@ -88,6 +88,26 @@ html.js .tab-panel.tab-active{display:block}
       padding:6px 14px;font:inherit;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;flex:none}
 .chip.on{background:var(--sea);border-color:var(--sea);color:#fff}
 
+/* ── Grille de services (V2-12) : navigation principale d'« Autour de vous » ─
+   En tête de l'onglet, avant la carte. Tuiles tactiles généreuses (mobile-first),
+   grande icône du seed (SVG inline), nom localisé et compte. Chaque tuile est un
+   lien d'ancre vers le bloc de la catégorie (`#autour/{code}`). */
+.svc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));
+  gap:10px;margin:4px 0 16px}
+.svc-tile{display:flex;flex-direction:column;align-items:center;gap:7px;text-align:center;
+  padding:14px 8px 12px;min-height:96px;background:var(--shell);border:1px solid var(--line);
+  border-radius:14px;color:var(--ink);transition:transform .12s,box-shadow .12s,border-color .12s}
+.svc-tile:hover,.svc-tile:focus-visible{border-color:var(--svc-accent,var(--sea));
+  transform:translateY(-1px);box-shadow:0 4px 14px rgba(30,42,50,.09);outline:none}
+.svc-ic{display:flex;align-items:center;justify-content:center;width:46px;height:46px;
+  border-radius:13px;background:var(--line-soft);color:var(--svc-accent,var(--sea))}
+.svc-ic{background:color-mix(in srgb,var(--svc-accent,var(--sea)) 13%,#fff)}
+.svc-svg{width:27px;height:27px;display:block}
+.svc-name{font-size:12.5px;font-weight:600;line-height:1.2;color:var(--ink);
+  overflow-wrap:break-word;hyphens:auto}
+.svc-count{font-size:11px;font-weight:700;color:#fff;line-height:1.5;
+  background:var(--svc-accent,var(--sea));border-radius:999px;min-width:22px;padding:0 8px}
+
 /* ── Chapitres & sections ────────────────────────────────────────────────── */
 .chapter{scroll-margin-top:56px}
 h2{font-family:Fraunces,serif;font-size:23px;margin:32px 0 2px}
@@ -158,6 +178,8 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
           border-radius:6px;padding:3px 7px}
 
 /* ── POI (cartes « distance d'abord ») ───────────────────────────────────── */
+/* Ancre de catégorie (V2-12) : marge pour ne pas passer sous les puces/onglets. */
+.cat{scroll-margin-top:64px}
 .cat-title{font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
            font-weight:600;margin:20px 0 8px}
 .poi-card{display:flex;gap:14px;background:var(--shell);border:1px solid var(--line);

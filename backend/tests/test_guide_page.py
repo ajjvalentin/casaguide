@@ -597,3 +597,90 @@ def test_single_page_no_new_routes_hashes_are_fixed():
                                     "around": "autour"}
     for key in ("home", "emergency", "around"):
         assert f'id="tab-{key}"' in html
+
+
+# ── V2-12 : grille de pictogrammes (navigation principale d'« Autour de vous ») ─
+
+def _grid(html):
+    """Extrait le HTML de la grille de services, ou '' si absente."""
+    import re
+    m = re.search(r'<nav class="svc-grid".*?</nav>', html, re.S)
+    return m.group(0) if m else ""
+
+
+def test_service_grid_only_populated_categories_with_exact_counts():
+    """Une tuile par catégorie ayant ≥1 POI retenu, avec le compte exact ; aucune
+    tuile pour une catégorie « autour » sans POI."""
+    pois = [_poi("Mercadona", "supermarket", "C"),
+            _poi("Aldi", "supermarket", "C", walk=9),
+            _poi("La Marejada", "restaurant", "F"),
+            _poi("Playa Flamenca", "beach", "G")]
+    html = guide_page.render_guide(_prop(), [], pois, {}, "tok")
+    grid = _grid(html)
+    assert grid, "la grille doit être présente dès qu'il y a des POI « autour »"
+    # Tuiles présentes (une par catégorie peuplée), compte exact.
+    assert 'href="#autour/supermarket"' in grid
+    assert 'href="#autour/restaurant"' in grid
+    assert 'href="#autour/beach"' in grid
+    # supermarket a 2 POI, restaurant/beach 1 chacun (aria-label = « nom : N » ;
+    # le nom vient du category_name — ici {"fr": <code>} via l'aide de test).
+    assert 'aria-label="supermarket : 2"' in grid
+    assert 'aria-label="restaurant : 1"' in grid
+    assert '<span class="svc-count">2</span>' in grid
+    # Catégorie « autour » non peuplée → pas de tuile.
+    assert 'href="#autour/pharmacy"' not in grid   # pharmacy = onglet urgences de toute façon
+    assert 'href="#autour/bar"' not in grid
+
+
+def test_service_grid_order_follows_seed():
+    """L'ordre des tuiles suit celui du seed (poi_icons.category_rank), pas l'ordre
+    d'entrée ni l'alphabet."""
+    # Entrée volontairement désordonnée / à cheval sur plusieurs chapitres.
+    pois = [_poi("Playa", "beach", "G"), _poi("Bar Pepe", "bar", "F"),
+            _poi("La Marejada", "restaurant", "F"), _poi("Mercadona", "supermarket", "C")]
+    grid = _grid(guide_page.render_guide(_prop(), [], pois, {}, "tok"))
+    order = [m for m in ("supermarket", "restaurant", "bar", "beach")
+             if f'href="#autour/{m}"' in grid]
+    idx = [grid.index(f'href="#autour/{m}"') for m in order]
+    assert idx == sorted(idx)
+    # Concrètement : supermarket(1) < restaurant(12) < bar(13) < beach(15).
+    assert order == ["supermarket", "restaurant", "bar", "beach"]
+
+
+def test_service_grid_names_localised_and_inline_svg_icon():
+    pois = [_poi("La Marejada", "restaurant", "F")]
+    # Nom localisé : on remplace le category_name par un dict multilingue.
+    pois[0]["category_name"] = {"fr": "Restaurant", "en": "Restaurant", "es": "Restaurante"}
+    pois[0]["category_icon"] = "utensils"
+    grid_es = _grid(guide_page.render_guide(_prop(), [], pois, {}, "tok", lang="es"))
+    assert "Restaurante" in grid_es
+    assert 'aria-label="Servicios a tu alrededor"' in grid_es   # aria-label de la grille localisé
+    # Icône : SVG inline (pas de dépendance Lucide côté client, offline-first).
+    assert '<svg class="svc-svg"' in grid_es and "</svg>" in grid_es
+
+
+def test_service_grid_tiles_anchor_to_category_blocks_in_around_panel():
+    """Chaque tuile pointe vers l'id du bloc de sa catégorie, présent dans le
+    panneau « around » (navigation par ancre, fonctionne sans JS)."""
+    pois = [_poi("Mercadona", "supermarket", "C"), _poi("La Marejada", "restaurant", "F")]
+    html = guide_page.render_guide(_prop(), [], pois, {}, "tok")
+    around = _panel(html, "around")
+    for code in ("supermarket", "restaurant"):
+        assert f'href="#autour/{code}"' in _grid(html)          # cible de la tuile
+        assert f'id="autour/{code}"' in around                  # bloc ancré, dans le bon onglet
+
+
+def test_service_grid_absent_when_no_around_pois():
+    """Pas de POI « autour » → pas de grille (repli : carte/listes suffisent)."""
+    html = guide_page.render_guide(_prop(), [_section("B_wifi", "B", {"fields": []})],
+                                   [], {}, "tok")
+    assert '<nav class="svc-grid"' not in html
+
+
+def test_service_grid_is_head_of_around_before_map():
+    """La grille est en TÊTE de l'onglet, avant la carte (navigation principale)."""
+    pois = [_poi("Mercadona", "supermarket", "C")]
+    around = _panel(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [], pois, {}, "tok"),
+                    "around")
+    assert '<nav class="svc-grid"' in around and '<div id="map"></div>' in around
+    assert around.index('<nav class="svc-grid"') < around.index('<div id="map"></div>')
