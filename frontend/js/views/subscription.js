@@ -355,7 +355,7 @@ function planCard(plan, sub) {
   let btn;
   if (isCurrent) {
     btn = el("button", { class: "btn btn-block", disabled: true },
-      icon("check", 16), "Votre offre");
+      icon("check", 16), "Abonnement actif");
   } else if (scheduledHere) {
     // Déjà programmée : on l'indique (l'annulation se fait via le bandeau).
     btn = el("button", { class: "btn btn-block btn-ghost", disabled: true },

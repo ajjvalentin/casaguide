@@ -120,9 +120,21 @@ function initTabs() {
     let tabKey = HASH_TAB[raw];
     let scrollEl = null;
     if (!tabKey && raw) {
+      // Ancre directe : section (#B_wifi) OU catégorie de la grille (#autour/{code},
+      // l'id du bloc `.cat` est « autour/{code} », V2-12).
       const elt = document.getElementById(raw);
       const panel = elt && elt.closest(".tab-panel[data-tab]");
       if (panel) { tabKey = panel.dataset.tab; scrollEl = elt; }
+    }
+    // V2-12 : si la cible est un bloc de catégorie masqué par une puce de filtre
+    // (chapitre), on rétablit « Tout » pour la rendre visible avant le défilement.
+    if (scrollEl && scrollEl.classList.contains("cat")) {
+      const around = scrollEl.closest('.tab-panel[data-tab="around"]');
+      const activeChip = around && around.querySelector(".chip.on");
+      if (activeChip && activeChip.dataset.chapter) {
+        const allChip = around.querySelector('.chip[data-chapter=""]');
+        if (allChip) allChip.click();
+      }
     }
     activate(tabKey || "home", { push });
     if (scrollEl) setTimeout(() => scrollEl.scrollIntoView({ behavior: "smooth", block: "start" }), 80);

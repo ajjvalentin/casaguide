@@ -1,0 +1,142 @@
+<!doctype html>
+<!-- Harnais headless de la navigation par grille (V2-12) du guide voyageur.
+     Il pilote le VRAI module /frontend/guide/app.js (initTabs/applyHash +
+     initChips + initCategoryLists) sur un DOM fidèle au rendu SSR, et lit le
+     verdict dans #result. Aucune Leaflet, aucune guide.css : on éprouve la
+     LOGIQUE (classes, styles inline, hash, historique), pas la mise en page.
+     Représentatif (leçon V2-18c) : chaque élément est cherché dans l'arbre
+     réellement monté, jamais via une référence interne. -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>guide-nav-harness</title></head>
+<body data-token="tok" data-lang="fr" data-default-lang="fr">
+<script>
+  // Espionne scrollIntoView : app.js défile vers l'ancre cible → on retient son id.
+  window.__lastScroll = "";
+  Element.prototype.scrollIntoView = function () { window.__lastScroll = this.id || ""; };
+  // Empêche le SW de tenter un enregistrement réseau pendant le test (non bloquant
+  // de toute façon, mais on garde le harnais hermétique).
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  // État initial : on ouvre la grille de l'onglet « Autour de vous ».
+  location.hash = "#autour";
+</script>
+
+<nav class="guide-tabs" role="tablist">
+  <button class="tab on" role="tab" data-tab="home" id="tabbtn-home" aria-controls="tab-home" aria-selected="true">Le logement</button>
+  <button class="tab" role="tab" data-tab="emergency" id="tabbtn-emergency" aria-controls="tab-emergency" aria-selected="false">Urgences</button>
+  <button class="tab" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="false">Autour de vous</button>
+</nav>
+<main>
+  <section class="tab-panel tab-active" data-tab="home" id="tab-home" role="tabpanel">home</section>
+  <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
+  <section class="tab-panel" data-tab="around" id="tab-around" role="tabpanel">
+    <!-- Grille de services (navigation principale) -->
+    <nav class="svc-grid" aria-label="Services autour de vous">
+      <a class="svc-tile" href="#autour/restaurant" data-cat="restaurant" aria-label="Restaurant : 6"><span class="svc-name">Restaurant</span><span class="svc-count">6</span></a>
+      <a class="svc-tile" href="#autour/beach" data-cat="beach" aria-label="Plage : 1"><span class="svc-name">Plage</span><span class="svc-count">1</span></a>
+    </nav>
+    <nav class="chips" aria-label="Filtrer">
+      <button class="chip on" data-chapter="">Tout</button>
+      <button class="chip" data-chapter="F">Restaurants</button>
+      <button class="chip" data-chapter="G">Activités</button>
+    </nav>
+    <!-- Blocs de catégories (niveau 2) : ancrés id="autour/{code}" -->
+    <section class="chapter" data-chapter="F">
+      <div class="cat" data-cat="restaurant" id="autour/restaurant">
+        <h4 class="cat-title">Restaurant · 6</h4>
+        <div class="cuisines" data-cat="restaurant">
+          <button class="cchip on" data-cuisine="">Tout</button>
+          <button class="cchip" data-cuisine="italian">Italien</button>
+          <button class="cchip" data-cuisine="seafood">Fruits de mer</button>
+        </div>
+        <div class="poi-group" data-cat="restaurant">
+          <div class="poi-card" data-cuisine="italian">R1</div>
+          <div class="poi-card" data-cuisine="italian">R2</div>
+          <div class="poi-card" data-cuisine="seafood">R3</div>
+          <div class="poi-card" data-cuisine="seafood">R4</div>
+          <div class="poi-card" data-cuisine="italian">R5</div>
+          <div class="poi-card" data-cuisine="seafood">R6</div>
+        </div>
+        <button class="more-btn" data-more-tpl="Voir les {n} autres" data-less="Réduire">Voir les 2 autres</button>
+      </div>
+    </section>
+    <section class="chapter" data-chapter="G">
+      <div class="cat" data-cat="beach" id="autour/beach">
+        <h4 class="cat-title">Plage · 1</h4>
+        <div class="poi-group" data-cat="beach"><div class="poi-card">P1</div></div>
+      </div>
+    </section>
+  </section>
+</main>
+
+<pre id="result">PENDING</pre>
+
+<script id="guide-data" type="application/json">{"property":{"name":"Villa Test"},"pois":[]}</script>
+<script type="module">
+  const log = [];
+  let pass = true;
+  const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const q = (sel) => document.querySelector(sel);
+  const qa = (sel) => [...document.querySelectorAll(sel)];
+  const around = () => q('.tab-panel[data-tab="around"]');
+  const restoChapter = () => q('.chapter[data-chapter="F"]');
+  const restoCards = () => qa('.cat[data-cat="restaurant"] .poi-group > .poi-card');
+  const visibleCards = () => restoCards().filter((c) => c.style.display !== "none").length;
+
+  try {
+    // Charge et exécute le vrai module (init* au chargement, hash initial = #autour).
+    await import("/frontend/guide/app.js");
+    await wait(140);
+
+    // 1) État initial : onglet « Autour » actif (grille en tête), liste repliée à 4.
+    chk(around().classList.contains("tab-active"), "onglet Autour actif au chargement (#autour)");
+    chk(!q('.tab-panel[data-tab="home"]').classList.contains("tab-active"), "onglet Le logement inactif");
+    chk(visibleCards() === 4, "liste repliée : 4 cartes visibles au départ (a=" + visibleCards() + ")");
+    chk(q(".cat .more-btn").classList.contains("show"), "bouton « Voir les N autres » visible (>4)");
+
+    // 2) Tap sur une tuile (Plage) → hash #autour/beach, onglet Autour, défilement au bloc.
+    q('.svc-tile[href="#autour/beach"]').click();
+    await wait(140);
+    chk(location.hash === "#autour/beach", "tap tuile Plage → hash #autour/beach (h=" + location.hash + ")");
+    chk(around().classList.contains("tab-active"), "reste dans l'onglet Autour après tap");
+    chk(window.__lastScroll === "autour/beach", "défilement doux vers le bloc Plage (s=" + window.__lastScroll + ")");
+
+    // 3) Filtre par puce (chapitre G) masque le bloc Restaurant (chapitre F)…
+    q('.chips .chip[data-chapter="G"]').click();
+    await wait(20);
+    chk(restoChapter().style.display === "none", "puce Activités masque le chapitre Restaurants");
+    // …puis tap tuile Restaurant → applyHash rétablit « Tout » pour révéler la cible.
+    q('.svc-tile[href="#autour/restaurant"]').click();
+    await wait(140);
+    chk(location.hash === "#autour/restaurant", "tap tuile Restaurant → hash #autour/restaurant");
+    chk(restoChapter().style.display !== "none", "le bloc cible est de nouveau visible (filtre réinitialisé)");
+    chk(q('.chips .chip[data-chapter=""]').classList.contains("on"), "puce « Tout » réactivée par la navigation");
+    chk(window.__lastScroll === "autour/restaurant", "défilement vers le bloc Restaurant (s=" + window.__lastScroll + ")");
+
+    // 4) Retour arrière : popstate ramène à l'état précédent (#autour/beach), puis à la grille (#autour).
+    history.back();
+    await wait(140);
+    chk(location.hash === "#autour/beach", "retour arrière → #autour/beach (h=" + location.hash + ")");
+    chk(around().classList.contains("tab-active"), "toujours dans l'onglet Autour après retour");
+    history.back();
+    await wait(140);
+    chk(location.hash === "#autour", "second retour → grille #autour (h=" + location.hash + ")");
+
+    // 5) Coexistence avec la liste repliée : le bouton déplie toujours les 6 cartes.
+    q(".cat .more-btn").click();
+    await wait(20);
+    chk(visibleCards() === 6, "déplier montre les 6 cartes (a=" + visibleCards() + ")");
+    // Coexistence avec le filtre cuisine : « Italien » restreint aux cartes italian.
+    q('.cuisines .cchip[data-cuisine="italian"]').click();
+    await wait(20);
+    const italianVisible = restoCards().filter((c) => c.style.display !== "none");
+    chk(italianVisible.length === 3 && italianVisible.every((c) => c.dataset.cuisine === "italian"),
+      "filtre cuisine Italien : 3 cartes, toutes italian (n=" + italianVisible.length + ")");
+  } catch (e) {
+    pass = false;
+    log.push("✗ exception : " + (e && e.message ? e.message : e));
+  }
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>
+</body>
+</html>
