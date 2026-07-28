@@ -16,6 +16,14 @@
   // Empêche le SW de tenter un enregistrement réseau pendant le test (non bloquant
   // de toute façon, mais on garde le harnais hermétique).
   try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  // Défilement simulé (V2-27) : window.scrollY est piloté par __setScroll pour
+  // éprouver la visibilité du bouton flottant « Retour aux services ».
+  window.__sy = 0;
+  try { Object.defineProperty(window, "scrollY", { get: () => window.__sy }); } catch (_) {}
+  window.__setScroll = (v) => { window.__sy = v; window.dispatchEvent(new Event("scroll")); };
+  // headless=new + virtual-time : requestAnimationFrame ne se déclenche pas
+  // toujours (pas de compositeur) → on le rabat sur setTimeout pour le test.
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
   // État initial : on ouvre la grille de l'onglet « Autour de vous ».
   location.hash = "#autour";
 </script>
@@ -29,8 +37,8 @@
   <section class="tab-panel tab-active" data-tab="home" id="tab-home" role="tabpanel">home</section>
   <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
   <section class="tab-panel" data-tab="around" id="tab-around" role="tabpanel">
-    <!-- Grille de services (navigation principale) -->
-    <nav class="svc-grid" aria-label="Services autour de vous">
+    <!-- Grille de services (navigation principale) : id="autour" = cible du retour (V2-27) -->
+    <nav class="svc-grid" id="autour" aria-label="Services autour de vous">
       <a class="svc-tile" href="#autour/restaurant" data-cat="restaurant" aria-label="Restaurant : 6"><span class="svc-name">Restaurant</span><span class="svc-count">6</span></a>
       <a class="svc-tile" href="#autour/beach" data-cat="beach" aria-label="Plage : 1"><span class="svc-name">Plage</span><span class="svc-count">1</span></a>
     </nav>
@@ -57,15 +65,18 @@
           <div class="poi-card" data-cuisine="seafood">R6</div>
         </div>
         <button class="more-btn" data-more-tpl="Voir les {n} autres" data-less="Réduire">Voir les 2 autres</button>
+        <a class="back-services" href="#autour">↑ Retour aux services</a>
       </div>
     </section>
     <section class="chapter" data-chapter="G">
       <div class="cat" data-cat="beach" id="autour/beach">
         <h4 class="cat-title">Plage · 1</h4>
         <div class="poi-group" data-cat="beach"><div class="poi-card">P1</div></div>
+        <a class="back-services" href="#autour">↑ Retour aux services</a>
       </div>
     </section>
   </section>
+  <a class="back-services back-float" href="#autour">↑ Retour aux services</a>
 </main>
 
 <pre id="result">PENDING</pre>
@@ -132,6 +143,32 @@
     const italianVisible = restoCards().filter((c) => c.style.display !== "none");
     chk(italianVisible.length === 3 && italianVisible.every((c) => c.dataset.cuisine === "italian"),
       "filtre cuisine Italien : 3 cartes, toutes italian (n=" + italianVisible.length + ")");
+
+    // 6) Retour aux services (V2-27) : entrer dans une catégorie puis en sortir
+    //    par le lien de fin de liste → grille (#autour), défilement, onglet gardé.
+    q('.svc-tile[href="#autour/beach"]').click();
+    await wait(140);
+    window.__lastScroll = "";
+    q('.cat[data-cat="beach"] .back-services').click();
+    await wait(60);
+    chk(location.hash === "#autour", "retour aux services → hash #autour (h=" + location.hash + ")");
+    chk(around().classList.contains("tab-active"), "retour aux services : reste dans l'onglet Autour");
+    chk(window.__lastScroll === "autour", "retour aux services : défilement vers la grille (s=" + window.__lastScroll + ")");
+
+    // 7) Bouton flottant : visible en défilant dans « Autour », caché en haut et
+    //    hors de l'onglet (bonus JS).
+    const float = q(".back-float");
+    chk(!!float && !float.classList.contains("show"), "flottant caché au chargement (haut de page)");
+    window.__setScroll(600);
+    await wait(40);
+    chk(float.classList.contains("show"), "flottant révélé après défilement dans Autour");
+    window.__setScroll(0);
+    await wait(40);
+    chk(!float.classList.contains("show"), "flottant recaché en haut de page");
+    window.__setScroll(600); await wait(40);
+    window._activateTab("home");   // change d'onglet en restant défilé
+    await wait(40);
+    chk(!float.classList.contains("show"), "flottant caché hors de l'onglet Autour");
   } catch (e) {
     pass = false;
     log.push("✗ exception : " + (e && e.message ? e.message : e));

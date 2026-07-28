@@ -155,6 +155,46 @@ function updateLangHash() {
   });
 }
 
+// ── Retour aux services (V2-27) : ramener le voyageur à la grille V2-12 ──────
+// Chemin de retour visible depuis une liste de catégorie profonde. Les liens de
+// fin de liste sont rendus SSR (ancre native `#autour` → grille, sans JS) ; ici
+// on garantit l'onglet actif + le défilement doux, et on révèle un bouton
+// flottant discret pendant le défilement dans « Autour de vous ».
+function initBackToServices() {
+  const grid = document.querySelector(".svc-grid");
+  const links = [...document.querySelectorAll(".back-services")];
+  if (!grid || !links.length) return;
+  const aroundHash = "#" + TAB_HASH.around;
+
+  links.forEach((a) => a.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (window._activateTab) window._activateTab("around");
+    // Nettoie le hash vers l'onglet (#autour) → historique cohérent avec V2-12.
+    if (location.hash !== aroundHash) history.pushState(null, "", aroundHash);
+    grid.scrollIntoView({ behavior: "smooth", block: "start" });
+  }));
+
+  // Bouton flottant : visible seulement dans l'onglet « Autour » et une fois
+  // défilé au-delà d'un seuil raisonnable (disparaît en haut de page). Bonus JS.
+  const float = document.querySelector(".back-float");
+  if (!float) return;
+  const around = document.querySelector('.tab-panel[data-tab="around"]');
+  let ticking = false;
+  const evaluate = () => {
+    ticking = false;
+    const active = around && around.classList.contains("tab-active");
+    float.classList.toggle("show", !!(active && window.scrollY > 480));
+  };
+  const onScroll = () => { if (!ticking) { ticking = true; requestAnimationFrame(evaluate); } };
+  window.addEventListener("scroll", onScroll, { passive: true });
+  // Réévalue à tout changement d'onglet, quel que soit son déclencheur (bouton,
+  // hash, retour arrière) : l'onglet actif se lit sur la classe du panneau.
+  if (around) new MutationObserver(evaluate).observe(around, {
+    attributes: true, attributeFilter: ["class"],
+  });
+  evaluate();
+}
+
 // ── Filtres par chapitre (chips ↔ sections ↔ marqueurs) ──────────────────────
 // Scopés à l'onglet « Autour de vous » : ne masque jamais les chapitres des
 // autres onglets (qui ne portent pas de puce).
@@ -443,6 +483,7 @@ initLang();
 initMap();
 initTabs();
 initChips();
+initBackToServices();
 initCategoryLists();
 initCopy();
 initLightbox();

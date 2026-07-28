@@ -70,6 +70,20 @@ html.js .tab-panel.tab-active{display:block}
 .more-btn.show{display:inline-flex;align-items:center;gap:6px}
 .more-btn:hover{border-color:var(--sea)}
 
+/* ── Retour aux services (V2-27) : chemin de retour visible depuis une liste de
+   catégorie vers la grille. Le lien de fin de liste est rendu SSR (fonctionne
+   sans JS, ancre native vers #autour = la grille). Le bouton flottant est un
+   bonus JS : masqué par défaut, révélé (.show) quand on défile dans « Autour ». */
+.back-services{display:inline-flex;align-items:center;gap:6px;margin:12px 0 2px;
+  border:1px solid var(--line);background:var(--shell);color:var(--sea);
+  border-radius:999px;padding:8px 16px;font-size:13px;font-weight:600;
+  text-decoration:none;transition:.12s}
+.back-services:hover,.back-services:focus-visible{border-color:var(--sea);outline:none}
+.back-float{display:none;position:fixed;right:14px;z-index:800;
+  bottom:calc(14px + env(safe-area-inset-bottom));
+  box-shadow:0 4px 16px rgba(30,42,50,.22)}
+html.js .back-float.show{display:inline-flex}
+
 /* ── Carte ───────────────────────────────────────────────────────────────── */
 #map{position:relative;height:320px;border-radius:14px;border:1px solid var(--line);margin:14px 0 4px;background:#E9EEF0}
 /* Message discret hors-ligne / hors zone pré-chargée (M-10) */
@@ -93,7 +107,7 @@ html.js .tab-panel.tab-active{display:block}
    grande icône du seed (SVG inline), nom localisé et compte. Chaque tuile est un
    lien d'ancre vers le bloc de la catégorie (`#autour/{code}`). */
 .svc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));
-  gap:10px;margin:4px 0 16px}
+  gap:10px;margin:4px 0 16px;scroll-margin-top:64px}
 .svc-tile{display:flex;flex-direction:column;align-items:center;gap:7px;text-align:center;
   padding:14px 8px 12px;min-height:96px;background:var(--shell);border:1px solid var(--line);
   border-radius:14px;color:var(--ink);transition:transform .12s,box-shadow .12s,border-color .12s}

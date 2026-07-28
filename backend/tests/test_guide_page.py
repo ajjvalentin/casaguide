@@ -160,6 +160,44 @@ def test_cuisine_filter_chips_and_tags_localised():
     assert "Marisco" in html_es and 'data-cuisine="seafood"' in html_es
 
 
+# ── V2-27 : chemins de retour vers la grille de services ─────────────────────
+
+def test_back_to_services_link_in_each_around_category_and_floating_button():
+    pois = [_resto("Trattoria", "italian", 5), _resto("El Puerto", "seafood", 8)]
+    html = guide_page.render_guide(_prop(), [], pois, {}, "tok")
+    # La grille porte l'ancre de retour (id = « autour ») : cible du retour, natif
+    # sans JS (défilement vers la grille), hash propre (#autour).
+    assert 'class="svc-grid" id="autour"' in html
+    # Chaque catégorie « Autour de vous » se termine par un retour aux services.
+    assert 'class="back-services" href="#autour"' in html
+    assert "Retour aux services" in html
+    # Bouton flottant rendu (masqué par défaut, révélé par JS pendant le défilement).
+    assert 'class="back-services back-float" href="#autour"' in html
+
+
+def test_back_to_services_localised_es():
+    pois = [_resto("Trattoria", "italian", 5), _resto("El Puerto", "seafood", 8)]
+    html = guide_page.render_guide(_prop(), [], pois, {}, "tok", lang="es")
+    assert "Volver a los servicios" in html
+    assert "Retour aux services" not in html
+
+
+def test_no_back_float_without_around_pois():
+    # Sans POI en cartes autour, pas de grille → pas de bouton flottant.
+    html = guide_page.render_guide(_prop(), [], [], {}, "tok")
+    assert "back-float" not in html
+
+
+def test_staff_page_has_back_to_top_when_sections_present():
+    staff = [_section("S_checklist", "S",
+                      {"fields": [{"key": "steps", "type": "textarea",
+                                   "label": {"fr": "Étapes"}}]},
+                      content={"steps": "Aérer, nettoyer, vérifier."})]
+    html = guide_page.render_staff(_prop(), staff, "stok")
+    assert 'class="back-services" href="#content"' in html
+    assert "Haut de page" in html
+
+
 def test_cuisine_chips_absent_when_less_than_two_cuisines():
     pois = [_resto("Trattoria", "italian", 5), _resto("Da Vinci", "italian", 8),
             _resto("Sin Datos", None, 3)]

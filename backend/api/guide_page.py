@@ -131,6 +131,7 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filtrer par thème", "lang": "Langue",
         "cuisine_filter": "Filtrer par cuisine",
         "services_grid": "Services autour de vous",
+        "back_services": "↑ Retour aux services", "back_top": "↑ Haut de page",
         "tabs": "Espaces du guide", "tab_home": "Le logement",
         "tab_emergency": "Urgences", "tab_around": "Autour de vous",
         "show_more": "Voir les {n} autres", "show_less": "Réduire",
@@ -157,6 +158,7 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filter by theme", "lang": "Language",
         "cuisine_filter": "Filter by cuisine",
         "services_grid": "Services around you",
+        "back_services": "↑ Back to services", "back_top": "↑ Back to top",
         "tabs": "Guide sections", "tab_home": "The home",
         "tab_emergency": "Emergencies", "tab_around": "Around you",
         "show_more": "Show {n} more", "show_less": "Show less",
@@ -183,6 +185,7 @@ _UI: dict[str, dict[str, str]] = {
         "filter": "Filtrar por tema", "lang": "Idioma",
         "cuisine_filter": "Filtrar por cocina",
         "services_grid": "Servicios a tu alrededor",
+        "back_services": "↑ Volver a los servicios", "back_top": "↑ Volver arriba",
         "tabs": "Espacios de la guía", "tab_home": "El alojamiento",
         "tab_emergency": "Emergencias", "tab_around": "A tu alrededor",
         "show_more": "Ver {n} más", "show_less": "Reducir",
@@ -699,8 +702,14 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
         # Ancre profonde (V2-12) : id = « {onglet}/{code} » → cible des tuiles de
         # la grille (`#autour/{code}`) et lien natif fonctionnel sans JS.
         anchor = f' id="{_esc(tab_hash)}/{_esc(code)}"' if tab_hash else ""
+        # Retour aux services (V2-27) : en fin de CHAQUE catégorie de « Autour de
+        # vous », un lien d'ancre vers la grille (`#autour`) — chemin de retour
+        # visible, fonctionnel même sans JS (l'`id` de la grille est « autour »).
+        back = (f'<a class="back-services" href="#{_TAB_HASH["around"]}">'
+                f'{_esc(_t(lang, "back_services"))}</a>'
+                if tab_hash == _TAB_HASH["around"] else "")
         blocks.append(f'<div class="cat" data-cat="{_esc(code)}"{anchor}>'
-                      f'{head}{chips}{group}{more}</div>')
+                      f'{head}{chips}{group}{more}{back}</div>')
     return "".join(blocks)
 
 
@@ -734,7 +743,11 @@ def _render_service_grid(pois: list[dict], lang: str = "fr") -> str:
             f'<span class="svc-ic">{icon}</span>'
             f'<span class="svc-name">{name}</span>'
             f'<span class="svc-count">{count}</span></a>')
-    return (f'<nav class="svc-grid" aria-label="{_esc(_t(lang, "services_grid"))}">'
+    # id = « autour » (V2-27) : cible du retour aux services. Comme les liens de
+    # retour pointent `#autour`, le navigateur défile nativement jusqu'à la grille
+    # (sans JS) ; le hash reste propre (`#autour`, l'onglet), historique cohérent.
+    return (f'<nav class="svc-grid" id="{_TAB_HASH["around"]}" '
+            f'aria-label="{_esc(_t(lang, "services_grid"))}">'
             f'{"".join(tiles)}</nav>')
 
 
@@ -1025,6 +1038,12 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
         around_inner.append(
             f'<nav class="chips" aria-label="{_esc(_t(lang, "filter"))}">{"".join(chips)}</nav>')
     around_inner += panels["around"]
+    # Bouton flottant « Retour aux services » (V2-27) : rendu SSR mais masqué par
+    # défaut (bonus JS) — app.js le révèle quand on défile dans « Autour de vous ».
+    # N'a de sens que s'il y a une grille (des POI en cartes autour).
+    back_float = (f'<a class="back-services back-float" href="#{_TAB_HASH["around"]}" '
+                  f'aria-label="{_esc(_t(lang, "back_services"))}">'
+                  f'{_esc(_t(lang, "back_services"))}</a>') if around_card_pois else ""
 
     # Onglets + panneaux (V2-09). Sans JS, tous les panneaux restent visibles
     # (CSS gated sur `html.js`) → aucune perte de contenu (noscript = rouleau).
@@ -1096,6 +1115,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
   <main id="content">{"".join(panels_html)}</main>
   <footer>{_esc(_t(lang, "footer"))}{_watermark_html(lang) if watermark else ''}</footer>
 </div>
+{back_float}
 <script id="guide-data" type="application/json">{data_json}</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script type="module" src="{versioned('/guide/app.js')}"></script>
@@ -1163,6 +1183,10 @@ def render_staff(prop: dict, sections: list[dict], token: str) -> str:
 
     if sections:
         body = "".join(_render_staff_section(s) for s in sections)
+        # Retour en haut (V2-27) : sur une check-list longue, un chemin de retour
+        # visible (page à défilement unique, sans onglets). Ancre native → #content.
+        body += ('<a class="back-services" href="#content">'
+                 f'{_esc(_UI["fr"]["back_top"])}</a>')
     else:
         body = ('<div class="staff-empty"><p>Aucune consigne de préparation '
                 "n'a encore été saisie pour ce logement. Revenez après que le "
