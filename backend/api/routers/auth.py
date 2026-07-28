@@ -133,7 +133,8 @@ def me(owner: CurrentOwner, conn: Conn):
     ent = plans.effective_entitlements(conn, str(owner["id"]))
     return OwnerOut(**owner, on_trial=ent["on_trial"],
                     trial_expired=ent["trial_expired"],
-                    trial_ends_at=ent["trial_ends_at"])
+                    trial_ends_at=ent["trial_ends_at"],
+                    staff_access=ent["staff_access"])
 
 
 # ── Mot de passe oublié (V2-08) ──────────────────────────────────────────────

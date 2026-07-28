@@ -18,6 +18,7 @@ import { buildMediaPanel } from "../components/media.js";
 import { openPropertyInfoModal, openPositionModal } from "../components/propertyinfo.js";
 import { guideShareUrl } from "../share.js";
 import { openShareMenu } from "../components/sharemenu.js";
+import { openStaffShareMenu, staffUrl } from "../components/staffshare.js";
 import { runEnrichment } from "./properties.js";
 
 const ACCURACY_LABEL = { rooftop: "précise", street: "au niveau de la rue", city: "au centre de la commune" };
@@ -26,7 +27,7 @@ const ACCURACY_LABEL = { rooftop: "précise", street: "au niveau de la rue", cit
 const STAFF_META = { name: "Équipe d'entretien", icon: "clipboard-list", color: "#5B6B75" };
 const isStaff = (s) => s.audience === "staff";
 
-export async function renderEditor(view, pid) {
+export async function renderEditor(view, pid, context) {
   mount(view, el("div", { class: "page" }, loadingBlock("Ouverture de l'éditeur…")));
 
   let property, sectionsResp, secrets = {}, secretsAvailable = true;
@@ -48,7 +49,11 @@ export async function renderEditor(view, pid) {
     completed: !!s.completed,
   }));
   const byCode = new Map(sections.map((s) => [s.code, s]));
-  let current = sections[0]?.code;
+  // Contexte d'ouverture (V2-26) : arrivée par la porte « Équipe d'entretien » →
+  // l'éditeur s'ouvre directement sur le groupe staff (première section staff).
+  const staffSections = sections.filter(isStaff);
+  let current = (context === "staff" && staffSections.length)
+    ? staffSections[0].code : sections[0]?.code;
   const expanded = new Set();
 
   // ── Ossature de la page ───────────────────────────────────────────────────
@@ -82,6 +87,11 @@ export async function renderEditor(view, pid) {
   refreshMeter();
   if (current) { expanded.add(byCode.get(current).chapter); selectSection(current); }
   renderSidebar();
+  // Contexte staff (V2-26) : amener le groupe « Équipe d'entretien » sous les yeux
+  // (sur mobile la barre latérale est empilée au-dessus du panneau).
+  if (context === "staff" && staffSections.length) {
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   // Cmd/Ctrl+S : sauvegarde la section active (nettoie l'ancien handler éventuel)
   if (window._casaSaveHandler) document.removeEventListener("keydown", window._casaSaveHandler);
@@ -329,7 +339,7 @@ export async function renderEditor(view, pid) {
 
   // Lien de partage élégant (M-25) : /g/{slug}-{token}. Le token reste l'autorité.
   // « Copier le lien » ouvre un menu multilingue (V2-10, components/sharemenu.js).
-  function staffLink() { return location.origin + `/s/${property.staff_token}`; }
+  function staffLink() { return staffUrl(property); }
 
   // Bandeau du lien /s (cahier équipe d'entretien) affiché sur une section staff.
   function staffLinkBanner() {
@@ -345,7 +355,11 @@ export async function renderEditor(view, pid) {
         el("div", { class: "muted", style: { fontSize: "12.5px", margin: "3px 0 8px" } },
           "À partager avec votre équipe d'entretien uniquement. Accessible même avant publication ; ne contient jamais le wifi, la boîte à clés, ni la carte des lieux."),
         el("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } }, input, copy,
-          el("a", { class: "btn btn-sm", href: `/s/${property.staff_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 15), "Ouvrir"))));
+          el("a", { class: "btn btn-sm", href: `/s/${property.staff_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 15), "Ouvrir"),
+          // QR du lien équipe (V2-26) : mêmes outils de transmission que la porte
+          // « Équipe d'entretien » de la carte du logement.
+          el("button", { class: "btn btn-sm", type: "button", onClick: () => openStaffShareMenu(property) },
+            icon("qr-code", 15), "QR de l'équipe"))));
   }
 
   // Petit menu de langue du poster QR (M-26) : FR / EN / ES. Le poster ne sort

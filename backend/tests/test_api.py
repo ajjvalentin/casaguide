@@ -251,6 +251,9 @@ def test_register_login_me(client):
     assert body["plan_id"] == "trial"
     assert body["on_trial"] is True and body["trial_expired"] is False
     assert body["trial_ends_at"] is not None
+    # V2-26 : la porte « Équipe d'entretien » de la carte lit staff_access depuis
+    # /me. L'essai a l'aperçu du cahier staff (features.staff_guide='preview').
+    assert body["staff_access"] is True
 
     # Connexion avec les mêmes identifiants
     r = client.post("/api/auth/login",

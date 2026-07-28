@@ -61,6 +61,11 @@ class OwnerOut(BaseModel):
     on_trial: bool = False
     trial_expired: bool = False
     trial_ends_at: datetime | None = None
+    # Accès au cahier de l'équipe d'entretien /s/ (V2-18b) : pilote la « double
+    # porte » de la carte du logement (V2-26). false ⇒ porte badgée « Pro » +
+    # encart d'upsell au clic ; true (Pro/grand-périsé, ou aperçu d'essai) ⇒
+    # porte fonctionnelle (aperçu signalé via `on_trial`).
+    staff_access: bool = False
 
 
 # ── Plans & abonnement (V2-05a) ──────────────────────────────────────────────

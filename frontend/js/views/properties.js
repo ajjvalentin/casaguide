@@ -10,9 +10,11 @@ import {
 } from "../ui.js";
 import { navigate } from "../nav.js";
 import { handleQuotaError } from "../quota.js";
+import { getOwner } from "../store.js";
 import { COUNTRIES } from "../constants.js";
 import { openPropertyInfoModal } from "../components/propertyinfo.js";
 import { openShareMenu } from "../components/sharemenu.js";
+import { openStaffShareMenu } from "../components/staffshare.js";
 
 const STATUS_LABEL = { draft: "Brouillon", published: "Publié", archived: "Archivé" };
 
@@ -68,9 +70,12 @@ export async function renderProperties(view) {
           el("span", { class: "badge badge-" + p.status }, STATUS_LABEL[p.status] || p.status)),
         el("div", { class: "addr" }, [p.address_line1, p.postal_code, p.city].filter(Boolean).join(", "))),
       el("div", { class: "stats-slot muted", style: { fontSize: "13px" } }, "…"),
+      // Double porte (V2-26) : le guide voyageur et le cahier d'équipe sont deux
+      // produits pour deux publics → deux entrées dominantes.
+      el("div", { class: "prop-doors" }, guideDoor(p), staffDoor(p)),
+      // Actions secondaires (jamais dominantes) : suggestions, enrichissement,
+      // aperçu, fiche, suppression.
       el("div", { class: "actions" },
-        el("button", { class: "btn btn-sm btn-primary", onClick: () => navigate(`#/properties/${p.id}/editor`) },
-          icon("pencil-line", 16), "Compléter"),
         el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${p.id}/pois`) },
           icon("map-pin-check", 16), "Suggestions"),
         el("button", { class: "btn btn-sm", onClick: () => reEnrich(p) },
@@ -79,16 +84,64 @@ export async function renderProperties(view) {
           ? el("a", { class: "btn btn-sm", href: `/g/${p.guide_token}`, target: "_blank", rel: "noopener" },
             icon("external-link", 16), "Voir le guide")
           : null,
-        p.status === "published"
-          ? el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Copier le lien du guide", title: "Copier le lien du guide",
-            onClick: () => openShareMenu(p) }, icon("link", 16))
-          : null,
         el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Informations du logement", title: "Informations du logement",
           onClick: () => editInfo(p) }, icon("home", 16)),
         el("span", { style: { flex: "1" } }),
         el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Supprimer", onClick: () => removeProperty(p) },
           icon("trash-2", 16))));
     return card;
+  }
+
+  // Porte « Guide Locataires » (V2-26) : ouvre l'éditeur en contexte voyageur.
+  // Le menu de partage (lien multilingue) reste rattaché à cette porte.
+  function guideDoor(p) {
+    const main = el("button", { class: "door-main",
+      onClick: () => navigate(`#/properties/${p.id}/editor`) },
+      el("span", { class: "door-t" }, icon("book-open", 17), "Guide Locataires"),
+      el("span", { class: "door-sub" }, "Compléter & partager le guide"));
+    const share = p.status === "published"
+      ? el("button", { class: "door-share", "aria-label": "Copier le lien du guide", title: "Copier le lien du guide",
+        onClick: () => openShareMenu(p) }, icon("link", 15))
+      : null;
+    return el("div", { class: "door door-guide" }, main, share);
+  }
+
+  // Porte « Équipe d'entretien » (V2-26 + gating V2-18b) : ouvre l'éditeur sur le
+  // groupe staff ET porte ses propres outils de transmission (lien /s/ + QR).
+  //  · sans staff_access (Solo non grand-périsé) : porte VISIBLE, badgée « Pro »,
+  //    clic = encart d'upsell (patron handlePlanLimit) — jamais l'accès.
+  //  · essai : badge « Aperçu — inclus en Pro », accès fonctionnel.
+  //  · Pro / grand-périsé : porte normale, sans badge.
+  function staffDoor(p) {
+    const owner = getOwner() || {};
+    const access = owner.staff_access === true;
+    const trial = owner.on_trial === true;
+
+    const title = el("span", { class: "door-t" }, icon("clipboard-list", 17),
+      "Équipe d'entretien", access ? null : icon("lock", 13));
+    const sub = !access
+      ? el("span", { class: "door-badge" }, "Pro")
+      : trial
+        ? el("span", { class: "door-badge" }, "Aperçu — inclus en Pro")
+        : el("span", { class: "door-sub" }, "Cahier de préparation");
+
+    const main = el("button", { class: "door-main", onClick: () => openStaffDoor(p, access) }, title, sub);
+    const share = access
+      ? el("button", { class: "door-share", "aria-label": "Transmettre le cahier (lien + QR)",
+        title: "Lien & QR de l'équipe", onClick: () => openStaffShareMenu(p) }, icon("qr-code", 15))
+      : null;
+    return el("div", { class: "door door-staff" + (access ? "" : " locked") }, main, share);
+  }
+
+  // Clic sur la porte staff : accès → éditeur (contexte staff) ; sinon encart
+  // d'upsell propre (même patron que les refus 402 `staff_locked` côté serveur).
+  function openStaffDoor(p, access) {
+    if (!access) {
+      const msg = "Le cahier de l'équipe d'entretien est réservé à l'offre Pro.";
+      handleQuotaError(new ApiError(402, msg, { code: "staff_locked", message: msg }));
+      return;
+    }
+    navigate(`#/properties/${p.id}/editor/staff`);
   }
 
   // Fiche du logement éditable (M-24) — accessible depuis la carte.

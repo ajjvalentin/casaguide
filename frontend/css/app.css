@@ -236,6 +236,34 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .prop-card .poi-counts{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
 .prop-card .actions{display:flex;gap:8px;margin-top:auto;padding-top:4px;flex-wrap:wrap}
 
+/* ── Double porte de la carte (V2-26) : Guide Locataires / Équipe d'entretien ─
+   Deux entrées principales, dominantes visuellement ; les actions secondaires
+   (Suggestions, Enrichir, aperçu, suppression) restent dans .actions dessous. */
+.prop-doors{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:440px){.prop-doors{grid-template-columns:1fr}}
+.door{position:relative;display:flex}
+.door-main{flex:1;display:flex;flex-direction:column;justify-content:center;gap:3px;
+  min-height:66px;border:1px solid var(--line);background:var(--shell);border-radius:12px;
+  border-left:4px solid var(--door-accent,var(--sea));padding:11px 13px;text-align:left;
+  color:var(--ink);cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.door-main:hover{border-color:var(--door-accent,var(--sea));box-shadow:0 3px 12px rgba(30,42,50,.09)}
+.door-t{display:flex;align-items:center;gap:7px;font-weight:700;font-size:14.5px;line-height:1.15}
+.door-sub{font-size:11.5px;color:var(--muted);font-weight:500}
+.door-guide{--door-accent:var(--sea)}
+.door-staff{--door-accent:#5B6B75}
+.door.locked .door-main{opacity:.9}
+.door-badge{display:inline-flex;align-items:center;width:fit-content;font-size:10px;font-weight:700;
+  letter-spacing:.03em;text-transform:uppercase;color:var(--door-accent);
+  background:color-mix(in srgb,var(--door-accent) 13%,#fff);border-radius:999px;padding:2px 8px}
+.door-share{position:absolute;top:6px;right:6px;display:inline-flex;padding:5px;border-radius:8px;
+  border:1px solid var(--line);background:var(--shell);color:var(--muted);cursor:pointer;line-height:0}
+.door-share:hover{color:var(--door-accent);border-color:var(--door-accent)}
+
+/* QR de transmission (staff share V2-26 ; réutilisé côté éditeur) */
+.qr-share{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:12px}
+.qr-share canvas{width:184px;height:184px;image-rendering:pixelated;
+  border:1px solid var(--line);border-radius:10px;background:#fff}
+
 /* ── Éditeur de guide (M-03) ──────────────────────────────────────────────── */
 .editor{display:grid;grid-template-columns:270px 1fr;gap:22px;align-items:start}
 @media(max-width:820px){.editor{grid-template-columns:1fr}}

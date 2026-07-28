@@ -4,7 +4,8 @@
    Routes :
      #/login                         connexion / inscription
      #/properties                    mes logements
-     #/properties/:id/editor         éditeur de guide (M-03) + position (M-05)
+     #/properties/:id/editor[/staff] éditeur de guide (M-03) + position (M-05) ;
+                                     contexte « staff » = groupe équipe (V2-26)
      #/properties/:id/pois[/:filter] validation des suggestions (M-04),
                                      filtre initial optionnel (V2-11) */
 
@@ -133,7 +134,9 @@ function renderRoute() {
   // #/properties/:id/pois[/:filter] — le 4e segment (V2-11) pré-sélectionne un
   // filtre de la vue POI (deep-link depuis les pastilles de « Mes logements »).
   if (seg[2] === "pois") return void renderPois(view, pid, seg[3]);
-  return void renderEditor(view, pid); // éditeur par défaut
+  // #/properties/:id/editor[/staff] — le contexte « staff » (V2-26) ouvre
+  // l'éditeur directement sur le groupe « Équipe d'entretien ».
+  return void renderEditor(view, pid, seg[3]); // éditeur par défaut
 }
 
 async function boot() {
