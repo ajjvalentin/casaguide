@@ -6,11 +6,12 @@
    champs secrets chiffrés. Bandeau d'alerte + éditeur de position sur carte si
    le géocodage n'est pas au niveau « rooftop ». */
 
-import { api } from "../api.js";
+import { api, ApiError } from "../api.js";
 import {
   el, icon, mount, clear, t, toast, openModal, confirmDialog, loadingBlock, refreshIcons,
 } from "../ui.js";
 import { navigate } from "../nav.js";
+import { getOwner } from "../store.js";
 import { handleQuotaError } from "../quota.js";
 import { CHAPTER_ORDER, chapterMeta } from "../constants.js";
 import { buildSectionForm } from "../components/dynform.js";
@@ -28,6 +29,21 @@ const STAFF_META = { name: "Équipe d'entretien", icon: "clipboard-list", color:
 const isStaff = (s) => s.audience === "staff";
 
 export async function renderEditor(view, pid, context) {
+  // Séparation stricte des contextes (V2-26b) : l'éditeur est ouvert SOIT sur le
+  // guide voyageur (sections audience='guest'), SOIT sur le cahier d'équipe
+  // (audience='staff') — jamais les deux mélangés dans la même barre latérale.
+  const isStaffCtx = context === "staff";
+  const staffAccess = (getOwner() || {}).staff_access === true;
+  // Garde de la porte staff (V2-18b) : un deep-link vers /editor/staff sans droit
+  // (contournant la porte badgée et la bascule) reçoit le même encart d'upsell,
+  // jamais l'accès — et ne peut donc pas se cogner au 402 à la sauvegarde.
+  if (isStaffCtx && !staffAccess) {
+    const msg = "Le cahier de l'équipe d'entretien est réservé à l'offre Pro.";
+    handleQuotaError(new ApiError(402, msg, { code: "staff_locked", message: msg }));
+    navigate(`#/properties/${pid}/editor`);
+    return;
+  }
+
   mount(view, el("div", { class: "page" }, loadingBlock("Ouverture de l'éditeur…")));
 
   let property, sectionsResp, secrets = {}, secretsAvailable = true;
@@ -49,11 +65,11 @@ export async function renderEditor(view, pid, context) {
     completed: !!s.completed,
   }));
   const byCode = new Map(sections.map((s) => [s.code, s]));
-  // Contexte d'ouverture (V2-26) : arrivée par la porte « Équipe d'entretien » →
-  // l'éditeur s'ouvre directement sur le groupe staff (première section staff).
   const staffSections = sections.filter(isStaff);
-  let current = (context === "staff" && staffSections.length)
-    ? staffSections[0].code : sections[0]?.code;
+  const guestSections = sections.filter((s) => !isStaff(s));
+  // Les sections effectivement éditables dans ce contexte (voyageur ou staff).
+  const ctxSections = isStaffCtx ? staffSections : guestSections;
+  let current = ctxSections[0]?.code ?? sections[0]?.code;
   const expanded = new Set();
 
   // ── Ossature de la page ───────────────────────────────────────────────────
@@ -65,7 +81,9 @@ export async function renderEditor(view, pid, context) {
   const banner = el("div", {});
   const sidebar = el("nav", { class: "card chapters", style: { padding: "10px" } });
   const panel = el("section", { class: "card section-panel" });
-  const titleEl = el("h1", { class: "page-title", style: { margin: "0 0 6px" } }, property.name);
+  // En-tête adapté au contexte (V2-26b) : le cahier d'équipe est un autre produit.
+  const pageTitle = () => isStaffCtx ? `Cahier de préparation — ${property.name}` : property.name;
+  const titleEl = el("h1", { class: "page-title", style: { margin: "0 0 6px" } }, pageTitle());
   const crumbName = el("span", {}, property.name);
 
   const page = el("div", { class: "page" },
@@ -87,9 +105,9 @@ export async function renderEditor(view, pid, context) {
   refreshMeter();
   if (current) { expanded.add(byCode.get(current).chapter); selectSection(current); }
   renderSidebar();
-  // Contexte staff (V2-26) : amener le groupe « Équipe d'entretien » sous les yeux
-  // (sur mobile la barre latérale est empilée au-dessus du panneau).
-  if (context === "staff" && staffSections.length) {
+  // Contexte staff (V2-26) : amener le cahier sous les yeux (sur mobile la barre
+  // latérale est empilée au-dessus du panneau).
+  if (isStaffCtx && staffSections.length) {
     panel.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -103,81 +121,104 @@ export async function renderEditor(view, pid, context) {
   };
   document.addEventListener("keydown", window._casaSaveHandler);
 
-  // ── Rendu de la barre latérale (chapitres) ────────────────────────────────
+  // Une entrée de section dans la barre latérale (mutualisée guest/staff).
+  function sectionLink(s) {
+    const link = el("button", {
+      class: "sec-link" + (s.code === current ? " on" : ""),
+      onClick: () => selectSection(s.code),
+    },
+      el("span", { class: s.is_visible ? "" : "dim" }, t(s.name_i18n, s.code)),
+      s.is_sensitive ? icon("lock", 12) : null,
+      icon("circle-check", 15, s.completed));
+    const tick = link.querySelector("[data-lucide]:last-child");
+    if (tick) { tick.classList.add("tick"); if (!s.completed) tick.classList.add("off"); }
+    return link;
+  }
+
+  // Un chapitre repliable (tête + liste de sections).
+  function chapterNode(key, meta, chSecs) {
+    const done = chSecs.filter((s) => s.completed).length;
+    const isOpen = expanded.has(key);
+    const head = el("button", { class: "chap-head", onClick: () => { isOpen ? expanded.delete(key) : expanded.add(key); renderSidebar(); } },
+      el("span", { class: "chap-dot", style: { background: meta.color } }, icon(meta.icon, 15)),
+      el("span", { class: "nm" }, meta.name),
+      el("span", { class: "cnt" }, `${done}/${chSecs.length}`),
+      icon(isOpen ? "chevron-down" : "chevron-right", 15));
+    const node = el("div", { class: "chap" }, head);
+    if (isOpen) node.append(el("div", { class: "sec-list" }, ...chSecs.map(sectionLink)));
+    return node;
+  }
+
+  // ── Rendu de la barre latérale — STRICTEMENT un seul contexte (V2-26b) ──────
+  // Contexte voyageur : chapitres A→I uniquement (le groupe « Équipe d'entretien »
+  // n'apparaît plus ici — on n'y accède que par sa porte / la bascule).
+  // Contexte staff : uniquement le cahier d'équipe + son bloc de transmission.
   function renderSidebar() {
     clear(sidebar);
-    for (const ch of CHAPTER_ORDER) {
-      const chSecs = sections.filter((s) => s.chapter === ch);
-      if (!chSecs.length) continue;
-      const meta = chapterMeta(ch);
-      const done = chSecs.filter((s) => s.completed).length;
-      const isOpen = expanded.has(ch);
-
-      const head = el("button", { class: "chap-head", onClick: () => { isOpen ? expanded.delete(ch) : expanded.add(ch); renderSidebar(); } },
-        el("span", { class: "chap-dot", style: { background: meta.color } }, icon(meta.icon, 15)),
-        el("span", { class: "nm" }, meta.name),
-        el("span", { class: "cnt" }, `${done}/${chSecs.length}`),
-        icon(isOpen ? "chevron-down" : "chevron-right", 15));
-      const chapNode = el("div", { class: "chap" }, head);
-
-      if (isOpen) {
-        const listEl = el("div", { class: "sec-list" });
-        for (const s of chSecs) {
-          const link = el("button", {
-            class: "sec-link" + (s.code === current ? " on" : ""),
-            onClick: () => selectSection(s.code),
-          },
-            el("span", { class: s.is_visible ? "" : "dim" }, t(s.name_i18n, s.code)),
-            s.is_sensitive ? icon("lock", 12) : null,
-            icon("circle-check", 15, s.completed) );
-          // Marque de complétude
-          const tick = link.querySelector("[data-lucide]:last-child");
-          if (tick) { tick.classList.add("tick"); if (!s.completed) tick.classList.add("off"); }
-          listEl.append(link);
-        }
-        chapNode.append(listEl);
+    sidebar.append(contextSwitch());
+    if (isStaffCtx) {
+      if (staffSections.length) sidebar.append(chapterNode("S", STAFF_META, staffSections));
+      sidebar.append(staffTransmitBlock());
+    } else {
+      for (const ch of CHAPTER_ORDER) {
+        const chSecs = sections.filter((s) => s.chapter === ch && !isStaff(s));
+        if (!chSecs.length) continue;
+        sidebar.append(chapterNode(ch, chapterMeta(ch), chSecs));
       }
-      sidebar.append(chapNode);
-    }
-
-    // Groupe distinct « Équipe d'entretien » (sections staff, M-13) — jamais
-    // visible du voyageur ; son lien /s est affiché dans le panneau de section.
-    const staffSecs = sections.filter(isStaff);
-    if (staffSecs.length) {
-      const done = staffSecs.filter((s) => s.completed).length;
-      const isOpen = expanded.has("S");
-      const head = el("button", { class: "chap-head", onClick: () => { isOpen ? expanded.delete("S") : expanded.add("S"); renderSidebar(); } },
-        el("span", { class: "chap-dot", style: { background: STAFF_META.color } }, icon(STAFF_META.icon, 15)),
-        el("span", { class: "nm" }, STAFF_META.name),
-        el("span", { class: "cnt" }, `${done}/${staffSecs.length}`),
-        icon(isOpen ? "chevron-down" : "chevron-right", 15));
-      const chapNode = el("div", { class: "chap" }, head);
-      if (isOpen) {
-        const listEl = el("div", { class: "sec-list" });
-        for (const s of staffSecs) {
-          const link = el("button", {
-            class: "sec-link" + (s.code === current ? " on" : ""),
-            onClick: () => selectSection(s.code),
-          },
-            el("span", { class: s.is_visible ? "" : "dim" }, t(s.name_i18n, s.code)),
-            icon("circle-check", 15, s.completed));
-          const tick = link.querySelector("[data-lucide]:last-child");
-          if (tick) { tick.classList.add("tick"); if (!s.completed) tick.classList.add("off"); }
-          listEl.append(link);
-        }
-        chapNode.append(listEl);
-      }
-      sidebar.append(chapNode);
     }
     refreshIcons();
   }
 
+  // Bascule sobre vers l'AUTRE contexte (V2-26b), gating respecté.
+  function contextSwitch() {
+    if (isStaffCtx) {
+      return el("button", { class: "ctx-switch", onClick: () => navigate(`#/properties/${pid}/editor`) },
+        icon("arrow-left-right", 15), el("span", {}, "Guide Locataires"));
+    }
+    return el("button", { class: "ctx-switch" + (staffAccess ? "" : " locked"),
+      onClick: () => openStaffContext() },
+      icon("arrow-left-right", 15), el("span", {}, "Équipe d'entretien"),
+      staffAccess ? null : icon("lock", 12));
+  }
+
+  // Vers le contexte staff : accès → bascule ; sinon même encart d'invitation
+  // que la porte badgée de la carte (patron staff_locked, jamais d'accès).
+  function openStaffContext() {
+    if (!staffAccess) {
+      const msg = "Le cahier de l'équipe d'entretien est réservé à l'offre Pro.";
+      handleQuotaError(new ApiError(402, msg, { code: "staff_locked", message: msg }));
+      return;
+    }
+    navigate(`#/properties/${pid}/editor/staff`);
+  }
+
+  // Bloc de transmission du cahier (lien /s/ + ouverture + QR), dans la barre
+  // latérale du contexte staff (staffshare mutualisé).
+  function staffTransmitBlock() {
+    const input = el("input", { type: "text", value: staffLink(), readonly: true, onFocus: (e) => e.target.select() });
+    const copy = el("button", { class: "btn btn-sm", type: "button", onClick: async () => {
+      try { await navigator.clipboard.writeText(staffLink()); toast("Lien du cahier copié.", "ok"); }
+      catch (_) { toast("Copie impossible.", "err"); }
+    } }, icon("link", 15), "Copier");
+    return el("div", { class: "staff-transmit notice notice-info", style: { alignItems: "flex-start", marginTop: "12px" } },
+      icon("clipboard-list", 18),
+      el("div", { style: { flex: "1", minWidth: "0" } },
+        el("b", {}, "Lien du cahier de préparation"),
+        el("div", { class: "muted", style: { fontSize: "12px", margin: "3px 0 8px" } },
+          "À partager avec votre équipe d'entretien uniquement. Accessible même avant publication ; ne contient jamais le wifi, la boîte à clés, ni la carte des lieux."),
+        input,
+        el("div", { class: "row", style: { gap: "6px", flexWrap: "wrap", marginTop: "6px" } }, copy,
+          el("a", { class: "btn btn-sm", href: `/s/${property.staff_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 15), "Ouvrir"),
+          el("button", { class: "btn btn-sm", type: "button", onClick: () => openStaffShareMenu(property) },
+            icon("qr-code", 15), "QR"))));
+  }
+
   function refreshMeter() {
-    // La complétude affichée est celle du guide VOYAGEUR : le cahier de l'équipe
-    // d'entretien (sections staff) a son propre décompte et ne la dilue pas.
-    const guestSecs = sections.filter((s) => !isStaff(s));
-    const total = guestSecs.length;
-    const done = guestSecs.filter((s) => s.completed).length;
+    // Chaque contexte affiche SA propre progression (V2-26b) : le guide voyageur
+    // compte les sections guest, le cahier d'équipe compte les sections staff —
+    // les deux décomptes ne se diluent jamais.
+    const total = ctxSections.length;
+    const done = ctxSections.filter((s) => s.completed).length;
     const pct = total ? Math.round((done / total) * 100) : 0;
     globalMeter.querySelector("i").style.width = pct + "%";
     globalPct.textContent = pct + " %";
@@ -210,7 +251,6 @@ export async function renderEditor(view, pid, context) {
             sec.is_sensitive ? el("span", { class: "badge badge-secret" }, icon("lock", 12), "Sensible") : null,
             sec.ai_enrichable ? el("span", { class: "badge badge-ai" }, icon("sparkles", 12), "Pré-remplissable IA") : null))),
       el("p", { class: "sp-desc" }, t(sec.description_i18n, "")),
-      isStaff(sec) ? staffLinkBanner() : null,
       secretUnavailable,
       form.node,
       buildMediaPanel({ propertyId: pid, sectionCode: sec.code }).node,
@@ -265,11 +305,25 @@ export async function renderEditor(view, pid, context) {
   function renderHeaderActions() {
     statusBadge.textContent = { draft: "Brouillon", published: "Publié", archived: "Archivé" }[property.status] || property.status;
     statusBadge.className = "badge badge-" + property.status;
+    // Le badge de publication concerne le guide voyageur → masqué en contexte staff.
+    statusBadge.style.display = isStaffCtx ? "none" : "";
     clear(headerRight);
     // Fiche du logement éditable (M-24) — accessible en permanence.
     headerRight.append(
       el("button", { class: "btn btn-sm", onClick: () => openInfo() },
         icon("home", 16), "Informations"));
+    // Contexte staff (V2-26b) : les actions du guide voyageur (lien voyageur,
+    // Traductions, QR à imprimer, Publier/Dépublier) n'ont pas de sens ici — on
+    // ne montre que les outils de transmission du cahier d'équipe.
+    if (isStaffCtx) {
+      headerRight.append(
+        el("a", { class: "btn btn-sm", href: `/s/${property.staff_token}`, target: "_blank", rel: "noopener" },
+          icon("external-link", 16), "Ouvrir le cahier"),
+        el("button", { class: "btn btn-sm", onClick: () => openStaffShareMenu(property) },
+          icon("qr-code", 16), "Lien & QR de l'équipe"));
+      refreshIcons();
+      return;
+    }
     if (property.status === "published") {
       // ── Traductions du guide (M-09) : bouton « Mettre à jour les traductions »
       // avec état (à jour / X éléments périmés). La (re)traduction est déclenchée
@@ -337,30 +391,8 @@ export async function renderEditor(view, pid, context) {
     }
   }
 
-  // Lien de partage élégant (M-25) : /g/{slug}-{token}. Le token reste l'autorité.
-  // « Copier le lien » ouvre un menu multilingue (V2-10, components/sharemenu.js).
+  // Lien du cahier d'équipe /s/{staff_token} (utilisé par le bloc de transmission).
   function staffLink() { return staffUrl(property); }
-
-  // Bandeau du lien /s (cahier équipe d'entretien) affiché sur une section staff.
-  function staffLinkBanner() {
-    const input = el("input", { type: "text", value: staffLink(), readonly: true, onFocus: (e) => e.target.select() });
-    const copy = el("button", { class: "btn btn-sm", type: "button", onClick: async () => {
-      try { await navigator.clipboard.writeText(staffLink()); toast("Lien du cahier copié.", "ok"); }
-      catch (_) { toast("Copie impossible.", "err"); }
-    } }, icon("link", 15), "Copier");
-    return el("div", { class: "notice notice-info", style: { marginBottom: "16px", alignItems: "flex-start" } },
-      icon("clipboard-list", 18),
-      el("div", { style: { flex: "1" } },
-        el("b", {}, "Lien du cahier de préparation"),
-        el("div", { class: "muted", style: { fontSize: "12.5px", margin: "3px 0 8px" } },
-          "À partager avec votre équipe d'entretien uniquement. Accessible même avant publication ; ne contient jamais le wifi, la boîte à clés, ni la carte des lieux."),
-        el("div", { class: "row", style: { gap: "8px", flexWrap: "wrap" } }, input, copy,
-          el("a", { class: "btn btn-sm", href: `/s/${property.staff_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 15), "Ouvrir"),
-          // QR du lien équipe (V2-26) : mêmes outils de transmission que la porte
-          // « Équipe d'entretien » de la carte du logement.
-          el("button", { class: "btn btn-sm", type: "button", onClick: () => openStaffShareMenu(property) },
-            icon("qr-code", 15), "QR de l'équipe"))));
-  }
 
   // Petit menu de langue du poster QR (M-26) : FR / EN / ES. Le poster ne sort
   // plus qu'en une langue, choisie par le propriétaire.
@@ -422,7 +454,7 @@ export async function renderEditor(view, pid, context) {
   // (components/propertyinfo.js) et accessibles À TOUT MOMENT.
   function applyPropertyUpdate(updated) {
     property = { ...property, ...updated };
-    titleEl.textContent = property.name;
+    titleEl.textContent = pageTitle();
     crumbName.textContent = property.name;
     renderBanner();
     renderHeaderActions();

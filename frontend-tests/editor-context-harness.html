@@ -1,0 +1,156 @@
+<!doctype html>
+<!-- Harnais headless de la séparation stricte des contextes de l'éditeur (V2-26b).
+     Pilote le VRAI /frontend/js/views/editor.js avec un fetch simulé (aucune
+     requête réseau) et un profil (store.setOwner) contrôlé par scénario. On teste
+     le composant SUR SON ARBRE RENDU (querySelector), jamais via une référence
+     interne (leçon V2-18c). Verdict dans #result, lu par editor-context.test.mjs.
+     Ce fichier vit hors de frontend/ (jamais servi publiquement en statique). -->
+<meta charset="utf-8">
+<title>editor-context-harness</title>
+<div id="app"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { renderEditor } from "/frontend/js/views/editor.js";
+import { setOwner, setToken } from "/frontend/js/store.js";
+
+const TOKEN = "abc123def456abc123def456abc123de";       // 128 bits (hex)
+const PROP = {
+  id: "p1", name: "Villa Test", status: "published",
+  address_line1: "Calle 1", postal_code: "03189", city: "Orihuela",
+  guide_token: "gtok", staff_token: TOKEN, default_lang: "fr",
+  lat: 38.0, lon: -0.7, geocode_accuracy: "rooftop",
+};
+// Deux sections voyageur (chapitres A, B) + deux sections staff (chapitre S).
+const SECTIONS = { sections: [
+  { code: "A_arrival", chapter: "A", sort_order: 1, icon: "plane", audience: "guest",
+    name_i18n: { fr: "Arrivée & départ" }, description_i18n: { fr: "" },
+    is_visible: true, completed: true, is_sensitive: false, ai_enrichable: false,
+    content: {}, body_md: "", field_schema: {} },
+  { code: "F_restaurants", chapter: "B", sort_order: 2, icon: "utensils", audience: "guest",
+    name_i18n: { fr: "Restaurants" }, description_i18n: { fr: "" },
+    is_visible: true, completed: true, is_sensitive: false, ai_enrichable: false,
+    content: {}, body_md: "", field_schema: {} },
+  { code: "S_checklist", chapter: "S", sort_order: 90, icon: "clipboard-list", audience: "staff",
+    name_i18n: { fr: "Check-list ménage" }, description_i18n: { fr: "" },
+    is_visible: true, completed: false, is_sensitive: false, ai_enrichable: false,
+    content: {}, body_md: "", field_schema: {} },
+  { code: "S_linen", chapter: "S", sort_order: 91, icon: "bed", audience: "staff",
+    name_i18n: { fr: "Linge & consommables" }, description_i18n: { fr: "" },
+    is_visible: true, completed: false, is_sensitive: false, ai_enrichable: false,
+    content: {}, body_md: "", field_schema: {} },
+] };
+
+window.fetch = async (path, opts) => {
+  const p = String(path).split("?")[0];
+  let body = null;
+  if (p === "/api/properties/p1") body = PROP;
+  else if (p === "/api/properties/p1/sections") body = SECTIONS;
+  else if (p === "/api/properties/p1/secrets") body = {};
+  else if (p === "/api/properties/p1/translation-status") body = { total: 0, up_to_date: true, outdated: 0 };
+  else if (p === "/api/properties/p1/media") body = [];
+  else throw new Error("fetch inattendu : " + p);
+  return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+};
+setToken("t");
+
+const log = [];
+let pass = true;
+const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const app = document.getElementById("app");
+const q = (sel, root = document) => root.querySelector(sel);
+const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+const closeModals = () => qa(".modal-back").forEach((m) => m.remove());
+
+async function open(owner, context) {
+  setOwner(owner);
+  closeModals();
+  await renderEditor(app, "p1", context);
+  await wait(60);
+}
+const sidebar = () => q(".chapters");
+const header = () => q(".page .row");   // 1re rangée = titre + actions
+
+try {
+  // ── Contexte VOYAGEUR (Pro) : pas de groupe staff dans la barre latérale ──
+  await open({ staff_access: true, on_trial: false }, undefined);
+  const guestSide = sidebar().textContent;
+  chk(/Arrivée & départ/.test(guestSide), "voyageur : chapitres du guide présents (Arrivée & départ)");
+  // Le groupe staff (tête de chapitre) et ses sections ont disparu — la seule
+  // occurrence de « Équipe d'entretien » restante est le libellé de la bascule.
+  const guestChapHeads = qa(".chap-head", sidebar()).map((h) => h.textContent).join(" | ");
+  chk(!/Équipe d'entretien/.test(guestChapHeads) && !/Check-list ménage/.test(guestSide) && !/Linge & consommables/.test(guestSide),
+    "voyageur : le groupe « Équipe d'entretien » (et ses sections) A DISPARU de la barre latérale");
+  // Bascule sobre vers le contexte staff, présente et fonctionnelle
+  const toStaff = q(".ctx-switch");
+  chk(!!toStaff && /Équipe d'entretien/.test(toStaff.textContent), "voyageur : bascule « ↔ Équipe d'entretien » présente");
+  chk(!toStaff.classList.contains("locked"), "voyageur (Pro) : bascule staff NON verrouillée");
+  // Actions d'en-tête voyageur (guide) présentes ; pas d'outils staff
+  chk(!!qa("button, a").find((b) => /Copier le lien/.test(b.textContent)), "voyageur : action « Copier le lien » (guide) présente");
+  chk(!!qa("button, a").find((b) => /Traductions/.test(b.textContent)), "voyageur : bouton « Traductions » présent");
+
+  // La bascule ouvre bien l'éditeur staff (via le hash)
+  location.hash = "";
+  toStaff.click();
+  chk(location.hash === "#/properties/p1/editor/staff", "voyageur : bascule → éditeur staff (h=" + location.hash + ")");
+
+  // ── Contexte STAFF (Pro) : uniquement le cahier + transmission ───────────
+  await open({ staff_access: true, on_trial: false }, "staff");
+  const staffSide = sidebar().textContent;
+  chk(/Check-list ménage/.test(staffSide) && /Équipe d'entretien/.test(staffSide),
+    "staff : le cahier d'équipe est dans la barre latérale");
+  chk(!/Arrivée & départ/.test(staffSide) && !/Restaurants/.test(staffSide),
+    "staff : AUCUNE rubrique voyageur dans la barre latérale");
+  // Bloc de transmission (lien /s/ + copier + ouvrir + QR) dans la barre latérale
+  const transmit = q(".staff-transmit");
+  chk(!!transmit, "staff : bloc de transmission présent dans la barre latérale");
+  const linkInput = transmit && q("input", transmit);
+  chk(!!linkInput && linkInput.value === location.origin + "/s/" + TOKEN,
+    "staff : le lien encode /s/{staff_token} (v=" + (linkInput && linkInput.value) + ")");
+  chk(!!qa("button, a", transmit).find((b) => /QR/.test(b.textContent)), "staff : bouton QR présent dans le bloc");
+  // En-tête adapté + actions guide RETIRÉES
+  chk(/Cahier de préparation/.test(q(".page-title").textContent), "staff : titre « Cahier de préparation — … »");
+  chk(!qa("button, a").find((b) => /Traductions/.test(b.textContent)), "staff : bouton « Traductions » RETIRÉ");
+  chk(!qa("button, a").find((b) => /Dépublier/.test(b.textContent)), "staff : bouton « Dépublier » RETIRÉ");
+  chk(!qa("button, a").find((b) => /QR à imprimer/.test(b.textContent)), "staff : « QR à imprimer » RETIRÉ");
+  // Bascule retour vers le guide voyageur
+  const toGuide = q(".ctx-switch");
+  chk(!!toGuide && /Guide Locataires/.test(toGuide.textContent), "staff : bascule « ↔ Guide Locataires » présente");
+  location.hash = "";
+  toGuide.click();
+  chk(location.hash === "#/properties/p1/editor", "staff : bascule → éditeur voyageur (h=" + location.hash + ")");
+
+  // ── Jauges séparées : voyageur = 100 % (2/2), staff = 0 % (0/2) ──────────
+  // Un décompte MÉLANGÉ donnerait 50 % (2/4) dans les deux contextes → la
+  // dissociation 100/0 prouve que chaque contexte compte SES sections.
+  await open({ staff_access: true, on_trial: false }, undefined);
+  chk(/100\s*%/.test(q(".page .row").textContent), "voyageur : jauge = 100 % (2/2 sections voyageur)");
+  await open({ staff_access: true, on_trial: false }, "staff");
+  chk(/\b0\s*%/.test(q(".page .row").textContent), "staff : jauge = 0 % (0/2 sections staff)");
+
+  // ── Gating de la bascule : Solo sans staff_access ────────────────────────
+  await open({ staff_access: false, on_trial: false }, undefined);
+  const lockedSwitch = q(".ctx-switch");
+  chk(lockedSwitch.classList.contains("locked"), "Solo : bascule staff verrouillée (cadenas)");
+  location.hash = "";
+  lockedSwitch.click();
+  await wait(40);
+  chk(location.hash !== "#/properties/p1/editor/staff", "Solo : la bascule n'ouvre PAS l'éditeur staff");
+  const upsell = qa(".modal-back").map((m) => m.textContent).join(" ");
+  chk(/Réservé à l'offre Pro/.test(upsell), "Solo : encart d'upsell « Réservé à l'offre Pro »");
+  closeModals();
+
+  // ── Deep-link /editor/staff sans droit → redirigé + upsell (jamais l'accès) ─
+  location.hash = "#/properties/p1/editor/staff";
+  await open({ staff_access: false, on_trial: false }, "staff");
+  chk(location.hash === "#/properties/p1/editor", "Solo deep-link staff : redirigé vers l'éditeur voyageur");
+  chk(!q(".staff-transmit"), "Solo deep-link staff : le cahier n'est PAS rendu");
+  const upsell2 = qa(".modal-back").map((m) => m.textContent).join(" ");
+  chk(/Réservé à l'offre Pro/.test(upsell2), "Solo deep-link staff : encart d'upsell affiché");
+  closeModals();
+} catch (e) {
+  pass = false;
+  log.push("✗ exception : " + (e && e.message ? e.message : e) + "\n" + (e && e.stack ? e.stack : ""));
+}
+document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>

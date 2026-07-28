@@ -286,6 +286,17 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .sec-link .tick.off{color:var(--line)}
 .sec-link .dim{opacity:.5}
 
+/* ── Bascule entre contextes voyageur ↔ équipe (V2-26b) ────────────────────── */
+.ctx-switch{display:flex;align-items:center;gap:8px;width:100%;border:1px solid var(--line);
+            background:transparent;padding:8px 10px;border-radius:10px;text-align:left;
+            color:var(--sea-dark);font-weight:600;font-size:13px;margin-bottom:12px}
+.ctx-switch:hover{background:#EAF3F6;border-color:var(--sea)}
+.ctx-switch [data-lucide]{width:15px;height:15px;flex:none;opacity:.85}
+.ctx-switch.locked{color:var(--muted)}
+.ctx-switch.locked:hover{background:rgba(30,42,50,.04);border-color:var(--line)}
+/* Bloc de transmission du cahier d'équipe dans la barre latérale (V2-26b) */
+.staff-transmit input{width:100%;font-size:12px}
+
 .section-panel{padding:22px 24px}
 .section-panel .sp-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:4px}
 .section-panel h2{font-size:23px}
