@@ -13,6 +13,9 @@
   // Espionne scrollIntoView : app.js défile vers l'ancre cible → on retient son id.
   window.__lastScroll = "";
   Element.prototype.scrollIntoView = function () { window.__lastScroll = this.id || ""; };
+  // Espionne window.scrollTo (V2-12b : le mode filtré remet le défilement en haut).
+  window.__scrolledTop = 0;
+  window.scrollTo = (opt) => { if (opt && opt.top === 0) window.__scrolledTop += 1; };
   // Empêche le SW de tenter un enregistrement réseau pendant le test (non bloquant
   // de toute façon, mais on garde le harnais hermétique).
   try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
@@ -40,6 +43,7 @@
     <!-- Grille de services (navigation principale) : id="autour" = cible du retour (V2-27) -->
     <nav class="svc-grid" id="autour" aria-label="Services autour de vous">
       <a class="svc-tile" href="#autour/restaurant" data-cat="restaurant" aria-label="Restaurant : 6"><span class="svc-name">Restaurant</span><span class="svc-count">6</span></a>
+      <a class="svc-tile" href="#autour/supermarket" data-cat="supermarket" aria-label="Supermarché : 2"><span class="svc-name">Supermarché</span><span class="svc-count">2</span></a>
       <a class="svc-tile" href="#autour/beach" data-cat="beach" aria-label="Plage : 1"><span class="svc-name">Plage</span><span class="svc-count">1</span></a>
     </nav>
     <nav class="chips" aria-label="Filtrer">
@@ -49,6 +53,8 @@
     </nav>
     <!-- Blocs de catégories (niveau 2) : ancrés id="autour/{code}" -->
     <section class="chapter" data-chapter="F">
+      <h2>Restaurants &amp; commerces</h2>
+      <div class="chapline"></div>
       <div class="cat" data-cat="restaurant" id="autour/restaurant">
         <h4 class="cat-title">Restaurant · 6</h4>
         <div class="cuisines" data-cat="restaurant">
@@ -65,6 +71,13 @@
           <div class="poi-card" data-cuisine="seafood">R6</div>
         </div>
         <button class="more-btn" data-more-tpl="Voir les {n} autres" data-less="Réduire">Voir les 2 autres</button>
+        <a class="back-services" href="#autour">↑ Retour aux services</a>
+      </div>
+      <!-- Catégorie voisine DANS LE MÊME chapitre (V2-12b : doit être masquée en
+           mode filtré Restaurant → classe cat-off, chapitre F non masqué). -->
+      <div class="cat" data-cat="supermarket" id="autour/supermarket">
+        <h4 class="cat-title">Supermarché · 2</h4>
+        <div class="poi-group" data-cat="supermarket"><div class="poi-card">S1</div><div class="poi-card">S2</div></div>
         <a class="back-services" href="#autour">↑ Retour aux services</a>
       </div>
     </section>
@@ -93,6 +106,12 @@
   const restoChapter = () => q('.chapter[data-chapter="F"]');
   const restoCards = () => qa('.cat[data-cat="restaurant"] .poi-group > .poi-card');
   const visibleCards = () => restoCards().filter((c) => c.style.display !== "none").length;
+  // V2-12b : le mode filtré s'exprime par des CLASSES (le harnais ne charge pas
+  // guide.css → on éprouve la logique, pas le rendu). cat-filtered sur le panneau,
+  // cat-off sur les blocs masqués, chapter-off sur les chapitres masqués.
+  const catBlock = (code) => q(`.cat[data-cat="${code}"]`);
+  const chapterOf = (ch) => q(`.chapter[data-chapter="${ch}"]`);
+  const filteredOn = () => around().classList.contains("cat-filtered");
 
   try {
     // Charge et exécute le vrai module (init* au chargement, hash initial = #autour).
@@ -105,33 +124,48 @@
     chk(visibleCards() === 4, "liste repliée : 4 cartes visibles au départ (a=" + visibleCards() + ")");
     chk(q(".cat .more-btn").classList.contains("show"), "bouton « Voir les N autres » visible (>4)");
 
-    // 2) Tap sur une tuile (Plage) → hash #autour/beach, onglet Autour, défilement au bloc.
+    // 2) Tap sur une tuile (Plage) → MODE FILTRÉ (V2-12b) : une catégorie = un écran.
+    window.__scrolledTop = 0;
     q('.svc-tile[href="#autour/beach"]').click();
     await wait(140);
     chk(location.hash === "#autour/beach", "tap tuile Plage → hash #autour/beach (h=" + location.hash + ")");
     chk(around().classList.contains("tab-active"), "reste dans l'onglet Autour après tap");
-    chk(window.__lastScroll === "autour/beach", "défilement doux vers le bloc Plage (s=" + window.__lastScroll + ")");
+    chk(filteredOn(), "mode filtré actif (classe cat-filtered)");
+    chk(!catBlock("beach").classList.contains("cat-off"), "bloc Plage visible (pas de cat-off)");
+    chk(catBlock("restaurant").classList.contains("cat-off"), "bloc Restaurant masqué (cat-off)");
+    chk(catBlock("supermarket").classList.contains("cat-off"), "bloc Supermarché masqué (cat-off)");
+    chk(!chapterOf("G").classList.contains("chapter-off"), "chapitre hôte (Plage/G) affiché");
+    chk(chapterOf("F").classList.contains("chapter-off"), "autre chapitre (F) masqué");
+    chk(window.__scrolledTop >= 1, "défilement remis en haut à l'entrée du mode filtré (n=" + window.__scrolledTop + ")");
 
-    // 3) Filtre par puce (chapitre G) masque le bloc Restaurant (chapitre F)…
+    // 3) Filtre par puce (chapitre G) puis tap tuile Restaurant → mode filtré ciblé,
+    //    filtre chapitre réinitialisé, voisin du même chapitre (Supermarché) masqué.
     q('.chips .chip[data-chapter="G"]').click();
     await wait(20);
-    chk(restoChapter().style.display === "none", "puce Activités masque le chapitre Restaurants");
-    // …puis tap tuile Restaurant → applyHash rétablit « Tout » pour révéler la cible.
     q('.svc-tile[href="#autour/restaurant"]').click();
     await wait(140);
     chk(location.hash === "#autour/restaurant", "tap tuile Restaurant → hash #autour/restaurant");
-    chk(restoChapter().style.display !== "none", "le bloc cible est de nouveau visible (filtre réinitialisé)");
+    chk(filteredOn(), "mode filtré actif (Restaurant)");
+    chk(!catBlock("restaurant").classList.contains("cat-off"), "bloc Restaurant visible");
+    chk(catBlock("supermarket").classList.contains("cat-off"), "voisin du même chapitre (Supermarché) masqué");
+    chk(catBlock("beach").classList.contains("cat-off"), "bloc Plage (autre chapitre) masqué");
+    chk(!restoChapter().classList.contains("chapter-off"), "chapitre hôte F affiché");
+    chk(chapterOf("G").classList.contains("chapter-off"), "chapitre G masqué");
     chk(q('.chips .chip[data-chapter=""]').classList.contains("on"), "puce « Tout » réactivée par la navigation");
-    chk(window.__lastScroll === "autour/restaurant", "défilement vers le bloc Restaurant (s=" + window.__lastScroll + ")");
 
-    // 4) Retour arrière : popstate ramène à l'état précédent (#autour/beach), puis à la grille (#autour).
+    // 4) Retour arrière : popstate ramène à l'état précédent (#autour/beach → mode
+    //    filtré Plage restauré), puis à la grille (#autour → mode filtré levé).
     history.back();
     await wait(140);
     chk(location.hash === "#autour/beach", "retour arrière → #autour/beach (h=" + location.hash + ")");
-    chk(around().classList.contains("tab-active"), "toujours dans l'onglet Autour après retour");
+    chk(filteredOn() && !catBlock("beach").classList.contains("cat-off"),
+      "retour arrière → mode filtré Plage restauré");
     history.back();
     await wait(140);
     chk(location.hash === "#autour", "second retour → grille #autour (h=" + location.hash + ")");
+    chk(!filteredOn(), "grille : mode filtré désactivé (cat-filtered retirée)");
+    chk(!catBlock("restaurant").classList.contains("cat-off") && !catBlock("beach").classList.contains("cat-off"),
+      "grille : tous les blocs de nouveau visibles");
 
     // 5) Coexistence avec la liste repliée : le bouton déplie toujours les 6 cartes.
     q(".cat .more-btn").click();
@@ -144,14 +178,17 @@
     chk(italianVisible.length === 3 && italianVisible.every((c) => c.dataset.cuisine === "italian"),
       "filtre cuisine Italien : 3 cartes, toutes italian (n=" + italianVisible.length + ")");
 
-    // 6) Retour aux services (V2-27) : entrer dans une catégorie puis en sortir
-    //    par le lien de fin de liste → grille (#autour), défilement, onglet gardé.
+    // 6) Retour aux services (V2-27/V2-12b) : entrer dans une catégorie (mode
+    //    filtré) puis en sortir par le lien de fin de liste → grille (#autour),
+    //    mode filtré levé, défilement vers la grille, onglet gardé.
     q('.svc-tile[href="#autour/beach"]').click();
     await wait(140);
+    chk(filteredOn(), "entrée en mode filtré avant le retour");
     window.__lastScroll = "";
     q('.cat[data-cat="beach"] .back-services').click();
     await wait(60);
     chk(location.hash === "#autour", "retour aux services → hash #autour (h=" + location.hash + ")");
+    chk(!filteredOn(), "retour aux services : mode filtré levé (grille + tous les blocs)");
     chk(around().classList.contains("tab-active"), "retour aux services : reste dans l'onglet Autour");
     chk(window.__lastScroll === "autour", "retour aux services : défilement vers la grille (s=" + window.__lastScroll + ")");
 
@@ -169,6 +206,14 @@
     window._activateTab("home");   // change d'onglet en restant défilé
     await wait(40);
     chk(!float.classList.contains("show"), "flottant caché hors de l'onglet Autour");
+
+    // 8) V2-12b : en mode filtré, le flottant « Retour aux services » est offert
+    //    même en haut de page (c'est le chemin de retour à la grille).
+    window.__setScroll(0);
+    location.hash = "#autour/beach";   // ré-entre en mode filtré (hashchange)
+    await wait(140);
+    chk(around().classList.contains("tab-active") && filteredOn(), "ré-entrée en mode filtré (Plage)");
+    chk(float.classList.contains("show"), "flottant offert en mode filtré même sans défilement");
   } catch (e) {
     pass = false;
     log.push("✗ exception : " + (e && e.message ? e.message : e));

@@ -89,6 +89,32 @@ function showMapOffline(mapEl) {
 const TAB_HASH = { home: "logement", emergency: "urgences", around: "autour" };
 const HASH_TAB = { logement: "home", urgences: "emergency", autour: "around" };
 
+// ── Mode filtré « une catégorie = un écran » (V2-12b) ────────────────────────
+// Un tap sur une tuile de la grille (#autour/{code}) n'est plus un simple
+// défilement : on entre dans un mode où seuls le bloc de la catégorie choisie
+// et le titre de son chapitre restent affichés — la grille, la carte, les puces
+// et tous les autres blocs sont masqués. Le retour à la grille (#autour) sort du
+// mode. Piloté PAR DES CLASSES (CSS gated sur `html.js`) : sans JS, la classe
+// n'est jamais posée et tout reste visible (ancres natives, dégradation propre).
+function aroundPanel() { return document.querySelector('.tab-panel[data-tab="around"]'); }
+
+function setServiceFilter(code) {
+  const around = aroundPanel();
+  if (!around) return;
+  const on = !!code;
+  around.classList.toggle("cat-filtered", on);
+  // Blocs de catégorie : seul le choisi reste visible en mode filtré.
+  around.querySelectorAll(".cat").forEach((cat) => {
+    cat.classList.toggle("cat-off", on && cat.dataset.cat !== code);
+  });
+  // Chapitres : on ne garde (avec son titre) que celui qui contient la catégorie
+  // choisie ; les autres sont masqués (le titre du chapitre hôte donne le contexte).
+  around.querySelectorAll(".chapter[data-chapter]").forEach((ch) => {
+    const holds = [...ch.querySelectorAll(".cat")].some((c) => c.dataset.cat === code);
+    ch.classList.toggle("chapter-off", on && !holds);
+  });
+}
+
 function initTabs() {
   const tabs = [...document.querySelectorAll(".guide-tabs .tab[data-tab]")];
   const panels = [...document.querySelectorAll(".tab-panel[data-tab]")];
@@ -119,12 +145,18 @@ function initTabs() {
     const raw = decodeURIComponent(location.hash.replace(/^#/, ""));
     let tabKey = HASH_TAB[raw];
     let scrollEl = null;
+    let catCode = "";   // V2-12b : catégorie du mode filtré (#autour/{code}), sinon ""
     if (!tabKey && raw) {
       // Ancre directe : section (#B_wifi) OU catégorie de la grille (#autour/{code},
       // l'id du bloc `.cat` est « autour/{code} », V2-12).
       const elt = document.getElementById(raw);
       const panel = elt && elt.closest(".tab-panel[data-tab]");
       if (panel) { tabKey = panel.dataset.tab; scrollEl = elt; }
+      // V2-12b : une tuile de la grille (#autour/{code}) ouvre le MODE FILTRÉ
+      // (une catégorie = un écran), pas un simple défilement vers le bloc.
+      if (elt && tabKey === "around" && elt.classList.contains("cat")) {
+        catCode = elt.dataset.cat || "";
+      }
     }
     // V2-12 : si la cible est un bloc de catégorie masqué par une puce de filtre
     // (chapitre), on rétablit « Tout » pour la rendre visible avant le défilement.
@@ -136,8 +168,17 @@ function initTabs() {
         if (allChip) allChip.click();
       }
     }
+    // V2-12b : (dés)active le mode filtré. Hors #autour/{code} (onglet fixe,
+    // grille #autour, ancre de section) → catCode="" → grille + tous les blocs.
+    setServiceFilter(catCode);
     activate(tabKey || "home", { push });
-    if (scrollEl) setTimeout(() => scrollEl.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+    if (catCode) {
+      // Mode filtré : une catégorie = un écran → défilement remis EN HAUT (la
+      // grille et les autres blocs ont disparu, le bloc choisi occupe l'écran).
+      setTimeout(() => window.scrollTo({ top: 0, behavior: "auto" }), 0);
+    } else if (scrollEl) {
+      setTimeout(() => scrollEl.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+    }
   }
 
   tabs.forEach((t) => t.addEventListener("click", () => activate(t.dataset.tab)));
@@ -169,6 +210,9 @@ function initBackToServices() {
   links.forEach((a) => a.addEventListener("click", (e) => {
     e.preventDefault();
     if (window._activateTab) window._activateTab("around");
+    // V2-12b : sortie du mode filtré → grille + tous les blocs de nouveau visibles.
+    // (pushState ne déclenche pas de hashchange → on désactive le mode à la main.)
+    setServiceFilter("");
     // Nettoie le hash vers l'onglet (#autour) → historique cohérent avec V2-12.
     if (location.hash !== aroundHash) history.pushState(null, "", aroundHash);
     grid.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -183,7 +227,10 @@ function initBackToServices() {
   const evaluate = () => {
     ticking = false;
     const active = around && around.classList.contains("tab-active");
-    float.classList.toggle("show", !!(active && window.scrollY > 480));
+    // V2-12b : en mode filtré, le flottant est TOUJOURS offert (chemin de retour
+    // à la grille) ; hors mode filtré, seulement une fois défilé assez bas.
+    const filtered = around && around.classList.contains("cat-filtered");
+    float.classList.toggle("show", !!(active && (filtered || window.scrollY > 480)));
   };
   const onScroll = () => { if (!ticking) { ticking = true; requestAnimationFrame(evaluate); } };
   window.addEventListener("scroll", onScroll, { passive: true });
