@@ -1007,7 +1007,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
     map_data = {
         "property": {"name": prop.get("name"), "lat": prop.get("lat"), "lon": prop.get("lon")},
         "pois": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"],
-                  "chapter": p["chapter"], "color": p.get("map_color"),
+                  "chapter": p["chapter"], "category_code": p["category_code"],
+                  "color": p.get("map_color"),
                   "category": _i18n(p.get("category_name"), lang, p["category_code"]),
                   "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
                   "travel_mode": p.get("travel_mode"), "phone": p.get("phone")}

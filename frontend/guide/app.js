@@ -31,7 +31,14 @@ function fmtDist(p) {
 function tel(raw) { return (String(raw).trim().startsWith("+") ? "+" : "") + String(raw).replace(/\D/g, ""); }
 
 // ── Carte Leaflet ────────────────────────────────────────────────────────────
-const markersByChapter = {};
+// UNE SEULE instance de carte (window._guideMap), la plus robuste avec Leaflet :
+// la carte vit toujours à la même place DOM (en tête de l'onglet « Autour », sous
+// les onglets, avant la liste). Le mode filtré (V2-12e) ne déplace ni ne recrée
+// rien — il masque simplement la grille au-dessus (CSS) et recadre les marqueurs.
+// Marqueurs POI conservés à plat (`_allMarkers`, tagués `_catCode`/`_chapter`) pour
+// filtrer par catégorie (mode filtré) ou par chapitre (puces) sans les recréer.
+let allMarkers = [];      // marqueurs POI (jamais le logement)
+let allBounds = null;     // cadrage d'origine (logement + tous les POI)
 function initMap() {
   const mapEl = document.getElementById("map");
   const P = GUIDE.property || {};
@@ -53,6 +60,7 @@ function initMap() {
   }).addTo(map).bindPopup(`<b>${escapeHtml(P.name || "Votre logement")}</b>`);
 
   const bounds = [[P.lat, P.lon]];
+  allMarkers = [];
   for (const p of GUIDE.pois || []) {
     const m = L.circleMarker([p.lat, p.lon], {
       radius: 7, weight: 2, color: "#fff", fillColor: p.color || "#0E5A73", fillOpacity: 0.95,
@@ -63,14 +71,57 @@ function initMap() {
     if (p.phone) html += `<br>📞 <a href="tel:${tel(p.phone)}">${escapeHtml(p.phone)}</a>`;
     html += `<br><a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">Itinéraire ↗</a>`;
     m.bindPopup(html);
+    m._catCode = p.category_code || "";
+    m._chapter = p.chapter || "";
     m.addTo(map);
-    (markersByChapter[p.chapter] ||= []).push(m);
+    allMarkers.push(m);
     bounds.push([p.lat, p.lon]);
   }
+  allBounds = bounds;
   if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
   // La carte est créée avant la mise en page finale : recalage.
   setTimeout(() => map.invalidateSize(), 80);
   window._guideMap = map;
+}
+
+// Chapitre actif de la puce de filtre (vide = « Tout ») — source de vérité du
+// filtrage par chapitre, partagée entre les puces et la sortie du mode filtré.
+function activeChapter() {
+  const chip = document.querySelector('.tab-panel[data-tab="around"] .chip.on');
+  return chip ? (chip.dataset.chapter || "") : "";
+}
+
+// Un SEUL point de décision de la visibilité des marqueurs (jamais de recréation,
+// donc jamais de doublon même après N aller-retours). Priorité au mode filtré
+// (catégorie choisie) ; sinon repli sur le filtre chapitre des puces.
+function syncMarkers() {
+  const map = window._guideMap;
+  if (!map) return;
+  const cat = window._filterCat || "";
+  const ch = cat ? "" : activeChapter();
+  for (const m of allMarkers) {
+    const show = cat ? (m._catCode === cat) : (!ch || m._chapter === ch);
+    if (show) m.addTo(map); else map.removeLayer(m);   // addTo est idempotent
+  }
+}
+
+// Recadrage sur le sous-ensemble d'une catégorie (mode filtré) : logement + POI
+// de la catégorie. Un seul POI → zoom plafonné (sinon fitBounds sur 2 points très
+// proches zoomerait à l'excès). Reste dans la zone pré-cachée (invariant M-10 :
+// aucun nouveau téléchargement de tuile).
+function fitFiltered(code) {
+  const map = window._guideMap;
+  const P = GUIDE.property || {};
+  if (!map || P.lat == null) return;
+  const pts = [[P.lat, P.lon]];
+  for (const m of allMarkers) if (m._catCode === code) { const ll = m.getLatLng(); pts.push([ll.lat, ll.lng]); }
+  map.fitBounds(pts, { padding: [40, 40], maxZoom: pts.length <= 2 ? 15 : 16 });
+}
+
+// Retour au cadrage d'origine (grille) : logement + tous les POI.
+function fitAll() {
+  const map = window._guideMap;
+  if (map && allBounds && allBounds.length > 1) map.fitBounds(allBounds, { padding: [30, 30], maxZoom: 15 });
 }
 
 // Message discret « hors ligne / hors zone » sur la carte (M-10).
@@ -101,8 +152,14 @@ function aroundPanel() { return document.querySelector('.tab-panel[data-tab="aro
 function setServiceFilter(code) {
   const around = aroundPanel();
   if (!around) return;
+  code = code || "";
   const on = !!code;
+  const changed = (window._filterCat || "") !== code;
+  window._filterCat = code;
   around.classList.toggle("cat-filtered", on);
+  // La barre d'urgences d'en-tête vit HORS du panneau (dans <header>) : une classe
+  // au niveau du <body> pilote son retrait en mode filtré (V2-12e).
+  document.body.classList.toggle("cat-filtered", on);
   // Blocs de catégorie : seul le choisi reste visible en mode filtré.
   around.querySelectorAll(".cat").forEach((cat) => {
     cat.classList.toggle("cat-off", on && cat.dataset.cat !== code);
@@ -113,6 +170,19 @@ function setServiceFilter(code) {
     const holds = [...ch.querySelectorAll(".cat")].some((c) => c.dataset.cat === code);
     ch.classList.toggle("chapter-off", on && !holds);
   });
+  // Carte (V2-12e) : filtrer les marqueurs sur la catégorie choisie et recadrer.
+  // On n'agit QUE sur une vraie transition (setServiceFilter("") est appelé à
+  // chaque navigation, y compris hors « Autour » : ne pas re-cadrer inutilement).
+  if (!changed) return;
+  syncMarkers();
+  const map = window._guideMap;
+  if (!map) return;
+  // La carte peut être masquée juste avant (changement d'onglet) ou remonter (grille
+  // masquée) : invalider la taille avant de recadrer sur le nouvel ensemble.
+  setTimeout(() => {
+    map.invalidateSize();
+    if (on) fitFiltered(code); else fitAll();
+  }, 60);
 }
 
 function initTabs() {
@@ -122,6 +192,11 @@ function initTabs() {
 
   function activate(tabKey, { push = true } = {}) {
     if (!TAB_HASH[tabKey]) tabKey = "home";
+    // Quitter « Autour » (tap d'onglet → pushState, pas de hashchange) doit lever
+    // le mode filtré, sinon `body.cat-filtered` masquerait la barre d'urgences sur
+    // les autres onglets (V2-12e). Sur #autour/{code}, applyHash a déjà posé le
+    // filtre AVANT d'appeler activate("around") → on ne le touche pas ici.
+    if (tabKey !== "around") setServiceFilter("");
     tabs.forEach((t) => {
       const on = t.dataset.tab === tabKey;
       t.classList.toggle("on", on);
@@ -257,12 +332,9 @@ function initChips() {
     around.querySelectorAll(".chapter[data-chapter]").forEach((sec) => {
       sec.style.display = (!ch || sec.dataset.chapter === ch) ? "" : "none";
     });
-    const map = window._guideMap;
-    if (map) {
-      Object.entries(markersByChapter).forEach(([c, list]) => {
-        list.forEach((m) => (!ch || c === ch) ? m.addTo(map) : map.removeLayer(m));
-      });
-    }
+    // Les puces ne sont visibles qu'en grille (masquées en mode filtré) : la
+    // synchro des marqueurs lit le chapitre actif via activeChapter().
+    syncMarkers();
   }));
 }
 

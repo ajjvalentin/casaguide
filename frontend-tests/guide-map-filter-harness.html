@@ -1,0 +1,222 @@
+<!doctype html>
+<!-- Harnais headless de la carte filtrée en tête de catégorie (V2-12e) du guide
+     voyageur. Il pilote le VRAI module /frontend/guide/app.js sur un DOM fidèle au
+     rendu SSR ET charge la vraie guide.css : on éprouve le RENDU RÉEL (offsetParent
+     = présence dans l'arbre de rendu), pas seulement les classes (leçon V2-12c/d).
+     Leaflet est remplacé par un mock qui enregistre marqueurs et fitBounds — on
+     vérifie le sous-ensemble filtré, l'appel de recadrage, l'absence de doublons
+     après aller-retours, et le zoom plafonné à un seul POI. Verdict dans #result. -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>guide-map-filter-harness</title>
+<!-- La classe `js` est posée par le SSR : les règles CSS du mode filtré y sont gatées. -->
+<script>document.documentElement.className += " js";</script>
+<link rel="stylesheet" href="/frontend/guide/guide.css">
+<script>
+  // Espions inoffensifs (app.js s'en sert dans initBackToServices / applyHash).
+  window.__lastScroll = "";
+  Element.prototype.scrollIntoView = function () { window.__lastScroll = this.id || ""; };
+  window.scrollTo = () => {};
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.__sy = 0;
+  try { Object.defineProperty(window, "scrollY", { get: () => window.__sy }); } catch (_) {}
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+
+  // ── Mock Leaflet : fidèle à la surface qu'app.js utilise ────────────────────
+  // marker.addTo(map)/bindPopup() renvoient le marqueur (chaînage) ; map tient
+  // l'ensemble de ses couches (Set → un même objet n'est jamais dédoublé) ; on
+  // compte les CRÉATIONS de circleMarker (un doublon = une recréation) et on
+  // enregistre chaque fitBounds (n points + maxZoom demandé).
+  window.__created = 0;
+  window.__fit = [];
+  function mkMarker(ll, kind) {
+    const m = {
+      _ll: ll, _kind: kind,
+      addTo(map) { map._layers.add(m); return m; },
+      bindPopup() { return m; },
+      getLatLng() { return { lat: m._ll[0], lng: m._ll[1] }; },
+    };
+    return m;
+  }
+  window.L = {
+    map() {
+      const map = {
+        _layers: new Set(),
+        setView() { return map; },
+        fitBounds(b, o) { window.__fit.push({ n: b.length, maxZoom: o && o.maxZoom }); return map; },
+        invalidateSize() { return map; },
+        removeLayer(m) { map._layers.delete(m); return map; },
+      };
+      window.__map = map;
+      return map;
+    },
+    tileLayer() { return { on() { return this; }, addTo() { return this; } }; },
+    divIcon() { return {}; },
+    marker(ll) { return mkMarker(ll, "home"); },
+    circleMarker(ll) { window.__created += 1; return mkMarker(ll, "poi"); },
+  };
+
+  // État initial : grille de l'onglet « Autour de vous ».
+  location.hash = "#autour";
+</script>
+</head>
+<body data-token="tok" data-lang="fr" data-default-lang="fr">
+<div class="wrap">
+  <header class="guide-head">
+    <div class="hrow"><div><h1>Villa Test</h1></div></div>
+    <!-- Barre d'urgences d'en-tête : présente sur les 3 onglets SAUF en mode filtré (V2-12e). -->
+    <div class="sos">
+      <a class="sos-item" href="tel:112"><span class="num">112</span><span class="lbl">Urgences</span></a>
+    </div>
+  </header>
+  <nav class="guide-tabs" role="tablist">
+    <button class="tab on" role="tab" data-tab="home" id="tabbtn-home" aria-controls="tab-home" aria-selected="true">Le logement</button>
+    <button class="tab" role="tab" data-tab="emergency" id="tabbtn-emergency" aria-controls="tab-emergency" aria-selected="false">Urgences</button>
+    <button class="tab" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="false">Autour de vous</button>
+  </nav>
+  <main>
+    <section class="tab-panel tab-active" data-tab="home" id="tab-home" role="tabpanel">home</section>
+    <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
+    <section class="tab-panel" data-tab="around" id="tab-around" role="tabpanel">
+      <nav class="svc-grid" id="autour" aria-label="Services autour de vous">
+        <a class="svc-tile" href="#autour/restaurant" data-cat="restaurant" aria-label="Restaurant : 3"><span class="svc-name">Restaurant</span><span class="svc-count">3</span></a>
+        <a class="svc-tile" href="#autour/supermarket" data-cat="supermarket" aria-label="Supermarché : 2"><span class="svc-name">Supermarché</span><span class="svc-count">2</span></a>
+        <a class="svc-tile" href="#autour/beach" data-cat="beach" aria-label="Plage : 1"><span class="svc-name">Plage</span><span class="svc-count">1</span></a>
+      </nav>
+      <div id="map"></div>
+      <nav class="chips" aria-label="Filtrer">
+        <button class="chip on" data-chapter="">Tout</button>
+        <button class="chip" data-chapter="F">Restaurants</button>
+        <button class="chip" data-chapter="G">Activités</button>
+      </nav>
+      <section class="chapter" data-chapter="F">
+        <h2>Restaurants &amp; commerces</h2>
+        <div class="chapline"></div>
+        <div class="cat" data-cat="restaurant" id="autour/restaurant">
+          <h4 class="cat-title">Restaurant · 3</h4>
+          <div class="poi-group" data-cat="restaurant"><div class="poi-card">R1</div><div class="poi-card">R2</div><div class="poi-card">R3</div></div>
+          <a class="back-services" href="#autour">↑ Retour aux services</a>
+        </div>
+        <div class="cat" data-cat="supermarket" id="autour/supermarket">
+          <h4 class="cat-title">Supermarché · 2</h4>
+          <div class="poi-group" data-cat="supermarket"><div class="poi-card">S1</div><div class="poi-card">S2</div></div>
+          <a class="back-services" href="#autour">↑ Retour aux services</a>
+        </div>
+      </section>
+      <section class="chapter" data-chapter="G">
+        <div class="cat" data-cat="beach" id="autour/beach">
+          <h4 class="cat-title">Plage · 1</h4>
+          <div class="poi-group" data-cat="beach"><div class="poi-card">P1</div></div>
+          <a class="back-services" href="#autour">↑ Retour aux services</a>
+        </div>
+      </section>
+    </section>
+    <a class="back-services back-float" href="#autour">↑ Retour aux services</a>
+  </main>
+</div>
+
+<pre id="result">PENDING</pre>
+
+<script id="guide-data" type="application/json">{
+  "property": { "name": "Villa Test", "lat": 38.00, "lon": -0.70 },
+  "pois": [
+    { "name": "R1", "lat": 38.001, "lon": -0.701, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
+    { "name": "R2", "lat": 38.002, "lon": -0.702, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
+    { "name": "R3", "lat": 38.003, "lon": -0.703, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
+    { "name": "S1", "lat": 38.004, "lon": -0.704, "chapter": "F", "category_code": "supermarket", "color": "#0E5A73", "category": "Supermarché" },
+    { "name": "S2", "lat": 38.005, "lon": -0.705, "chapter": "F", "category_code": "supermarket", "color": "#0E5A73", "category": "Supermarché" },
+    { "name": "P1", "lat": 38.010, "lon": -0.710, "chapter": "G", "category_code": "beach", "color": "#0E5A73", "category": "Plage" }
+  ]
+}</script>
+
+<script type="module">
+  const log = [];
+  let pass = true;
+  const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const q = (sel) => document.querySelector(sel);
+  const around = () => q('.tab-panel[data-tab="around"]');
+  const filteredOn = () => around().classList.contains("cat-filtered");
+  // RENDU RÉEL (leçon V2-12c/d) : offsetParent === null ⇔ absent de l'arbre de
+  // rendu (un ancêtre — ou l'élément — est display:none).
+  const rendered = (el) => !!el && el.offsetParent !== null;
+  const sosBar = () => q(".guide-head .sos");
+  const mapEl = () => q("#map");
+  // Marqueurs POI actuellement sur la carte (le mock tient _layers), par catégorie.
+  const onMapPois = () => [...window.__map._layers].filter((m) => m._kind === "poi");
+  const onMapCats = () => onMapPois().map((m) => m._catCode).sort();
+  const homeOnMap = () => [...window.__map._layers].some((m) => m._kind === "home");
+
+  try {
+    await import("/frontend/guide/app.js");
+    await wait(160);
+
+    // 0) Grille : carte visible, barre d'urgences visible, tous les marqueurs posés.
+    chk(around().classList.contains("tab-active"), "onglet Autour actif (#autour)");
+    chk(!filteredOn(), "grille : mode filtré inactif");
+    chk(rendered(mapEl()), "grille : carte rendue (visible)");
+    chk(rendered(sosBar()), "grille : barre d'urgences d'en-tête visible");
+    chk(window.__created === 6, "6 marqueurs POI créés (c=" + window.__created + ")");
+    chk(onMapPois().length === 6, "grille : 6 marqueurs POI sur la carte");
+    chk(homeOnMap(), "marqueur du logement présent");
+
+    // 1) Entrée en mode filtré Plage (1 POI) : carte visible SOUS les onglets,
+    //    barre d'urgences retirée, marqueurs = sous-ensemble exact, fitBounds appelé.
+    window.__fit = [];
+    q('.svc-tile[href="#autour/beach"]').click();
+    await wait(160);
+    chk(location.hash === "#autour/beach", "hash #autour/beach (h=" + location.hash + ")");
+    chk(filteredOn(), "mode filtré actif");
+    chk(rendered(mapEl()), "mode filtré : carte RESTE visible (renversement V2-12b)");
+    chk(!rendered(sosBar()), "mode filtré : barre d'urgences d'en-tête masquée (display:none)");
+    chk(JSON.stringify(onMapCats()) === JSON.stringify(["beach"]),
+      "marqueurs = seule la catégorie Plage (" + onMapCats().join(",") + ")");
+    chk(homeOnMap(), "mode filtré : marqueur du logement conservé");
+    chk(window.__fit.length >= 1, "fitBounds appelé à l'entrée (n=" + window.__fit.length + ")");
+    // Catégorie à 1 POI → 2 points (logement + POI) → zoom plafonné.
+    const lastFit = window.__fit[window.__fit.length - 1];
+    chk(lastFit && lastFit.n === 2 && lastFit.maxZoom === 15,
+      "1 POI : recadrage sur 2 points, zoom plafonné à 15 (n=" + (lastFit && lastFit.n) + ", z=" + (lastFit && lastFit.maxZoom) + ")");
+
+    // 2) Retour à la grille : tous les marqueurs restaurés, barre d'urgences revenue.
+    q('.cat[data-cat="beach"] .back-services').click();
+    await wait(160);
+    chk(location.hash === "#autour", "retour → #autour");
+    chk(!filteredOn(), "retour : mode filtré levé");
+    chk(rendered(sosBar()), "retour : barre d'urgences de nouveau visible");
+    chk(onMapPois().length === 6, "retour : 6 marqueurs restaurés (n=" + onMapPois().length + ")");
+
+    // 3) Mode filtré Restaurant (plusieurs POI) : sous-ensemble exact, zoom max 16.
+    window.__fit = [];
+    q('.svc-tile[href="#autour/restaurant"]').click();
+    await wait(160);
+    chk(JSON.stringify(onMapCats()) === JSON.stringify(["restaurant", "restaurant", "restaurant"]),
+      "marqueurs = 3 restaurants exactement (" + onMapCats().join(",") + ")");
+    const rFit = window.__fit[window.__fit.length - 1];
+    chk(rFit && rFit.n === 4 && rFit.maxZoom === 16,
+      "restaurants : recadrage 4 points (logement + 3), zoom max 16 (n=" + (rFit && rFit.n) + ", z=" + (rFit && rFit.maxZoom) + ")");
+    // Sortie propre.
+    location.hash = "#autour";
+    await wait(160);
+
+    // 4) Trois aller-retours Plage ↔ grille : aucun doublon (ni recréation de
+    //    marqueur, ni marqueur résiduel). __created reste à 6, l'ensemble est exact.
+    for (let i = 0; i < 3; i++) {
+      location.hash = "#autour/beach"; await wait(140);
+      location.hash = "#autour"; await wait(140);
+    }
+    chk(window.__created === 6, "après 3 aller-retours : aucune recréation (c=" + window.__created + ")");
+    chk(onMapPois().length === 6, "après 3 aller-retours : 6 marqueurs, pas de doublon (n=" + onMapPois().length + ")");
+    location.hash = "#autour/beach"; await wait(140);
+    chk(JSON.stringify(onMapCats()) === JSON.stringify(["beach"]),
+      "après 3 aller-retours : filtre Plage toujours exact (" + onMapCats().join(",") + ")");
+  } catch (e) {
+    pass = false;
+    log.push("✗ exception : " + (e && e.message ? e.message : e));
+  }
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>
+</body>
+</html>

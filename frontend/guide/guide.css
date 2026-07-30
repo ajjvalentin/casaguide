@@ -86,15 +86,21 @@ html.js .tab-panel.tab-active{display:block}
   box-shadow:0 4px 16px rgba(30,42,50,.22)}
 html.js .back-float.show{display:inline-flex}
 
-/* ── Mode filtré « une catégorie = un écran » (V2-12b) ────────────────────────
-   Le tap sur une tuile de la grille (#autour/{code}) masque la grille, la carte,
-   les puces et tous les blocs sauf la catégorie choisie (+ le titre de son
-   chapitre pour le contexte). Retour à la grille via « ↑ Retour aux services ».
+/* ── Mode filtré « une catégorie = un écran » (V2-12b, carte V2-12e) ──────────
+   Le tap sur une tuile de la grille (#autour/{code}) masque la grille, les puces
+   et tous les blocs sauf la catégorie choisie (+ le titre de son chapitre pour le
+   contexte). Retour à la grille via « ↑ Retour aux services ».
+   V2-12e (renversement du choix V2-12b, qui masquait aussi la carte) : la carte
+   RESTE visible en mode filtré et remonte en tête (sous les onglets, avant la
+   liste — sa place DOM naturelle une fois la grille masquée), recadrée par app.js
+   sur les seuls marqueurs de la catégorie choisie ; en contrepartie la barre
+   d'urgences d'en-tête se retire DANS CE MODE UNIQUEMENT (l'onglet Urgences reste
+   à un tap — info de sécurité jamais retirée ailleurs).
    Amélioration progressive : sans JS la classe `cat-filtered` n'est jamais posée,
    tout reste visible (ancres natives → défilement simple, comportement d'origine). */
 html.js .tab-panel[data-tab="around"].cat-filtered > .svc-grid,
-html.js .tab-panel[data-tab="around"].cat-filtered > #map,
 html.js .tab-panel[data-tab="around"].cat-filtered > .chips{display:none}
+html.js body.cat-filtered .guide-head .sos{display:none}
 html.js .cat-filtered .chapter.chapter-off{display:none}
 /* Dans le chapitre hôte : on ne garde que le titre (h2/chapline) et la catégorie
    choisie ; toute autre contenu (sections, autres catégories) est masqué. */
