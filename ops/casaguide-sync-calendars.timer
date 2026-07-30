@@ -1,0 +1,12 @@
+# Déclencheur périodique de la synchro des flux iCal Holaguia — V2-23a
+# Toutes les 4 h : les plateformes elles-mêmes ne rafraîchissent pas plus vite.
+# Un bouton « Synchroniser maintenant » couvre l'impatience légitime côté UI.
+[Unit]
+Description=Synchro des flux iCal Holaguia (toutes les 4 h)
+
+[Timer]
+OnCalendar=*-*-* 00/4:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

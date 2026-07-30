@@ -1228,3 +1228,229 @@ def get_staff_media(conn, token: str, media_id: str) -> dict | None:
              AND ps.is_visible = TRUE AND t.audience = 'staff'""",
         (media_id, token),
     ).fetchone()
+
+
+# ── Calendrier des séjours (V2-23a) ──────────────────────────────────────────
+#
+# `property_calendars.ical_url_enc` est un secret (chiffré AES par le router) :
+# le repo ne le déchiffre jamais ; il le transporte tel quel (bytea) et c'est
+# l'appelant autorisé qui déchiffre pour synchroniser ou masquer l'affichage.
+
+# Colonnes d'un flux hors URL chiffrée (jamais l'URL en clair dans une réponse).
+_CAL_COLS = ("id, property_id, platform, last_sync_at, last_sync_status, "
+             "sync_error, created_at, updated_at")
+
+
+def list_calendars(conn, property_id: str) -> list[dict]:
+    """Flux d'un logement (sans l'URL chiffrée — affichage masqué côté router)."""
+    return conn.execute(
+        f"SELECT {_CAL_COLS} FROM property_calendars WHERE property_id = %s "
+        "ORDER BY created_at",
+        (property_id,),
+    ).fetchall()
+
+
+def list_calendars_with_url(conn, property_id: str) -> list[dict]:
+    """Flux d'un logement, **URL chiffrée comprise** (synchro « maintenant » de
+    tous les flux du logement). Jamais renvoyé tel quel dans une réponse API."""
+    return conn.execute(
+        f"SELECT {_CAL_COLS}, ical_url_enc FROM property_calendars "
+        "WHERE property_id = %s ORDER BY created_at",
+        (property_id,),
+    ).fetchall()
+
+
+def get_calendar(conn, property_id: str, calendar_id: str) -> dict | None:
+    """Un flux du logement, **URL chiffrée comprise** (pour la synchro)."""
+    return conn.execute(
+        f"SELECT {_CAL_COLS}, ical_url_enc FROM property_calendars "
+        "WHERE id = %s AND property_id = %s",
+        (calendar_id, property_id),
+    ).fetchone()
+
+
+def list_all_calendars(conn) -> list[dict]:
+    """Tous les flux de tous les logements (synchro périodique ops). URL chiffrée
+    incluse — le script la déchiffre pour fetcher, jamais journalisée en clair."""
+    return conn.execute(
+        f"SELECT {_CAL_COLS}, ical_url_enc FROM property_calendars "
+        "ORDER BY property_id, created_at"
+    ).fetchall()
+
+
+def create_calendar(conn, property_id: str, *, platform: str,
+                    ical_url_enc: bytes) -> dict:
+    return conn.execute(
+        f"""INSERT INTO property_calendars (property_id, platform, ical_url_enc)
+            VALUES (%s, %s, %s) RETURNING {_CAL_COLS}""",
+        (property_id, platform, ical_url_enc),
+    ).fetchone()
+
+
+def update_calendar_sync(conn, calendar_id: str, *, status: str,
+                         error: str | None) -> None:
+    """Horodate le résultat d'une synchro (last_sync_at = now, statut, message)."""
+    conn.execute(
+        """UPDATE property_calendars
+           SET last_sync_at = now(), last_sync_status = %s, sync_error = %s,
+               updated_at = now()
+           WHERE id = %s""",
+        (status, error, calendar_id),
+    )
+
+
+def delete_calendar(conn, property_id: str, calendar_id: str) -> bool:
+    """Supprime un flux. Ses séjours ne sont **jamais** supprimés : ils passent
+    d'abord 'cancelled' (conservés, grisés — invariant maison), puis la ligne de
+    flux est retirée (leur `calendar_id` devient NULL via ON DELETE SET NULL)."""
+    row = conn.execute(
+        "SELECT id FROM property_calendars WHERE id = %s AND property_id = %s",
+        (calendar_id, property_id),
+    ).fetchone()
+    if not row:
+        return False
+    conn.execute(
+        "UPDATE bookings SET status = 'cancelled', updated_at = now() "
+        "WHERE calendar_id = %s AND status <> 'cancelled'",
+        (calendar_id,),
+    )
+    conn.execute(
+        "DELETE FROM property_calendars WHERE id = %s AND property_id = %s",
+        (calendar_id, property_id),
+    )
+    return True
+
+
+# ── Séjours ──────────────────────────────────────────────────────────────────
+
+_BOOKING_COLS = ("id, property_id, calendar_id, starts_on, ends_on, "
+                 "checkin_time, checkout_time, source, external_uid, "
+                 "guest_name, guest_contact, notes, status, created_at, updated_at")
+
+# Champs d'un séjour modifiables à la main (jamais écrasés par une synchro).
+_BOOKING_UPDATABLE = ("starts_on", "ends_on", "checkin_time", "checkout_time",
+                      "guest_name", "guest_contact", "notes", "status", "source")
+
+
+def list_bookings(conn, property_id: str) -> list[dict]:
+    """Tous les séjours du logement (annulés compris — le router les replie).
+    Triés par arrivée puis départ (ordre chronologique de la vue « Séjours »)."""
+    return conn.execute(
+        f"SELECT {_BOOKING_COLS} FROM bookings WHERE property_id = %s "
+        "ORDER BY starts_on, ends_on",
+        (property_id,),
+    ).fetchall()
+
+
+def get_booking(conn, property_id: str, booking_id: str) -> dict | None:
+    return conn.execute(
+        f"SELECT {_BOOKING_COLS} FROM bookings "
+        "WHERE id = %s AND property_id = %s",
+        (booking_id, property_id),
+    ).fetchone()
+
+
+def create_booking(conn, property_id: str, data: dict) -> dict:
+    """Saisie directe d'un séjour (jamais rattachée à un flux : calendar_id NULL,
+    external_uid NULL). Les heures NULL signifient « heures standard du logement »."""
+    cols = ("starts_on", "ends_on", "checkin_time", "checkout_time", "source",
+            "guest_name", "guest_contact", "notes", "status")
+    values = [property_id] + [data.get(c) for c in cols]
+    placeholders = ", ".join(["%s"] * (len(cols) + 1))
+    return conn.execute(
+        f"INSERT INTO bookings (property_id, {', '.join(cols)}) "
+        f"VALUES ({placeholders}) RETURNING {_BOOKING_COLS}",
+        values,
+    ).fetchone()
+
+
+def update_booking(conn, property_id: str, booking_id: str,
+                   fields: dict) -> dict | None:
+    """Complète/édite un séjour (nom, contact, heures, notes, statut, dates).
+    Sert notamment à **promouvoir** un import 'blocked' en 'confirmed' (V2-23b :
+    complétion). None si le séjour n'appartient pas au logement."""
+    sets, params = [], []
+    for key in _BOOKING_UPDATABLE:
+        if key in fields:
+            sets.append(f"{key} = %s")
+            params.append(fields[key])
+    if not sets:
+        return get_booking(conn, property_id, booking_id)
+    sets.append("updated_at = now()")
+    params.extend([booking_id, property_id])
+    return conn.execute(
+        f"UPDATE bookings SET {', '.join(sets)} "
+        f"WHERE id = %s AND property_id = %s RETURNING {_BOOKING_COLS}",
+        params,
+    ).fetchone()
+
+
+def delete_booking(conn, property_id: str, booking_id: str) -> str | None:
+    """Retire un séjour. Une **saisie directe** (aucun flux) est réellement
+    supprimée ; un séjour **importé** est conservé et passé 'cancelled' (il
+    reviendrait de toute façon à la prochaine synchro — invariant maison).
+    Renvoie 'deleted' | 'cancelled', ou None si le séjour est introuvable."""
+    row = conn.execute(
+        "SELECT calendar_id, external_uid FROM bookings "
+        "WHERE id = %s AND property_id = %s",
+        (booking_id, property_id),
+    ).fetchone()
+    if not row:
+        return None
+    is_direct = row["calendar_id"] is None and row["external_uid"] is None
+    if is_direct:
+        conn.execute("DELETE FROM bookings WHERE id = %s", (booking_id,))
+        return "deleted"
+    conn.execute(
+        "UPDATE bookings SET status = 'cancelled', updated_at = now() "
+        "WHERE id = %s", (booking_id,))
+    return "cancelled"
+
+
+# ── Upsert de synchronisation (idempotent par UID iCal) ──────────────────────
+
+def upsert_imported_booking(conn, *, property_id: str, calendar_id: str,
+                            source: str, external_uid: str,
+                            starts_on, ends_on, status: str) -> bool:
+    """Insère ou met à jour un séjour importé, clé (calendar_id, external_uid).
+
+    Idempotent (invariant 2 de la mission) : re-synchroniser N fois ne crée aucun
+    doublon. Sur conflit, seules les **dates** sont rafraîchies — les champs
+    saisis à la main (nom, contact, heures, notes) ne sont **jamais** écrasés. Le
+    `status` n'est pas non plus rétrogradé : une promotion manuelle 'blocked' →
+    'confirmed' survit ; un séjour qui avait disparu ('cancelled') et qui
+    **réapparaît** dans le flux est en revanche réactivé (statut du flux).
+
+    Renvoie True si un séjour a été **créé**, False s'il a été mis à jour."""
+    row = conn.execute(
+        f"""INSERT INTO bookings (property_id, calendar_id, source, external_uid,
+                                  starts_on, ends_on, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (calendar_id, external_uid)
+              WHERE calendar_id IS NOT NULL AND external_uid IS NOT NULL
+            DO UPDATE SET
+                starts_on = EXCLUDED.starts_on,
+                ends_on   = EXCLUDED.ends_on,
+                status    = CASE WHEN bookings.status = 'cancelled'
+                                 THEN EXCLUDED.status ELSE bookings.status END,
+                updated_at = now()
+            RETURNING (xmax = 0) AS inserted""",
+        (property_id, calendar_id, source, external_uid, starts_on, ends_on,
+         status),
+    ).fetchone()
+    return bool(row["inserted"])
+
+
+def cancel_missing_bookings(conn, calendar_id: str,
+                            seen_uids: list[str]) -> int:
+    """Passe 'cancelled' les séjours de ce flux dont l'UID n'est **plus** présent
+    dans la dernière synchro (annulation côté plateforme). Conservés, jamais
+    supprimés. Renvoie le nombre de séjours annulés."""
+    row = conn.execute(
+        """UPDATE bookings SET status = 'cancelled', updated_at = now()
+           WHERE calendar_id = %s AND status <> 'cancelled'
+             AND NOT (external_uid = ANY(%s))
+           RETURNING id""",
+        (calendar_id, seen_uids),
+    ).fetchall()
+    return len(row)

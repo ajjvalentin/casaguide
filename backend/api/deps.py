@@ -213,6 +213,21 @@ def get_poi_searcher() -> NominatimSearcher:
     return _default_poi_searcher
 
 
+# ── Récupération des flux iCal (calendrier des séjours, V2-23a) ──────────────
+
+# (url) -> texte du flux iCal. Appel réseau sortant (serveur → plateforme) :
+# injectable pour tester la synchro sans réseau.
+CalendarFetcher = Callable[[str], str]
+
+
+def get_calendar_fetcher() -> CalendarFetcher:
+    """Fetch iCal réel (httpx, timeout court, User-Agent). Surchargé dans les
+    tests par un fetcher qui renvoie un flux iCal en dur
+    (app.dependency_overrides[get_calendar_fetcher])."""
+    from . import calendars
+    return calendars.fetch_ical
+
+
 # ── Envoi d'emails transactionnels (V2-08, injectable pour les tests) ────────
 
 def build_mailer() -> _mailer.Mailer:

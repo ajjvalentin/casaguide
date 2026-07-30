@@ -1,0 +1,165 @@
+"""Moteur de synchronisation des flux iCal du calendrier des séjours (V2-23a).
+
+Nouveau flux réseau **sortant** (serveur → plateformes), le premier régulier hors
+OSM / Claude / Stripe / SMTP. Règles (invariant 3 de la mission) : timeout court,
+User-Agent propre, suivi des redirections, et **jamais bloquant** — l'échec d'un
+flux enregistre son erreur (`last_sync_status='error'`, `sync_error`) sans jamais
+faire remonter d'exception ni empêcher la synchro des autres flux.
+
+Chaîne : `fetch_ical(url)` (réseau) → `ical.parse_events(text)` (pur) → upsert par
+UID (`repo`, idempotent) → séjours disparus passés 'cancelled'. La fonction de
+fetch est **injectable** (`deps.get_calendar_fetcher`) → tests sans réseau.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Callable
+
+import httpx
+
+from enrich.settings import settings
+
+from . import crypto, ical, repo
+
+log = logging.getLogger("casaguide.calendars")
+
+# Fetch iCal : (url) -> texte du flux. Défaut ci-dessous ; injecté dans les tests.
+CalendarFetcher = Callable[[str], str]
+
+# Timeout court : une plateforme lente ne doit pas bloquer la synchro (inv. 3).
+FETCH_TIMEOUT_S = 10.0
+# Garde-fou taille : un flux iCal légitime pèse quelques dizaines de Ko ; au-delà,
+# on refuse (réponse anormale, page d'erreur HTML volumineuse…).
+MAX_ICAL_BYTES = 5 * 1024 * 1024
+
+
+@dataclass
+class SyncResult:
+    """Bilan d'une synchro de flux (retourné à l'UI « X séjours importés »)."""
+    status: str = "ok"                 # 'ok' | 'error'
+    error: str | None = None
+    created: int = 0
+    updated: int = 0
+    cancelled: int = 0
+    total: int = 0                     # nombre d'événements lus dans le flux
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+    def as_dict(self) -> dict:
+        return {"status": self.status, "error": self.error,
+                "created": self.created, "updated": self.updated,
+                "cancelled": self.cancelled, "total": self.total}
+
+
+def fetch_ical(url: str, client: httpx.Client | None = None) -> str:
+    """Récupère le texte d'un flux iCal. Timeout court, User-Agent propre, suit
+    les redirections (les plateformes redirigent souvent vers un CDN). Lève sur
+    erreur réseau/HTTP — le moteur (`sync_calendar`) attrape et enregistre."""
+    own = client is None
+    client = client or httpx.Client(timeout=FETCH_TIMEOUT_S, follow_redirects=True)
+    try:
+        resp = client.get(url, headers={"User-Agent": settings.user_agent})
+        resp.raise_for_status()
+        raw = resp.content
+        if len(raw) > MAX_ICAL_BYTES:
+            raise ValueError("flux iCal anormalement volumineux")
+        return raw.decode("utf-8", errors="replace")
+    finally:
+        if own:
+            client.close()
+
+
+def sync_calendar(conn, calendar: dict, *, fetch: CalendarFetcher) -> SyncResult:
+    """Synchronise **un** flux (déjà chargé, `ical_url_enc` compris).
+
+    Non bloquant : toute erreur (réseau, HTTP, flux illisible) est enregistrée sur
+    le flux et renvoyée dans `SyncResult` — jamais propagée. Idempotent : upsert
+    par UID, aucun doublon ; les séjours disparus du flux passent 'cancelled'.
+    """
+    calendar_id = str(calendar["id"])
+    property_id = str(calendar["property_id"])
+    source = calendar["platform"]
+    try:
+        url = crypto.decrypt(calendar["ical_url_enc"])
+        text = fetch(url)
+        events = ical.parse_events(text)
+    except Exception as exc:  # noqa: BLE001 — inv. 3 : jamais bloquant
+        msg = _short_error(exc)
+        log.warning("Synchro du flux %s échouée : %s", calendar_id, msg)
+        repo.update_calendar_sync(conn, calendar_id, status="error", error=msg)
+        return SyncResult(status="error", error=msg)
+
+    created = updated = 0
+    seen: list[str] = []
+    for ev in events:
+        seen.append(ev.uid)
+        inserted = repo.upsert_imported_booking(
+            conn, property_id=property_id, calendar_id=calendar_id,
+            source=source, external_uid=ev.uid,
+            starts_on=ev.starts_on, ends_on=ev.ends_on, status=ev.status)
+        created += int(inserted)
+        updated += int(not inserted)
+    cancelled = repo.cancel_missing_bookings(conn, calendar_id, seen)
+    repo.update_calendar_sync(conn, calendar_id, status="ok", error=None)
+    return SyncResult(status="ok", created=created, updated=updated,
+                      cancelled=cancelled, total=len(events))
+
+
+def sync_property(conn, property_id: str, *,
+                  fetch: CalendarFetcher) -> list[SyncResult]:
+    """Synchronise **tous** les flux d'un logement. L'échec de l'un n'empêche
+    jamais les autres (inv. 3)."""
+    results = []
+    for cal in repo.list_calendars_with_url(conn, property_id):
+        results.append(sync_calendar(conn, cal, fetch=fetch))
+    return results
+
+
+@dataclass
+class SyncAllReport:
+    calendars: int = 0
+    ok: int = 0
+    errors: int = 0
+    created: int = 0
+    updated: int = 0
+    cancelled: int = 0
+    failures: list[str] = field(default_factory=list)   # ids de flux en erreur
+
+
+def sync_all(conn, *, fetch: CalendarFetcher = fetch_ical,
+             commit_each: bool = True) -> SyncAllReport:
+    """Synchronise tous les flux de tous les logements (timer périodique).
+
+    `commit_each` : commit après chaque flux → un flux lent/en échec ne fait pas
+    perdre le travail des précédents (chaque flux est indépendant, inv. 3)."""
+    report = SyncAllReport()
+    for cal in repo.list_all_calendars(conn):
+        report.calendars += 1
+        res = sync_calendar(conn, cal, fetch=fetch)
+        if commit_each:
+            conn.commit()
+        if res.ok:
+            report.ok += 1
+            report.created += res.created
+            report.updated += res.updated
+            report.cancelled += res.cancelled
+        else:
+            report.errors += 1
+            report.failures.append(str(cal["id"]))
+    return report
+
+
+def _short_error(exc: Exception) -> str:
+    """Message d'erreur court et sûr (jamais l'URL — c'est un secret, inv. 1)."""
+    if isinstance(exc, ical.ICalError):
+        return "Flux illisible : ce lien ne renvoie pas un calendrier iCal valide."
+    if isinstance(exc, httpx.TimeoutException):
+        return "Délai dépassé en contactant la plateforme."
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"La plateforme a répondu {exc.response.status_code}."
+    if isinstance(exc, httpx.HTTPError):
+        return "Impossible de contacter la plateforme (erreur réseau)."
+    return "Synchronisation impossible."

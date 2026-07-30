@@ -1,0 +1,21 @@
+# Synchronisation des flux iCal du calendrier des séjours Holaguia — V2-23a
+# Déclenchée par casaguide-sync-calendars.timer (toutes les 4 h).
+# Installation :
+#   sudo cp /opt/casaguide/ops/casaguide-sync-calendars.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-sync-calendars.timer
+#   (vérifier : systemctl list-timers | grep sync-calendars ; test manuel :
+#    sudo -u casaguide /opt/casaguide/.venv/bin/python \
+#        /opt/casaguide/ops/sync_calendars.py --dry-run)
+[Unit]
+Description=Synchronisation des flux iCal Holaguia (calendrier des séjours)
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=casaguide
+Group=casaguide
+# EnvironmentFile facultatif : le script charge aussi backend/.env lui-même (OPS-1).
+EnvironmentFile=-/opt/casaguide/backend/.env
+WorkingDirectory=/opt/casaguide/backend
+ExecStart=/opt/casaguide/.venv/bin/python /opt/casaguide/ops/sync_calendars.py

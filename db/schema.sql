@@ -111,6 +111,9 @@ CREATE TABLE properties (
     contact_backup   TEXT,                         -- contact de secours (voisin…)
     -- Réglementaire (§4.I)
     tourism_license  TEXT,                         -- n° VT/VUT en Espagne
+    -- Heures standard du calendrier des séjours (V2-23a) — NULL sur un séjour = ces heures
+    default_checkin_time  TIME NOT NULL DEFAULT '15:00',
+    default_checkout_time TIME NOT NULL DEFAULT '10:00',
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -136,6 +139,52 @@ CREATE TABLE property_members (
     role        TEXT NOT NULL DEFAULT 'editor',    -- editor | viewer
     PRIMARY KEY (property_id, owner_id)
 );
+
+-- Calendrier des séjours (V2-23a) — voir db/migrations/014_calendar.sql pour le détail.
+-- Flux iCal du logement (multi-flux). `ical_url_enc` est un SECRET (chiffré AES,
+-- même régime que le wifi) : l'URL iCal donne accès au calendrier complet du bien.
+CREATE TABLE property_calendars (
+    id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    property_id      UUID NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    platform         TEXT NOT NULL DEFAULT 'other'
+                     CHECK (platform IN ('airbnb', 'vrbo', 'booking', 'other')),
+    ical_url_enc     BYTEA NOT NULL,               -- URL iCal chiffrée (secret)
+    last_sync_at     TIMESTAMPTZ,
+    last_sync_status TEXT,                          -- 'ok' | 'error' | NULL
+    sync_error       TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_calendars_property ON property_calendars(property_id);
+
+-- Séjours (importés par UID iCal ou saisis directement). Intervalle semi-ouvert
+-- [starts_on, ends_on) : ends_on = jour du départ ; deux séjours qui se touchent
+-- (départ = arrivée) ne se chevauchent pas (rotation). Un import disparu → 'cancelled'
+-- (jamais supprimé). Les champs manuels (nom/contact/heures/notes) ne sont jamais
+-- écrasés par une sync ; idempotence par (calendar_id, external_uid).
+CREATE TABLE bookings (
+    id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    property_id   UUID NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    calendar_id   UUID REFERENCES property_calendars(id) ON DELETE SET NULL,
+    starts_on     DATE NOT NULL,                    -- arrivée
+    ends_on       DATE NOT NULL,                    -- départ (exclusif : dernière nuit = ends_on - 1)
+    checkin_time  TIME,                             -- NULL = heure standard du logement
+    checkout_time TIME,                             -- NULL = heure standard du logement
+    source        TEXT NOT NULL DEFAULT 'direct'
+                  CHECK (source IN ('airbnb', 'vrbo', 'booking', 'direct', 'other')),
+    external_uid  TEXT,                             -- UID iCal (NULL si saisie directe)
+    guest_name    TEXT,
+    guest_contact TEXT,
+    notes         TEXT,
+    status        TEXT NOT NULL DEFAULT 'confirmed'
+                  CHECK (status IN ('confirmed', 'blocked', 'cancelled')),
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_bookings_property ON bookings(property_id);
+CREATE INDEX idx_bookings_property_dates ON bookings(property_id, starts_on, ends_on);
+CREATE UNIQUE INDEX idx_bookings_calendar_uid ON bookings(calendar_id, external_uid)
+    WHERE calendar_id IS NOT NULL AND external_uid IS NOT NULL;
 
 -- ============================================================================
 -- 3. STRUCTURE DU GUIDE — sections pré-définies (§4)
