@@ -203,6 +203,10 @@ function initTabs() {
       t.setAttribute("aria-selected", on ? "true" : "false");
     });
     panels.forEach((p) => p.classList.toggle("tab-active", p.dataset.tab === tabKey));
+    // V2-12f : classe d'onglet au niveau body → l'onglet Urgences masque la barre
+    // SOS d'en-tête (doublon avec les cartes du contenu). Même mécanique que
+    // `body.cat-filtered` (V2-12e). Les autres onglets gardent la barre.
+    Object.values(TAB_HASH).forEach((h) => document.body.classList.toggle("tab-" + h, h === TAB_HASH[tabKey]));
     if (push) {
       const h = "#" + TAB_HASH[tabKey];
       if (location.hash !== h) history.pushState(null, "", h);

@@ -101,6 +101,10 @@ html.js .back-float.show{display:inline-flex}
 html.js .tab-panel[data-tab="around"].cat-filtered > .svc-grid,
 html.js .tab-panel[data-tab="around"].cat-filtered > .chips{display:none}
 html.js body.cat-filtered .guide-head .sos{display:none}
+/* V2-12f : sur l'onglet Urgences, la barre SOS d'en-tête ferait doublon avec les
+   cartes du contenu (qui SONT le contenu de l'onglet) → on la retire ICI seulement.
+   Sans JS, `body.tab-urgences` n'est jamais posée → tout reste visible (noscript). */
+html.js body.tab-urgences .guide-head .sos{display:none}
 html.js .cat-filtered .chapter.chapter-off{display:none}
 /* Dans le chapitre hôte : on ne garde que le titre (h2/chapline) et la catégorie
    choisie ; toute autre contenu (sections, autres catégories) est masqué. */
