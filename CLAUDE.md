@@ -53,6 +53,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
 | Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v15) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}`. **Lisibilité (V2-09) faite** : TROIS onglets (Le logement / Urgences / Autour de vous, état dans le hash, `app.js initTabs`) + listes de lieux repliées (4 + « Voir les N autres », `initCategoryLists`) |
+| Calendrier des séjours (V2-23a) | **Volet 1+2 faits** — migration 014 (`bookings`, `property_calendars` avec `ical_url_enc` chiffrée, heures standard `properties.default_checkin/checkout_time`). Parser iCal pur `api/ical.py` (DTSTART/DTEND dates & datetimes, DTEND exclusif, heuristique blocked). Moteur `api/calendars.py` (fetch httpx timeout/UA/redirections/non-bloquant ; upsert idempotent par UID ; disparu→cancelled ; champs manuels & promotion préservés ; overlaps/rotations purs ; `mask_url`). Fetch injectable (`deps.get_calendar_fetcher`). API `routers/calendars.py` (`GET /calendar` vue complète, CRUD `/bookings`, `/calendars` avec validation au collage, `DELETE` flux→cancel, `POST /calendar/sync` rate-limité). Front `js/views/calendar.js` (liste chronologique, badges, alerte chevauchement, rotations, blocs à compléter, annulés repliés, flux masqués + ajout/synchro/suppression). Bouton « Calendrier » (carte + porte staff), route `#/properties/:id/calendrier`. Ops `sync_calendars.py` + timer systemd 4 h. Testé (parser + moteur + API intégration + headless `calendar.test.mjs`). **Reste V2-23b** : demandes particulières/catalogue, welcome pack, règles d'entretien, interventions calculées, **planning staff dans `/s/`** avec gating Pro |
 
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
 
@@ -187,6 +188,25 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
     **purement informatives** : l'accès aux quotas ne dépend QUE de `plan_id`
     (un downgrade programmé garde l'accès Pro jusqu'à la bascule ; l'excédent
     devient alors lecture seule, jamais supprimé — inv. 8).
+13. **Calendrier des séjours (V2-23a)** : une **URL iCal est un secret** (elle
+    donne accès au calendrier complet du bien) → chiffrée AES en base
+    (`property_calendars.ical_url_enc`, même régime que le wifi), jamais en clair
+    dans les réponses (affichage `mask_url`) ni les logs. **Idempotence des
+    imports par (calendar_id, external_uid)** : re-synchroniser N fois = zéro
+    doublon ; un événement disparu du flux passe `cancelled` (conservé, **jamais
+    supprimé**) et **réapparaît** réactivé. Une sync ne rafraîchit que les
+    **dates** : les champs saisis à la main (nom, contact, heures, notes) et une
+    **promotion manuelle** `blocked`→`confirmed` ne sont **jamais** écrasés. Le
+    fetch iCal est le **premier flux réseau sortant régulier** hors
+    OSM/Claude/Stripe/SMTP (`api/calendars.fetch_ical`) : timeout court (10 s),
+    User-Agent propre, suivi des redirections, et **jamais bloquant** — l'échec
+    d'un flux est enregistré sur le flux (`last_sync_status='error'`, `sync_error`)
+    sans empêcher les autres. L'anti-chevauchement **alerte, ne bloque jamais**
+    (le propriétaire arbitre) ; les séjours sont modélisés en intervalle
+    **semi-ouvert** `[arrivée, départ)` → deux séjours qui se touchent (départ =
+    arrivée le même jour) ne se chevauchent pas : c'est une **rotation** (fenêtre
+    horaire calculée avec les heures effectives). Le fetch est **injectable**
+    (`deps.get_calendar_fetcher`) → tests sans réseau.
 
 ## Commandes
 
@@ -205,6 +225,7 @@ psql -d casaguide -f db/migrations/010_trial_reminders.sql # reminder_7d/2d_sent
 psql -d casaguide -f db/migrations/011_grille_addons_staff.sql # add-on + staff_grandfathered (grille V2-18b)
 psql -d casaguide -f db/migrations/012_scheduled_plan_change.sql # downgrade programmé (scheduled_plan_id/_change_at, V2-18e)
 psql -d casaguide -f db/migrations/013_poi_travel_mode.sql # mode de trajet par catégorie (poi_categories.travel_mode, V2-24)
+psql -d casaguide -f db/migrations/014_calendar.sql # calendrier des séjours : bookings + property_calendars + heures standard (V2-23a)
 
 # Backend
 cd backend
@@ -856,6 +877,25 @@ exposé, peer auth).
   mise en page se fait à la largeur du `.wrap` (680px) → un « débordement » apparent
   à 390px est un **artefact du screenshot**, pas un bug (vérifier à 900px : colonne
   centrée propre).
+- Calendrier des séjours (V2-23a) : le parser iCal (`api/ical.py`) est **pur**
+  (aucun réseau) ; le fetch (`api/calendars.fetch_ical`) est le seul point réseau
+  et il est **injecté** (`deps.get_calendar_fetcher`) → toute la synchro se teste
+  sans sortir (fakes dans `test_calendars.py`/`test_calendar_api.py`). **Sémantique
+  de dates** : `ends_on` = jour du **départ** (= DTEND, exclusif pour les VEVENT
+  journée entière) ; toute logique de chevauchement/rotation raisonne en intervalle
+  **semi-ouvert** `[starts_on, ends_on)` — ne jamais la refaire en jours inclusifs
+  (une rotation deviendrait un faux chevauchement). L'upsert de synchro ne touche
+  QUE `starts_on`/`ends_on` (et réactive un `cancelled` qui réapparaît) : le
+  `status` d'un séjour non annulé et les champs manuels survivent — **ne jamais**
+  ajouter `guest_name`/`checkin_time`/`status` au `DO UPDATE SET` de
+  `upsert_imported_booking`, sinon une promotion ou une complétion manuelle serait
+  écrasée à la prochaine sync. `mask_url` masque l'URL iCal (secret) : ne jamais
+  renvoyer `ical_url_enc` ni l'URL déchiffrée dans une réponse (`list_calendars`
+  n'expose pas la colonne ; le router mask via `list_calendars_with_url`). Le
+  bouton « Synchroniser maintenant » est rate-limité (cooldown 20 s, `429`) :
+  l'ajout d'un flux synchronise déjà → un sync-now immédiat après ajout **répond
+  429** (attendu). Timer systemd toutes les 4 h (`ops/sync_calendars.py` +
+  `casaguide-sync-calendars.{service,timer}`, patron opsenv/OPS-1).
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 
