@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- Harnais headless de MISE EN PAGE (V2-12d) : rangées de puces du guide voyageur
+     en viewport étroit (~375 px). Contrairement à guide-nav-harness (qui éprouve la
+     LOGIQUE sans guide.css), celui-ci CHARGE la vraie /frontend/guide/guide.css et
+     MESURE le rendu : les puces cuisine aux libellés longs doivent WRAPPER (retour à
+     la ligne) sans déborder l'écran ni rogner les libellés. Représentatif (leçon
+     V2-18c) : on lit le rendu réellement mis en page (getComputedStyle + scrollWidth/
+     offsetTop), jamais des classes. Lancé en fenêtre 375 px par guide-chips.test.mjs. -->
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>guide-chips-harness</title>
+  <link rel="stylesheet" href="/frontend/guide/guide.css">
+</head>
+<body>
+<!-- Cadre « téléphone » à largeur fixe 375 px : mesures déterministes,
+     indépendantes de la largeur réelle de la fenêtre headless (Chrome
+     headless=new borne innerWidth ~500 px quel que soit --window-size). Le
+     .wrap garde son padding 0 16px → colonne de contenu ≈ 343 px, fidèle à un
+     iPhone en portrait. -->
+<div id="phone" style="width:375px">
+<div class="wrap">
+  <!-- Sélecteur de langue (même patron : doit wrapper, jamais rogner). -->
+  <nav class="langs" aria-label="Langue">
+    <a class="lang on">FR</a><a class="lang">EN</a><a class="lang">ES</a>
+  </nav>
+
+  <!-- Puces cuisine avec libellés RÉELS observés en prod (constat André 28/07) :
+       une rangée qui débordait l'écran, libellés coupés en pleine lettre. -->
+  <div class="cuisines" data-cat="restaurant" aria-label="Filtrer par cuisine">
+    <button class="cchip on" data-cuisine="">Tout</button>
+    <button class="cchip" data-cuisine="asian">Asiatique</button>
+    <button class="cchip" data-cuisine="spanish_fine">Espagnole haut de gamme</button>
+    <button class="cchip" data-cuisine="mixology">Modern, international cuisine and mixology</button>
+    <button class="cchip" data-cuisine="italian">Italien</button>
+    <button class="cchip" data-cuisine="seafood">Fruits de mer</button>
+  </div>
+</div>
+</div>
+
+<pre id="result">PENDING</pre>
+
+<script type="module">
+  const log = [];
+  let pass = true;
+  const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+
+  try {
+    // Cadre téléphone à largeur fixe (mesures déterministes, cf. commentaire HTML).
+    const phone = document.querySelector("#phone");
+    chk(phone.getBoundingClientRect().width <= 400,
+      "cadre téléphone étroit (w=" + Math.round(phone.getBoundingClientRect().width) + ")");
+
+    const cuisines = document.querySelector(".cuisines");
+    const chips = [...cuisines.querySelectorAll(".cchip")];
+
+    // 1) Le conteneur wrappe (patron V2-12d), plus de défilement horizontal.
+    const cs = getComputedStyle(cuisines);
+    chk(cs.flexWrap === "wrap", "flex-wrap:wrap sur .cuisines (v=" + cs.flexWrap + ")");
+    chk(cs.overflowX !== "auto" && cs.overflowX !== "scroll",
+      "pas de défilement horizontal sur .cuisines (overflow-x=" + cs.overflowX + ")");
+
+    // 2) La rangée ne déborde pas de son conteneur (aucun contenu masqué à droite).
+    chk(cuisines.scrollWidth <= cuisines.clientWidth + 1,
+      "rangée cuisine sans débordement (scroll=" + cuisines.scrollWidth + " client=" + cuisines.clientWidth + ")");
+
+    // 3) Le contenu ne déborde pas du cadre téléphone (pas de scroll horizontal).
+    chk(phone.scrollWidth <= phone.clientWidth + 1,
+      "colonne sans débordement horizontal (scroll=" + phone.scrollWidth + " client=" + phone.clientWidth + ")");
+
+    // 4) Toutes les puces sont visibles ET dans les bornes du conteneur (rien de rogné).
+    const box = cuisines.getBoundingClientRect();
+    const allInside = chips.every((c) => {
+      const r = c.getBoundingClientRect();
+      return r.width > 0 && r.left >= box.left - 1 && r.right <= box.right + 1;
+    });
+    chk(allInside, "toutes les puces visibles et dans les bornes (n=" + chips.length + ")");
+
+    // 5) Preuve du retour à la ligne : les 6 puces (dont un très long libellé)
+    //    occupent plusieurs lignes → au moins deux valeurs distinctes d'offsetTop.
+    const tops = new Set(chips.map((c) => c.offsetTop));
+    chk(tops.size >= 2, "les puces s'étalent sur plusieurs lignes (lignes=" + tops.size + ")");
+
+    // 6) Le sélecteur de langue suit le même patron (wrap).
+    chk(getComputedStyle(document.querySelector(".langs")).flexWrap === "wrap",
+      "flex-wrap:wrap sur .langs (même patron)");
+  } catch (e) {
+    pass = false;
+    log.push("✗ exception : " + (e && e.message ? e.message : e));
+  }
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>
+</body>
+</html>

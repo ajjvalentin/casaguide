@@ -26,7 +26,9 @@ a{color:var(--sea);text-decoration:none}
 h1{font-family:Fraunces,serif;font-weight:700;font-size:clamp(28px,7vw,36px);margin:.12em 0 .05em}
 .city{color:var(--muted);font-size:15px}
 
-.langs{display:flex;gap:6px;flex:none}
+/* V2-12d : même patron que les puces cuisine — la rangée wrappe plutôt que de
+   rogner (le sélecteur reste court, mais on aligne le comportement). */
+.langs{display:flex;flex-wrap:wrap;gap:6px;flex:none}
 .lang{display:inline-flex;align-items:center;text-decoration:none;
       border:1px solid var(--line);background:var(--shell);border-radius:999px;
       padding:5px 11px;font:inherit;font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer}
@@ -222,8 +224,12 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .cuisine-tag{display:inline-block;margin-left:8px;vertical-align:middle;font-size:11px;
              font-weight:600;letter-spacing:.02em;color:var(--sea);background:#EAF3F6;
              border-radius:999px;padding:1px 9px;text-transform:none}
-/* Puces de filtre par cuisine (M-16) : plus discrètes que les chips de chapitre. */
-.cuisines{display:flex;gap:7px;overflow-x:auto;padding:2px 0 8px;-webkit-overflow-scrolling:touch}
+/* Puces de filtre par cuisine (M-16) : plus discrètes que les chips de chapitre.
+   V2-12d : retour à la ligne (flex-wrap) plutôt qu'un défilement horizontal qui
+   rognait les libellés longs sur mobile (cuisines OSM libres : « Modern,
+   international cuisine and mixology »). La rangée wrappe ; chaque puce garde sa
+   forme (white-space:nowrap ci-dessous). */
+.cuisines{display:flex;flex-wrap:wrap;gap:7px;padding:2px 0 8px}
 .cchip{border:1px solid var(--line);background:var(--shell);border-radius:999px;
        padding:4px 12px;font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;
        white-space:nowrap;flex:none;color:var(--ink)}
