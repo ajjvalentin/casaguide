@@ -76,6 +76,8 @@ export async function renderProperties(view) {
       // Actions secondaires (jamais dominantes) : suggestions, enrichissement,
       // aperçu, fiche, suppression.
       el("div", { class: "actions" },
+        el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${p.id}/calendrier`) },
+          icon("calendar-days", 16), "Calendrier"),
         el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${p.id}/pois`) },
           icon("map-pin-check", 16), "Suggestions"),
         el("button", { class: "btn btn-sm", onClick: () => reEnrich(p) },

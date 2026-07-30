@@ -1,7 +1,7 @@
 """Schémas Pydantic (validation des requêtes / forme des réponses)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time
 from typing import Any, Literal
 from uuid import UUID
 
@@ -218,6 +218,9 @@ class PropertyUpdate(BaseModel):
     contact_email: str | None = None
     contact_backup: str | None = None
     tourism_license: str | None = None
+    # Heures standard du calendrier des séjours (V2-23a)
+    default_checkin_time: time | None = None
+    default_checkout_time: time | None = None
     # Placement manuel du point sur la carte (§5.1 : le propriétaire corrige le géocodage)
     lat: float | None = Field(default=None, ge=-90, le=90)
     lon: float | None = Field(default=None, ge=-180, le=180)
@@ -248,6 +251,8 @@ class PropertyOut(BaseModel):
     contact_email: str | None = None
     contact_backup: str | None = None
     tourism_license: str | None = None
+    default_checkin_time: time | None = None
+    default_checkout_time: time | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -407,3 +412,125 @@ class JobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+# ── Calendrier des séjours (V2-23a) ──────────────────────────────────────────
+
+_Platform = Literal["airbnb", "vrbo", "booking", "other"]
+_Source = Literal["airbnb", "vrbo", "booking", "direct", "other"]
+_BookingStatus = Literal["confirmed", "blocked", "cancelled"]
+
+
+class CalendarIn(BaseModel):
+    """Ajout d'un flux iCal (validation immédiate au collage)."""
+    platform: _Platform = "other"
+    ical_url: str = Field(min_length=8, max_length=2000)
+
+
+class CalendarOut(BaseModel):
+    """Vue d'un flux : URL **masquée** (jamais l'URL en clair — c'est un secret)."""
+    id: UUID
+    platform: str
+    masked_url: str
+    last_sync_at: datetime | None = None
+    last_sync_status: str | None = None
+    sync_error: str | None = None
+    created_at: datetime
+
+
+class SyncResultOut(BaseModel):
+    status: str
+    error: str | None = None
+    created: int = 0
+    updated: int = 0
+    cancelled: int = 0
+    total: int = 0
+
+
+class CalendarCreateOut(BaseModel):
+    """Réponse au collage d'une URL : le flux créé + le bilan de la 1re synchro."""
+    calendar: CalendarOut
+    sync: SyncResultOut
+
+
+class SyncNowOut(BaseModel):
+    """Bilan agrégé d'un « Synchroniser maintenant » (tous les flux du logement)."""
+    calendars: int
+    ok: int
+    errors: int
+    created: int
+    updated: int
+    cancelled: int
+
+
+class BookingIn(BaseModel):
+    """Saisie directe d'un séjour."""
+    starts_on: date
+    ends_on: date
+    checkin_time: time | None = None
+    checkout_time: time | None = None
+    source: _Source = "direct"
+    guest_name: str | None = Field(default=None, max_length=200)
+    guest_contact: str | None = Field(default=None, max_length=200)
+    notes: str | None = None
+    status: Literal["confirmed", "blocked"] = "confirmed"
+
+
+class BookingUpdate(BaseModel):
+    """Complétion / édition d'un séjour (tous champs optionnels). Sert aussi à
+    promouvoir un import 'blocked' en 'confirmed'."""
+    starts_on: date | None = None
+    ends_on: date | None = None
+    checkin_time: time | None = None
+    checkout_time: time | None = None
+    guest_name: str | None = Field(default=None, max_length=200)
+    guest_contact: str | None = Field(default=None, max_length=200)
+    notes: str | None = None
+    status: _BookingStatus | None = None
+
+
+class BookingOut(BaseModel):
+    id: UUID
+    calendar_id: UUID | None = None
+    starts_on: date
+    ends_on: date
+    checkin_time: time | None = None          # NULL = heure standard héritée
+    checkout_time: time | None = None
+    eff_checkin_time: time                     # heure effective (héritée ou ajustée)
+    eff_checkout_time: time
+    source: str
+    external_uid: str | None = None
+    is_direct: bool                            # saisie directe (éditable/supprimable)
+    guest_name: str | None = None
+    guest_contact: str | None = None
+    notes: str | None = None
+    status: str
+
+
+class OverlapOut(BaseModel):
+    """Deux séjours confirmés qui se recouvrent (alerte, jamais un blocage)."""
+    a: UUID
+    b: UUID
+
+
+class RotationOut(BaseModel):
+    """Rotation même jour : un départ puis une arrivée, avec la fenêtre de prépa."""
+    on: date
+    departing: UUID
+    arriving: UUID
+    gap_minutes: int
+
+
+class CalendarViewOut(BaseModel):
+    """Charge complète de la vue « Séjours » : un seul appel pour tout rendre."""
+    property_id: UUID
+    default_checkin_time: time
+    default_checkout_time: time
+    calendars: list[CalendarOut] = []
+    bookings: list[BookingOut] = []
+    overlaps: list[OverlapOut] = []
+    rotations: list[RotationOut] = []
+
+
+class DeleteBookingOut(BaseModel):
+    outcome: str          # 'deleted' (saisie directe) | 'cancelled' (importé)

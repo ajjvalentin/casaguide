@@ -210,7 +210,10 @@ export async function renderEditor(view, pid, context) {
         el("div", { class: "row", style: { gap: "6px", flexWrap: "wrap", marginTop: "6px" } }, copy,
           el("a", { class: "btn btn-sm", href: `/s/${property.staff_token}`, target: "_blank", rel: "noopener" }, icon("external-link", 15), "Ouvrir"),
           el("button", { class: "btn btn-sm", type: "button", onClick: () => openStaffShareMenu(property) },
-            icon("qr-code", 15), "QR"))));
+            icon("qr-code", 15), "QR"),
+          // Le calendrier des séjours nourrit la préparation de l'équipe (V2-23a).
+          el("button", { class: "btn btn-sm", type: "button", onClick: () => navigate(`#/properties/${pid}/calendrier`) },
+            icon("calendar-days", 15), "Calendrier"))));
   }
 
   function refreshMeter() {

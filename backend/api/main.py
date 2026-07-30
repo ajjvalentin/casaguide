@@ -17,7 +17,8 @@ from enrich import db as enrich_db
 from . import repo
 from .assets import RevalidatingStaticFiles, versioned
 from .config import missing_production_config, settings
-from .routers import auth, billing, enrich, guide, media, pois, properties
+from .routers import (auth, billing, calendars, enrich, guide, media, pois,
+                      properties)
 
 log = logging.getLogger("casaguide.api")
 
@@ -90,6 +91,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(billing.router)
 app.include_router(properties.router)
+app.include_router(calendars.router)
 app.include_router(pois.router)
 app.include_router(media.router)
 app.include_router(enrich.router)

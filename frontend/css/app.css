@@ -475,3 +475,77 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .pc-price{color:var(--muted);font-size:13.5px}
 .pc-soon{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
   background:var(--sand-hi);color:var(--sand-hi-ink);border-radius:20px;padding:2px 8px}
+
+/* ── Calendrier des séjours (V2-23a) ─────────────────────────────────────── */
+.cal-alert,.cal-rotation{display:flex;gap:11px;align-items:flex-start;
+  border-radius:var(--radius);padding:12px 14px;margin-bottom:12px}
+.cal-alert{background:#FDECEC;border:1px solid #F3C3C3;color:var(--alert)}
+.cal-alert .muted{color:#9B4B4B}
+.cal-rotation{background:var(--sand-hi);border:1px solid var(--sand-hi-line);color:var(--sand-hi-ink)}
+.cal-rotation .muted{color:#8A6A2E}
+.cal-alert svg,.cal-rotation svg{flex:none;margin-top:1px}
+
+.booking-list{display:flex;flex-direction:column;gap:10px;margin-bottom:20px}
+.booking-row{display:flex;gap:14px;align-items:center;background:var(--shell);
+  border:1px solid var(--line);border-left:4px solid var(--line);
+  border-radius:var(--radius);padding:12px 14px;cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.booking-row:hover{border-color:var(--sea);box-shadow:var(--shadow)}
+.booking-row.row-overlap{border-left-color:var(--alert)}
+.booking-row.row-rot{border-left-color:var(--prog)}
+.booking-row.row-blocked{background:#FBFAF7;border-left-color:var(--todo)}
+.booking-row.row-cancelled{opacity:.6}
+.booking-dates{font-weight:700;font-size:15px;min-width:150px;flex:none}
+.booking-body{flex:1;display:flex;flex-direction:column;gap:5px;min-width:0}
+.booking-guest{font-weight:600}
+.booking-times{font-size:12.5px}
+.booking-row>.btn{flex:none}
+
+/* Pastilles plateforme (couleur par source) */
+.plat-badge{font-size:11.5px;font-weight:600;border-radius:20px;padding:2px 10px;
+  border:1px solid transparent;white-space:nowrap}
+.plat-airbnb{background:#FDE9EC;color:#C1123E;border-color:#F5C6CF}
+.plat-vrbo{background:#E7F0FB;color:#12457A;border-color:#C4DAF3}
+.plat-booking{background:#E9EDFB;color:#22357E;border-color:#C9D2F2}
+.plat-direct{background:#E7F4EC;color:#1E6B37;border-color:#C4E4CE}
+.plat-other{background:var(--line-soft);color:var(--muted);border-color:var(--line)}
+
+/* Badges de statut de séjour */
+.cal-st{font-size:11.5px}
+.cal-st-confirmed{background:#E7F4EC;color:#1E6B37}
+.cal-st-blocked{background:var(--line-soft);color:var(--muted)}
+.cal-st-cancelled{background:#FDECEC;color:#9B4B4B}
+
+/* Drapeaux inline (chevauchement / rotation) */
+.cal-flag{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;
+  border-radius:6px;padding:1px 7px}
+.cal-flag-overlap{background:#FDECEC;color:var(--alert)}
+.cal-flag-rot{background:var(--sand-hi);color:var(--sand-hi-ink)}
+
+.cancelled-block{margin-bottom:20px}
+.cancelled-block>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600;
+  padding:6px 0;user-select:none}
+.cancelled-block[open]>summary{margin-bottom:8px}
+
+/* Flux de calendrier */
+.flux-card{margin-top:8px}
+.flux-card h3{display:flex;align-items:center;gap:7px;font-size:16px}
+.flux-list{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+.flux-row{display:flex;gap:12px;align-items:center;justify-content:space-between;
+  border:1px solid var(--line);border-radius:var(--radius);padding:10px 12px}
+.flux-url{font-size:12px;color:var(--muted);background:var(--line-soft);
+  border-radius:6px;padding:2px 7px}
+.flux-state{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;margin-top:5px}
+.flux-ok{color:var(--ok)}
+.flux-err{color:var(--alert)}
+.flux-add{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.flux-add select{flex:none}
+.flux-input{flex:1;min-width:220px;border:1px solid var(--line);border-radius:10px;
+  padding:8px 11px;font:inherit;background:var(--shell);color:var(--ink)}
+.flux-input:focus{outline:none;border-color:var(--sea)}
+.flux-feedback{font-size:13px;margin-top:8px}
+.flux-feedback.flux-err{color:var(--alert)}
+
+@media (max-width:560px){
+  .booking-row{flex-wrap:wrap}
+  .booking-dates{min-width:0}
+}

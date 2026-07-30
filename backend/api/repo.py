@@ -20,6 +20,7 @@ _PROP_COLS = """
     geocode_source, geocode_accuracy, guide_token, staff_token, access_mode, status,
     default_lang, published_langs, contact_name, contact_phone,
     contact_whatsapp, contact_email, contact_backup, tourism_license,
+    default_checkin_time, default_checkout_time,
     created_at, updated_at
 """
 
@@ -423,7 +424,7 @@ _UPDATABLE = (
     "name", "address_line1", "address_line2", "postal_code", "city", "region",
     "country_code", "default_lang", "access_mode", "status", "contact_name",
     "contact_phone", "contact_whatsapp", "contact_email", "contact_backup",
-    "tourism_license",
+    "tourism_license", "default_checkin_time", "default_checkout_time",
 )
 
 
@@ -1285,6 +1286,19 @@ def create_calendar(conn, property_id: str, *, platform: str,
             VALUES (%s, %s, %s) RETURNING {_CAL_COLS}""",
         (property_id, platform, ical_url_enc),
     ).fetchone()
+
+
+def recent_calendar_sync_seconds(conn, property_id: str) -> float | None:
+    """Nombre de secondes depuis la synchro la plus récente d'un flux du logement,
+    ou None si aucun flux n'a jamais été synchronisé (rate-limit du bouton
+    « Synchroniser maintenant »)."""
+    row = conn.execute(
+        """SELECT EXTRACT(EPOCH FROM (now() - max(last_sync_at))) AS s
+           FROM property_calendars
+           WHERE property_id = %s AND last_sync_at IS NOT NULL""",
+        (property_id,),
+    ).fetchone()
+    return float(row["s"]) if row and row["s"] is not None else None
 
 
 def update_calendar_sync(conn, calendar_id: str, *, status: str,

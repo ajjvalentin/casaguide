@@ -184,6 +184,16 @@ export const api = {
   translationStatus: (id) => request("GET", `/api/properties/${id}/translation-status`),
   translate:         (id) => request("POST", `/api/properties/${id}/translate`),
 
+  // Calendrier des séjours (V2-23a)
+  calendarView:   (id) => request("GET", `/api/properties/${id}/calendar`),
+  createBooking:  (id, b) => request("POST", `/api/properties/${id}/bookings`, { body: b }),
+  updateBooking:  (id, bid, b) => request("PATCH", `/api/properties/${id}/bookings/${bid}`, { body: b }),
+  deleteBooking:  (id, bid) => request("DELETE", `/api/properties/${id}/bookings/${bid}`),
+  listCalendars:  (id) => request("GET", `/api/properties/${id}/calendars`),
+  addCalendar:    (id, b) => request("POST", `/api/properties/${id}/calendars`, { body: b }),
+  deleteCalendar: (id, cid) => request("DELETE", `/api/properties/${id}/calendars/${cid}`),
+  syncCalendars:  (id) => request("POST", `/api/properties/${id}/calendar/sync`),
+
   // Médias par section (M-12)
   listMedia:  (id, code) =>
     request("GET", `/api/properties/${id}/media` + (code ? `?section_code=${encodeURIComponent(code)}` : "")),

@@ -12,6 +12,7 @@ fetch est **injectable** (`deps.get_calendar_fetcher`) → tests sans réseau.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 from dataclasses import dataclass, field
 from typing import Callable
@@ -150,6 +151,73 @@ def sync_all(conn, *, fetch: CalendarFetcher = fetch_ical,
             report.errors += 1
             report.failures.append(str(cal["id"]))
     return report
+
+
+# ── Analyse du calendrier (pur) : chevauchements & rotations ─────────────────
+#
+# Modèle d'intervalle **semi-ouvert** [arrivée, départ) : deux séjours qui se
+# touchent (départ = arrivée le même jour) NE se chevauchent PAS — c'est une
+# rotation. L'anti-chevauchement **alerte, ne bloque jamais** (inv. 4 : le
+# propriétaire arbitre).
+
+
+def effective_times(booking: dict, default_in: _dt.time,
+                    default_out: _dt.time) -> tuple[_dt.time, _dt.time]:
+    """Heures effectives d'un séjour : celles saisies, sinon les heures standard
+    du logement (NULL = « heures standard »)."""
+    ci = booking.get("checkin_time") or default_in
+    co = booking.get("checkout_time") or default_out
+    return ci, co
+
+
+def compute_overlaps(bookings: list[dict]) -> list[tuple[dict, dict]]:
+    """Paires de séjours **confirmés** dont les intervalles [arrivée, départ) se
+    recouvrent. Les 'blocked' (fermetures plateforme) et 'cancelled' sont ignorés."""
+    confirmed = [b for b in bookings if b["status"] == "confirmed"]
+    out: list[tuple[dict, dict]] = []
+    for i in range(len(confirmed)):
+        a = confirmed[i]
+        for j in range(i + 1, len(confirmed)):
+            b = confirmed[j]
+            if a["starts_on"] < b["ends_on"] and b["starts_on"] < a["ends_on"]:
+                out.append((a, b))
+    return out
+
+
+def compute_rotations(bookings: list[dict], default_in: _dt.time,
+                      default_out: _dt.time) -> list[dict]:
+    """Rotations même jour : un séjour **part** le jour où un autre **arrive**
+    (départ = arrivée). Renvoie {on, departing, arriving, gap_minutes} — la
+    fenêtre de préparation entre le checkout effectif et le checkin effectif."""
+    confirmed = [b for b in bookings if b["status"] == "confirmed"]
+    rotations: list[dict] = []
+    for a in confirmed:                       # a part…
+        for b in confirmed:                   # …le jour où b arrive
+            if a["id"] == b["id"]:
+                continue
+            if a["ends_on"] == b["starts_on"]:
+                _, checkout = effective_times(a, default_in, default_out)
+                checkin, _ = effective_times(b, default_in, default_out)
+                gap = int((_dt.datetime.combine(a["ends_on"], checkin)
+                           - _dt.datetime.combine(a["ends_on"], checkout))
+                          .total_seconds() // 60)
+                rotations.append({"on": a["ends_on"], "departing": a["id"],
+                                  "arriving": b["id"], "gap_minutes": gap})
+    rotations.sort(key=lambda r: r["on"])
+    return rotations
+
+
+def mask_url(url: str) -> str:
+    """Affichage masqué d'une URL iCal (secret, inv. 1) : on ne montre que la fin
+    du chemin, jamais la valeur exploitable. Ex. `airbnb.com/…/…a1b2.ics`."""
+    try:
+        host = url.split("//", 1)[-1].split("/", 1)[0]
+    except Exception:  # noqa: BLE001
+        host = ""
+    tail = url.rstrip("/").rsplit("/", 1)[-1]
+    tail = tail[-8:] if len(tail) > 8 else tail
+    host = host or "…"
+    return f"{host}/…/…{tail}" if tail else f"{host}/…"
 
 
 def _short_error(exc: Exception) -> str:

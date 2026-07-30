@@ -96,6 +96,57 @@ def test_parse_empty_calendar_is_not_an_error():
     assert ical.parse_events(_ical()) == []
 
 
+# ── Analyse : chevauchements, rotations, masquage (pur, aucun réseau) ─────────
+
+def _bk(bid, start, end, status="confirmed", ci=None, co=None):
+    return {"id": bid, "starts_on": dt.date(*start), "ends_on": dt.date(*end),
+            "status": status, "checkin_time": ci, "checkout_time": co}
+
+
+def test_overlap_detects_recovering_confirmed_pairs():
+    a = _bk("a", (2026, 8, 10), (2026, 8, 20))
+    b = _bk("b", (2026, 8, 15), (2026, 8, 25))     # recouvre a
+    c = _bk("c", (2026, 9, 1), (2026, 9, 5))       # disjoint
+    pairs = calendars.compute_overlaps([a, b, c])
+    assert len(pairs) == 1
+    assert {pairs[0][0]["id"], pairs[0][1]["id"]} == {"a", "b"}
+
+
+def test_touching_stays_are_not_overlap_but_rotation():
+    """Départ = arrivée le même jour : PAS un chevauchement (rotation)."""
+    a = _bk("a", (2026, 8, 10), (2026, 8, 20))     # départ le 20
+    b = _bk("b", (2026, 8, 20), (2026, 8, 27))     # arrivée le 20
+    assert calendars.compute_overlaps([a, b]) == []
+    # Heures standard : arrivée (checkin) 15:00, départ (checkout) 10:00.
+    rots = calendars.compute_rotations([a, b], dt.time(15, 0), dt.time(10, 0))
+    assert len(rots) == 1
+    r = rots[0]
+    assert r["on"] == dt.date(2026, 8, 20)
+    assert r["departing"] == "a" and r["arriving"] == "b"
+    assert r["gap_minutes"] == 300                 # checkout 10:00 → checkin 15:00 = 5 h
+
+
+def test_rotation_uses_adjusted_times_when_present():
+    a = _bk("a", (2026, 8, 10), (2026, 8, 20), co=dt.time(11, 0))
+    b = _bk("b", (2026, 8, 20), (2026, 8, 27), ci=dt.time(16, 0))
+    rots = calendars.compute_rotations([a, b], dt.time(15, 0), dt.time(10, 0))
+    assert rots[0]["gap_minutes"] == 300           # checkout 11:00 → checkin 16:00 = 5 h
+
+
+def test_blocked_and_cancelled_excluded_from_overlap():
+    a = _bk("a", (2026, 8, 10), (2026, 8, 20))
+    b = _bk("b", (2026, 8, 12), (2026, 8, 22), status="blocked")
+    c = _bk("c", (2026, 8, 12), (2026, 8, 22), status="cancelled")
+    assert calendars.compute_overlaps([a, b, c]) == []
+
+
+def test_mask_url_never_reveals_the_url():
+    masked = calendars.mask_url(
+        "https://www.airbnb.com/calendar/ical/12345.ics?s=secret-token-abcd")
+    assert "secret-token" not in masked
+    assert "airbnb.com" in masked
+
+
 # ── Fixtures base réelle ─────────────────────────────────────────────────────
 
 @pytest.fixture()

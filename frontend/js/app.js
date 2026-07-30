@@ -18,6 +18,7 @@ import { renderForgot, renderReset, renderVerify } from "./views/reset.js";
 import { renderProperties } from "./views/properties.js";
 import { renderEditor } from "./views/editor.js";
 import { renderPois } from "./views/pois.js";
+import { renderCalendar } from "./views/calendar.js";
 import { renderSubscription } from "./views/subscription.js";
 
 const appEl = document.getElementById("app");
@@ -134,6 +135,8 @@ function renderRoute() {
   // #/properties/:id/pois[/:filter] — le 4e segment (V2-11) pré-sélectionne un
   // filtre de la vue POI (deep-link depuis les pastilles de « Mes logements »).
   if (seg[2] === "pois") return void renderPois(view, pid, seg[3]);
+  // #/properties/:id/calendrier — calendrier des séjours (V2-23a).
+  if (seg[2] === "calendrier") return void renderCalendar(view, pid);
   // #/properties/:id/editor[/staff] — le contexte « staff » (V2-26) ouvre
   // l'éditeur directement sur le groupe « Équipe d'entretien ».
   return void renderEditor(view, pid, seg[3]); // éditeur par défaut
