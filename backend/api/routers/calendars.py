@@ -11,17 +11,20 @@ configuré (même motif que les secrets wifi).
 """
 from __future__ import annotations
 
+import datetime as _dt
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import calendars, crypto, repo
+from .. import calendars, care, crypto, repo
 from ..deps import (CalendarFetcher, Conn, OwnedProperty, get_calendar_fetcher,
                     require_write_access)
 from ..schemas import (
-    BookingIn, BookingOut, BookingUpdate, CalendarCreateOut, CalendarIn,
-    CalendarOut, CalendarViewOut, DeleteBookingOut, OverlapOut, RotationOut,
-    SyncNowOut, SyncResultOut,
+    BookingIn, BookingOut, BookingRequestIn, BookingRequestOut,
+    BookingRequestUpdate, BookingUpdate, CalendarCreateOut, CalendarIn,
+    CalendarOut, CalendarViewOut, DeleteBookingOut, InterventionOut, OverlapOut,
+    RequestTypeIn, RequestTypeOut, RequestTypeUpdate, RotationOut, SyncNowOut,
+    SyncResultOut,
 )
 
 router = APIRouter(prefix="/api/properties/{property_id}", tags=["calendrier"])
@@ -54,9 +57,14 @@ def _calendar_out(cal: dict) -> CalendarOut:
         sync_error=cal["sync_error"], created_at=cal["created_at"])
 
 
-def _booking_out(b: dict, default_in, default_out) -> BookingOut:
+def _booking_out(b: dict, default_in, default_out, *,
+                 care_rules: dict | None = None,
+                 today: _dt.date | None = None) -> BookingOut:
     eff_in, eff_out = calendars.effective_times(b, default_in, default_out)
     is_direct = b["calendar_id"] is None and b["external_uid"] is None
+    # Relance active (§0.6) : ce qui manque pour préparer ce séjour.
+    missing = care.missing_info(b, care_rules or {},
+                                today=today or _dt.date.today())
     return BookingOut(
         id=b["id"], calendar_id=b["calendar_id"], starts_on=b["starts_on"],
         ends_on=b["ends_on"], checkin_time=b["checkin_time"],
@@ -67,7 +75,11 @@ def _booking_out(b: dict, default_in, default_out) -> BookingOut:
         source=b["source"], external_uid=b["external_uid"], is_direct=is_direct,
         guest_name=b["guest_name"], guest_contact=b["guest_contact"],
         notes=b["notes"], nature=b["nature"], status=b["status"],
-        linked_booking_id=b["linked_booking_id"])
+        linked_booking_id=b["linked_booking_id"],
+        guest_count=b["guest_count"],
+        children_count=care.children_count(b),
+        children_ages=list(b["children_ages"] or []),
+        missing_info=missing)
 
 
 # ── Vue « Séjours » (une seule charge pour tout rendre) ──────────────────────
@@ -78,6 +90,8 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
     pid = str(prop["id"])
     default_in = prop["default_checkin_time"]
     default_out = prop["default_checkout_time"]
+    care_rules = prop["care_rules"]
+    today = _dt.date.today()
     # Un bloc miroir **rattaché** (§0.5) disparaît de la liste et du planning : il
     # double un séjour déjà présent (une seule arrivée pour l'équipe). Jamais
     # supprimé pour autant — la synchro le recréerait ; il reste en base, masqué.
@@ -89,7 +103,8 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
         property_id=pid,
         default_checkin_time=default_in, default_checkout_time=default_out,
         calendars=[_calendar_out(c) for c in repo.list_calendars_with_url(conn, pid)],
-        bookings=[_booking_out(b, default_in, default_out) for b in bookings],
+        bookings=[_booking_out(b, default_in, default_out, care_rules=care_rules,
+                               today=today) for b in bookings],
         overlaps=[OverlapOut(a=a["id"], b=b["id"]) for a, b in overlaps],
         rotations=[RotationOut(**r) for r in rotations])
 
@@ -106,7 +121,8 @@ def create_booking(payload: BookingIn, conn: Conn, prop: OwnedProperty):
             detail="Le départ doit être postérieur à l'arrivée (au moins une nuit).")
     b = repo.create_booking(conn, str(prop["id"]), payload.model_dump())
     return _booking_out(b, prop["default_checkin_time"],
-                        prop["default_checkout_time"])
+                        prop["default_checkout_time"],
+                        care_rules=prop["care_rules"])
 
 
 @router.patch("/bookings/{booking_id}", response_model=BookingOut,
@@ -144,7 +160,8 @@ def update_booking(booking_id: str, payload: BookingUpdate, conn: Conn,
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Séjour introuvable")
     return _booking_out(b, prop["default_checkin_time"],
-                        prop["default_checkout_time"])
+                        prop["default_checkout_time"],
+                        care_rules=prop["care_rules"])
 
 
 @router.delete("/bookings/{booking_id}", response_model=DeleteBookingOut,
@@ -220,3 +237,129 @@ def sync_now(conn: Conn, prop: OwnedProperty,
         created=sum(r.created for r in results),
         updated=sum(r.updated for r in results),
         cancelled=sum(r.cancelled for r in results))
+
+
+# ── Catalogue de demandes particulières (V2-23b, §1.2) ───────────────────────
+
+def _request_type_out(t: dict) -> RequestTypeOut:
+    return RequestTypeOut(id=t["id"], code=t["code"], label=t["label"],
+                          sort_order=t["sort_order"], is_active=t["is_active"])
+
+
+def _booking_request_out(r: dict) -> BookingRequestOut:
+    return BookingRequestOut(
+        id=r["id"], booking_id=r["booking_id"],
+        request_type_id=r["request_type_id"], label=r["label"],
+        quantity=r["quantity"], note=r["note"], origin=r["origin"],
+        status=r["status"])
+
+
+@router.get("/request-types", response_model=list[RequestTypeOut])
+def list_request_types(conn: Conn, prop: OwnedProperty):
+    """Catalogue de demandes du logement (lit bébé, chaise haute…)."""
+    return [_request_type_out(t)
+            for t in repo.list_request_types(conn, str(prop["id"]))]
+
+
+@router.post("/request-types", response_model=RequestTypeOut,
+             status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_write_access)])
+def create_request_type(payload: RequestTypeIn, conn: Conn, prop: OwnedProperty):
+    if repo.get_request_type_by_code(conn, str(prop["id"]), payload.code):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ce code de demande existe déjà pour ce logement.")
+    t = repo.create_request_type(conn, str(prop["id"]), code=payload.code,
+                                 label=payload.label, sort_order=payload.sort_order)
+    return _request_type_out(t)
+
+
+@router.patch("/request-types/{type_id}", response_model=RequestTypeOut,
+              dependencies=[Depends(require_write_access)])
+def update_request_type(type_id: str, payload: RequestTypeUpdate, conn: Conn,
+                        prop: OwnedProperty):
+    t = repo.update_request_type(conn, str(prop["id"]), type_id,
+                                 payload.model_dump(exclude_unset=True))
+    if not t:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Type de demande introuvable")
+    return _request_type_out(t)
+
+
+# ── Demandes rattachées à un séjour (V2-23b, §1.2) ───────────────────────────
+
+@router.get("/bookings/{booking_id}/requests",
+            response_model=list[BookingRequestOut])
+def list_booking_requests(booking_id: str, conn: Conn, prop: OwnedProperty):
+    if not repo.get_booking(conn, str(prop["id"]), booking_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Séjour introuvable")
+    return [_booking_request_out(r)
+            for r in repo.list_booking_requests(conn, booking_id)]
+
+
+@router.post("/bookings/{booking_id}/requests", response_model=BookingRequestOut,
+             status_code=status.HTTP_201_CREATED,
+             dependencies=[Depends(require_write_access)])
+def create_booking_request(booking_id: str, payload: BookingRequestIn, conn: Conn,
+                           prop: OwnedProperty):
+    if not repo.get_booking(conn, str(prop["id"]), booking_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Séjour introuvable")
+    # Résout le libellé : celui saisi, sinon celui du type du catalogue (recopié
+    # pour survivre à une suppression future du type).
+    label = payload.label
+    type_id = str(payload.request_type_id) if payload.request_type_id else None
+    if type_id:
+        t = repo.get_request_type(conn, str(prop["id"]), type_id)
+        if not t:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="Type de demande introuvable")
+        label = label or t["label"]
+    if not label:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Précisez un type de demande ou un libellé.")
+    r = repo.create_booking_request(
+        conn, booking_id, request_type_id=type_id, label=label,
+        quantity=payload.quantity, note=payload.note, origin="owner",
+        status=payload.status)
+    return _booking_request_out(r)
+
+
+@router.patch("/requests/{request_id}", response_model=BookingRequestOut,
+              dependencies=[Depends(require_write_access)])
+def update_booking_request(request_id: str, payload: BookingRequestUpdate,
+                           conn: Conn, prop: OwnedProperty):
+    if not repo.get_booking_request(conn, str(prop["id"]), request_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Demande introuvable")
+    r = repo.update_booking_request(conn, request_id,
+                                    payload.model_dump(exclude_unset=True))
+    return _booking_request_out(r)
+
+
+@router.delete("/requests/{request_id}", status_code=status.HTTP_204_NO_CONTENT,
+               dependencies=[Depends(require_write_access)])
+def delete_booking_request(request_id: str, conn: Conn, prop: OwnedProperty):
+    if not repo.delete_booking_request(conn, str(prop["id"]), request_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Demande introuvable")
+    return None
+
+
+# ── Interventions calculées pour un séjour (V2-23b, §1.3) ────────────────────
+
+@router.get("/bookings/{booking_id}/interventions",
+            response_model=list[InterventionOut])
+def booking_interventions(booking_id: str, conn: Conn, prop: OwnedProperty):
+    """Liste des interventions d'entretien calculées (jamais stockées) pour un
+    séjour : préparation d'arrivée quantifiée, changements de draps en cours de
+    séjour, demandes acceptées. La nature pilote la préparation (invariant 14)."""
+    b = repo.get_booking(conn, str(prop["id"]), booking_id)
+    if not b:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Séjour introuvable")
+    reqs = repo.list_booking_requests(conn, booking_id)
+    interventions = care.plan_interventions(b, prop["care_rules"], requests=reqs)
+    return [InterventionOut(**i.as_dict()) for i in interventions]

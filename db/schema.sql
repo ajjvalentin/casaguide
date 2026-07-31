@@ -114,6 +114,11 @@ CREATE TABLE properties (
     -- Heures standard du calendrier des séjours (V2-23a) — NULL sur un séjour = ces heures
     default_checkin_time  TIME NOT NULL DEFAULT '15:00',
     default_checkout_time TIME NOT NULL DEFAULT '10:00',
+    -- Règles d'entretien du logement (V2-23b, §1.1) — jamais en dur (invariant 8).
+    -- Défaut applicatif posé à la création (api/care.default_care_rules) : linge,
+    -- ménage en cours de séjour, welcome pack, tranches d'âge & équipement suggéré,
+    -- effort de rotation en hommes-heures. Voir db/migrations/017.
+    care_rules       JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -180,6 +185,12 @@ CREATE TABLE bookings (
     guest_name    TEXT,
     guest_contact TEXT,
     notes         TEXT,
+    -- Voyageurs (V2-23b, §1.0) — non transportés par l'iCal, saisis à la main.
+    -- La checklist d'équipe est QUANTIFIÉE à partir de ces champs (draps/pack pour
+    -- N). NULL = non renseigné → hypothèse pessimiste + relance (§0.6). Le nombre
+    -- d'enfants se déduit de la longueur de children_ages (âges à l'arrivée).
+    guest_count   INT,
+    children_ages INT[],
     -- Rattachement d'un bloc miroir à son séjour (jamais supprimé, juste masqué).
     linked_booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
     nature        TEXT NOT NULL DEFAULT 'unqualified'
@@ -195,6 +206,40 @@ CREATE INDEX idx_bookings_linked ON bookings(linked_booking_id)
     WHERE linked_booking_id IS NOT NULL;
 CREATE UNIQUE INDEX idx_bookings_calendar_uid ON bookings(calendar_id, external_uid)
     WHERE calendar_id IS NOT NULL AND external_uid IS NOT NULL;
+
+-- Catalogue de demandes particulières par logement (V2-23b, §1.2) — lit bébé,
+-- chaise haute, parasol, lit d'appoint… Amorcé à la création du logement,
+-- personnalisable. `is_active` désactive sans supprimer (garde l'historique).
+CREATE TABLE property_request_types (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    property_id UUID NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    code        TEXT NOT NULL,                    -- 'lit_bebe', 'chaise_haute'…
+    label       TEXT NOT NULL,                    -- libellé affiché (FR)
+    sort_order  INT  NOT NULL DEFAULT 0,
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_request_types_property ON property_request_types(property_id);
+CREATE UNIQUE INDEX idx_request_types_property_code
+    ON property_request_types(property_id, code);
+
+-- Demandes rattachées à un séjour (V2-23b, §1.2). `origin='guest'` = demande du
+-- voyageur (volet 3). `label` recopie le libellé du type → survit à sa suppression.
+CREATE TABLE booking_requests (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    booking_id      UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    request_type_id UUID REFERENCES property_request_types(id) ON DELETE SET NULL,
+    label           TEXT,
+    quantity        INT NOT NULL DEFAULT 1,
+    note            TEXT,
+    origin          TEXT NOT NULL DEFAULT 'owner'
+                    CHECK (origin IN ('owner', 'guest')),
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'accepted', 'declined')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_booking_requests_booking ON booking_requests(booking_id);
 
 -- ============================================================================
 -- 3. STRUCTURE DU GUIDE — sections pré-définies (§4)

@@ -317,3 +317,120 @@ def test_calendar_is_tenant_isolated(client):
     r = client.post(f"/api/properties/{pid}/bookings", headers=h2, json={
         "starts_on": "2026-08-12", "ends_on": "2026-08-20"})
     assert r.status_code == 404
+
+
+# ── Voyageurs & règles d'entretien (V2-23b, volet 1) ─────────────────────────
+
+def test_property_seeds_default_care_rules_and_catalog(client):
+    """À la création : care_rules par défaut + catalogue amorcé (§1.1/§1.2)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    prop = client.get(f"/api/properties/{pid}", headers=h).json()
+    assert prop["care_rules"]["linen_change_from_day"] == 8
+    # hommes-heures laissés à null (à obtenir d'André).
+    assert prop["care_rules"]["turnaround"]["person_hours_full_occupancy"] is None
+    types = client.get(f"/api/properties/{pid}/request-types", headers=h).json()
+    codes = {t["code"] for t in types}
+    assert {"lit_bebe", "chaise_haute", "parasol", "lit_appoint"} <= codes
+
+
+def test_care_rules_editable_via_patch(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    r = client.patch(f"/api/properties/{pid}", headers=h, json={
+        "care_rules": {"linen_change_from_day": 5, "welcome_pack": "none",
+                       "turnaround": {"person_hours_full_occupancy": 6}}})
+    assert r.status_code == 200
+    cr = r.json()["care_rules"]
+    assert cr["linen_change_from_day"] == 5 and cr["welcome_pack"] == "none"
+    assert cr["turnaround"]["person_hours_full_occupancy"] == 6
+
+
+def test_booking_carries_guest_count_and_children(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    r = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-20",
+        "guest_name": "Famille", "guest_contact": "+34 600",
+        "guest_count": 6, "children_ages": [1, 3, 14]})
+    assert r.status_code == 201, r.text
+    b = r.json()
+    assert b["guest_count"] == 6 and b["children_count"] == 3
+    assert b["children_ages"] == [1, 3, 14]
+
+
+def test_missing_info_surfaces_in_calendar_view(client):
+    """§0.6 — un séjour futur occupé mais incomplet est signalé."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    # Séjour de 14 nuits, sans voyageurs ni contact → relance draps + voyageurs.
+    future = dt.date.today() + dt.timedelta(days=20)
+    client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": future.isoformat(),
+        "ends_on": (future + dt.timedelta(days=14)).isoformat(),
+        "guest_name": "Sans contact", "nature": "reservation"})
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    codes = {m["code"] for m in view["bookings"][0]["missing_info"]}
+    assert "guest_count_missing" in codes
+    assert "contact_missing" in codes
+
+
+def test_booking_requests_crud(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    bid = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-20"}).json()["id"]
+    types = client.get(f"/api/properties/{pid}/request-types", headers=h).json()
+    lit = next(t for t in types if t["code"] == "lit_bebe")
+    # Crée une demande depuis le catalogue → libellé recopié, origin='owner'.
+    r = client.post(f"/api/properties/{pid}/bookings/{bid}/requests", headers=h,
+                    json={"request_type_id": lit["id"], "quantity": 1})
+    assert r.status_code == 201, r.text
+    req = r.json()
+    assert req["label"] == "Lit bébé" and req["origin"] == "owner"
+    assert req["status"] == "accepted"
+    lst = client.get(f"/api/properties/{pid}/bookings/{bid}/requests",
+                     headers=h).json()
+    assert len(lst) == 1
+    # Suppression.
+    assert client.delete(f"/api/properties/{pid}/requests/{req['id']}",
+                         headers=h).status_code == 204
+    assert client.get(f"/api/properties/{pid}/bookings/{bid}/requests",
+                      headers=h).json() == []
+
+
+def test_accepted_request_appears_in_interventions(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    bid = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-26",
+        "guest_count": 6, "nature": "reservation"}).json()["id"]
+    types = client.get(f"/api/properties/{pid}/request-types", headers=h).json()
+    lit = next(t for t in types if t["code"] == "lit_bebe")
+    client.post(f"/api/properties/{pid}/bookings/{bid}/requests", headers=h,
+                json={"request_type_id": lit["id"], "quantity": 1})
+    inter = client.get(f"/api/properties/{pid}/bookings/{bid}/interventions",
+                       headers=h).json()
+    kinds = {i["kind"] for i in inter}
+    assert "arrival" in kinds and "linen_change" in kinds
+    arrival = next(i for i in inter if i["kind"] == "arrival")
+    assert any("Lit bébé" in t for t in arrival["tasks"])
+    assert any("Welcome pack pour 6" in t for t in arrival["tasks"])
+
+
+def test_request_type_add_and_deactivate(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    r = client.post(f"/api/properties/{pid}/request-types", headers=h,
+                    json={"code": "rehausseur", "label": "Réhausseur"})
+    assert r.status_code == 201, r.text
+    tid = r.json()["id"]
+    # Doublon de code → 409.
+    assert client.post(f"/api/properties/{pid}/request-types", headers=h,
+                       json={"code": "rehausseur", "label": "X"}).status_code == 409
+    # Désactivation (jamais suppression → garde l'historique).
+    r2 = client.patch(f"/api/properties/{pid}/request-types/{tid}", headers=h,
+                      json={"is_active": False})
+    assert r2.status_code == 200 and r2.json()["is_active"] is False
+    active = client.get(f"/api/properties/{pid}/request-types", headers=h).json()
+    assert any(t["id"] == tid and not t["is_active"] for t in active)

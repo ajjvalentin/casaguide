@@ -35,7 +35,14 @@ const mk = (over) => ({
   eff_checkin_time: "15:00:00", eff_checkout_time: "10:00:00",
   source: "direct", external_uid: null, is_direct: true, guest_name: null,
   guest_contact: null, notes: null, nature: "reservation", status: "active",
-  linked_booking_id: null, ...over });
+  linked_booking_id: null, guest_count: null, children_count: 0,
+  children_ages: [], missing_info: [], ...over });
+
+// Catalogue de demandes du logement (V2-23b, §1.2).
+const CATALOG = [
+  { id: "rt1", code: "lit_bebe", label: "Lit bébé", sort_order: 0, is_active: true },
+  { id: "rt2", code: "chaise_haute", label: "Chaise haute", sort_order: 1, is_active: true },
+];
 
 const calData = {
   property_id: "p1",
@@ -47,17 +54,19 @@ const calData = {
   ],
   bookings: [
     mk({ id: "b1", starts_on: iso(30), ends_on: iso(40), source: "direct",
-         is_direct: true, guest_name: "Dupont" }),
+         is_direct: true, guest_name: "Dupont", guest_count: 4, children_count: 1,
+         children_ages: [3] }),
     mk({ id: "b2", calendar_id: "c1", starts_on: iso(40), ends_on: iso(47),
          source: "airbnb", external_uid: "u2", is_direct: false }),
     mk({ id: "b3", starts_on: iso(45), ends_on: iso(50), source: "vrbo",
          is_direct: true, guest_name: "Martin" }),
     mk({ id: "b4", calendar_id: "c1", starts_on: iso(60), ends_on: iso(64),
          source: "airbnb", external_uid: "u4", is_direct: false,
-         nature: "unqualified" }),
+         nature: "unqualified",
+         missing_info: [{ code: "unqualified", message: "Séjour à qualifier (réservation, privé, travaux…)." }] }),
     mk({ id: "b5", calendar_id: "c1", starts_on: iso(-60), ends_on: iso(-56),
          source: "airbnb", external_uid: "u5", is_direct: false,
-         status: "cancelled" }),
+         status: "cancelled", nature: "" }),   // §0.h : nature inconnue → « À qualifier », jamais « undefined »
   ],
   overlaps: [{ a: "b2", b: "b3" }],
   rotations: [{ on: iso(40), departing: "b1", arriving: "b2", gap_minutes: 300 }],
@@ -70,6 +79,8 @@ window.fetch = async (path, opts = {}) => {
     { headers: { "Content-Type": "application/json" } });
   if (path === "/api/properties/p1" && method === "GET") return json(PROP);
   if (path === "/api/properties/p1/calendar" && method === "GET") return json(calData);
+  if (path === "/api/properties/p1/request-types" && method === "GET") return json(CATALOG);
+  if (/\/bookings\/[^/]+\/requests$/.test(path) && method === "GET") return json([]);
   if (path === "/api/properties/p1/bookings" && method === "POST") {
     const b = JSON.parse(opts.body);
     posted.push(b);
@@ -125,6 +136,20 @@ try {
   chk(!!cancelledBlock && /Séjours annulés \(1\)/.test(cancelledBlock.textContent),
     "séjours annulés repliés (1)");
 
+  // ── Voyageurs (§1.0) & relance active (§0.6) ─────────────────────────────
+  const b1row = qa(".booking-row").find((r) => /Dupont/.test(r.textContent));
+  chk(!!b1row && /4 voyageur/.test(b1row.textContent) && /1 enfant/.test(b1row.textContent),
+    "ligne : « 4 voyageur(s) (dont 1 enfant(s)) »");
+  chk(!!toQualify && !!q(".cal-relance", toQualify)
+    && /à qualifier/i.test(toQualify.textContent),
+    "relance active affichée sur le séjour à qualifier");
+
+  // §0.h — une nature inconnue tombe sur « À qualifier », jamais « undefined ».
+  chk(!/undefined/i.test(app.textContent),
+    "aucun « undefined » imprimé (repli de libellé de nature)");
+  chk(!!cancelledBlock && /À qualifier/.test(cancelledBlock.textContent),
+    "nature inconnue (b5) affichée « À qualifier »");
+
   // ── §0.3 auto-promotion + §0.4 avertissement rouge à la saisie ───────────
   q(".booking-row[data-nature='unqualified'] .btn").click();  // « Compléter »
   await wait(40);
@@ -141,6 +166,17 @@ try {
   guestInput.value = "Famille"; fire(guestInput);
   chk(natureSel.value === "reservation", "auto-promotion : nature → « réservation » dès qu'un nom est saisi");
   q(".modal-back").remove();                    // ferme la modale de complétion
+
+  // ── Modale d'un séjour : voyageurs pré-remplis + demandes particulières ───
+  b1row.click();
+  await wait(40);
+  const gc = qa('.modal-back input[type=number]').find((i) => i.value === "4");
+  chk(!!gc, "modale : nombre de voyageurs pré-rempli (4)");
+  chk(!!q(".modal-back .child-chip") && /3 an/.test(q(".modal-back .child-chip").textContent),
+    "modale : âge d'enfant en chip (« 3 ans »)");
+  chk(!!q(".modal-back .req-section") && !!q(".modal-back .req-add select"),
+    "modale : section « Demandes particulières » avec le catalogue");
+  q(".modal-back").remove();
 
   // ── Création d'un séjour direct (POST → rechargement → nouvelle ligne) ────
   q(".btn-primary.btn-sm").click();            // « Nouveau séjour »

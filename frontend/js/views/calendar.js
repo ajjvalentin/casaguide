@@ -16,6 +16,7 @@ import {
 import { navigate } from "../nav.js";
 import { handleQuotaError } from "../quota.js";
 import { analyzeCandidate } from "../lib/overlaps.js";
+import { suggestEquipment } from "../lib/care.js";
 
 const PLATFORMS = [
   ["airbnb", "Airbnb"], ["vrbo", "Vrbo / Abritel"], ["booking", "Booking"],
@@ -34,6 +35,9 @@ const NATURE_OPTIONS = [
   ["unqualified", "À qualifier"],
 ];
 const NATURE_LABEL = Object.fromEntries(NATURE_OPTIONS);
+// Libellé de repli EXPLICITE (§0.h) : une nature absente/inconnue ne doit jamais
+// imprimer « undefined » à l'écran — elle retombe sur « À qualifier ».
+const natureLabel = (n) => NATURE_LABEL[n] || NATURE_LABEL.unqualified;
 const OCCUPIED = new Set(["reservation", "private"]);
 const MONTHS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.",
   "août", "sept.", "oct.", "nov.", "déc."];
@@ -53,6 +57,12 @@ function fmtRange(startIso, endIso) {
   return `${fmtDay(startIso)} → ${end}`;
 }
 function pad(n) { return String(n).padStart(2, "0"); }
+// Code technique à partir d'un libellé (catalogue de demandes) : ASCII, minuscules.
+function slugCode(label) {
+  const base = label.normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return (base || "demande").slice(0, 60);
+}
 function fmtTime(t) { return t ? t.slice(0, 5) : ""; }        // "15:00:00" → "15:00"
 function fmtGap(min) {
   if (min == null) return "";
@@ -76,10 +86,10 @@ function relSync(iso) {
 export async function renderCalendar(view, pid) {
   mount(view, el("div", { class: "page" }, loadingBlock("Chargement du calendrier…")));
 
-  let property, data;
+  let property, data, catalog;
   try {
-    [property, data] = await Promise.all([
-      api.getProperty(pid), api.calendarView(pid)]);
+    [property, data, catalog] = await Promise.all([
+      api.getProperty(pid), api.calendarView(pid), api.listRequestTypes(pid)]);
   } catch (err) {
     return mount(view, el("div", { class: "page" },
       el("div", { class: "errbox" }, err.message || "Impossible de charger le calendrier.")));
@@ -100,6 +110,8 @@ export async function renderCalendar(view, pid) {
       el("div", {}, el("div", { class: "eyebrow" }, "Séjours"),
         el("h1", { class: "page-title", style: { margin: "2px 0 0" } }, "Calendrier des séjours")),
       el("div", { class: "row", style: { gap: "8px" } },
+        el("button", { class: "btn btn-sm", onClick: () => openCareSettings() },
+          icon("sliders-horizontal", 16), "Réglages d'entretien"),
         el("button", { class: "btn btn-sm", id: "cal-sync", onClick: () => syncNow() },
           icon("refresh-cw", 16), "Synchroniser"),
         el("button", { class: "btn btn-primary btn-sm", onClick: () => openBookingModal() },
@@ -196,7 +208,7 @@ export async function renderCalendar(view, pid) {
     const platBadge = el("span", { class: "plat-badge plat-" + b.source },
       SOURCE_LABEL[b.source] || b.source);
     const natureBadge = el("span", { class: "badge cal-nat cal-nat-" + b.nature },
-      NATURE_LABEL[b.nature] || b.nature);
+      natureLabel(b.nature));
 
     const meta = el("div", { class: "row", style: { gap: "8px", flexWrap: "wrap", alignItems: "center" } },
       platBadge, natureBadge,
@@ -207,7 +219,17 @@ export async function renderCalendar(view, pid) {
 
     const times = el("div", { class: "muted booking-times" },
       `Arrivée ${fmtTime(b.eff_checkin_time)}${b.checkin_time ? " (ajustée)" : ""} · `
-      + `Départ ${fmtTime(b.eff_checkout_time)}${b.checkout_time ? " (ajustée)" : ""}`);
+      + `Départ ${fmtTime(b.eff_checkout_time)}${b.checkout_time ? " (ajustée)" : ""}`
+      + (b.guest_count != null ? ` · ${b.guest_count} voyageur(s)`
+        + (b.children_count ? ` (dont ${b.children_count} enfant(s))` : "") : ""));
+
+    // Relance active (§0.6) : ce qui manque encore pour préparer ce séjour.
+    const relance = (b.missing_info && b.missing_info.length)
+      ? el("div", { class: "booking-relance" },
+        ...b.missing_info.map((m) => el("span", {
+          class: "cal-relance cal-relance-" + m.code, title: m.message },
+          icon("triangle-alert", 12), m.message)))
+      : null;
 
     const who = b.guest_name
       ? el("span", { class: "booking-guest" }, b.guest_name)
@@ -228,7 +250,7 @@ export async function renderCalendar(view, pid) {
       onClick: () => openBookingModal(b),
     },
       el("div", { class: "booking-dates" }, fmtRange(b.starts_on, b.ends_on)),
-      el("div", { class: "booking-body" }, who, meta, times),
+      el("div", { class: "booking-body" }, who, meta, times, relance),
       cta);
   }
 
@@ -328,6 +350,151 @@ export async function renderCalendar(view, pid) {
     } finally { if (btn) btn.disabled = false; }
   }
 
+  // ── Réglages d'entretien : règles + catalogue de demandes (§1.1/§1.2) ──────
+  function openCareSettings() {
+    const cr = property.care_rules || {};
+    const t = cr.turnaround || {};
+    const field = (label, node, help) => el("div", { class: "field" },
+      el("label", {}, label), node, help ? el("div", { class: "help" }, help) : null);
+    const numOrBlank = (v) => (v == null ? "" : String(v));
+
+    const linenDay = el("input", { type: "number", min: "0", max: "60",
+      value: numOrBlank(cr.linen_change_from_day ?? 8) });
+    const midstay = el("select", {},
+      ...[["included", "Inclus"], ["on_request", "Sur demande"], ["none", "Non proposé"]]
+        .map(([k, v]) => el("option", { value: k, selected: (cr.midstay_cleaning || "on_request") === k }, v)));
+    const pack = el("select", {},
+      ...[["free", "Offert"], ["paid", "Payant"], ["none", "Aucun"]]
+        .map(([k, v]) => el("option", { value: k, selected: (cr.welcome_pack || "free") === k }, v)));
+    const packNote = el("textarea", { rows: "2" }, cr.welcome_pack_note || "");
+
+    // Rotation (hommes-heures) — laissées vides tant qu'André n'a pas mesuré.
+    const phMin = el("input", { type: "number", min: "0", step: "0.5", value: numOrBlank(t.person_hours_min_occupancy) });
+    const phFull = el("input", { type: "number", min: "0", step: "0.5", value: numOrBlank(t.person_hours_full_occupancy) });
+    const gMin = el("input", { type: "number", min: "0", value: numOrBlank(t.min_occupancy_guests) });
+    const gFull = el("input", { type: "number", min: "0", value: numOrBlank(t.full_occupancy_guests) });
+    const maxCleaners = el("input", { type: "number", min: "1", max: "6", value: numOrBlank(t.max_cleaners ?? 2) });
+    const margin = el("input", { type: "number", min: "0", step: "0.5", value: numOrBlank(t.comfort_margin_hours ?? 1) });
+    const numVal = (inp) => (inp.value.trim() === "" ? null : Number(inp.value));
+
+    const err = el("div", { class: "errbox hidden" });
+    const catBox = el("div", { class: "cat-box" });
+    renderCatalog();
+
+    const save = el("button", { class: "btn btn-primary" }, "Enregistrer les règles");
+    const modal = openModal({
+      title: "Réglages d'entretien",
+      body: el("form", { onSubmit: onSave },
+        el("h3", { class: "care-h" }, "Règles d'entretien"),
+        el("div", { class: "grid-2" },
+          field("Draps changés à partir du (jour)", linenDay,
+            "En cours de séjour. 0 = jamais. Villa Ballarin : 8."),
+          field("Ménage en cours de séjour", midstay)),
+        el("div", { class: "grid-2" },
+          field("Welcome pack", pack),
+          field("Note du welcome pack", packNote)),
+        el("details", { class: "care-adv" },
+          el("summary", {}, "Rotation — effort de nettoyage (avancé)"),
+          el("p", { class: "help" },
+            "La charge se mesure en hommes-heures et suit l'occupation ; l'effectif "
+            + "est une décision d'équipe. Laissez vide tant que ce n'est pas mesuré."),
+          el("div", { class: "grid-2" },
+            field("Hommes-heures à faible occupation", phMin),
+            field("Hommes-heures à pleine occupation", phFull)),
+          el("div", { class: "grid-2" },
+            field("Voyageurs à faible occupation", gMin),
+            field("Capacité (pleine occupation)", gFull)),
+          el("div", { class: "grid-2" },
+            field("Nombre max de personnes au ménage", maxCleaners),
+            field("Marge de confort (heures)", margin))),
+        el("h3", { class: "care-h" }, "Catalogue de demandes particulières"),
+        el("p", { class: "help" }, "Lit bébé, chaise haute, parasol… proposés à la préparation d'un séjour."),
+        catBox,
+        addTypeRow(),
+        err),
+      footer: [
+        el("button", { class: "btn btn-ghost", type: "button", onClick: () => modal.close() }, "Fermer"),
+        save,
+      ],
+    });
+    save.addEventListener("click", () => onSave());
+
+    function renderCatalog() {
+      clear(catBox);
+      if (!catalog.length) {
+        catBox.append(el("div", { class: "muted", style: { fontSize: "13px" } }, "Aucun type pour l'instant."));
+      }
+      for (const ty of catalog) {
+        const toggle = el("button", { class: "btn btn-sm btn-ghost", type: "button",
+          onClick: async () => {
+            try {
+              await api.updateRequestType(pid, ty.id, { is_active: !ty.is_active });
+              catalog = await api.listRequestTypes(pid);
+              renderCatalog();
+            } catch (e) { toast(e.message || "Modification impossible.", "err"); }
+          } },
+          icon(ty.is_active ? "eye" : "eye-off", 14), ty.is_active ? "Actif" : "Masqué");
+        catBox.append(el("div", { class: "cat-row" + (ty.is_active ? "" : " cat-off") },
+          el("span", { class: "cat-label" }, ty.label),
+          el("code", { class: "cat-code" }, ty.code), toggle));
+      }
+      refreshIcons();
+    }
+
+    function addTypeRow() {
+      const label = el("input", { type: "text", maxlength: "120", placeholder: "Libellé (ex. Réhausseur)" });
+      const btn = el("button", { class: "btn btn-sm", type: "button", onClick: onAddType },
+        icon("plus", 14), "Ajouter au catalogue");
+      async function onAddType() {
+        const lv = label.value.trim();
+        if (!lv) return;
+        const code = slugCode(lv);
+        btn.disabled = true;
+        try {
+          await api.createRequestType(pid, { code, label: lv });
+          catalog = await api.listRequestTypes(pid);
+          label.value = ""; renderCatalog();
+        } catch (e) {
+          if (e.status === 409) toast("Un type avec ce code existe déjà.", "err");
+          else toast(e.message || "Ajout impossible.", "err");
+        } finally { btn.disabled = false; }
+      }
+      return el("div", { class: "cat-add row" }, label, btn);
+    }
+
+    async function onSave(e) {
+      if (e && e.preventDefault) e.preventDefault();
+      err.classList.add("hidden");
+      const care_rules = {
+        ...cr,
+        linen_change_from_day: linenDay.value.trim() === "" ? 0 : Math.max(0, parseInt(linenDay.value, 10) || 0),
+        midstay_cleaning: midstay.value,
+        welcome_pack: pack.value,
+        welcome_pack_note: packNote.value.trim(),
+        turnaround: {
+          ...(cr.turnaround || {}),
+          person_hours_min_occupancy: numVal(phMin),
+          person_hours_full_occupancy: numVal(phFull),
+          min_occupancy_guests: numVal(gMin),
+          full_occupancy_guests: numVal(gFull),
+          max_cleaners: numVal(maxCleaners) || 2,
+          comfort_margin_hours: numVal(margin) ?? 1,
+        },
+      };
+      save.disabled = true; save.textContent = "Enregistrement…";
+      try {
+        property = await api.updateProperty(pid, { care_rules });
+        modal.close();
+        toast("Règles d'entretien enregistrées.", "ok");
+        await reload();
+      } catch (e2) {
+        if (handleQuotaError(e2)) { modal.close(); return; }
+        err.textContent = e2.message || "Enregistrement impossible."; err.classList.remove("hidden");
+        save.disabled = false; save.textContent = "Enregistrer les règles";
+      }
+    }
+  }
+
   // ── Modale séjour (saisie directe, complétion, qualification, suppression) ──
   function openBookingModal(b) {
     const isNew = !b;
@@ -351,12 +518,60 @@ export async function renderCalendar(view, pid) {
     const guest = el("input", { type: "text", maxlength: "200", value: b?.guest_name || "" });
     const contact = el("input", { type: "text", maxlength: "200", value: b?.guest_contact || "" });
     const notes = el("textarea", { rows: "2" }, b?.notes || "");
+
+    // ── Voyageurs (§1.0) — quantifient toute la préparation de l'équipe ───────
+    const guestCount = el("input", { type: "number", min: "0", max: "100",
+      value: b && b.guest_count != null ? String(b.guest_count) : "",
+      placeholder: "ex. 6" });
+    let childAges = b && Array.isArray(b.children_ages) ? [...b.children_ages] : [];
+    const chipRow = el("div", { class: "child-ages" });
+    const ageInput = el("input", { type: "number", min: "0", max: "17",
+      class: "child-age-input", placeholder: "âge" });
+    const suggestLine = el("div", { class: "help care-suggest" });
+    const catLabel = (code) =>
+      (catalog.find((t) => t.code === code) || {}).label || code;
+
+    function renderAges() {
+      clear(chipRow);
+      childAges.forEach((age, i) => {
+        chipRow.append(el("span", { class: "child-chip" }, `${age} an${age > 1 ? "s" : ""}`,
+          el("button", { type: "button", class: "child-chip-x", "aria-label": "Retirer",
+            onClick: () => { childAges.splice(i, 1); renderAges(); } }, "×")));
+      });
+      chipRow.append(el("span", { class: "child-add-inline" }, ageInput,
+        el("button", { type: "button", class: "btn btn-sm btn-ghost",
+          onClick: addAge }, icon("plus", 13))));
+      // Suggestions d'équipement d'après les âges (propose, n'ajoute jamais).
+      clear(suggestLine);
+      const codes = suggestEquipment(childAges, property.care_rules);
+      if (codes.length) {
+        suggestLine.append("Suggéré d'après les âges : " + codes.map(catLabel).join(", ")
+          + (b ? " — ajoutez-les en demandes ci-dessous." : "."));
+      }
+      refreshIcons();
+    }
+    function addAge() {
+      const v = ageInput.value.trim();
+      if (v === "") return;
+      const n = Math.max(0, Math.min(17, parseInt(v, 10) || 0));
+      childAges.push(n); ageInput.value = ""; renderAges(); ageInput.focus();
+    }
+    ageInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); addAge(); }
+    });
+    renderAges();
+
     const sourceSel = el("select", {},
       ...SOURCES.map(([k, v]) => el("option", { value: k, selected: (b?.source || "direct") === k }, v)));
     // Nature : la sémantique du séjour (elle pilote la préparation, jamais le statut).
+    // Repli PRUDENT (§0.h) : un NOUVEAU séjour saisi à la main est une réservation
+    // par défaut (intention du propriétaire, cohérent avec BookingIn) ; mais un
+    // séjour EXISTANT dont la nature manquerait ne doit JAMAIS retomber sur la
+    // valeur la plus conséquente — il retombe sur « à qualifier », le moins actif.
+    const natureDefault = isNew ? "reservation" : (b.nature || "unqualified");
     const natureSel = el("select", {},
       ...NATURE_OPTIONS.map(([k, v]) =>
-        el("option", { value: k, selected: (b?.nature || "reservation") === k }, v)));
+        el("option", { value: k, selected: natureDefault === k }, v)));
     const natureHelp = el("div", { class: "help" },
       "Un séjour occupé (réservation, séjour privé) déclenche les alertes de "
       + "chevauchement et la préparation par l'équipe.");
@@ -390,10 +605,19 @@ export async function renderCalendar(view, pid) {
         field("Heure de départ", co, `Par défaut ${outDefault}`)),
       field("Dépôt de bagages avant l'entrée (facultatif)", luggageDrop,
         "Heure à laquelle la maison doit être accessible et présentable."),
+      el("div", { class: "grid-2" },
+        field("Nombre de voyageurs", guestCount,
+          "Total, enfants compris. Quantifie draps, serviettes et welcome pack."),
+        field("Âges des enfants à l'arrivée",
+          el("div", {}, chipRow), "Le nombre d'enfants s'en déduit.")),
+      suggestLine,
       field("Nom du locataire", guest),
       field("Contact (téléphone / email)", contact),
       field("Notes", notes),
     ];
+    // Demandes particulières : uniquement sur un séjour déjà enregistré (il faut
+    // son id pour rattacher). Chargées à l'ouverture (§1.2).
+    if (b) rows.push(requestsSection(b));
     // La source n'est éditable que pour une saisie directe (un import garde la sienne).
     if (isNew || (b && b.is_direct)) rows.splice(2, 0, field("Origine", sourceSel));
 
@@ -466,7 +690,7 @@ export async function renderCalendar(view, pid) {
     function describe(x) {
       const who = x.guest_name ? ` · ${x.guest_name}` : "";
       const src = x.is_direct ? "" : ` · ${SOURCE_LABEL[x.source] || x.source}`;
-      return `${fmtRange(x.starts_on, x.ends_on)} — ${NATURE_LABEL[x.nature] || x.nature}${who}${src}`;
+      return `${fmtRange(x.starts_on, x.ends_on)} — ${natureLabel(x.nature)}${who}${src}`;
     }
 
     // Rattacher un bloc miroir importé au séjour saisi (§0.5). Le bloc n'est jamais
@@ -482,6 +706,68 @@ export async function renderCalendar(view, pid) {
         recomputeWarnings();
       };
       return btn;
+    }
+
+    // ── Demandes particulières du séjour (§1.2) ──────────────────────────────
+    function requestsSection(bk) {
+      const list = el("div", { class: "req-list" }, el("div", { class: "muted", style: { fontSize: "13px" } }, "Chargement…"));
+      const active = catalog.filter((t) => t.is_active);
+      const typeSel = el("select", {},
+        ...active.map((t) => el("option", { value: t.id }, t.label)));
+      const qty = el("input", { type: "number", min: "1", max: "50", value: "1", class: "req-qty" });
+      const addBtn = el("button", { class: "btn btn-sm", type: "button", onClick: onAdd },
+        icon("plus", 14), "Ajouter");
+      const adder = active.length
+        ? el("div", { class: "req-add row" }, typeSel, qty, addBtn)
+        : el("div", { class: "muted", style: { fontSize: "13px" } },
+          "Aucun type de demande actif. Ajoutez-en dans « Réglages d'entretien ».");
+
+      loadRequests();
+      async function loadRequests() {
+        try {
+          const reqs = await api.listBookingRequests(pid, bk.id);
+          clear(list);
+          if (!reqs.length) {
+            list.append(el("div", { class: "muted", style: { fontSize: "13px" } },
+              "Aucune demande pour ce séjour."));
+          }
+          for (const r of reqs) list.append(reqRow(r));
+          refreshIcons();
+        } catch { clear(list); list.append(el("div", { class: "muted" }, "Chargement impossible.")); }
+      }
+      function reqRow(r) {
+        const org = r.origin === "guest"
+          ? el("span", { class: "badge req-guest", title: "Demande du voyageur" }, "voyageur")
+          : null;
+        return el("div", { class: "req-row" },
+          el("span", { class: "req-label" }, `${r.label}${r.quantity > 1 ? " ×" + r.quantity : ""}`),
+          org,
+          el("span", { class: "req-status req-" + r.status }, statusLabel(r.status)),
+          el("button", { class: "btn btn-sm btn-ghost", type: "button", "aria-label": "Retirer",
+            onClick: async () => {
+              try { await api.deleteBookingRequest(pid, r.id); await loadRequests(); }
+              catch (e) { toast(e.message || "Suppression impossible.", "err"); }
+            } }, icon("trash-2", 14)));
+      }
+      async function onAdd() {
+        if (!active.length) return;
+        addBtn.disabled = true;
+        try {
+          await api.createBookingRequest(pid, bk.id, {
+            request_type_id: typeSel.value,
+            quantity: Math.max(1, parseInt(qty.value, 10) || 1),
+            status: "accepted" });
+          qty.value = "1";
+          await loadRequests();
+        } catch (e) { if (!handleQuotaError(e)) toast(e.message || "Ajout impossible.", "err"); }
+        finally { addBtn.disabled = false; }
+      }
+      return el("div", { class: "req-section" },
+        el("label", {}, "Demandes particulières"), list, adder);
+    }
+
+    function statusLabel(s) {
+      return { pending: "en attente", accepted: "acceptée", declined: "refusée" }[s] || s;
     }
 
     async function onSave(e) {
@@ -511,6 +797,8 @@ export async function renderCalendar(view, pid) {
         guest_contact: contact.value.trim() || null,
         notes: notes.value.trim() || null,
         nature: natureSel.value,
+        guest_count: guestCount.value === "" ? null : Math.max(0, parseInt(guestCount.value, 10) || 0),
+        children_ages: childAges,
       };
       save.disabled = true; save.textContent = "Enregistrement…";
       try {

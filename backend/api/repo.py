@@ -20,7 +20,7 @@ _PROP_COLS = """
     geocode_source, geocode_accuracy, guide_token, staff_token, access_mode, status,
     default_lang, published_langs, contact_name, contact_phone,
     contact_whatsapp, contact_email, contact_backup, tourism_license,
-    default_checkin_time, default_checkout_time,
+    default_checkin_time, default_checkout_time, care_rules,
     created_at, updated_at
 """
 
@@ -405,17 +405,24 @@ def get_owned_property(conn, owner_id: str, property_id: str) -> dict | None:
 
 
 def create_property(conn, owner_id: str, data: dict) -> dict:
+    """Crée un logement et **amorce** ses règles d'entretien (`care_rules`, §1.1)
+    et son catalogue de demandes (`property_request_types`, §1.2) avec les défauts
+    applicatifs (`api/care`) — jamais figés en base, ajustables ensuite."""
+    from . import care  # import local : évite un cycle au chargement du module
     cols = ["owner_id", "name", "address_line1", "address_line2", "postal_code",
             "city", "region", "country_code", "default_lang", "contact_name",
             "contact_phone", "contact_whatsapp", "contact_email",
-            "contact_backup", "tourism_license"]
-    values = [owner_id] + [data.get(c) for c in cols[1:]]
+            "contact_backup", "tourism_license", "care_rules"]
+    care_rules = data.get("care_rules") or care.default_care_rules()
+    scalar = [data.get(c) for c in cols[1:-1]]
+    values = [owner_id] + scalar + [json.dumps(care_rules)]
     placeholders = ", ".join(["%s"] * len(cols))
     row = conn.execute(
         f"INSERT INTO properties ({', '.join(cols)}) VALUES ({placeholders}) "
         f"RETURNING {_PROP_COLS}",
         values,
     ).fetchone()
+    seed_request_types(conn, str(row["id"]), care.DEFAULT_REQUEST_TYPES)
     return row
 
 
@@ -435,6 +442,10 @@ def update_property(conn, owner_id: str, property_id: str,
         if key in fields:
             sets.append(f"{key} = %s")
             params.append(fields[key])
+    # Règles d'entretien (JSONB, §1.1) — sérialisées, jamais un objet brut.
+    if "care_rules" in fields and fields["care_rules"] is not None:
+        sets.append("care_rules = %s")
+        params.append(json.dumps(fields["care_rules"]))
     # Placement manuel du point (le propriétaire corrige le géocodage)
     if fields.get("lat") is not None and fields.get("lon") is not None:
         sets.append("geom = ST_SetSRID(ST_MakePoint(%s, %s), 4326)")
@@ -1341,6 +1352,7 @@ _BOOKING_COLS = ("id, property_id, calendar_id, starts_on, ends_on, "
                  "checkin_time, checkout_time, luggage_drop_time, "
                  "luggage_until_time, source, external_uid, "
                  "guest_name, guest_contact, notes, nature, status, "
+                 "guest_count, children_ages, "
                  "linked_booking_id, created_at, updated_at")
 
 # Champs d'un séjour modifiables à la main (jamais écrasés par une synchro). `nature`
@@ -1349,7 +1361,7 @@ _BOOKING_COLS = ("id, property_id, calendar_id, starts_on, ends_on, "
 _BOOKING_UPDATABLE = ("starts_on", "ends_on", "checkin_time", "checkout_time",
                       "luggage_drop_time", "luggage_until_time",
                       "guest_name", "guest_contact", "notes", "nature", "status",
-                      "source", "linked_booking_id")
+                      "source", "linked_booking_id", "guest_count", "children_ages")
 
 
 def list_bookings(conn, property_id: str) -> list[dict]:
@@ -1377,7 +1389,8 @@ def create_booking(conn, property_id: str, data: dict) -> dict:
     sémantique (réservation, privé, travaux…)."""
     cols = ("starts_on", "ends_on", "checkin_time", "checkout_time",
             "luggage_drop_time", "luggage_until_time", "source",
-            "guest_name", "guest_contact", "notes", "nature")
+            "guest_name", "guest_contact", "notes", "nature",
+            "guest_count", "children_ages")
     values = [property_id] + [data.get(c) for c in cols]
     placeholders = ", ".join(["%s"] * (len(cols) + 1))
     return conn.execute(
@@ -1482,3 +1495,152 @@ def cancel_missing_bookings(conn, calendar_id: str,
         (calendar_id, seen_uids),
     ).fetchall()
     return len(row)
+
+
+# ── Catalogue de demandes particulières (V2-23b, §1.2) ───────────────────────
+
+_REQ_TYPE_COLS = ("id, property_id, code, label, sort_order, is_active, created_at")
+
+
+def seed_request_types(conn, property_id: str, types: list[dict]) -> int:
+    """Amorce le catalogue d'un logement (à sa création **ou** en rattrapage).
+    Idempotent : un code déjà présent n'est pas dupliqué (ON CONFLICT sur
+    (property_id, code)). Renvoie le nombre de types réellement **insérés**."""
+    inserted = 0
+    for i, t in enumerate(types):
+        row = conn.execute(
+            """INSERT INTO property_request_types
+                   (property_id, code, label, sort_order)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (property_id, code) DO NOTHING
+               RETURNING id""",
+            (property_id, t["code"], t["label"], t.get("sort_order", i))).fetchone()
+        inserted += int(row is not None)
+    return inserted
+
+
+def list_properties_care(conn) -> list[dict]:
+    """(id, care_rules) de **tous** les logements (rattrapage ops, tous
+    propriétaires confondus). `care_rules = {}` = jamais amorcé."""
+    return conn.execute(
+        "SELECT id, care_rules FROM properties ORDER BY created_at").fetchall()
+
+
+def set_care_rules(conn, property_id: str, care_rules: dict) -> None:
+    """Pose les règles d'entretien d'un logement (rattrapage ops). Sérialise le
+    JSONB — jamais un objet brut, jamais un littéral SQL recopié (invariant 8 :
+    la vérité est `care.default_care_rules`, pas une copie figée)."""
+    conn.execute("UPDATE properties SET care_rules = %s WHERE id = %s",
+                 (json.dumps(care_rules), property_id))
+
+
+def list_request_types(conn, property_id: str,
+                       *, active_only: bool = False) -> list[dict]:
+    sql = (f"SELECT {_REQ_TYPE_COLS} FROM property_request_types "
+           "WHERE property_id = %s")
+    if active_only:
+        sql += " AND is_active"
+    sql += " ORDER BY sort_order, label"
+    return conn.execute(sql, (property_id,)).fetchall()
+
+
+def create_request_type(conn, property_id: str, *, code: str, label: str,
+                        sort_order: int = 0) -> dict:
+    return conn.execute(
+        f"""INSERT INTO property_request_types (property_id, code, label, sort_order)
+            VALUES (%s, %s, %s, %s) RETURNING {_REQ_TYPE_COLS}""",
+        (property_id, code, label, sort_order),
+    ).fetchone()
+
+
+def update_request_type(conn, property_id: str, type_id: str,
+                        fields: dict) -> dict | None:
+    allowed = ("label", "sort_order", "is_active")
+    sets = [f"{k} = %s" for k in allowed if k in fields]
+    if not sets:
+        return conn.execute(
+            f"SELECT {_REQ_TYPE_COLS} FROM property_request_types "
+            "WHERE id = %s AND property_id = %s", (type_id, property_id)).fetchone()
+    params = [fields[k] for k in allowed if k in fields] + [type_id, property_id]
+    return conn.execute(
+        f"UPDATE property_request_types SET {', '.join(sets)} "
+        f"WHERE id = %s AND property_id = %s RETURNING {_REQ_TYPE_COLS}",
+        params,
+    ).fetchone()
+
+
+def get_request_type(conn, property_id: str, type_id: str) -> dict | None:
+    return conn.execute(
+        f"SELECT {_REQ_TYPE_COLS} FROM property_request_types "
+        "WHERE id = %s AND property_id = %s", (type_id, property_id)).fetchone()
+
+
+def get_request_type_by_code(conn, property_id: str, code: str) -> dict | None:
+    return conn.execute(
+        f"SELECT {_REQ_TYPE_COLS} FROM property_request_types "
+        "WHERE property_id = %s AND code = %s", (property_id, code)).fetchone()
+
+
+# ── Demandes rattachées à un séjour (V2-23b, §1.2 ; guest au volet 3) ─────────
+
+_REQ_COLS = ("id, booking_id, request_type_id, label, quantity, note, origin, "
+             "status, created_at, updated_at")
+
+
+def list_booking_requests(conn, booking_id: str) -> list[dict]:
+    return conn.execute(
+        f"SELECT {_REQ_COLS} FROM booking_requests WHERE booking_id = %s "
+        "ORDER BY created_at", (booking_id,)).fetchall()
+
+
+def list_requests_for_property(conn, property_id: str) -> list[dict]:
+    """Toutes les demandes des séjours d'un logement (une charge pour la vue)."""
+    return conn.execute(
+        f"""SELECT r.id, r.booking_id, r.request_type_id, r.label, r.quantity,
+                   r.note, r.origin, r.status, r.created_at, r.updated_at
+            FROM booking_requests r
+            JOIN bookings b ON b.id = r.booking_id
+            WHERE b.property_id = %s ORDER BY r.created_at""",
+        (property_id,)).fetchall()
+
+
+def create_booking_request(conn, booking_id: str, *, request_type_id: str | None,
+                           label: str | None, quantity: int, note: str | None,
+                           origin: str, status: str) -> dict:
+    return conn.execute(
+        f"""INSERT INTO booking_requests
+                (booking_id, request_type_id, label, quantity, note, origin, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {_REQ_COLS}""",
+        (booking_id, request_type_id, label, quantity, note, origin, status),
+    ).fetchone()
+
+
+def update_booking_request(conn, request_id: str, fields: dict) -> dict | None:
+    allowed = ("quantity", "note", "status")
+    sets = [f"{k} = %s" for k in allowed if k in fields]
+    if not sets:
+        return conn.execute(
+            f"SELECT {_REQ_COLS} FROM booking_requests WHERE id = %s",
+            (request_id,)).fetchone()
+    sets.append("updated_at = now()")
+    params = [fields[k] for k in allowed if k in fields] + [request_id]
+    return conn.execute(
+        f"UPDATE booking_requests SET {', '.join(sets)} WHERE id = %s "
+        f"RETURNING {_REQ_COLS}", params).fetchone()
+
+
+def get_booking_request(conn, property_id: str, request_id: str) -> dict | None:
+    """Une demande, garantie appartenir à un séjour du logement (isolation §7)."""
+    return conn.execute(
+        f"""SELECT {', '.join('r.' + c for c in _REQ_COLS.split(', '))}
+            FROM booking_requests r JOIN bookings b ON b.id = r.booking_id
+            WHERE r.id = %s AND b.property_id = %s""",
+        (request_id, property_id)).fetchone()
+
+
+def delete_booking_request(conn, property_id: str, request_id: str) -> bool:
+    row = conn.execute(
+        """DELETE FROM booking_requests r USING bookings b
+           WHERE r.booking_id = b.id AND r.id = %s AND b.property_id = %s
+           RETURNING r.id""", (request_id, property_id)).fetchone()
+    return row is not None

@@ -236,6 +236,27 @@ calcule la **version d'assets** (SHA git court) écrite dans `backend/.env.deplo
 → `systemctl restart casaguide` → **healthcheck** (`/health`, `/docs`, `/` → 200,
 échoue bruyamment sinon).
 
+### 2bis. Rattrapages post-migration (une fois par migration concernée)
+
+Une migration ajoute une colonne/table **vide** ; le **contenu applicatif** posé
+par le code à la création d'un logement (règles d'entretien, catalogue de demandes)
+n'existe donc pas sur les logements **antérieurs**. Après un `deploy.sh` qui
+introduit un tel état, lancer **une fois** le script de rattrapage idempotent
+correspondant (à blanc d'abord avec `--dry-run`) :
+
+```bash
+# V2-23b (volet 1) — care_rules par défaut + catalogue de demandes sur l'existant.
+# Réutilise les mêmes fonctions que la création (jamais une copie du JSON en SQL).
+sudo -u casaguide /opt/casaguide/.venv/bin/python \
+     /opt/casaguide/ops/backfill_care.py --dry-run   # compte sans écrire
+sudo -u casaguide /opt/casaguide/.venv/bin/python \
+     /opt/casaguide/ops/backfill_care.py             # applique + commit
+```
+
+Idempotent : ne touche que les logements où `care_rules = {}` et saute les codes de
+catalogue déjà présents → ré-exécutable sans risque. (Voir CLAUDE.md, « Migrations
+& amorçage » : tout état amorcé à la création exige un backfill.)
+
 ---
 
 ## 3. Versionnage des assets (cache-busting automatique)

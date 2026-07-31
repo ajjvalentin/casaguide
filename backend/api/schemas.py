@@ -221,6 +221,8 @@ class PropertyUpdate(BaseModel):
     # Heures standard du calendrier des séjours (V2-23a)
     default_checkin_time: time | None = None
     default_checkout_time: time | None = None
+    # Règles d'entretien (V2-23b, §1.1) — objet JSON libre, remplacé en bloc.
+    care_rules: dict | None = None
     # Placement manuel du point sur la carte (§5.1 : le propriétaire corrige le géocodage)
     lat: float | None = Field(default=None, ge=-90, le=90)
     lon: float | None = Field(default=None, ge=-180, le=180)
@@ -253,6 +255,7 @@ class PropertyOut(BaseModel):
     tourism_license: str | None = None
     default_checkin_time: time | None = None
     default_checkout_time: time | None = None
+    care_rules: dict = {}     # règles d'entretien (V2-23b, §1.1)
     created_at: datetime
     updated_at: datetime
 
@@ -480,6 +483,9 @@ class BookingIn(BaseModel):
     guest_contact: str | None = Field(default=None, max_length=200)
     notes: str | None = None
     nature: _Nature = "reservation"
+    # Voyageurs (V2-23b, §1.0) — le nombre d'enfants se déduit de children_ages.
+    guest_count: int | None = Field(default=None, ge=0, le=100)
+    children_ages: list[int] | None = None
 
 
 class BookingUpdate(BaseModel):
@@ -498,6 +504,8 @@ class BookingUpdate(BaseModel):
     nature: _Nature | None = None
     status: _BookingStatus | None = None
     linked_booking_id: UUID | None = None
+    guest_count: int | None = Field(default=None, ge=0, le=100)
+    children_ages: list[int] | None = None
 
 
 class BookingOut(BaseModel):
@@ -520,6 +528,12 @@ class BookingOut(BaseModel):
     nature: str                                # sémantique (pilote la préparation)
     status: str                                # cycle de vie ('active' | 'cancelled')
     linked_booking_id: UUID | None = None      # bloc miroir rattaché à un autre séjour
+    guest_count: int | None = None             # voyageurs (§1.0)
+    children_count: int = 0                     # dérivé de children_ages
+    children_ages: list[int] = []
+    # Relance active (§0.6) : {code, message} pour ce séjour (voyageurs/coordonnées
+    # manquants, nature à qualifier). Vide si rien à signaler.
+    missing_info: list[dict] = []
 
 
 class OverlapOut(BaseModel):
@@ -549,3 +563,65 @@ class CalendarViewOut(BaseModel):
 
 class DeleteBookingOut(BaseModel):
     outcome: str          # 'deleted' (saisie directe) | 'cancelled' (importé)
+
+
+# ── Catalogue de demandes & demandes par séjour (V2-23b, §1.2) ───────────────
+
+_RequestOrigin = Literal["owner", "guest"]
+_RequestStatus = Literal["pending", "accepted", "declined"]
+
+
+class RequestTypeIn(BaseModel):
+    code: str = Field(min_length=1, max_length=60)
+    label: str = Field(min_length=1, max_length=120)
+    sort_order: int = 0
+
+
+class RequestTypeUpdate(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=120)
+    sort_order: int | None = None
+    is_active: bool | None = None
+
+
+class RequestTypeOut(BaseModel):
+    id: UUID
+    code: str
+    label: str
+    sort_order: int
+    is_active: bool
+
+
+class BookingRequestIn(BaseModel):
+    """Demande créée par le propriétaire (origin='owner'). L'origine 'guest' est
+    posée côté serveur (volet 3), jamais par ce payload."""
+    request_type_id: UUID | None = None
+    label: str | None = Field(default=None, max_length=120)
+    quantity: int = Field(default=1, ge=1, le=50)
+    note: str | None = Field(default=None, max_length=500)
+    status: _RequestStatus = "accepted"   # le propriétaire prépare → accepté d'emblée
+
+
+class BookingRequestUpdate(BaseModel):
+    quantity: int | None = Field(default=None, ge=1, le=50)
+    note: str | None = Field(default=None, max_length=500)
+    status: _RequestStatus | None = None
+
+
+class BookingRequestOut(BaseModel):
+    id: UUID
+    booking_id: UUID
+    request_type_id: UUID | None = None
+    label: str | None = None
+    quantity: int
+    note: str | None = None
+    origin: str
+    status: str
+
+
+class InterventionOut(BaseModel):
+    """Une intervention calculée pour un séjour (§1.3) — jamais stockée."""
+    kind: str
+    on: date
+    label: str
+    tasks: list[str] = []
+    needs_appointment: bool = False

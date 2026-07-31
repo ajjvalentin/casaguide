@@ -404,3 +404,40 @@ def test_delete_imported_booking_cancels(conn):
     assert repo.delete_booking(conn, pid, str(b["id"])) == "cancelled"
     rows = repo.list_bookings(conn, pid)
     assert len(rows) == 1 and rows[0]["status"] == "cancelled"
+
+
+# ── Rattrapage care_rules + catalogue (V2-23b, volet 1 — ops/backfill_care) ──
+# `_make_property` insère en SQL direct → logement « legacy » (care_rules={}, aucun
+# type de demande), exactement l'état d'un logement créé AVANT le volet 1.
+
+def test_backfill_seeds_care_rules_and_catalog_and_is_idempotent(conn):
+    from api import care
+    pid = _make_property(conn)
+    # État de départ : legacy (aucun contenu applicatif amorcé).
+    prop = conn.execute("SELECT care_rules FROM properties WHERE id = %s",
+                        (pid,)).fetchone()
+    assert prop["care_rules"] == {}
+    assert repo.list_request_types(conn, pid) == []
+
+    # Rattrapage = mêmes fonctions que la création (jamais un JSON figé en SQL).
+    repo.set_care_rules(conn, pid, care.default_care_rules())
+    inserted = repo.seed_request_types(conn, pid, care.DEFAULT_REQUEST_TYPES)
+    assert inserted == 4
+
+    prop = conn.execute("SELECT care_rules FROM properties WHERE id = %s",
+                        (pid,)).fetchone()
+    assert prop["care_rules"]["linen_change_from_day"] == 8
+    # Hommes-heures laissés à null (à obtenir d'André, jamais inventés).
+    assert prop["care_rules"]["turnaround"]["person_hours_full_occupancy"] is None
+    codes = {t["code"] for t in repo.list_request_types(conn, pid)}
+    assert {"lit_bebe", "chaise_haute", "parasol", "lit_appoint"} == codes
+
+    # Rejeu : idempotent (aucun doublon, rien de neuf inséré).
+    assert repo.seed_request_types(conn, pid, care.DEFAULT_REQUEST_TYPES) == 0
+    assert len(repo.list_request_types(conn, pid)) == 4
+
+
+def test_list_properties_care_flags_unseeded(conn):
+    pid = _make_property(conn)
+    rows = {str(p["id"]): p for p in repo.list_properties_care(conn)}
+    assert pid in rows and rows[pid]["care_rules"] == {}   # {} → à amorcer

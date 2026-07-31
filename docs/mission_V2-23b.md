@@ -192,9 +192,52 @@ donnée strictement nécessaire à la préparation matérielle du logement.
   "midstay_cleaning": "on_request",
   "welcome_pack": "free",
   "welcome_pack_note": "…",
-  "welcome_pack_media_id": null
+  "welcome_pack_media_id": null,
+  "turnaround": {
+    "person_hours_min_occupancy": null,
+    "person_hours_full_occupancy": null,
+    "max_cleaners": 2,
+    "comfort_margin_hours": 1
+  }
 }
 ```
+
+**La rotation se mesure en HOMMES-HEURES, pas en heures** (correction André 31/07 : « 4
+à 6 h selon le nombre de personnes qui viennent NETTOYER — si peu de temps, elles
+viennent à deux ; sinon une seule suffit et prend plus longtemps »). Deux variables
+indépendantes, qu'il ne faut surtout pas confondre :
+
+- **la CHARGE de travail** — en hommes-heures ; elle suit l'occupation (deux personnes
+  ne laissent pas huit lits à refaire), d'où l'interpolation entre
+  `person_hours_min_occupancy` et `person_hours_full_occupancy` selon `guest_count` ;
+- **la RESSOURCE affectée** — combien de personnes viennent. La durée réelle écoulée
+  découle des deux.
+
+Quand `guest_count` est inconnu, prendre la charge PESSIMISTE (pleine occupation) —
+même principe que le repli du §0 : dans le doute, l'hypothèse la plus prudente.
+
+**Conséquence majeure sur la signalétique : une fenêtre serrée n'est pas une fatalité,
+c'est une DÉCISION D'ÉQUIPE.** L'alerte ne doit donc pas se plaindre, elle doit dire
+quoi faire :
+
+| Fenêtre disponible | Signal |
+|---|---|
+| ≥ charge à 1 personne + marge de confort | neutre — rien à signaler |
+| < charge à 1 personne, mais tenable à plusieurs | **ambre ⇄** — « prévoir 2 personnes » |
+| < charge même avec `max_cleaners` | **rouge ⚠** — « infaisable, même à deux » |
+
+Le triangle reste réservé au danger réel : celui-ci et le chevauchement de deux
+occupations. Le dépôt de bagages (§2) avance l'échéance et peut faire basculer une
+rotation confortable en rotation serrée — le calcul part toujours de l'échéance la
+plus proche. La recommandation d'effectif remonte aussi au planning staff (volet 2) :
+c'est exactement ce dont la personne qui organise l'équipe a besoin.
+
+⚠ **VALEURS À OBTENIR D'ANDRÉ avant implémentation** (laissées à `null` délibérément,
+ne pas inventer) : la charge en hommes-heures pour Villa Ballarin à faible occupation
+et à pleine occupation. Note honnête à conserver : le travail à deux n'est pas
+parfaitement divisible (coordination, tâches non parallélisables) — si l'écart observé
+entre 1 et 2 personnes s'éloigne trop d'un facteur 2, prévoir un rendement explicite
+dans `turnaround` plutôt qu'une division silencieuse.
 
 Valeurs par défaut proposées à la création = celles de Villa Ballarin
 (draps inclus dès le 8e jour ; ménage en cours de séjour non inclus / sur demande).

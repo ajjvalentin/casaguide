@@ -194,6 +194,16 @@ export const api = {
   deleteCalendar: (id, cid) => request("DELETE", `/api/properties/${id}/calendars/${cid}`),
   syncCalendars:  (id) => request("POST", `/api/properties/${id}/calendar/sync`),
 
+  // Règles d'entretien, catalogue & demandes (V2-23b, volet 1)
+  listRequestTypes:  (id) => request("GET", `/api/properties/${id}/request-types`),
+  createRequestType: (id, b) => request("POST", `/api/properties/${id}/request-types`, { body: b }),
+  updateRequestType: (id, tid, b) => request("PATCH", `/api/properties/${id}/request-types/${tid}`, { body: b }),
+  listBookingRequests:  (id, bid) => request("GET", `/api/properties/${id}/bookings/${bid}/requests`),
+  createBookingRequest: (id, bid, b) => request("POST", `/api/properties/${id}/bookings/${bid}/requests`, { body: b }),
+  updateBookingRequest: (id, rid, b) => request("PATCH", `/api/properties/${id}/requests/${rid}`, { body: b }),
+  deleteBookingRequest: (id, rid) => request("DELETE", `/api/properties/${id}/requests/${rid}`),
+  bookingInterventions: (id, bid) => request("GET", `/api/properties/${id}/bookings/${bid}/interventions`),
+
   // Médias par section (M-12)
   listMedia:  (id, code) =>
     request("GET", `/api/properties/${id}/media` + (code ? `?section_code=${encodeURIComponent(code)}` : "")),

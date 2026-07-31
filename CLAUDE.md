@@ -53,7 +53,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
 | Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v15) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}`. **Lisibilité (V2-09) faite** : TROIS onglets (Le logement / Urgences / Autour de vous, état dans le hash, `app.js initTabs`) + listes de lieux repliées (4 + « Voir les N autres », `initCategoryLists`) |
-| Calendrier des séjours (V2-23a) | **Volet 1+2 faits** — migration 014 (`bookings`, `property_calendars` avec `ical_url_enc` chiffrée, heures standard `properties.default_checkin/checkout_time`). Parser iCal pur `api/ical.py` (DTSTART/DTEND dates & datetimes, DTEND exclusif, heuristique blocked). Moteur `api/calendars.py` (fetch httpx timeout/UA/redirections/non-bloquant ; upsert idempotent par UID ; disparu→cancelled ; champs manuels & promotion préservés ; overlaps/rotations purs ; `mask_url`). Fetch injectable (`deps.get_calendar_fetcher`). API `routers/calendars.py` (`GET /calendar` vue complète, CRUD `/bookings`, `/calendars` avec validation au collage, `DELETE` flux→cancel, `POST /calendar/sync` rate-limité). Front `js/views/calendar.js` (liste chronologique, badges, alerte chevauchement, rotations, blocs à compléter, annulés repliés, flux masqués + ajout/synchro/suppression). Bouton « Calendrier » (carte + porte staff), route `#/properties/:id/calendrier`. Ops `sync_calendars.py` + timer systemd 4 h. Testé (parser + moteur + API intégration + headless `calendar.test.mjs`). **V2-23b volet 0 fait** (migration 015) : séparation `nature` (sémantique, pilote la préparation — invariant 14) / `status` (cycle de vie `active`/`cancelled`) ; chevauchement = occupé↔occupé ; avertissement **à la saisie** (`js/lib/overlaps.js` pur + `overlaps.test.mjs`) ; auto-promotion nature à la saisie d'un nom ; rattachement d'un bloc miroir (`linked_booking_id`, masqué jamais supprimé) ; bagages (`luggage_drop_time`) ; vue ancrée sur aujourd'hui (à venir / passés repliés). **Reste V2-23b** : 0.6 relance coordonnées manquantes (dépend du moteur d'interventions §1.3), volet 1 règles d'entretien/catalogue/welcome pack + `api/care.py`, volet 2 **planning staff dans `/s/`** avec gating Pro, volet 3 demande du voyageur → planning |
+| Calendrier des séjours (V2-23a) | **Volet 1+2 faits** — migration 014 (`bookings`, `property_calendars` avec `ical_url_enc` chiffrée, heures standard `properties.default_checkin/checkout_time`). Parser iCal pur `api/ical.py` (DTSTART/DTEND dates & datetimes, DTEND exclusif, heuristique blocked). Moteur `api/calendars.py` (fetch httpx timeout/UA/redirections/non-bloquant ; upsert idempotent par UID ; disparu→cancelled ; champs manuels & promotion préservés ; overlaps/rotations purs ; `mask_url`). Fetch injectable (`deps.get_calendar_fetcher`). API `routers/calendars.py` (`GET /calendar` vue complète, CRUD `/bookings`, `/calendars` avec validation au collage, `DELETE` flux→cancel, `POST /calendar/sync` rate-limité). Front `js/views/calendar.js` (liste chronologique, badges, alerte chevauchement, rotations, blocs à compléter, annulés repliés, flux masqués + ajout/synchro/suppression). Bouton « Calendrier » (carte + porte staff), route `#/properties/:id/calendrier`. Ops `sync_calendars.py` + timer systemd 4 h. Testé (parser + moteur + API intégration + headless `calendar.test.mjs`). **V2-23b volet 0 fait** (migration 015) : séparation `nature` (sémantique, pilote la préparation — invariant 14) / `status` (cycle de vie `active`/`cancelled`) ; chevauchement = occupé↔occupé ; avertissement **à la saisie** (`js/lib/overlaps.js` pur + `overlaps.test.mjs`) ; auto-promotion nature à la saisie d'un nom ; rattachement d'un bloc miroir (`linked_booking_id`, masqué jamais supprimé) ; bagages (`luggage_drop_time`) ; vue ancrée sur aujourd'hui (à venir / passés repliés). **V2-23b volet 1 fait** (migrations 016 nb voyageurs/âges enfants + 017 `care_rules` JSONB/`property_request_types`/`booking_requests`) : moteur d'interventions **pur** `api/care.py` (la nature pilote — reservation=tout, private=sans pack, works/unavailable/unqualified=rien ; interventions datées & **quantifiées** par `guest_count` ; draps à J+N ; demandes acceptées ; signal de fenêtre de rotation en **hommes-heures** neutre/ambre/rouge, null-safe tant qu'André n'a pas mesuré) ; `care_rules` amorcées + catalogue amorcé à la création (`create_property`) ; endpoints `GET/POST/PATCH /request-types`, `GET/POST /bookings/{id}/requests`, `PATCH/DELETE /requests/{id}`, `GET /bookings/{id}/interventions` ; care_rules éditables via `PATCH /properties/{id}` ; **relance active §0.6** (`missing_info` par séjour dans `GET /calendar`) ; front : modale séjour (voyageurs + âges en chips + suggestions + demandes), « Réglages d'entretien » (règles + catalogue), pastilles de relance ; module pur `js/lib/care.js` (duplication volontaire du back). Testé (`test_care.py` 23 unitaires + intégration `test_calendar_api.py` + `care.test.mjs` + headless calendar). **Reste V2-23b** : volet 2 **planning staff dans `/s/`** (frise des fenêtres + interventions en cours de séjour) avec gating Pro & minimisation RGPD des coordonnées, volet 3 demande du voyageur → planning |
 
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
 
@@ -244,6 +244,8 @@ psql -d casaguide -f db/migrations/012_scheduled_plan_change.sql # downgrade pro
 psql -d casaguide -f db/migrations/013_poi_travel_mode.sql # mode de trajet par catégorie (poi_categories.travel_mode, V2-24)
 psql -d casaguide -f db/migrations/014_calendar.sql # calendrier des séjours : bookings + property_calendars + heures standard (V2-23a)
 psql -d casaguide -f db/migrations/015_booking_nature.sql # nature du séjour + bagages + bloc miroir ; status → cycle de vie (V2-23b, volet 0)
+psql -d casaguide -f db/migrations/016_booking_guests.sql # nb de voyageurs + âges des enfants (V2-23b, volet 1)
+psql -d casaguide -f db/migrations/017_care_rules.sql # règles d'entretien + catalogue de demandes (V2-23b, volet 1)
 
 # Backend
 cd backend
@@ -934,6 +936,59 @@ exposé, peer auth).
   purs) mais jamais supprimé. La vue est **ancrée sur aujourd'hui** (§0.7) :
   `todayISO()` sépare « à venir » (départ ≥ aujourd'hui, en cours compris) des
   passés/annulés repliés — le flux Abritel exporte aussi l'historique.
+- Préparation des séjours & moteur d'interventions (V2-23b, volet 1, invariant 14) :
+  le **moteur `api/care.py` est PUR** (aucune base, aucun réseau, `today` toujours
+  passé) et **ne stocke jamais** : les interventions sont **calculées** comme les
+  fenêtres. La **nature pilote** la préparation, pas le statut — `reservation` =
+  tout, `private` = même entretien **sans** welcome pack, `works`/`unavailable`/
+  `unqualified` = aucune intervention. Toute sortie est **quantifiée** par
+  `guest_count` ; une quantité inconnue s'affiche (« nombre de voyageurs non
+  renseigné »), jamais un trou. Le **nombre d'enfants se déduit** de
+  `children_ages` (jamais une colonne redondante) ; les âges **suggèrent**
+  l'équipement du catalogue (`suggest_equipment`) mais n'ajoutent **jamais** une
+  demande d'office (la modale propose, le propriétaire confirme). Les **hommes-heures**
+  de rotation vivent dans `care_rules` (invariant 8) et sont **laissés à `null`**
+  tant qu'André ne les a pas mesurés → `turnaround_signal` renvoie `level='unknown'`
+  plutôt qu'une valeur inventée ; ne **jamais** coder une charge en dur. `care_rules`
+  est un **JSONB** : `create_property` pose le défaut (`care.default_care_rules`) et
+  amorce le catalogue (`seed_request_types`) ; `update_property` le **sérialise**
+  (`json.dumps`), jamais un objet brut. **Duplication volontaire front/back** (comme
+  la règle d'intervalle) : les tranches d'âge & suggestions vivent dans
+  `frontend/js/lib/care.js` (front, suggère à la saisie) ET `api/care.py` (back, fait
+  foi/planning) — si l'une change, changer l'autre **et** les deux tests
+  (`test_care.py`, `care.test.mjs`). La **relance active §0.6** (`missing_info`) ne
+  signale que les séjours **occupés, actifs, non rattachés, non terminés** ; les
+  coordonnées ne sont exigées que si une intervention **en cours de séjour** est
+  prévue (elle suppose un rendez-vous). RGPD (à formaliser V2-25) : les âges
+  d'enfants suivent le régime des coordonnées (visibles pour l'équipe, séjours en
+  cours et à venir uniquement — appliqué au planning `/s/` du **volet 2**).
+
+- Migrations & amorçage — leçons de l'incident 015 (31/07, à ne jamais réapprendre) :
+  1. **Une migration se teste contre l'ÉTAT ANTÉRIEUR RÉEL**, jamais en la rejouant
+     sur son propre résultat ni sur une base neuve construite depuis `schema.sql`
+     (où les contraintes sont **déjà** les nouvelles). La 015 échouait
+     systématiquement en prod (`new row violates check constraint
+     bookings_status_check`) parce que l'`UPDATE` des valeurs de statut s'exécutait
+     **avant** le `DROP` de la contrainte héritée — invisible en test car la suite
+     bâtit sa base depuis `schema.sql`. Règle : **tout changement de contrainte
+     `CHECK` suit l'ordre `DROP → UPDATE → ADD`** (retirer l'ancienne contrainte,
+     migrer les valeurs, poser la nouvelle) ; et une migration doit être exercée au
+     moins une fois contre une base portant l'ancien schéma.
+  2. **Tout état amorcé à la CRÉATION exige un BACKFILL** pour les lignes
+     antérieures. Une migration SQL n'ajoute que la colonne/table (vide) : le
+     CONTENU applicatif posé par le code de création (ex. `care_rules` par défaut,
+     catalogue de demandes) n'existe pas sur les logements déjà en base. Fournir un
+     script `ops/` idempotent qui **réutilise les mêmes fonctions que la création**
+     (jamais une copie du JSON dans le SQL — invariant 8) et le documenter comme
+     **étape post-migration** dans `docs/deploiement.md`. Exemple :
+     `ops/backfill_care.py` (V2-23b) rejoue `care.default_care_rules()` +
+     `repo.seed_request_types` sur les logements où `care_rules = {}`.
+  3. **`deploy.sh` fait `git pull` (bascule du FRONT) AVANT les migrations** : une
+     migration en échec laisse un front **neuf** devant une API **ancienne** (les
+     statiques sont relus du disque, l'API reste en mémoire sur l'ancien code) →
+     des symptômes qui désignent le mauvais coupable (champ manquant, `undefined`
+     affiché). Devant un symptôme « front OK / données absentes » après déploiement,
+     **vérifier d'abord le journal des migrations**, pas le code applicatif.
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 

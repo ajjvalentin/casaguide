@@ -133,3 +133,72 @@ supprimé (la synchro le recréerait).
 **Bagages** : `luggage_drop_time` (dépôt avant l'entrée : la maison doit être
 accessible et présentable pour cette heure-là) est saisissable ; `luggage_until_time`
 est prévu en base (cas symétrique, affiché seulement s'il est renseigné).
+
+## 5. Préparation des séjours (V2-23b, volet 1)
+
+### 5.1 Voyageurs — la checklist est QUANTIFIÉE
+
+Le flux iCal ne transporte **pas** le nombre de voyageurs : il est saisi à la main
+dans la modale du séjour (`bookings.guest_count`, enfants compris). Sans lui, la
+préparation dirait *quoi* faire mais pas *combien* — c'est pourquoi un séjour occupé
+sans `guest_count` est **relancé** dans le calendrier (§0.6, encart ambre).
+
+Les **âges des enfants à l'arrivée** (`bookings.children_ages`, ex. `{1,3,14}`) sont
+saisis en chips ; le nombre d'enfants s'en déduit (pas de colonne redondante). Le
+libellé « âge à l'arrivée » évite toute mécanique de date de naissance. Les âges
+**suggèrent** l'équipement du catalogue (lit bébé, chaise haute, lit d'appoint) —
+la modale propose, le propriétaire confirme : rien n'est jamais ajouté d'office
+(un bébé dont les parents ont leur propre lit parapluie n'exige aucune préparation).
+
+> RGPD : les âges d'enfants suivent le régime des coordonnées — donnée strictement
+> nécessaire à la préparation matérielle, à exposer à l'équipe pour les séjours en
+> cours et à venir uniquement (à formaliser en V2-25).
+
+### 5.2 Règles d'entretien par logement (`properties.care_rules`)
+
+Réglables dans « Réglages d'entretien » (bouton du calendrier). Jamais en dur
+(invariant 8) — défaut posé à la création du logement (`api/care.default_care_rules`,
+valeurs de Villa Ballarin) :
+
+- **`linen_change_from_day`** — draps changés tous les N jours en cours de séjour
+  (8 par défaut). Un séjour de 14 nuits → draps à J+8 ; un séjour de 5 nuits → aucun.
+- **`midstay_cleaning`** — `included` | `on_request` | `none`.
+- **`welcome_pack`** — `free` | `paid` | `none` (jamais sur une occupation privée).
+- **`age_bands`** — tranches d'âge → équipement suggéré (personnalisables).
+- **`turnaround`** — effort de rotation en **hommes-heures** : la CHARGE suit
+  l'occupation (interpolée entre faible et pleine occupation), la RESSOURCE (combien
+  de personnes viennent) est une décision d'équipe. ⚠ Les hommes-heures sont laissés
+  à `null` tant qu'André ne les a pas mesurés (jamais inventés) → tant qu'ils
+  manquent, le signal de fenêtre reste « non configuré » plutôt que faux.
+
+### 5.3 Moteur d'interventions (`api/care.py`, fonction pure)
+
+À partir d'un séjour (nature, dates, voyageurs) et des `care_rules`, il **calcule**
+(ne stocke jamais) les interventions datées et quantifiées :
+
+- **La nature pilote** (invariant 14) : `reservation` → tout ; `private` → même
+  entretien **sans** welcome pack ; `works`/`unavailable`/`unqualified` → aucune
+  intervention automatique.
+- Sortie quantifiée à partir de `guest_count` (« Draps pour 6 », « Welcome pack
+  pour 6 ») ; une quantité inconnue s'affiche explicitement (« nombre de voyageurs
+  non renseigné »), jamais un trou silencieux.
+- Une **demande acceptée** (catalogue, `booking_requests`) rejoint la préparation.
+- Le signal de fenêtre de rotation (§1.1) dit **quoi faire** : neutre / ambre
+  (« prévoir 2 personnes ») / rouge (« infaisable, même à deux »).
+
+API propriétaire : `GET .../bookings/{id}/interventions`. Le **planning de l'équipe**
+dans `/s/` (frise des fenêtres) est livré au **volet 2**.
+
+### 5.4 Catalogue de demandes particulières (§1.2)
+
+`property_request_types` (lit bébé, chaise haute, parasol, lit d'appoint) amorcé à
+la création, personnalisable (ajout / désactivation — jamais de suppression qui
+casserait l'historique). Une demande rattachée à un séjour (`booking_requests`)
+porte une `origin` (`owner` ; `guest` au volet 3) et un `status`
+(`pending`/`accepted`/`declined`).
+
+> **Duplication volontaire front/back** (comme la règle d'intervalle) : les tranches
+> d'âge et les suggestions vivent des DEUX côtés — `backend/api/care.py` (fait foi,
+> planning) et `frontend/js/lib/care.js` (suggère à la saisie, sans aller-retour).
+> Si l'une change, changer l'autre **et** les deux tests (`test_care.py`,
+> `care.test.mjs`).
