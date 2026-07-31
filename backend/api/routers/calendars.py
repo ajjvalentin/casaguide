@@ -61,10 +61,13 @@ def _booking_out(b: dict, default_in, default_out) -> BookingOut:
         id=b["id"], calendar_id=b["calendar_id"], starts_on=b["starts_on"],
         ends_on=b["ends_on"], checkin_time=b["checkin_time"],
         checkout_time=b["checkout_time"], eff_checkin_time=eff_in,
-        eff_checkout_time=eff_out, source=b["source"],
-        external_uid=b["external_uid"], is_direct=is_direct,
+        eff_checkout_time=eff_out,
+        luggage_drop_time=b["luggage_drop_time"],
+        luggage_until_time=b["luggage_until_time"],
+        source=b["source"], external_uid=b["external_uid"], is_direct=is_direct,
         guest_name=b["guest_name"], guest_contact=b["guest_contact"],
-        notes=b["notes"], status=b["status"])
+        notes=b["notes"], nature=b["nature"], status=b["status"],
+        linked_booking_id=b["linked_booking_id"])
 
 
 # ── Vue « Séjours » (une seule charge pour tout rendre) ──────────────────────
@@ -75,7 +78,11 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
     pid = str(prop["id"])
     default_in = prop["default_checkin_time"]
     default_out = prop["default_checkout_time"]
-    bookings = repo.list_bookings(conn, pid)
+    # Un bloc miroir **rattaché** (§0.5) disparaît de la liste et du planning : il
+    # double un séjour déjà présent (une seule arrivée pour l'équipe). Jamais
+    # supprimé pour autant — la synchro le recréerait ; il reste en base, masqué.
+    bookings = [b for b in repo.list_bookings(conn, pid)
+                if b["linked_booking_id"] is None]
     overlaps = calendars.compute_overlaps(bookings)
     rotations = calendars.compute_rotations(bookings, default_in, default_out)
     return CalendarViewOut(
@@ -107,6 +114,19 @@ def create_booking(payload: BookingIn, conn: Conn, prop: OwnedProperty):
 def update_booking(booking_id: str, payload: BookingUpdate, conn: Conn,
                    prop: OwnedProperty):
     fields = payload.model_dump(exclude_unset=True)
+    # Rattachement d'un bloc miroir (§0.5) : la cible doit être un autre séjour du
+    # même logement (jamais soi-même). `None` = détacher (toujours autorisé).
+    if fields.get("linked_booking_id") is not None:
+        target = str(fields["linked_booking_id"])
+        if target == booking_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Un séjour ne peut pas être rattaché à lui-même.")
+        if not repo.get_booking(conn, str(prop["id"]), target):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Séjour de rattachement introuvable.")
+        fields["linked_booking_id"] = target
     # Cohérence des dates si l'une des deux est modifiée.
     if "starts_on" in fields or "ends_on" in fields:
         cur = repo.get_booking(conn, str(prop["id"]), booking_id)

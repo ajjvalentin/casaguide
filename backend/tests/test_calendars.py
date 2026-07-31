@@ -61,13 +61,14 @@ def test_parse_all_day_dtend_is_exclusive_departure_day():
     ev = events[0]
     assert ev.starts_on == dt.date(2026, 8, 12)
     assert ev.ends_on == dt.date(2026, 8, 31)     # départ le 31 (nuits 12→30)
-    assert ev.status == "confirmed"
+    assert ev.nature == "reservation"
 
 
 def test_parse_blocked_heuristic():
+    """Un bloc de fermeture arrive en 'unqualified' (à qualifier), pas 'reservation'."""
     events = ical.parse_events(_ical(
         _vevent("b@x", "20260901", "20260905", "CLOSED - Not available")))
-    assert events[0].status == "blocked"
+    assert events[0].nature == "unqualified"
 
 
 def test_parse_datetime_event_normalized_to_dates():
@@ -98,9 +99,11 @@ def test_parse_empty_calendar_is_not_an_error():
 
 # ── Analyse : chevauchements, rotations, masquage (pur, aucun réseau) ─────────
 
-def _bk(bid, start, end, status="confirmed", ci=None, co=None):
+def _bk(bid, start, end, nature="reservation", status="active", ci=None, co=None,
+        linked=None):
     return {"id": bid, "starts_on": dt.date(*start), "ends_on": dt.date(*end),
-            "status": status, "checkin_time": ci, "checkout_time": co}
+            "nature": nature, "status": status, "checkin_time": ci,
+            "checkout_time": co, "linked_booking_id": linked}
 
 
 def test_overlap_detects_recovering_confirmed_pairs():
@@ -133,11 +136,22 @@ def test_rotation_uses_adjusted_times_when_present():
     assert rots[0]["gap_minutes"] == 300           # checkout 11:00 → checkin 16:00 = 5 h
 
 
-def test_blocked_and_cancelled_excluded_from_overlap():
+def test_non_occupied_and_cancelled_excluded_from_overlap():
+    """Seule une OCCUPATION (reservation/private, active, non rattachée) compte."""
     a = _bk("a", (2026, 8, 10), (2026, 8, 20))
-    b = _bk("b", (2026, 8, 12), (2026, 8, 22), status="blocked")
+    b = _bk("b", (2026, 8, 12), (2026, 8, 22), nature="unqualified")  # à qualifier
     c = _bk("c", (2026, 8, 12), (2026, 8, 22), status="cancelled")
-    assert calendars.compute_overlaps([a, b, c]) == []
+    d = _bk("d", (2026, 8, 12), (2026, 8, 22), nature="works")        # travaux
+    e = _bk("e", (2026, 8, 12), (2026, 8, 22), linked="a")            # bloc rattaché
+    assert calendars.compute_overlaps([a, b, c, d, e]) == []
+
+
+def test_private_occupation_overlapping_reservation_is_a_conflict():
+    """Une occupation privée qui recouvre une réservation = double réservation."""
+    a = _bk("a", (2026, 8, 10), (2026, 8, 20), nature="reservation")
+    b = _bk("b", (2026, 8, 15), (2026, 8, 25), nature="private")
+    pairs = calendars.compute_overlaps([a, b])
+    assert len(pairs) == 1
 
 
 def test_mask_url_never_reveals_the_url():
@@ -214,9 +228,10 @@ def test_first_sync_imports_events(conn):
     rows = repo.list_bookings(conn, pid)
     assert len(rows) == 2
     by_uid = {r["external_uid"]: r for r in rows}
-    assert by_uid["u1@a"]["status"] == "confirmed"
+    assert by_uid["u1@a"]["nature"] == "reservation"
+    assert by_uid["u1@a"]["status"] == "active"
     assert by_uid["u1@a"]["source"] == "airbnb"
-    assert by_uid["u2@a"]["status"] == "blocked"
+    assert by_uid["u2@a"]["nature"] == "unqualified"        # "Not available"
     # Le flux est horodaté 'ok'.
     listed = repo.list_calendars(conn, pid)[0]
     assert listed["last_sync_status"] == "ok" and listed["last_sync_at"] is not None
@@ -258,7 +273,7 @@ def test_disappeared_event_is_cancelled_not_deleted(conn):
     rows = {r["external_uid"]: r for r in repo.list_bookings(conn, pid)}
     assert len(rows) == 2                                  # conservé, pas supprimé
     assert rows["gone@a"]["status"] == "cancelled"
-    assert rows["keep@a"]["status"] == "confirmed"
+    assert rows["keep@a"]["status"] == "active"
 
 
 def test_reappearing_cancelled_event_is_revived(conn):
@@ -269,7 +284,7 @@ def test_reappearing_cancelled_event_is_revived(conn):
     calendars.sync_calendar(conn, cal, fetch=_feeder(_ical()))          # disparaît
     assert repo.list_bookings(conn, pid)[0]["status"] == "cancelled"
     calendars.sync_calendar(conn, cal, fetch=_feeder(feed))             # revient
-    assert repo.list_bookings(conn, pid)[0]["status"] == "confirmed"
+    assert repo.list_bookings(conn, pid)[0]["status"] == "active"
 
 
 # ── Champs manuels préservés (invariant 2) ───────────────────────────────────
@@ -293,19 +308,21 @@ def test_manual_fields_survive_sync(conn):
     assert b2["notes"] == "Arrivée tardive"
 
 
-def test_manual_blocked_promotion_survives_sync(conn):
-    """Un 'blocked' promu 'confirmed' à la main n'est pas rétrogradé par la synchro."""
+def test_manual_nature_qualification_survives_sync(conn):
+    """Une nature saisie à la main ('unqualified' → 'private') n'est jamais écrasée
+    par la synchro (invariant 13, prolongé aux natures)."""
     pid = _make_property(conn)
     cal = _make_calendar(conn, pid)
     feed = _ical(_vevent("u1@a", "20260901", "20260905", "Not available"))
     calendars.sync_calendar(conn, cal, fetch=_feeder(feed))
     b = repo.list_bookings(conn, pid)[0]
-    assert b["status"] == "blocked"
+    assert b["nature"] == "unqualified"
     repo.update_booking(conn, pid, str(b["id"]),
-                        {"status": "confirmed", "guest_name": "Martin"})
-    calendars.sync_calendar(conn, cal, fetch=_feeder(feed))            # toujours 'blocked' côté flux
+                        {"nature": "private", "guest_name": "Martin"})
+    calendars.sync_calendar(conn, cal, fetch=_feeder(feed))            # même flux
     b2 = repo.list_bookings(conn, pid)[0]
-    assert b2["status"] == "confirmed" and b2["guest_name"] == "Martin"
+    assert b2["nature"] == "private" and b2["guest_name"] == "Martin"
+    assert b2["status"] == "active"
 
 
 # ── Erreurs non bloquantes (invariant 3) ─────────────────────────────────────
@@ -373,7 +390,7 @@ def test_delete_direct_booking_hard_deletes(conn):
     pid = _make_property(conn)
     b = repo.create_booking(conn, pid, {
         "starts_on": dt.date(2026, 7, 1), "ends_on": dt.date(2026, 7, 5),
-        "source": "direct", "status": "confirmed", "guest_name": "Test"})
+        "source": "direct", "nature": "reservation", "guest_name": "Test"})
     assert repo.delete_booking(conn, pid, str(b["id"])) == "deleted"
     assert repo.list_bookings(conn, pid) == []
 

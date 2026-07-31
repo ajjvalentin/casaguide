@@ -159,9 +159,11 @@ CREATE INDEX idx_calendars_property ON property_calendars(property_id);
 
 -- Séjours (importés par UID iCal ou saisis directement). Intervalle semi-ouvert
 -- [starts_on, ends_on) : ends_on = jour du départ ; deux séjours qui se touchent
--- (départ = arrivée) ne se chevauchent pas (rotation). Un import disparu → 'cancelled'
--- (jamais supprimé). Les champs manuels (nom/contact/heures/notes) ne sont jamais
--- écrasés par une sync ; idempotence par (calendar_id, external_uid).
+-- (départ = arrivée) ne se chevauchent pas (rotation). Un import disparu → status
+-- 'cancelled' (jamais supprimé). Les champs manuels (nom/contact/heures/notes/nature)
+-- ne sont jamais écrasés par une sync ; idempotence par (calendar_id, external_uid).
+-- `nature` = SÉMANTIQUE (pilote la préparation) ; `status` = CYCLE DE VIE. « occupé »
+-- = nature IN ('reservation','private') — voir db/migrations/015 (V2-23b).
 CREATE TABLE bookings (
     id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     property_id   UUID NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
@@ -170,19 +172,27 @@ CREATE TABLE bookings (
     ends_on       DATE NOT NULL,                    -- départ (exclusif : dernière nuit = ends_on - 1)
     checkin_time  TIME,                             -- NULL = heure standard du logement
     checkout_time TIME,                             -- NULL = heure standard du logement
+    luggage_drop_time  TIME,                        -- dépôt de bagages avant l'entrée
+    luggage_until_time TIME,                        -- consigne de bagages après le départ
     source        TEXT NOT NULL DEFAULT 'direct'
                   CHECK (source IN ('airbnb', 'vrbo', 'booking', 'direct', 'other')),
     external_uid  TEXT,                             -- UID iCal (NULL si saisie directe)
     guest_name    TEXT,
     guest_contact TEXT,
     notes         TEXT,
-    status        TEXT NOT NULL DEFAULT 'confirmed'
-                  CHECK (status IN ('confirmed', 'blocked', 'cancelled')),
+    -- Rattachement d'un bloc miroir à son séjour (jamais supprimé, juste masqué).
+    linked_booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
+    nature        TEXT NOT NULL DEFAULT 'unqualified'
+                  CHECK (nature IN ('reservation', 'private', 'works', 'unavailable', 'unqualified')),
+    status        TEXT NOT NULL DEFAULT 'active'
+                  CHECK (status IN ('active', 'cancelled')),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_bookings_property ON bookings(property_id);
 CREATE INDEX idx_bookings_property_dates ON bookings(property_id, starts_on, ends_on);
+CREATE INDEX idx_bookings_linked ON bookings(linked_booking_id)
+    WHERE linked_booking_id IS NOT NULL;
 CREATE UNIQUE INDEX idx_bookings_calendar_uid ON bookings(calendar_id, external_uid)
     WHERE calendar_id IS NOT NULL AND external_uid IS NOT NULL;
 

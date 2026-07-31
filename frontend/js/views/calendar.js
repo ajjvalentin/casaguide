@@ -15,6 +15,7 @@ import {
 } from "../ui.js";
 import { navigate } from "../nav.js";
 import { handleQuotaError } from "../quota.js";
+import { analyzeCandidate } from "../lib/overlaps.js";
 
 const PLATFORMS = [
   ["airbnb", "Airbnb"], ["vrbo", "Vrbo / Abritel"], ["booking", "Booking"],
@@ -26,9 +27,21 @@ const SOURCES = [
 ];
 const SOURCE_LABEL = Object.fromEntries(
   [...SOURCES, ["direct", "Direct"]].map(([k, v]) => [k, v]));
-const STATUS_LABEL = { confirmed: "Confirmé", blocked: "Bloqué", cancelled: "Annulé" };
+// La NATURE porte la sémantique (elle pilote la préparation) — jamais le statut.
+const NATURE_OPTIONS = [
+  ["reservation", "Réservation"], ["private", "Séjour privé"],
+  ["works", "Travaux"], ["unavailable", "Indisponible"],
+  ["unqualified", "À qualifier"],
+];
+const NATURE_LABEL = Object.fromEntries(NATURE_OPTIONS);
+const OCCUPIED = new Set(["reservation", "private"]);
 const MONTHS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.",
   "août", "sept.", "oct.", "nov.", "déc."];
+
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 // ── Formatage dates/heures (parsing manuel : aucune surprise de fuseau) ──────
 function parseISO(iso) { const [y, m, d] = iso.split("-").map(Number); return { y, m, d }; }
@@ -101,6 +114,12 @@ export async function renderCalendar(view, pid) {
     const bookings = data.bookings || [];
     const active = bookings.filter((b) => b.status !== "cancelled");
     const cancelled = bookings.filter((b) => b.status === "cancelled");
+    // Ancrage sur aujourd'hui (§0.7) : les plateformes exportent aussi l'historique.
+    // « À venir » (en cours compris : départ ≥ aujourd'hui) par défaut ; les séjours
+    // déjà terminés sont repliés dans une section discrète.
+    const today = todayISO();
+    const upcoming = active.filter((b) => b.ends_on >= today);
+    const past = active.filter((b) => b.ends_on < today);
 
     // Index chevauchements & rotations pour marquer les lignes.
     const overlapIds = new Set();
@@ -133,16 +152,29 @@ export async function renderCalendar(view, pid) {
             `Sortie ${fmtTime(out.eff_checkout_time)} → entrée ${fmtTime(inn.eff_checkin_time)} — fenêtre ${fmtGap(r.gap_minutes)}`))));
     }
 
-    // Liste chronologique des séjours actifs.
+    // Liste chronologique des séjours À VENIR (en cours compris).
     if (!active.length) {
       body.append(emptyBlock({
         icon: "calendar", title: "Aucun séjour",
         text: "Importez un calendrier de plateforme (Airbnb, Vrbo/Abritel, Booking) ou saisissez une location directe.",
       }));
+    } else if (!upcoming.length) {
+      body.append(emptyBlock({
+        icon: "calendar-check", title: "Aucun séjour à venir",
+        text: "Les séjours passés sont repliés plus bas.",
+      }));
     } else {
       const list = el("div", { class: "booking-list" });
-      for (const b of active) list.append(bookingRow(b, overlapIds, rotById));
+      for (const b of upcoming) list.append(bookingRow(b, overlapIds, rotById));
       body.append(list);
+    }
+
+    // Séjours passés (repliés, discrets — l'historique n'encombre pas la vue).
+    if (past.length) {
+      const inner = el("div", { class: "booking-list" });
+      for (const b of past) inner.append(bookingRow(b, overlapIds, rotById));
+      body.append(el("details", { class: "cancelled-block" },
+        el("summary", {}, `Séjours passés (${past.length})`), inner));
     }
 
     // Séjours annulés (repliés, discrets).
@@ -160,13 +192,14 @@ export async function renderCalendar(view, pid) {
   function bookingRow(b, overlapIds, rotById) {
     const overlap = overlapIds.has(b.id);
     const rot = rotById.get(b.id);
+    const toQualify = b.nature === "unqualified" && b.status !== "cancelled";
     const platBadge = el("span", { class: "plat-badge plat-" + b.source },
       SOURCE_LABEL[b.source] || b.source);
-    const statusBadge = el("span", { class: "badge cal-st cal-st-" + b.status },
-      STATUS_LABEL[b.status] || b.status);
+    const natureBadge = el("span", { class: "badge cal-nat cal-nat-" + b.nature },
+      NATURE_LABEL[b.nature] || b.nature);
 
     const meta = el("div", { class: "row", style: { gap: "8px", flexWrap: "wrap", alignItems: "center" } },
-      platBadge, statusBadge,
+      platBadge, natureBadge,
       overlap ? el("span", { class: "cal-flag cal-flag-overlap", title: "Chevauchement" },
         icon("triangle-alert", 13), "Chevauchement") : null,
       rot ? el("span", { class: "cal-flag cal-flag-rot", title: "Rotation même jour" },
@@ -178,9 +211,10 @@ export async function renderCalendar(view, pid) {
 
     const who = b.guest_name
       ? el("span", { class: "booking-guest" }, b.guest_name)
-      : el("span", { class: "muted booking-guest" }, b.status === "blocked" ? "Bloqué par la plateforme" : "Sans nom");
+      : el("span", { class: "muted booking-guest" },
+        toQualify ? "À qualifier" : (OCCUPIED.has(b.nature) ? "Sans nom" : "—"));
 
-    const cta = b.status === "blocked"
+    const cta = toQualify
       ? el("button", { class: "btn btn-sm", onClick: (e) => { e.stopPropagation(); openBookingModal(b); } },
         icon("pencil", 15), "Compléter")
       : el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Ouvrir le séjour",
@@ -189,8 +223,8 @@ export async function renderCalendar(view, pid) {
     return el("div", {
       class: "booking-row" + (overlap ? " row-overlap" : "") + (rot ? " row-rot" : "")
         + (b.status === "cancelled" ? " row-cancelled" : "")
-        + (b.status === "blocked" ? " row-blocked" : ""),
-      dataset: { bid: b.id, status: b.status, source: b.source },
+        + (toQualify ? " row-blocked" : ""),
+      dataset: { bid: b.id, nature: b.nature, status: b.status, source: b.source },
       onClick: () => openBookingModal(b),
     },
       el("div", { class: "booking-dates" }, fmtRange(b.starts_on, b.ends_on)),
@@ -294,10 +328,17 @@ export async function renderCalendar(view, pid) {
     } finally { if (btn) btn.disabled = false; }
   }
 
-  // ── Modale séjour (saisie directe, complétion, promotion, suppression) ─────
+  // ── Modale séjour (saisie directe, complétion, qualification, suppression) ──
   function openBookingModal(b) {
     const isNew = !b;
     const inherited = data;
+    const isImported = b && !b.is_direct;
+    // Blocs miroirs choisis pour être rattachés au séjour saisi (§0.5), et
+    // acquittement de l'avertissement rouge (§0.4 : la double résa = choix conscient).
+    const attachIds = new Set();
+    let redAck = false;
+    let lastAnalysis = { red: [], neutral: [], rotations: [] };
+
     const field = (label, node, help) => el("div", { class: "field" },
       el("label", {}, label), node, help ? el("div", { class: "help" }, help) : null);
 
@@ -305,34 +346,56 @@ export async function renderCalendar(view, pid) {
     const end = el("input", { type: "date", value: b ? b.ends_on : "" });
     const ci = el("input", { type: "time", value: b && b.checkin_time ? fmtTime(b.checkin_time) : "" });
     const co = el("input", { type: "time", value: b && b.checkout_time ? fmtTime(b.checkout_time) : "" });
+    const luggageDrop = el("input", { type: "time",
+      value: b && b.luggage_drop_time ? fmtTime(b.luggage_drop_time) : "" });
     const guest = el("input", { type: "text", maxlength: "200", value: b?.guest_name || "" });
     const contact = el("input", { type: "text", maxlength: "200", value: b?.guest_contact || "" });
     const notes = el("textarea", { rows: "2" }, b?.notes || "");
     const sourceSel = el("select", {},
       ...SOURCES.map(([k, v]) => el("option", { value: k, selected: (b?.source || "direct") === k }, v)));
-    // Statut : pour un import 'blocked', proposer la promotion en 'confirmed'.
-    const isImported = b && !b.is_direct;
-    const statusSel = el("select", {},
-      el("option", { value: "confirmed", selected: (b?.status || "confirmed") === "confirmed" }, "Confirmé (réservation)"),
-      el("option", { value: "blocked", selected: b?.status === "blocked" }, "Bloqué (indisponible)"));
+    // Nature : la sémantique du séjour (elle pilote la préparation, jamais le statut).
+    const natureSel = el("select", {},
+      ...NATURE_OPTIONS.map(([k, v]) =>
+        el("option", { value: k, selected: (b?.nature || "reservation") === k }, v)));
+    const natureHelp = el("div", { class: "help" },
+      "Un séjour occupé (réservation, séjour privé) déclenche les alertes de "
+      + "chevauchement et la préparation par l'équipe.");
 
+    const warnBox = el("div", { class: "cal-warn-box" });
     const err = el("div", { class: "errbox hidden" });
     const inDefault = fmtTime(inherited.default_checkin_time);
     const outDefault = fmtTime(inherited.default_checkout_time);
     ci.placeholder = inDefault; co.placeholder = outDefault;
 
+    // §0.3 — auto-promotion : dès qu'un nom est saisi sur un séjour « à qualifier »,
+    // la nature bascule VISIBLEMENT sur « Réservation » (réversible d'un clic).
+    guest.addEventListener("input", () => {
+      if (guest.value.trim() && natureSel.value === "unqualified") {
+        natureSel.value = "reservation";
+        natureSel.classList.add("cal-nat-flash");
+        setTimeout(() => natureSel.classList.remove("cal-nat-flash"), 900);
+      }
+    });
+    // §0.4 — l'avertissement se recalcule à chaque changement de dates/heures.
+    for (const inp of [start, end, ci, co]) {
+      inp.addEventListener("input", () => { redAck = false; recomputeWarnings(); });
+    }
+
     const rows = [
       el("div", { class: "grid-2" }, field("Arrivée", start), field("Départ", end)),
+      warnBox,
+      field("Nature du séjour", natureSel), natureHelp,
       el("div", { class: "grid-2" },
-        field("Heure d'arrivée", ci, `Par défaut ${inDefault} (heure standard du logement)`),
+        field("Heure d'arrivée", ci, `Par défaut ${inDefault} (heure standard)`),
         field("Heure de départ", co, `Par défaut ${outDefault}`)),
+      field("Dépôt de bagages avant l'entrée (facultatif)", luggageDrop,
+        "Heure à laquelle la maison doit être accessible et présentable."),
       field("Nom du locataire", guest),
       field("Contact (téléphone / email)", contact),
       field("Notes", notes),
     ];
     // La source n'est éditable que pour une saisie directe (un import garde la sienne).
-    if (isNew || (b && b.is_direct)) rows.splice(1, 0, field("Origine", sourceSel));
-    rows.splice(isNew || (b && b.is_direct) ? 2 : 1, 0, field("Statut", statusSel));
+    if (isNew || (b && b.is_direct)) rows.splice(2, 0, field("Origine", sourceSel));
 
     const save = el("button", { class: "btn btn-primary" }, isNew ? "Créer le séjour" : "Enregistrer");
     const footer = [
@@ -350,6 +413,76 @@ export async function renderCalendar(view, pid) {
       footer,
     });
     save.addEventListener("click", () => onSave());
+    recomputeWarnings();
+
+    // ── Avertissement de chevauchement à la saisie (§0.4/§0.5) ───────────────
+    function recomputeWarnings() {
+      clear(warnBox);
+      const candidate = {
+        id: b?.id, starts_on: start.value, ends_on: end.value,
+        checkin_time: ci.value || null, checkout_time: co.value || null,
+      };
+      const a = analyzeCandidate(candidate, data.bookings, {
+        defaultCheckin: inDefault, defaultCheckout: outDefault });
+      lastAnalysis = a;
+      const effectiveRed = a.red.filter((x) => !attachIds.has(x.id));
+
+      if (effectiveRed.length) {
+        warnBox.append(warnBlock("cal-warn-red", "triangle-alert",
+          effectiveRed.length === 1 ? "Chevauchement avec une occupation"
+            : `${effectiveRed.length} chevauchements avec des occupations`,
+          effectiveRed));
+      }
+      if (a.neutral.length) {
+        warnBox.append(warnBlock("cal-warn-neutral", "info",
+          "Recouvre une période non occupée", a.neutral));
+      }
+      for (const r of a.rotations) {
+        warnBox.append(el("div", { class: "cal-warn cal-warn-info" },
+          icon("arrow-right-left", 15),
+          el("div", {},
+            el("b", {}, `Rotation le ${fmtDayLong(r.on)}`),
+            el("div", { class: "muted", style: { fontSize: "12.5px" } },
+              `Fenêtre de préparation ${fmtGap(r.gap_minutes)} avec ${describe(r.booking)}.`))));
+      }
+      // Le libellé du bouton reste neutre ; le 2e clic n'est demandé qu'au moment
+      // de l'enregistrement (voir onSave) pour ne pas dévoiler l'issue trop tôt.
+      if (!save.disabled) save.textContent = isNew ? "Créer le séjour" : "Enregistrer";
+    }
+
+    function warnBlock(cls, ic, title, list) {
+      const items = el("div", { class: "cal-warn-items" });
+      for (const x of list) {
+        const line = el("div", { class: "cal-warn-item" },
+          el("span", {}, describe(x)));
+        const att = attachBtn(x);
+        if (att) line.append(att);
+        items.append(line);
+      }
+      return el("div", { class: "cal-warn " + cls }, icon(ic, 15),
+        el("div", {}, el("b", {}, title), items));
+    }
+
+    function describe(x) {
+      const who = x.guest_name ? ` · ${x.guest_name}` : "";
+      const src = x.is_direct ? "" : ` · ${SOURCE_LABEL[x.source] || x.source}`;
+      return `${fmtRange(x.starts_on, x.ends_on)} — ${NATURE_LABEL[x.nature] || x.nature}${who}${src}`;
+    }
+
+    // Rattacher un bloc miroir importé au séjour saisi (§0.5). Le bloc n'est jamais
+    // supprimé : il sera masqué (linked_booking_id) après l'enregistrement.
+    function attachBtn(x) {
+      if (x.is_direct) return null;
+      const on = attachIds.has(x.id);
+      const btn = el("button", { class: "btn btn-sm btn-ghost", type: "button" },
+        icon(on ? "link-2" : "link", 13), on ? "Rattaché ✓" : "Rattacher ce bloc");
+      btn.onclick = () => {
+        if (attachIds.has(x.id)) attachIds.delete(x.id);
+        else { attachIds.add(x.id); redAck = false; }
+        recomputeWarnings();
+      };
+      return btn;
+    }
 
     async function onSave(e) {
       if (e && e.preventDefault) e.preventDefault();
@@ -360,20 +493,43 @@ export async function renderCalendar(view, pid) {
       if (end.value <= start.value) {
         err.textContent = "Le départ doit être postérieur à l'arrivée."; err.classList.remove("hidden"); return;
       }
+      // §0.4 — le cas ROUGE (double réservation) demande un second clic conscient.
+      const effectiveRed = lastAnalysis.red.filter((x) => !attachIds.has(x.id));
+      if (effectiveRed.length && !redAck) {
+        redAck = true;
+        save.textContent = "Enregistrer quand même";
+        err.textContent = "Double réservation avec une occupation existante. "
+          + "Cliquez à nouveau pour l'enregistrer volontairement.";
+        err.classList.remove("hidden");
+        return;
+      }
       const payload = {
         starts_on: start.value, ends_on: end.value,
         checkin_time: ci.value || null, checkout_time: co.value || null,
+        luggage_drop_time: luggageDrop.value || null,
         guest_name: guest.value.trim() || null,
         guest_contact: contact.value.trim() || null,
         notes: notes.value.trim() || null,
-        status: statusSel.value,
+        nature: natureSel.value,
       };
       save.disabled = true; save.textContent = "Enregistrement…";
       try {
-        if (isNew) { payload.source = sourceSel.value; await api.createBooking(pid, payload); }
-        else {
+        let bookingId;
+        if (isNew) {
+          payload.source = sourceSel.value;
+          bookingId = (await api.createBooking(pid, payload)).id;
+        } else {
           if (b.is_direct) payload.source = sourceSel.value;
           await api.updateBooking(pid, b.id, payload);
+          bookingId = b.id;
+        }
+        // Rattachement des blocs miroirs choisis (best-effort : un échec ne perd
+        // pas le séjour déjà enregistré).
+        const toAttach = [...attachIds].filter((id) =>
+          lastAnalysis.red.concat(lastAnalysis.neutral).some((x) => x.id === id));
+        for (const id of toAttach) {
+          try { await api.updateBooking(pid, id, { linked_booking_id: bookingId }); }
+          catch { /* le bloc reviendra à la prochaine synchro : non bloquant */ }
         }
         modal.close();
         toast(isNew ? "Séjour créé." : "Séjour enregistré.", "ok");

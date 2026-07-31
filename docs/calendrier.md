@@ -90,3 +90,46 @@ Sur **Villa Ballarin**, avec le flux iCal réel Vrbo/Abritel (hébergement
 Post-validation : si des retouches sont nécessaires, elles font l'objet du
 commit 3 ; sinon la mission V2-23a est close et V2-23b (préparation par séjour,
 planning staff dans `/s/`) prend la suite.
+
+## 4. Nature d'un séjour vs. cycle de vie (V2-23b, volet 0)
+
+Depuis la migration 015, un séjour porte **deux axes indépendants** :
+
+- **`nature`** — la **sémantique**, celle qui pilote la préparation par l'équipe
+  (jamais le statut). La bonne question n'est pas « est-ce loué » mais « est-ce
+  **occupé** » : quelqu'un dort ici → il y a une préparation.
+
+  | nature | occupée ? | préparation | welcome pack | occupation locative |
+  |---|---|---|---|---|
+  | `reservation` | oui | complète | oui | oui |
+  | `private` (proprio / famille / amis) | oui | complète | non | **non** |
+  | `works` (travaux, maintenance) | non | aucune | non | non |
+  | `unavailable` (fermé, ne pas louer) | non | aucune | non | non |
+  | `unqualified` (défaut à l'import) | inconnu | « à qualifier » | — | non |
+
+- **`status`** — le **cycle de vie** : `active` | `cancelled`. La synchro passe un
+  séjour disparu du flux en `cancelled` (conservé, jamais supprimé) et le réactive
+  s'il réapparaît.
+
+**Chevauchement = occupé ↔ occupé** (`nature IN ('reservation','private')`) : une
+occupation privée qui recouvre une réservation est une double réservation, comme
+deux réservations. L'alerte existe désormais **à la saisie** (encart sous les
+dates, calculé côté navigateur, jamais bloquant ; seul le cas rouge demande un
+2e clic « Enregistrer quand même »).
+
+**Import iCal** : un événement dont le flux donne un nom arrive en `reservation` ;
+un bloc de fermeture arrive en `unqualified` (à qualifier par le propriétaire). La
+synchro ne touche **jamais** la nature saisie à la main (invariant 13).
+
+**Auto-promotion** : saisir un nom sur un séjour « à qualifier » bascule
+visiblement la nature sur « Réservation » (réversible).
+
+**Bloc miroir** (§0.5) : une location directe est souvent re-bloquée sur la
+plateforme pour éviter la double vente → deux lignes pour un même séjour. On
+**rattache** le bloc importé au séjour direct (`linked_booking_id`) : il disparaît
+de la liste et du planning (une seule arrivée pour l'équipe) mais n'est **jamais**
+supprimé (la synchro le recréerait).
+
+**Bagages** : `luggage_drop_time` (dépôt avant l'entrée : la maison doit être
+accessible et présentable pour cette heure-là) est saisissable ; `luggage_until_time`
+est prévu en base (cas symétrique, affiché seulement s'il est renseigné).

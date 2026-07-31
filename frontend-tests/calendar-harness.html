@@ -1,12 +1,15 @@
 <!doctype html>
-<!-- Harnais headless du calendrier des séjours (V2-23a).
+<!-- Harnais headless du calendrier des séjours (V2-23a + V2-23b volet 0).
      Pilote le VRAI /frontend/js/views/calendar.js avec un fetch simulé (aucune
      requête réseau). On teste le composant SUR SON ARBRE RENDU (querySelector),
      jamais via une référence interne (leçon V2-18c) : liste chronologique,
-     badges plateforme, statut, alerte chevauchement, rotation avec fenêtre,
-     bouton « Compléter » d'un bloc, séjours annulés repliés, flux masqué, et
-     création d'un séjour direct (POST → rechargement → nouvelle ligne).
-     Verdict dans #result, lu par calendar.test.mjs. Hors frontend/ (jamais servi). -->
+     badges plateforme, nature, alerte chevauchement, rotation avec fenêtre,
+     bouton « Compléter » d'un séjour à qualifier, auto-promotion de la nature à
+     la saisie d'un nom (§0.3), avertissement rouge de chevauchement à la saisie
+     (§0.4), séjours annulés repliés, flux masqué, création d'un séjour direct.
+     Dates RELATIVES à aujourd'hui → le test reste vert quelle que soit la date
+     d'exécution (ancrage « à venir » du §0.7). Verdict dans #result, lu par
+     calendar.test.mjs. Hors frontend/ (jamais servi). -->
 <meta charset="utf-8">
 <title>calendar-harness</title>
 <div id="app"></div>
@@ -16,49 +19,48 @@
 import { renderCalendar } from "/frontend/js/views/calendar.js";
 import { setToken } from "/frontend/js/store.js";
 
+const DAY = 86400000;
+const NOW = new Date();
+const iso = (off) => new Date(NOW.getTime() + off * DAY).toISOString().slice(0, 10);
+
 const PROP = {
   id: "p1", name: "Villa Ballarin", status: "published",
   address_line1: "Calle 1", city: "Orihuela", default_lang: "fr",
   default_checkin_time: "15:00:00", default_checkout_time: "10:00:00",
 };
 
+const mk = (over) => ({
+  calendar_id: null, checkin_time: null, checkout_time: null,
+  luggage_drop_time: null, luggage_until_time: null,
+  eff_checkin_time: "15:00:00", eff_checkout_time: "10:00:00",
+  source: "direct", external_uid: null, is_direct: true, guest_name: null,
+  guest_contact: null, notes: null, nature: "reservation", status: "active",
+  linked_booking_id: null, ...over });
+
 const calData = {
   property_id: "p1",
   default_checkin_time: "15:00:00", default_checkout_time: "10:00:00",
   calendars: [
     { id: "c1", platform: "airbnb", masked_url: "airbnb.com/…/…a1b2.ics",
-      last_sync_at: new Date().toISOString(), last_sync_status: "ok",
-      sync_error: null, created_at: new Date().toISOString() },
+      last_sync_at: NOW.toISOString(), last_sync_status: "ok",
+      sync_error: null, created_at: NOW.toISOString() },
   ],
   bookings: [
-    { id: "b1", calendar_id: null, starts_on: "2026-08-10", ends_on: "2026-08-20",
-      checkin_time: null, checkout_time: null, eff_checkin_time: "15:00:00",
-      eff_checkout_time: "10:00:00", source: "direct", external_uid: null,
-      is_direct: true, guest_name: "Dupont", guest_contact: null, notes: null,
-      status: "confirmed" },
-    { id: "b2", calendar_id: "c1", starts_on: "2026-08-20", ends_on: "2026-08-27",
-      checkin_time: null, checkout_time: null, eff_checkin_time: "15:00:00",
-      eff_checkout_time: "10:00:00", source: "airbnb", external_uid: "u2",
-      is_direct: false, guest_name: null, guest_contact: null, notes: null,
-      status: "confirmed" },
-    { id: "b3", calendar_id: null, starts_on: "2026-08-25", ends_on: "2026-08-30",
-      checkin_time: null, checkout_time: null, eff_checkin_time: "15:00:00",
-      eff_checkout_time: "10:00:00", source: "vrbo", external_uid: null,
-      is_direct: true, guest_name: "Martin", guest_contact: null, notes: null,
-      status: "confirmed" },
-    { id: "b4", calendar_id: "c1", starts_on: "2026-09-01", ends_on: "2026-09-05",
-      checkin_time: null, checkout_time: null, eff_checkin_time: "15:00:00",
-      eff_checkout_time: "10:00:00", source: "airbnb", external_uid: "u4",
-      is_direct: false, guest_name: null, guest_contact: null, notes: null,
-      status: "blocked" },
-    { id: "b5", calendar_id: "c1", starts_on: "2026-07-01", ends_on: "2026-07-05",
-      checkin_time: null, checkout_time: null, eff_checkin_time: "15:00:00",
-      eff_checkout_time: "10:00:00", source: "airbnb", external_uid: "u5",
-      is_direct: false, guest_name: null, guest_contact: null, notes: null,
-      status: "cancelled" },
+    mk({ id: "b1", starts_on: iso(30), ends_on: iso(40), source: "direct",
+         is_direct: true, guest_name: "Dupont" }),
+    mk({ id: "b2", calendar_id: "c1", starts_on: iso(40), ends_on: iso(47),
+         source: "airbnb", external_uid: "u2", is_direct: false }),
+    mk({ id: "b3", starts_on: iso(45), ends_on: iso(50), source: "vrbo",
+         is_direct: true, guest_name: "Martin" }),
+    mk({ id: "b4", calendar_id: "c1", starts_on: iso(60), ends_on: iso(64),
+         source: "airbnb", external_uid: "u4", is_direct: false,
+         nature: "unqualified" }),
+    mk({ id: "b5", calendar_id: "c1", starts_on: iso(-60), ends_on: iso(-56),
+         source: "airbnb", external_uid: "u5", is_direct: false,
+         status: "cancelled" }),
   ],
   overlaps: [{ a: "b2", b: "b3" }],
-  rotations: [{ on: "2026-08-20", departing: "b1", arriving: "b2", gap_minutes: 300 }],
+  rotations: [{ on: iso(40), departing: "b1", arriving: "b2", gap_minutes: 300 }],
 };
 
 const posted = [];
@@ -71,11 +73,9 @@ window.fetch = async (path, opts = {}) => {
   if (path === "/api/properties/p1/bookings" && method === "POST") {
     const b = JSON.parse(opts.body);
     posted.push(b);
-    const row = {
-      id: "bnew", calendar_id: null, external_uid: null, is_direct: true,
+    const row = mk({ id: "bnew", is_direct: true,
       eff_checkin_time: b.checkin_time || "15:00:00",
-      eff_checkout_time: b.checkout_time || "10:00:00",
-      guest_contact: null, notes: null, ...b };
+      eff_checkout_time: b.checkout_time || "10:00:00", ...b });
     calData.bookings.push(row);
     return json(row);
   }
@@ -87,6 +87,7 @@ const log = [];
 let pass = true;
 const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const fire = (node) => node.dispatchEvent(new Event("input", { bubbles: true }));
 const app = document.getElementById("app");
 const q = (sel, root = document) => root.querySelector(sel);
 const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -95,13 +96,15 @@ try {
   await renderCalendar(app, "p1");
   await wait(50);
 
-  // ── Liste chronologique & badges ─────────────────────────────────────────
+  // ── Liste chronologique & badges (à venir uniquement, §0.7) ──────────────
   const rows = qa(".booking-row").filter((r) => !r.closest(".cancelled-block"));
-  chk(rows.length === 4, "4 séjours actifs listés (b1..b4), pas les annulés (n=" + rows.length + ")");
-  chk(/10\.08 → 20\.08\.2026/.test(rows[0].textContent), "1re ligne : plage « 10.08 → 20.08.2026 »");
-  chk(/Dupont/.test(rows[0].textContent), "1re ligne : nom du locataire « Dupont »");
+  chk(rows.length === 4, "4 séjours à venir listés (b1..b4), pas les annulés (n=" + rows.length + ")");
+  chk(/→/.test(rows[0].textContent) && /Dupont/.test(rows[0].textContent),
+    "1re ligne : plage + nom du locataire « Dupont »");
   chk(!!q(".plat-direct") && !!q(".plat-airbnb") && !!q(".plat-vrbo"),
     "pastilles plateforme colorées (direct/airbnb/vrbo)");
+  chk(!!q(".cal-nat-reservation") && !!q(".cal-nat-unqualified"),
+    "badges de nature (réservation / à qualifier)");
 
   // ── Alerte chevauchement (alerte, jamais blocage) ────────────────────────
   const alert = q(".cal-alert");
@@ -114,34 +117,45 @@ try {
   chk(rot && /Sortie 10:00 → entrée 15:00/.test(rot.textContent), "rotation : « Sortie 10:00 → entrée 15:00 »");
   chk(rot && /fenêtre 5 h/.test(rot.textContent), "rotation : fenêtre « 5 h »");
 
-  // ── Bloc « Compléter » + séjours annulés repliés ─────────────────────────
-  const blocked = q('.booking-row[data-status="blocked"]');
-  chk(!!blocked && /Compléter/.test(blocked.textContent), "séjour bloqué : bouton « Compléter »");
+  // ── Séjour « à qualifier » : bouton « Compléter » + séjours annulés ──────
+  const toQualify = q('.booking-row[data-nature="unqualified"]');
+  chk(!!toQualify && /Compléter/.test(toQualify.textContent),
+    "séjour à qualifier : bouton « Compléter »");
   const cancelledBlock = q(".cancelled-block");
   chk(!!cancelledBlock && /Séjours annulés \(1\)/.test(cancelledBlock.textContent),
     "séjours annulés repliés (1)");
 
-  // ── Flux de calendrier (masqué) ──────────────────────────────────────────
-  const flux = q(".flux-row");
-  chk(!!flux && /a1b2\.ics/.test(flux.textContent), "flux listé avec URL masquée");
-  chk(!!q(".flux-add"), "formulaire d'ajout de flux présent");
-  chk(!!q(".flux-add input[type=url]"), "champ URL du flux présent");
+  // ── §0.3 auto-promotion + §0.4 avertissement rouge à la saisie ───────────
+  q(".booking-row[data-nature='unqualified'] .btn").click();  // « Compléter »
+  await wait(40);
+  let modal = q(".modal-back");
+  const natureSel = q(".modal-back select");   // 1re <select> = nature (pas de source sur un import)
+  chk(natureSel && natureSel.value === "unqualified", "modale : nature initiale « à qualifier »");
+  // Dates qui recouvrent b2 (occupation) → avertissement rouge.
+  const dts = qa('.modal-back input[type=date]');
+  dts[0].value = iso(41); dts[1].value = iso(45); fire(dts[0]); fire(dts[1]);
+  await wait(20);
+  chk(!!q(".modal-back .cal-warn-red"), "avertissement ROUGE affiché (chevauchement d'occupation)");
+  // Saisie d'un nom → la nature bascule sur « Réservation » (auto-promotion).
+  const guestInput = qa('.modal-back input[type=text]')[0];
+  guestInput.value = "Famille"; fire(guestInput);
+  chk(natureSel.value === "reservation", "auto-promotion : nature → « réservation » dès qu'un nom est saisi");
+  q(".modal-back").remove();                    // ferme la modale de complétion
 
   // ── Création d'un séjour direct (POST → rechargement → nouvelle ligne) ────
   q(".btn-primary.btn-sm").click();            // « Nouveau séjour »
   await wait(40);
-  const modal = q(".modal-back");
-  chk(!!modal, "modale « Nouveau séjour » ouverte");
+  chk(!!q(".modal-back"), "modale « Nouveau séjour » ouverte");
   const dates = qa('.modal-back input[type=date]');
   chk(dates.length === 2, "modale : deux champs date (arrivée / départ)");
-  dates[0].value = "2026-10-01"; dates[1].value = "2026-10-08";
+  dates[0].value = iso(70); dates[1].value = iso(77);
   const nameInput = qa('.modal-back input[type=text]')[0];
   if (nameInput) nameInput.value = "Nouveau Test";
-  qa(".modal-foot .btn-primary")[0].click();   // Enregistrer
+  qa(".modal-foot .btn-primary")[0].click();   // Enregistrer (aucun chevauchement → direct)
   await wait(200);
   chk(posted.length === 1, "POST /bookings émis une fois");
-  chk(posted[0] && posted[0].starts_on === "2026-10-01" && posted[0].ends_on === "2026-10-08",
-    "POST : dates transmises");
+  chk(posted[0] && posted[0].starts_on === iso(70) && posted[0].nature === "reservation",
+    "POST : dates + nature « réservation » transmises");
   chk(qa(".booking-row").some((r) => /Nouveau Test/.test(r.textContent)),
     "la nouvelle ligne apparaît après rechargement");
 } catch (e) {

@@ -161,7 +161,7 @@ def test_overlap_and_rotation_surfaced_in_view(client):
 
 # ── Complétion & promotion ───────────────────────────────────────────────────
 
-def test_complete_and_promote_blocked_to_confirmed(client):
+def test_complete_and_qualify_unqualified_to_reservation(client):
     h = _register(client)
     pid = _make_property(client, h)
     FEED.text = _ical(_vevent("blk@a", "20260901", "20260905", "Not available"))
@@ -170,15 +170,60 @@ def test_complete_and_promote_blocked_to_confirmed(client):
     assert add.status_code == 201
     view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
     b = view["bookings"][0]
-    assert b["status"] == "blocked" and b["is_direct"] is False
-    # Compléter + promouvoir.
+    assert b["nature"] == "unqualified" and b["status"] == "active"
+    assert b["is_direct"] is False
+    # Compléter + qualifier en réservation.
     r = client.patch(f"/api/properties/{pid}/bookings/{b['id']}", headers=h,
-                     json={"status": "confirmed", "guest_name": "Martin",
+                     json={"nature": "reservation", "guest_name": "Martin",
                            "checkin_time": "17:00"})
     assert r.status_code == 200
     bb = r.json()
-    assert bb["status"] == "confirmed" and bb["guest_name"] == "Martin"
+    assert bb["nature"] == "reservation" and bb["guest_name"] == "Martin"
     assert bb["eff_checkin_time"] == "17:00:00"
+
+
+def test_direct_booking_defaults_to_reservation_nature(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    b = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-20"}).json()
+    assert b["nature"] == "reservation" and b["status"] == "active"
+
+
+def test_link_mirror_block_hides_it_from_view(client):
+    """§0.5 : rattacher un bloc importé à un séjour direct le retire de la vue
+    (et donc du chevauchement), sans jamais le supprimer."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    # Séjour direct hors plateforme.
+    direct = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-19",
+        "guest_name": "Location directe"}).json()
+    # Bloc miroir importé qui double ces dates → chevauchement au départ.
+    FEED.text = _ical(_vevent("blk@a", "20260812", "20260819", "Reserved"))
+    client.post(f"/api/properties/{pid}/calendars", headers=h,
+                json={"platform": "vrbo", "ical_url": "https://x/c.ics"})
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert len(view["bookings"]) == 2 and len(view["overlaps"]) == 1
+    block = next(b for b in view["bookings"] if not b["is_direct"])
+    # Rattachement du bloc au séjour direct.
+    r = client.patch(f"/api/properties/{pid}/bookings/{block['id']}", headers=h,
+                     json={"linked_booking_id": direct["id"]})
+    assert r.status_code == 200
+    view2 = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert len(view2["bookings"]) == 1          # le bloc a disparu de la liste
+    assert view2["overlaps"] == []              # plus de faux chevauchement
+    assert view2["bookings"][0]["id"] == direct["id"]
+
+
+def test_cannot_link_booking_to_itself(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    b = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-19"}).json()
+    r = client.patch(f"/api/properties/{pid}/bookings/{b['id']}", headers=h,
+                     json={"linked_booking_id": b["id"]})
+    assert r.status_code == 422
 
 
 # ── Ajout de flux : validation au collage ────────────────────────────────────

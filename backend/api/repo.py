@@ -1338,12 +1338,18 @@ def delete_calendar(conn, property_id: str, calendar_id: str) -> bool:
 # ── Séjours ──────────────────────────────────────────────────────────────────
 
 _BOOKING_COLS = ("id, property_id, calendar_id, starts_on, ends_on, "
-                 "checkin_time, checkout_time, source, external_uid, "
-                 "guest_name, guest_contact, notes, status, created_at, updated_at")
+                 "checkin_time, checkout_time, luggage_drop_time, "
+                 "luggage_until_time, source, external_uid, "
+                 "guest_name, guest_contact, notes, nature, status, "
+                 "linked_booking_id, created_at, updated_at")
 
-# Champs d'un séjour modifiables à la main (jamais écrasés par une synchro).
+# Champs d'un séjour modifiables à la main (jamais écrasés par une synchro). `nature`
+# et `linked_booking_id` en font partie : la synchro ne touche QUE les dates (et
+# réactive un 'cancelled' réapparu), jamais la sémantique saisie (invariant 13).
 _BOOKING_UPDATABLE = ("starts_on", "ends_on", "checkin_time", "checkout_time",
-                      "guest_name", "guest_contact", "notes", "status", "source")
+                      "luggage_drop_time", "luggage_until_time",
+                      "guest_name", "guest_contact", "notes", "nature", "status",
+                      "source", "linked_booking_id")
 
 
 def list_bookings(conn, property_id: str) -> list[dict]:
@@ -1366,9 +1372,12 @@ def get_booking(conn, property_id: str, booking_id: str) -> dict | None:
 
 def create_booking(conn, property_id: str, data: dict) -> dict:
     """Saisie directe d'un séjour (jamais rattachée à un flux : calendar_id NULL,
-    external_uid NULL). Les heures NULL signifient « heures standard du logement »."""
-    cols = ("starts_on", "ends_on", "checkin_time", "checkout_time", "source",
-            "guest_name", "guest_contact", "notes", "status")
+    external_uid NULL). Les heures NULL signifient « heures standard du logement ».
+    `status` reste au défaut 'active' (cycle de vie) ; c'est `nature` qui porte la
+    sémantique (réservation, privé, travaux…)."""
+    cols = ("starts_on", "ends_on", "checkin_time", "checkout_time",
+            "luggage_drop_time", "luggage_until_time", "source",
+            "guest_name", "guest_contact", "notes", "nature")
     values = [property_id] + [data.get(c) for c in cols]
     placeholders = ", ".join(["%s"] * (len(cols) + 1))
     return conn.execute(
@@ -1380,9 +1389,10 @@ def create_booking(conn, property_id: str, data: dict) -> dict:
 
 def update_booking(conn, property_id: str, booking_id: str,
                    fields: dict) -> dict | None:
-    """Complète/édite un séjour (nom, contact, heures, notes, statut, dates).
-    Sert notamment à **promouvoir** un import 'blocked' en 'confirmed' (V2-23b :
-    complétion). None si le séjour n'appartient pas au logement."""
+    """Complète/édite un séjour (nom, contact, heures, notes, nature, dates,
+    bagages, rattachement). Sert notamment à **qualifier** un import 'unqualified'
+    en 'reservation'/'private'/… (V2-23b, complétion). None si le séjour
+    n'appartient pas au logement."""
     sets, params = [], []
     for key in _BOOKING_UPDATABLE:
         if key in fields:
@@ -1425,32 +1435,36 @@ def delete_booking(conn, property_id: str, booking_id: str) -> str | None:
 
 def upsert_imported_booking(conn, *, property_id: str, calendar_id: str,
                             source: str, external_uid: str,
-                            starts_on, ends_on, status: str) -> bool:
+                            starts_on, ends_on, nature: str) -> bool:
     """Insère ou met à jour un séjour importé, clé (calendar_id, external_uid).
 
     Idempotent (invariant 2 de la mission) : re-synchroniser N fois ne crée aucun
     doublon. Sur conflit, seules les **dates** sont rafraîchies — les champs
-    saisis à la main (nom, contact, heures, notes) ne sont **jamais** écrasés. Le
-    `status` n'est pas non plus rétrogradé : une promotion manuelle 'blocked' →
-    'confirmed' survit ; un séjour qui avait disparu ('cancelled') et qui
-    **réapparaît** dans le flux est en revanche réactivé (statut du flux).
+    saisis à la main (nom, contact, heures, notes, **nature**, rattachement) ne
+    sont **jamais** écrasés (invariant 13). La `nature` déduite du flux ne sert
+    donc qu'à la **création** ; une qualification manuelle ('unqualified' →
+    'private'…) survit à toutes les synchros suivantes.
+
+    Le `status` (cycle de vie) : un import est créé 'active' ; un séjour disparu
+    passé 'cancelled' (`cancel_missing_bookings`) et qui **réapparaît** dans le
+    flux est **réactivé** ('active'). Un séjour 'active' n'est jamais retouché.
 
     Renvoie True si un séjour a été **créé**, False s'il a été mis à jour."""
     row = conn.execute(
         f"""INSERT INTO bookings (property_id, calendar_id, source, external_uid,
-                                  starts_on, ends_on, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                  starts_on, ends_on, nature, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'active')
             ON CONFLICT (calendar_id, external_uid)
               WHERE calendar_id IS NOT NULL AND external_uid IS NOT NULL
             DO UPDATE SET
                 starts_on = EXCLUDED.starts_on,
                 ends_on   = EXCLUDED.ends_on,
                 status    = CASE WHEN bookings.status = 'cancelled'
-                                 THEN EXCLUDED.status ELSE bookings.status END,
+                                 THEN 'active' ELSE bookings.status END,
                 updated_at = now()
             RETURNING (xmax = 0) AS inserted""",
         (property_id, calendar_id, source, external_uid, starts_on, ends_on,
-         status),
+         nature),
     ).fetchone()
     return bool(row["inserted"])
 

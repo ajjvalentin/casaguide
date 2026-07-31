@@ -100,7 +100,7 @@ def sync_calendar(conn, calendar: dict, *, fetch: CalendarFetcher) -> SyncResult
         inserted = repo.upsert_imported_booking(
             conn, property_id=property_id, calendar_id=calendar_id,
             source=source, external_uid=ev.uid,
-            starts_on=ev.starts_on, ends_on=ev.ends_on, status=ev.status)
+            starts_on=ev.starts_on, ends_on=ev.ends_on, nature=ev.nature)
         created += int(inserted)
         updated += int(not inserted)
     cancelled = repo.cancel_missing_bookings(conn, calendar_id, seen)
@@ -159,6 +159,23 @@ def sync_all(conn, *, fetch: CalendarFetcher = fetch_ical,
 # touchent (départ = arrivée le même jour) NE se chevauchent PAS — c'est une
 # rotation. L'anti-chevauchement **alerte, ne bloque jamais** (inv. 4 : le
 # propriétaire arbitre).
+#
+# La bonne question n'est pas « est-ce loué » mais « est-ce OCCUPÉ » (V2-23b) :
+# un séjour est occupé quand quelqu'un y dort — `nature IN ('reservation',
+# 'private')` et cycle de vie 'active'. Un `works` / `unavailable` / `unqualified`
+# ne bloque personne : il ne compte ni pour le chevauchement ni pour la rotation.
+# Un bloc **rattaché** (`linked_booking_id`) est le miroir d'un autre séjour : il
+# est ignoré (sinon il ferait un faux chevauchement avec le séjour qu'il double).
+
+_OCCUPIED_NATURES = ("reservation", "private")
+
+
+def _is_occupied(b: dict) -> bool:
+    """Un séjour occupe le logement (quelqu'un y dort → préparation) : nature
+    réservation/privé, cycle de vie actif, non rattaché à un autre séjour."""
+    return (b.get("status") == "active"
+            and b.get("nature") in _OCCUPIED_NATURES
+            and b.get("linked_booking_id") is None)
 
 
 def effective_times(booking: dict, default_in: _dt.time,
@@ -171,14 +188,16 @@ def effective_times(booking: dict, default_in: _dt.time,
 
 
 def compute_overlaps(bookings: list[dict]) -> list[tuple[dict, dict]]:
-    """Paires de séjours **confirmés** dont les intervalles [arrivée, départ) se
-    recouvrent. Les 'blocked' (fermetures plateforme) et 'cancelled' sont ignorés."""
-    confirmed = [b for b in bookings if b["status"] == "confirmed"]
+    """Paires de séjours **occupés** dont les intervalles [arrivée, départ) se
+    recouvrent (double réservation). Une occupation privée qui recouvre une
+    réservation en est une, exactement comme deux réservations. Les non-occupés
+    (works/unavailable/unqualified), 'cancelled' et blocs rattachés sont ignorés."""
+    occupied = [b for b in bookings if _is_occupied(b)]
     out: list[tuple[dict, dict]] = []
-    for i in range(len(confirmed)):
-        a = confirmed[i]
-        for j in range(i + 1, len(confirmed)):
-            b = confirmed[j]
+    for i in range(len(occupied)):
+        a = occupied[i]
+        for j in range(i + 1, len(occupied)):
+            b = occupied[j]
             if a["starts_on"] < b["ends_on"] and b["starts_on"] < a["ends_on"]:
                 out.append((a, b))
     return out
@@ -188,11 +207,12 @@ def compute_rotations(bookings: list[dict], default_in: _dt.time,
                       default_out: _dt.time) -> list[dict]:
     """Rotations même jour : un séjour **part** le jour où un autre **arrive**
     (départ = arrivée). Renvoie {on, departing, arriving, gap_minutes} — la
-    fenêtre de préparation entre le checkout effectif et le checkin effectif."""
-    confirmed = [b for b in bookings if b["status"] == "confirmed"]
+    fenêtre de préparation entre le checkout effectif et le checkin effectif.
+    Ne concerne que les séjours **occupés** (une rotation suppose une prépa)."""
+    occupied = [b for b in bookings if _is_occupied(b)]
     rotations: list[dict] = []
-    for a in confirmed:                       # a part…
-        for b in confirmed:                   # …le jour où b arrive
+    for a in occupied:                        # a part…
+        for b in occupied:                    # …le jour où b arrive
             if a["id"] == b["id"]:
                 continue
             if a["ends_on"] == b["starts_on"]:

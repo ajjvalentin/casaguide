@@ -53,7 +53,7 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
 | Config (M-02) | Chargement auto de `backend/.env` (`enrich/envfile.py`) ; `backend/.env.example` documenté ; avertissement de démarrage si clés manquantes |
 | Stockage médias | `api/storage.py` — interface `Storage` abstraite + `LocalStorage` sous `MEDIA_ROOT` (prêt pour S3) |
 | Guide voyageur PWA (M-08) | **Fait** — page HTML mobile-first rendue par `api/guide_page.py`, app shell `frontend/guide/` (modules ES : `app.js` carte/filtres/visionneuse/secrets, `qr.js` QR wifi autonome, `sw.js` hors-ligne, manifest par guide, icônes). Identité `guide_preview.html`. Multilingue (M-09) **fait**. **Hors-ligne complet (M-10) fait** : `sw.js` (v15) pré-charge les tuiles OSM de la zone (zooms 13-16, ~148 tuiles, séquentiel/poli) et les sert cache-first ; message discret hors zone. **Liens de partage (M-25) faits** : Open Graph/Twitter + og:image (photo ou image de marque `api/og_image.py`) + slug `/g/{slug}-{token}`. **Lisibilité (V2-09) faite** : TROIS onglets (Le logement / Urgences / Autour de vous, état dans le hash, `app.js initTabs`) + listes de lieux repliées (4 + « Voir les N autres », `initCategoryLists`) |
-| Calendrier des séjours (V2-23a) | **Volet 1+2 faits** — migration 014 (`bookings`, `property_calendars` avec `ical_url_enc` chiffrée, heures standard `properties.default_checkin/checkout_time`). Parser iCal pur `api/ical.py` (DTSTART/DTEND dates & datetimes, DTEND exclusif, heuristique blocked). Moteur `api/calendars.py` (fetch httpx timeout/UA/redirections/non-bloquant ; upsert idempotent par UID ; disparu→cancelled ; champs manuels & promotion préservés ; overlaps/rotations purs ; `mask_url`). Fetch injectable (`deps.get_calendar_fetcher`). API `routers/calendars.py` (`GET /calendar` vue complète, CRUD `/bookings`, `/calendars` avec validation au collage, `DELETE` flux→cancel, `POST /calendar/sync` rate-limité). Front `js/views/calendar.js` (liste chronologique, badges, alerte chevauchement, rotations, blocs à compléter, annulés repliés, flux masqués + ajout/synchro/suppression). Bouton « Calendrier » (carte + porte staff), route `#/properties/:id/calendrier`. Ops `sync_calendars.py` + timer systemd 4 h. Testé (parser + moteur + API intégration + headless `calendar.test.mjs`). **Reste V2-23b** : demandes particulières/catalogue, welcome pack, règles d'entretien, interventions calculées, **planning staff dans `/s/`** avec gating Pro |
+| Calendrier des séjours (V2-23a) | **Volet 1+2 faits** — migration 014 (`bookings`, `property_calendars` avec `ical_url_enc` chiffrée, heures standard `properties.default_checkin/checkout_time`). Parser iCal pur `api/ical.py` (DTSTART/DTEND dates & datetimes, DTEND exclusif, heuristique blocked). Moteur `api/calendars.py` (fetch httpx timeout/UA/redirections/non-bloquant ; upsert idempotent par UID ; disparu→cancelled ; champs manuels & promotion préservés ; overlaps/rotations purs ; `mask_url`). Fetch injectable (`deps.get_calendar_fetcher`). API `routers/calendars.py` (`GET /calendar` vue complète, CRUD `/bookings`, `/calendars` avec validation au collage, `DELETE` flux→cancel, `POST /calendar/sync` rate-limité). Front `js/views/calendar.js` (liste chronologique, badges, alerte chevauchement, rotations, blocs à compléter, annulés repliés, flux masqués + ajout/synchro/suppression). Bouton « Calendrier » (carte + porte staff), route `#/properties/:id/calendrier`. Ops `sync_calendars.py` + timer systemd 4 h. Testé (parser + moteur + API intégration + headless `calendar.test.mjs`). **V2-23b volet 0 fait** (migration 015) : séparation `nature` (sémantique, pilote la préparation — invariant 14) / `status` (cycle de vie `active`/`cancelled`) ; chevauchement = occupé↔occupé ; avertissement **à la saisie** (`js/lib/overlaps.js` pur + `overlaps.test.mjs`) ; auto-promotion nature à la saisie d'un nom ; rattachement d'un bloc miroir (`linked_booking_id`, masqué jamais supprimé) ; bagages (`luggage_drop_time`) ; vue ancrée sur aujourd'hui (à venir / passés repliés). **Reste V2-23b** : 0.6 relance coordonnées manquantes (dépend du moteur d'interventions §1.3), volet 1 règles d'entretien/catalogue/welcome pack + `api/care.py`, volet 2 **planning staff dans `/s/`** avec gating Pro, volet 3 demande du voyageur → planning |
 
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
 
@@ -207,6 +207,23 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
     arrivée le même jour) ne se chevauchent pas : c'est une **rotation** (fenêtre
     horaire calculée avec les heures effectives). Le fetch est **injectable**
     (`deps.get_calendar_fetcher`) → tests sans réseau.
+14. **La nature pilote la préparation, jamais le statut (V2-23b, migration 015)** :
+    un séjour porte DEUX axes indépendants. **`nature`** = la SÉMANTIQUE
+    (`reservation` | `private` | `works` | `unavailable` | `unqualified`) — c'est
+    elle, et elle seule, qui décide de la préparation par l'équipe. **`status`** =
+    le CYCLE DE VIE (`active` | `cancelled`). La bonne question n'est pas « est-ce
+    loué » mais « est-ce **occupé** » : `_is_occupied` = `nature IN
+    ('reservation','private')` + `status='active'` + non rattaché. Le chevauchement
+    (`compute_overlaps`) et les rotations raisonnent sur **l'occupation**, pas sur
+    le statut (une occupation privée qui recouvre une réservation est une double
+    réservation). La synchro iCal ne touche **jamais** la nature saisie à la main
+    (prolongement de l'invariant 13) : elle ne sert qu'à la **création** (`reservation`
+    si le flux donne un nom, sinon `unqualified`) et ne rafraîchit que les dates
+    (+ réactive un `cancelled` réapparu → `active`). Un **bloc miroir** rattaché
+    (`linked_booking_id`) est le double d'un séjour déjà présent : ignoré des
+    chevauchements et **masqué** de la vue, mais **jamais supprimé** (la synchro le
+    recréerait). Aucune valeur codée en dur : les natures vivent dans la contrainte
+    CHECK de la base (invariant 8).
 
 ## Commandes
 
@@ -226,6 +243,7 @@ psql -d casaguide -f db/migrations/011_grille_addons_staff.sql # add-on + staff_
 psql -d casaguide -f db/migrations/012_scheduled_plan_change.sql # downgrade programmé (scheduled_plan_id/_change_at, V2-18e)
 psql -d casaguide -f db/migrations/013_poi_travel_mode.sql # mode de trajet par catégorie (poi_categories.travel_mode, V2-24)
 psql -d casaguide -f db/migrations/014_calendar.sql # calendrier des séjours : bookings + property_calendars + heures standard (V2-23a)
+psql -d casaguide -f db/migrations/015_booking_nature.sql # nature du séjour + bagages + bloc miroir ; status → cycle de vie (V2-23b, volet 0)
 
 # Backend
 cd backend
@@ -896,6 +914,26 @@ exposé, peer auth).
   l'ajout d'un flux synchronise déjà → un sync-now immédiat après ajout **répond
   429** (attendu). Timer systemd toutes les 4 h (`ops/sync_calendars.py` +
   `casaguide-sync-calendars.{service,timer}`, patron opsenv/OPS-1).
+- Nature vs statut & avertissement à la saisie (V2-23b, volet 0, invariant 14) :
+  depuis la migration 015, `bookings.status` est un **cycle de vie pur**
+  (`active`/`cancelled`) et `bookings.nature` porte la sémantique. Le `DO UPDATE
+  SET` de `upsert_imported_booking` ne doit contenir QUE `starts_on`/`ends_on`/
+  `status` (réactivation `cancelled`→`active`) — **jamais** `nature` (une
+  qualification manuelle serait écrasée à chaque sync). Les chevauchements/rotations
+  filtrent sur `_is_occupied` (occupé = reservation/private, actif, non rattaché),
+  plus sur `status='confirmed'` (valeur qui n'existe plus). **Duplication
+  volontaire front/back de la règle d'intervalle** : `frontend/js/lib/overlaps.js`
+  (module PUR, testé par `frontend-tests/overlaps.test.mjs` sans Chrome) reprend
+  l'intervalle semi-ouvert + la notion d'occupation du backend pour **avertir à la
+  saisie** (encart instantané, aucun aller-retour serveur). Le front **avertit**, le
+  back **fait foi** (`GET /calendar` recalcule) — les deux DOIVENT rester alignés
+  (si on change la règle d'un côté, changer l'autre + les deux tests). L'alerte
+  n'est **jamais bloquante** ; seul le cas **rouge** (chevauchement d'une
+  occupation) demande un 2e clic « Enregistrer quand même ». Un **bloc miroir**
+  rattaché (`linked_booking_id`, §0.5) est filtré de `GET /calendar` (liste + vue
+  purs) mais jamais supprimé. La vue est **ancrée sur aujourd'hui** (§0.7) :
+  `todayISO()` sépare « à venir » (départ ≥ aujourd'hui, en cours compris) des
+  passés/annulés repliés — le flux Abritel exporte aussi l'historique.
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 

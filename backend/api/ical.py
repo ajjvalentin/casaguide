@@ -42,7 +42,7 @@ class ICalEvent:
     summary: str
     starts_on: _dt.date          # arrivée
     ends_on: _dt.date            # départ (exclusif : dernière nuit = ends_on - 1)
-    status: str                  # 'confirmed' | 'blocked'
+    nature: str                  # 'reservation' (le flux donne un nom) | 'unqualified'
 
 
 def _as_date(value) -> _dt.date | None:
@@ -59,9 +59,13 @@ def _as_date(value) -> _dt.date | None:
     return None
 
 
-def _status_from_summary(summary: str) -> str:
+def _nature_from_summary(summary: str) -> str:
+    """Nature déduite du SUMMARY (V2-23b). Un événement dont le flux donne un nom
+    de réservation arrive en `reservation` ; un bloc de fermeture/indisponibilité
+    (sans réservation) arrive en `unqualified` — c'est au propriétaire de dire s'il
+    s'agit d'un séjour privé, de travaux ou d'une simple indisponibilité (§0.1)."""
     low = summary.lower()
-    return "blocked" if any(h in low for h in _BLOCKED_HINTS) else "confirmed"
+    return "unqualified" if any(h in low for h in _BLOCKED_HINTS) else "reservation"
 
 
 def _stable_uid(summary: str, start: _dt.date, end: _dt.date) -> str:
@@ -77,7 +81,7 @@ def parse_events(text: str | bytes) -> list[ICalEvent]:
 
     Chaque événement gagne : `starts_on` (DTSTART ramené au jour), `ends_on`
     (DTEND exclusif ramené au jour ; à défaut, journée entière → +1 jour,
-    datetime → au moins une nuit), un `status` déduit du SUMMARY, un `uid`
+    datetime → au moins une nuit), une `nature` déduite du SUMMARY, un `uid`
     (celui du flux, sinon un repli déterministe). Les événements sans DTSTART
     exploitable sont ignorés (impossible à placer).
     """
@@ -109,5 +113,5 @@ def parse_events(text: str | bytes) -> list[ICalEvent]:
 
         events.append(ICalEvent(
             uid=uid, summary=summary, starts_on=start, ends_on=end,
-            status=_status_from_summary(summary)))
+            nature=_nature_from_summary(summary)))
     return events

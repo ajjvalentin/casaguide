@@ -418,7 +418,10 @@ class JobOut(BaseModel):
 
 _Platform = Literal["airbnb", "vrbo", "booking", "other"]
 _Source = Literal["airbnb", "vrbo", "booking", "direct", "other"]
-_BookingStatus = Literal["confirmed", "blocked", "cancelled"]
+# Cycle de vie (V2-23b) : distinct de la sémantique (nature).
+_BookingStatus = Literal["active", "cancelled"]
+# Sémantique du séjour : c'est elle qui pilote la préparation (jamais le statut).
+_Nature = Literal["reservation", "private", "works", "unavailable", "unqualified"]
 
 
 class CalendarIn(BaseModel):
@@ -464,29 +467,37 @@ class SyncNowOut(BaseModel):
 
 
 class BookingIn(BaseModel):
-    """Saisie directe d'un séjour."""
+    """Saisie directe d'un séjour. `nature` porte la sémantique (défaut :
+    réservation) ; le cycle de vie 'active' est implicite."""
     starts_on: date
     ends_on: date
     checkin_time: time | None = None
     checkout_time: time | None = None
+    luggage_drop_time: time | None = None
+    luggage_until_time: time | None = None
     source: _Source = "direct"
     guest_name: str | None = Field(default=None, max_length=200)
     guest_contact: str | None = Field(default=None, max_length=200)
     notes: str | None = None
-    status: Literal["confirmed", "blocked"] = "confirmed"
+    nature: _Nature = "reservation"
 
 
 class BookingUpdate(BaseModel):
-    """Complétion / édition d'un séjour (tous champs optionnels). Sert aussi à
-    promouvoir un import 'blocked' en 'confirmed'."""
+    """Complétion / édition d'un séjour (tous champs optionnels). Sert à qualifier
+    un import 'unqualified' (nature), à rattacher un bloc miroir
+    (`linked_booking_id`), et à annuler/réactiver (status)."""
     starts_on: date | None = None
     ends_on: date | None = None
     checkin_time: time | None = None
     checkout_time: time | None = None
+    luggage_drop_time: time | None = None
+    luggage_until_time: time | None = None
     guest_name: str | None = Field(default=None, max_length=200)
     guest_contact: str | None = Field(default=None, max_length=200)
     notes: str | None = None
+    nature: _Nature | None = None
     status: _BookingStatus | None = None
+    linked_booking_id: UUID | None = None
 
 
 class BookingOut(BaseModel):
@@ -498,13 +509,17 @@ class BookingOut(BaseModel):
     checkout_time: time | None = None
     eff_checkin_time: time                     # heure effective (héritée ou ajustée)
     eff_checkout_time: time
+    luggage_drop_time: time | None = None
+    luggage_until_time: time | None = None
     source: str
     external_uid: str | None = None
     is_direct: bool                            # saisie directe (éditable/supprimable)
     guest_name: str | None = None
     guest_contact: str | None = None
     notes: str | None = None
-    status: str
+    nature: str                                # sémantique (pilote la préparation)
+    status: str                                # cycle de vie ('active' | 'cancelled')
+    linked_booking_id: UUID | None = None      # bloc miroir rattaché à un autre séjour
 
 
 class OverlapOut(BaseModel):
