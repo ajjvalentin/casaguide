@@ -1189,7 +1189,8 @@ def get_property_by_staff_token(conn, token: str) -> dict | None:
     """Logement désigné par son staff_token (tout statut, y compris 'draft').
     None si le token est inconnu — on ne révèle pas l'existence d'un logement."""
     return conn.execute(
-        """SELECT id, owner_id, name, city, region, country_code, status
+        """SELECT id, owner_id, name, city, region, country_code, status,
+                  care_rules, default_checkin_time, default_checkout_time
            FROM properties
            WHERE staff_token = %s""",
         (token,),

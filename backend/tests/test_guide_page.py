@@ -198,6 +198,79 @@ def test_staff_page_has_back_to_top_when_sections_present():
     assert "Haut de page" in html
 
 
+# ── V2-23b §2 : planning du cahier d'équipe (la FENÊTRE, pas le séjour) ───────
+
+import datetime as _dt  # noqa: E402
+
+from api import care  # noqa: E402
+
+_DEF_IN, _DEF_OUT = _dt.time(15, 0), _dt.time(10, 0)
+_TODAY = _dt.date(2026, 8, 1)
+
+
+def _pbk(**over):
+    b = {"id": "b1", "starts_on": _dt.date(2026, 8, 10),
+         "ends_on": _dt.date(2026, 8, 24), "nature": "reservation",
+         "status": "active", "linked_booking_id": None, "guest_count": 6,
+         "children_ages": [], "guest_name": "Famille Martin",
+         "guest_contact": "+34 600 12 34 56", "checkin_time": None,
+         "checkout_time": None, "luggage_drop_time": None}
+    b.update(over)
+    return b
+
+
+def _staff_html(bookings, care_rules=None):
+    planning = care.build_planning(bookings, care_rules or {}, _DEF_IN, _DEF_OUT,
+                                   today=_TODAY)
+    return guide_page.render_staff(_prop(), [], "stok", planning=planning)
+
+
+def test_staff_planning_absent_when_planning_none():
+    """Rétrocompat : sans planning, aucune frise n'est rendue (ancien appel)."""
+    html = guide_page.render_staff(_prop(), [], "stok")
+    assert "prep-block" not in html
+
+
+def test_staff_planning_renders_window_with_tasks():
+    prev = _pbk(id="a", starts_on=_dt.date(2026, 8, 5), ends_on=_dt.date(2026, 8, 10))
+    nxt = _pbk(id="b", starts_on=_dt.date(2026, 8, 10), ends_on=_dt.date(2026, 8, 17))
+    html = _staff_html([prev, nxt])
+    assert "Préparations à venir" in html
+    assert "Libre depuis" in html
+    assert "fenêtre 5 h" in html
+    assert "À préparer" in html
+    assert "Welcome pack pour 6" in html
+
+
+def test_staff_planning_luggage_shows_two_deadlines():
+    prev = _pbk(id="a", starts_on=_dt.date(2026, 8, 5), ends_on=_dt.date(2026, 8, 10))
+    nxt = _pbk(id="b", starts_on=_dt.date(2026, 8, 10), ends_on=_dt.date(2026, 8, 17),
+               luggage_drop_time=_dt.time(11, 30))
+    html = _staff_html([prev, nxt])
+    assert "Dépôt de bagages annoncé à" in html
+    assert "11:30" in html
+
+
+def test_staff_planning_midstay_shows_contact():
+    html = _staff_html([_pbk()])                       # 14 nuits → draps J+8
+    assert "Changement de draps" in html
+    assert "maison habitée" in html
+    assert "+34 600 12 34 56" in html                  # coordonnées (séjour à venir)
+
+
+def test_staff_planning_greys_non_occupied():
+    works = _pbk(id="w", nature="works", starts_on=_dt.date(2026, 8, 20),
+                 ends_on=_dt.date(2026, 8, 22))
+    html = _staff_html([works])
+    assert "prep-idle" in html
+    assert "rien à préparer" in html
+
+
+def test_staff_planning_empty_state():
+    html = guide_page.render_staff(_prop(), [], "stok", planning=[])
+    assert "Aucune préparation à venir" in html
+
+
 def test_cuisine_chips_absent_when_less_than_two_cuisines():
     pois = [_resto("Trattoria", "italian", 5), _resto("Da Vinci", "italian", 8),
             _resto("Sin Datos", None, 3)]

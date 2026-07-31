@@ -562,12 +562,41 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .flux-feedback{font-size:13px;margin-top:8px}
 .flux-feedback.flux-err{color:var(--alert)}
 
-/* Relance active (§0.6) : voyageurs/coordonnées manquants, nature à qualifier */
+/* Relance active (§0.6/§2.1) : l'incomplétude est SOBRE (jamais le triangle) —
+   une seule pastille neutre par carte ; le triangle reste au danger réel. */
 .booking-relance{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-.cal-relance{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;
-  border-radius:6px;padding:1px 7px;background:#FBF0E0;color:#8A6A2E}
-.cal-relance svg{flex:none}
-.cal-relance-unqualified{background:#FDECEC;color:#9B4B4B}
+.cal-incomplete{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;
+  border-radius:6px;padding:1px 7px;background:var(--line-soft);color:var(--muted)}
+.cal-incomplete svg{flex:none}
+
+/* §2.1 — Agrégation « N séjours incomplets » + saisie rapide (repliable) */
+.incomplete-box{border:1px solid var(--line);border-radius:12px;background:var(--shell);
+  margin-bottom:12px;overflow:hidden}
+.incomplete-head{width:100%;display:flex;align-items:center;gap:9px;background:none;border:none;
+  padding:11px 13px;cursor:pointer;font:inherit;color:var(--ink);text-align:left}
+.incomplete-head svg{flex:none;color:var(--muted)}
+.incomplete-head .qf-sub{font-size:12.5px}
+.incomplete-head .qf-chev{margin-left:auto;transition:transform .18s}
+.incomplete-head .qf-chev.qf-open{transform:rotate(180deg)}
+.incomplete-panel{display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.qf-row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+  padding:10px 13px;border-bottom:1px solid var(--line-soft)}
+.qf-row:last-child{border-bottom:none}
+.qf-info{min-width:0}
+.qf-label{font-size:13.5px}
+.qf-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:3px}
+.qf-tag{font-size:11px;color:var(--muted);background:var(--line-soft);border-radius:5px;padding:1px 6px}
+.qf-actions{display:flex;gap:6px;align-items:center}
+.qf-count{width:96px}
+
+/* §2.2 — Signal de rotation gradué sur le calendrier du propriétaire */
+.cal-rotation-amber{background:#FBF0DC;border-color:#EBD4A6;color:#8A5A12}
+.cal-rotation-amber .muted{color:#9A7020}
+.cal-rotation-red{background:#FDECEC;border-color:#F3C3C3;color:var(--alert)}
+.cal-rotation-red .muted{color:#9B4B4B}
+.cal-rot-signal{margin-top:4px;font-size:12.5px;font-weight:600}
+.cal-rot-signal-amber{color:#8A5A12}
+.cal-rot-signal-red{color:#9B4B4B}
 
 /* Voyageurs : âges des enfants (chips) dans la modale de séjour (§1.0) */
 .child-ages{display:flex;flex-wrap:wrap;gap:6px;align-items:center}

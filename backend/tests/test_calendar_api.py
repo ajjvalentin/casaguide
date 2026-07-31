@@ -190,6 +190,48 @@ def test_direct_booking_defaults_to_reservation_nature(client):
     assert b["nature"] == "reservation" and b["status"] == "active"
 
 
+def test_rotation_signal_graded_in_view(client):
+    """§2.2 : la vue du propriétaire porte le signal de rotation gradué (aide à la
+    décision avant d'accorder une arrivée). Ambre → recommandation d'effectif."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    client.patch(f"/api/properties/{pid}", headers=h, json={"care_rules": {
+        "turnaround": {"person_hours_full_occupancy": 6, "max_cleaners": 2,
+                       "comfort_margin_hours": 1, "parallel_efficiency": 0.75}}})
+    client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-10", "ends_on": "2026-08-20", "nature": "reservation"})
+    client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-20", "ends_on": "2026-08-27", "nature": "reservation",
+        "guest_count": 4})
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    sig = view["rotations"][0]["signal"]
+    assert sig["level"] == "amber"                    # fenêtre 5 h, charge 6 h
+    assert sig["recommended_cleaners"] == 2
+
+
+def test_staff_planning_appears_in_cahier(client):
+    """§2 : le cahier /s/ porte la frise des préparations (fenêtres + interventions
+    en cours de séjour), coordonnées visibles pour un séjour à venir (RGPD)."""
+    h = _register(client)
+    r = client.post("/api/properties", json={
+        "name": "Villa Ballarin", "address_line1": "C. Ejemplo 1",
+        "city": "Orihuela Costa", "country_code": "ES"}, headers=h)
+    prop = r.json()
+    pid, staff_token = prop["id"], prop["staff_token"]
+    # Séjour à venir de 14 nuits (à distance de la date du jour) → fenêtre + draps J+8.
+    client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2027-06-10", "ends_on": "2027-06-24", "nature": "reservation",
+        "guest_count": 6, "guest_name": "Famille Martin",
+        "guest_contact": "+34 600 99 88 77"})
+    s = client.get(f"/s/{staff_token}")
+    assert s.status_code == 200
+    assert "Préparations à venir" in s.text
+    assert "À préparer" in s.text
+    assert "Welcome pack pour 6" in s.text
+    assert "Changement de draps" in s.text            # intervention en cours de séjour
+    assert "+34 600 99 88 77" in s.text               # coordonnées (séjour à venir)
+
+
 def test_link_mirror_block_hides_it_from_view(client):
     """§0.5 : rattacher un bloc importé à un séjour direct le retire de la vue
     (et donc du chevauchement), sans jamais le supprimer."""

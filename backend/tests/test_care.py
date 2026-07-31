@@ -215,3 +215,106 @@ def test_turnaround_person_hours_interpolates():
     # milieu de la plage (5 voyageurs sur 2..8) → entre 4 et 6.
     ph = care.turnaround_person_hours(cr, 5)
     assert 4.0 < ph < 6.0
+
+
+# ── Rendement du travail à plusieurs (§2.3) ──────────────────────────────────
+
+def test_default_rules_carry_parallel_efficiency():
+    assert care.default_care_rules()["turnaround"]["parallel_efficiency"] == 0.75
+
+
+def test_parallel_efficiency_is_not_naive_division():
+    """À 2 personnes, 0.75 → débit 1.75 (pas 2) : une charge de 6 h-homme se fait
+    en ~3 h 26, pas 3 h. Une fenêtre de 3 h reste donc ROUGE (infaisable) alors
+    qu'une division naïve la dirait tenable — la pire erreur possible (§2.3)."""
+    cr = _rules_with_hours(parallel_efficiency=0.75)
+    s = care.turnaround_signal(cr, 8, window_minutes=3 * 60)   # 3 h, charge 6
+    assert s["level"] == "red"                                 # 6/1.75 = 3.43 > 3
+    # Avec un rendement parfait (1.0 → débit 2), la même fenêtre passerait ambre.
+    s2 = care.turnaround_signal(_rules_with_hours(parallel_efficiency=1.0), 8,
+                                window_minutes=3 * 60)
+    assert s2["level"] == "amber"
+    assert s2["recommended_cleaners"] == 2
+
+
+# ── Planning du cahier d'équipe (§2) ─────────────────────────────────────────
+
+TODAY_P = dt.date(2026, 8, 1)
+
+
+def _pb(**over):
+    """Séjour pour le planning : porte un id, des heures et des bornes."""
+    b = {"id": "b1", "starts_on": dt.date(2026, 8, 10),
+         "ends_on": dt.date(2026, 8, 24), "nature": "reservation",
+         "status": "active", "linked_booking_id": None, "guest_count": 6,
+         "children_ages": [], "guest_name": "Dupont", "guest_contact": "+34 600",
+         "checkin_time": None, "checkout_time": None, "luggage_drop_time": None}
+    b.update(over)
+    return b
+
+
+DEF_IN, DEF_OUT = dt.time(15, 0), dt.time(10, 0)
+
+
+def _planning(bookings, care_rules=None, **kw):
+    return care.build_planning(bookings, care_rules or {}, DEF_IN, DEF_OUT,
+                               today=TODAY_P, **kw)
+
+
+def test_planning_window_between_two_occupations_is_a_rotation():
+    prev = _pb(id="a", starts_on=dt.date(2026, 8, 5), ends_on=dt.date(2026, 8, 10))
+    nxt = _pb(id="b", starts_on=dt.date(2026, 8, 10), ends_on=dt.date(2026, 8, 17))
+    plan = _planning([prev, nxt])
+    win = next(e for e in plan if e["kind"] == "window" and e["booking_id"] == "b")
+    assert win["same_day"] is True
+    assert win["free_days"] == 0
+    assert win["free_since_time"] == DEF_OUT
+    assert win["window_minutes"] == 300              # 10:00 → 15:00 = 5 h
+
+
+def test_planning_luggage_drop_shrinks_window_and_worsens_signal():
+    """Le dépôt de bagages avance l'échéance : la fenêtre part de l'échéance la
+    plus proche (§2.2) → une rotation confortable peut basculer en rouge."""
+    cr = _rules_with_hours()                          # charge 6 h à pleine occup.
+    prev = _pb(id="a", starts_on=dt.date(2026, 8, 5), ends_on=dt.date(2026, 8, 10))
+    nxt = _pb(id="b", starts_on=dt.date(2026, 8, 10), ends_on=dt.date(2026, 8, 17),
+              guest_count=8, luggage_drop_time=dt.time(13, 0))
+    win = next(e for e in _planning([prev, nxt], cr)
+               if e["kind"] == "window" and e["booking_id"] == "b")
+    assert win["window_minutes"] == 180              # 10:00 → 13:00 (bagages)
+    assert win["signal"]["level"] == "red"           # 6/1.75 = 3.43 > 3
+
+
+def test_planning_long_vacancy_anchors_on_arrival():
+    prev = _pb(id="a", starts_on=dt.date(2025, 7, 20), ends_on=dt.date(2025, 7, 28))
+    nxt = _pb(id="b", starts_on=dt.date(2026, 8, 9), ends_on=dt.date(2026, 8, 16))
+    win = next(e for e in _planning([prev, nxt])
+               if e["kind"] == "window" and e["booking_id"] == "b")
+    assert win["same_day"] is False
+    assert win["free_days"] == (dt.date(2026, 8, 9) - dt.date(2025, 7, 28)).days
+
+
+def test_planning_midstay_carries_contact_and_greys_non_occupied():
+    stay = _pb(id="b", starts_on=dt.date(2026, 8, 10), ends_on=dt.date(2026, 8, 24))
+    works = _pb(id="w", starts_on=dt.date(2026, 8, 26), ends_on=dt.date(2026, 8, 28),
+                nature="works", guest_contact="+34 600")
+    plan = _planning([stay, works])
+    mid = next(e for e in plan if e["kind"] == "midstay")
+    assert mid["on"] == dt.date(2026, 8, 18)          # draps J+8
+    assert mid["guest_contact"] == "+34 600"          # à venir → coordonnées visibles
+    idle = next(e for e in plan if e["kind"] == "idle")
+    assert idle["nature"] == "works"                  # grisé, « rien à préparer »
+
+
+def test_planning_excludes_past_and_cancelled_and_linked():
+    past = _pb(id="p", starts_on=dt.date(2025, 1, 1), ends_on=dt.date(2025, 1, 8))
+    cancelled = _pb(id="c", status="cancelled")
+    linked = _pb(id="l", linked_booking_id="b")
+    plan = _planning([past, cancelled, linked])
+    assert all(e["booking_id"] not in ("p", "c", "l") for e in plan)
+
+
+def test_planning_show_contact_gate_hides_history():
+    past = _pb(ends_on=dt.date(2025, 12, 31))
+    assert care._show_contact(past, today=TODAY_P) is False
+    assert care._show_contact(_pb(), today=TODAY_P) is True

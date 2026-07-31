@@ -59,7 +59,8 @@ const calData = {
     mk({ id: "b2", calendar_id: "c1", starts_on: iso(40), ends_on: iso(47),
          source: "airbnb", external_uid: "u2", is_direct: false }),
     mk({ id: "b3", starts_on: iso(45), ends_on: iso(50), source: "vrbo",
-         is_direct: true, guest_name: "Martin" }),
+         is_direct: true, guest_name: "Martin",
+         missing_info: [{ code: "guest_count_missing", message: "Nombre de voyageurs non renseigné." }] }),
     mk({ id: "b4", calendar_id: "c1", starts_on: iso(60), ends_on: iso(64),
          source: "airbnb", external_uid: "u4", is_direct: false,
          nature: "unqualified",
@@ -69,10 +70,14 @@ const calData = {
          status: "cancelled", nature: "" }),   // §0.h : nature inconnue → « À qualifier », jamais « undefined »
   ],
   overlaps: [{ a: "b2", b: "b3" }],
-  rotations: [{ on: iso(40), departing: "b1", arriving: "b2", gap_minutes: 300 }],
+  // §2.2 — signal de rotation gradué (recommandation d'effectif).
+  rotations: [{ on: iso(40), departing: "b1", arriving: "b2", gap_minutes: 300,
+    signal: { level: "amber", recommended_cleaners: 2, person_hours: 6,
+      window_hours: 5, message: "Prévoir 2 personnes sur cette rotation." } }],
 };
 
 const posted = [];
+const patched = [];
 window.fetch = async (path, opts = {}) => {
   const method = (opts.method || "GET").toUpperCase();
   const json = (body) => new Response(JSON.stringify(body),
@@ -89,6 +94,15 @@ window.fetch = async (path, opts = {}) => {
       eff_checkout_time: b.checkout_time || "10:00:00", ...b });
     calData.bookings.push(row);
     return json(row);
+  }
+  // §2.1.4 — saisie rapide en ligne du nombre de voyageurs (PATCH /bookings/:id).
+  const patchM = path.match(/^\/api\/properties\/p1\/bookings\/([^/]+)$/);
+  if (patchM && method === "PATCH") {
+    const b = JSON.parse(opts.body);
+    patched.push({ id: patchM[1], ...b });
+    const row = calData.bookings.find((x) => x.id === patchM[1]);
+    if (row) { Object.assign(row, b); if (b.guest_count != null) row.missing_info = []; }
+    return json(row || mk({ id: patchM[1], ...b }));
   }
   throw new Error("fetch inattendu : " + method + " " + path);
 };
@@ -122,11 +136,17 @@ try {
   chk(!!alert && /chevauchement/i.test(alert.textContent), "bandeau d'alerte de chevauchement affiché");
   chk(qa(".booking-row.row-overlap").length === 2, "2 lignes marquées « chevauchement »");
 
-  // ── Rotation avec fenêtre horaire ────────────────────────────────────────
+  // ── Rotation avec fenêtre horaire + signal gradué (§2.2) ─────────────────
   const rot = q(".cal-rotation");
   chk(!!rot, "encart de rotation affiché");
   chk(rot && /Sortie 10:00 → entrée 15:00/.test(rot.textContent), "rotation : « Sortie 10:00 → entrée 15:00 »");
   chk(rot && /fenêtre 5 h/.test(rot.textContent), "rotation : fenêtre « 5 h »");
+  chk(!!q(".cal-rotation.cal-rotation-amber"), "rotation ambre (recommandation d'effectif)");
+  chk(!!q(".cal-rot-signal-amber") && /Prévoir 2 personnes/.test(q(".cal-rot-signal-amber").textContent),
+    "signal de rotation : « Prévoir 2 personnes »");
+  // Le triangle est réservé au danger : une rotation ambre n'en porte PAS.
+  chk(rot && /arrow-right-left/.test(rot.innerHTML) && !/triangle/.test(rot.innerHTML),
+    "rotation ambre : double flèche neutre, pas de triangle");
 
   // ── Séjour « à qualifier » : bouton « Compléter » + séjours annulés ──────
   const toQualify = q('.booking-row[data-nature="unqualified"]');
@@ -136,13 +156,32 @@ try {
   chk(!!cancelledBlock && /Séjours annulés \(1\)/.test(cancelledBlock.textContent),
     "séjours annulés repliés (1)");
 
-  // ── Voyageurs (§1.0) & relance active (§0.6) ─────────────────────────────
+  // ── Voyageurs (§1.0) & incomplétude SOBRE (§2.1) ─────────────────────────
   const b1row = qa(".booking-row").find((r) => /Dupont/.test(r.textContent));
   chk(!!b1row && /4 voyageur/.test(b1row.textContent) && /1 enfant/.test(b1row.textContent),
     "ligne : « 4 voyageur(s) (dont 1 enfant(s)) »");
-  chk(!!toQualify && !!q(".cal-relance", toQualify)
-    && /à qualifier/i.test(toQualify.textContent),
-    "relance active affichée sur le séjour à qualifier");
+  // §2.1 — l'incomplétude est une pastille NEUTRE « Incomplet », jamais le triangle.
+  chk(!!toQualify && !!q(".cal-incomplete", toQualify)
+    && /Incomplet/.test(toQualify.textContent),
+    "pastille sobre « Incomplet » sur le séjour à qualifier");
+  chk(qa(".cal-relance").length === 0, "plus aucune ancienne pastille triangle « cal-relance »");
+  const incBox = q(".incomplete-box");
+  chk(!!incBox && /2 séjours incomplets/.test(incBox.textContent),
+    "agrégation en tête : « 2 séjours incomplets » (b3 sans voyageurs + b4 à qualifier)");
+  // Dépliage → saisie rapide en ligne du nombre de voyageurs pour b3.
+  q(".incomplete-head").click();
+  await wait(20);
+  const qfCount = q(".incomplete-panel .qf-count");
+  chk(!!qfCount, "panneau déplié : champ de saisie rapide du nombre de voyageurs");
+  if (qfCount) {
+    qfCount.value = "5";
+    const okBtn = qa(".incomplete-panel .qf-actions .btn-primary")
+      .find((b) => /OK/.test(b.textContent));
+    okBtn.click();
+    await wait(150);
+    chk(patched.some((p) => p.guest_count === 5),
+      "saisie rapide : PATCH guest_count=5 émis pour un séjour incomplet");
+  }
 
   // §0.h — une nature inconnue tombe sur « À qualifier », jamais « undefined ».
   chk(!/undefined/i.test(app.textContent),

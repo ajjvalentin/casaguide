@@ -1172,7 +1172,147 @@ def _render_staff_section(sec: dict) -> str:
     return f'<article class="sec-card staff-card">{body}</article>'
 
 
-def render_staff(prop: dict, sections: list[dict], token: str) -> str:
+# ── Planning du cahier d'équipe (V2-23b, §2) ─────────────────────────────────
+#
+# L'entité affichée est la FENÊTRE, pas le séjour : *depuis quand la maison est
+# libre*, *pour quand elle doit être prête*, *quoi faire*. Rendu server-side (le
+# cahier reste lisible sans JS). Les données viennent de `care.build_planning`
+# (pure) ; ici on ne fait que mettre en forme. Coordonnées déjà minimisées (RGPD)
+# en amont : ce module ne « ré-ouvre » jamais un contact absent.
+
+_WEEKDAYS_FR = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
+_NATURE_LABELS_FR = {
+    "reservation": "Réservation", "private": "Séjour privé", "works": "Travaux",
+    "unavailable": "Indisponible", "unqualified": "À qualifier"}
+
+
+def _fmt_wday_dm(d) -> str:
+    """« sam. 01.08 » — jour de semaine + jour.mois (aucune surprise de fuseau)."""
+    if not d:
+        return ""
+    return f"{_WEEKDAYS_FR[d.weekday()]} {d.day:02d}.{d.month:02d}"
+
+
+def _fmt_hm(t) -> str:
+    return t.strftime("%H:%M") if t else ""
+
+
+def _fmt_window(minutes) -> str:
+    """Durée de fenêtre lisible : « 5 h », « 3 h 30 », « 45 min »."""
+    if minutes is None:
+        return ""
+    minutes = max(0, int(minutes))
+    h, m = divmod(minutes, 60)
+    if h and m:
+        return f"{h} h {m:02d}"
+    if h:
+        return f"{h} h"
+    return f"{m} min"
+
+
+def _render_prep_tasks(tasks: list[str]) -> str:
+    if not tasks:
+        return ""
+    items = "".join(f"<li>{_esc(t)}</li>" for t in tasks)
+    return f'<div class="prep-tasks"><span>À préparer</span><ul>{items}</ul></div>'
+
+
+def _render_window_entry(e: dict) -> str:
+    checkin = _fmt_hm(e.get("checkin_time"))
+    luggage = _fmt_hm(e.get("luggage_drop_time"))
+    free_days = e.get("free_days")
+    lines: list[str] = []
+
+    if e.get("same_day") and e.get("free_since_time") is not None:
+        # Rotation même jour : libre au départ, prochaine arrivée le jour même.
+        since = f"{_fmt_wday_dm(e['free_since_date'])} à {_fmt_hm(e['free_since_time'])}"
+        win = _fmt_window(e.get("window_minutes"))
+        lines.append(
+            f"Libre depuis <b>{since}</b> · prochaine arrivée <b>{checkin}</b>"
+            + (f" → <b>fenêtre {win}</b>" if win else ""))
+    elif free_days and free_days >= 1:
+        # Longue vacance : on ancre sur l'arrivée (rafraîchissement la veille),
+        # sans urgence — la fenêtre en heures n'aurait pas de sens.
+        d = "jour" if free_days == 1 else "jours"
+        lines.append(
+            f"Libre depuis <b>{free_days} {d}</b> "
+            f"({_fmt_wday_dm(e.get('free_since_date'))}) · prochaine arrivée "
+            f"<b>{_fmt_wday_dm(e['arrival_date'])} à {checkin}</b>")
+    else:
+        # Aucune occupation antérieure connue : on affiche l'arrivée seule.
+        lines.append(f"Arrivée <b>{_fmt_wday_dm(e['arrival_date'])} à {checkin}</b>")
+
+    if luggage:
+        lines.append(
+            f'<span class="prep-luggage">Dépôt de bagages annoncé à '
+            f"<b>{luggage}</b> — accessible et présentable pour cette heure-là ; "
+            f"entrée à {checkin}, tout fini.</span>")
+
+    sig = e.get("signal") or {}
+    alert = ""
+    if sig.get("level") in ("amber", "red"):
+        alert = (f'<div class="prep-alert prep-alert-{sig["level"]}">'
+                 f'{_esc(sig.get("message") or "")}</div>')
+
+    who = ""
+    if e.get("guest_name"):
+        who = f'<div class="prep-guest">{_esc(e["guest_name"])}</div>'
+
+    body = "".join(f'<div class="prep-line">{ln}</div>' for ln in lines)
+    return (f'<article class="prep-card prep-window prep-sig-{sig.get("level","na")}">'
+            f'<div class="prep-when">{_esc(_fmt_wday_dm(e["arrival_date"]))}</div>'
+            f'<div class="prep-main">{who}{body}{alert}'
+            f'{_render_prep_tasks(e.get("tasks") or [])}</div></article>')
+
+
+def _render_midstay_entry(e: dict) -> str:
+    contact = e.get("guest_contact")
+    who = _esc(e.get("guest_name") or "Locataire")
+    if contact:
+        who += f' · <a href="tel:{_tel(contact)}">{_esc(contact)}</a>' \
+            if contact.strip().replace("+", "").replace(" ", "").isdigit() \
+            else f" · {_esc(contact)}"
+    return (f'<article class="prep-card prep-midstay">'
+            f'<div class="prep-when">{_esc(_fmt_wday_dm(e["on"]))}</div>'
+            f'<div class="prep-main">'
+            f'<div class="prep-line"><b>{_esc(e.get("label") or "Intervention")}</b>'
+            f' — maison habitée, sur rendez-vous</div>'
+            f'<div class="prep-guest">{who}</div>'
+            f'{_render_prep_tasks(e.get("tasks") or [])}</div></article>')
+
+
+def _render_idle_entry(e: dict) -> str:
+    label = _NATURE_LABELS_FR.get(e.get("nature"), "Séjour")
+    rng = f"{_fmt_wday_dm(e['on'])} → {_fmt_wday_dm(e.get('ends_on'))}"
+    return (f'<article class="prep-card prep-idle">'
+            f'<div class="prep-when">{_esc(_fmt_wday_dm(e["on"]))}</div>'
+            f'<div class="prep-main">'
+            f'<div class="prep-line"><b>{_esc(label)}</b> — rien à préparer</div>'
+            f'<div class="muted prep-range">{_esc(rng)}</div></div></article>')
+
+
+def _render_planning(planning: list[dict]) -> str:
+    """Frise chronologique du cahier d'équipe (§2). État vide explicite : aucune
+    préparation à venir n'est un message rassurant, pas un trou."""
+    if not planning:
+        return ('<section class="prep-block"><h2 class="prep-title">Préparations '
+                'à venir</h2><div class="staff-empty prep-empty"><p>Aucune '
+                "préparation à venir pour l'instant. Les fenêtres apparaîtront ici "
+                "dès qu'un séjour sera programmé.</p></div></section>")
+    rows = []
+    for e in planning:
+        if e["kind"] == "window":
+            rows.append(_render_window_entry(e))
+        elif e["kind"] == "midstay":
+            rows.append(_render_midstay_entry(e))
+        else:
+            rows.append(_render_idle_entry(e))
+    return ('<section class="prep-block"><h2 class="prep-title">Préparations à '
+            'venir</h2><div class="prep-list">' + "".join(rows) + "</div></section>")
+
+
+def render_staff(prop: dict, sections: list[dict], token: str,
+                 planning: list[dict] | None = None) -> str:
     """Cahier de préparation mobile de l'équipe d'entretien (§M-13).
 
     Jamais indexé, jamais de secrets ni de POI. Reste lisible sans JS (rendu
@@ -1182,12 +1322,27 @@ def render_staff(prop: dict, sections: list[dict], token: str) -> str:
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
     draft = prop.get("status") != "published"
 
+    # Planning (§2) : la frise des fenêtres passe **en tête** — c'est ce dont
+    # l'équipe a besoin en priorité (« quand, pour quand, quoi »). Les consignes
+    # (sections) sont le « comment » et suivent. Absent si `planning is None`
+    # (appel historique du rendu sans planning → rétrocompatibilité des tests).
+    planning_html = _render_planning(planning) if planning is not None else ""
+
     if sections:
-        body = "".join(_render_staff_section(s) for s in sections)
+        instructions = "".join(_render_staff_section(s) for s in sections)
+        instructions = (f'<section class="prep-block"><h2 class="prep-title">'
+                        f'Consignes de préparation</h2>{instructions}</section>'
+                        if planning is not None else instructions)
+        body = planning_html + instructions
         # Retour en haut (V2-27) : sur une check-list longue, un chemin de retour
         # visible (page à défilement unique, sans onglets). Ancre native → #content.
         body += ('<a class="back-services" href="#content">'
                  f'{_esc(_UI["fr"]["back_top"])}</a>')
+    elif planning is not None:
+        body = planning_html + (
+            '<div class="staff-empty"><p>Aucune consigne de préparation '
+            "n'a encore été saisie pour ce logement. Revenez après que le "
+            "propriétaire l'aura complété.</p></div>")
     else:
         body = ('<div class="staff-empty"><p>Aucune consigne de préparation '
                 "n'a encore été saisie pour ce logement. Revenez après que le "

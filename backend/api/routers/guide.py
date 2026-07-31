@@ -16,14 +16,15 @@ d'accès 'link' du MVP (le lien secret tient lieu de clé d'accès, §8).
 """
 from __future__ import annotations
 
+import datetime as _dt
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import (assets, crypto, guide_page, media_files, og_image, plans, repo,
-                storage, wifi)
+from .. import (assets, care, crypto, guide_page, media_files, og_image, plans,
+                repo, storage, wifi)
 from ..config import settings
 from ..deps import Conn
 
@@ -334,8 +335,26 @@ def staff_cahier_page(staff_token: str, conn: Conn):
     if not plans.effective_entitlements(conn, str(prop["owner_id"]))["staff_access"]:
         return HTMLResponse(guide_page.render_staff_locked(prop),
                             headers=_public_headers(no_store=True))
-    html = guide_page.render_staff(prop, sections, staff_token)
+    planning = _staff_planning(conn, prop)
+    html = guide_page.render_staff(prop, sections, staff_token, planning=planning)
     return HTMLResponse(html, headers=_public_headers(no_store=True))
+
+
+def _staff_planning(conn, prop: dict) -> list[dict]:
+    """Frise du cahier d'équipe (V2-23b, §2), calculée à la lecture (jamais
+    stockée, comme les fenêtres). Fenêtres de préparation, interventions en cours
+    de séjour (avec coordonnées **seulement** pour les séjours en cours/à venir —
+    RGPD), séjours non occupés grisés. La nature pilote la préparation (invariant
+    14) ; le gating Pro est déjà assuré par `staff_access` en amont."""
+    pid = str(prop["id"])
+    bookings = repo.list_bookings(conn, pid)
+    reqs_by_booking: dict[str, list] = {}
+    for r in repo.list_requests_for_property(conn, pid):
+        reqs_by_booking.setdefault(str(r["booking_id"]), []).append(r)
+    return care.build_planning(
+        bookings, prop.get("care_rules") or {},
+        prop["default_checkin_time"], prop["default_checkout_time"],
+        today=_dt.date.today(), requests_by_booking=reqs_by_booking)
 
 
 @router.get("/s/{staff_token}/media/{media_id}")

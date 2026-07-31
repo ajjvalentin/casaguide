@@ -548,6 +548,10 @@ class RotationOut(BaseModel):
     departing: UUID
     arriving: UUID
     gap_minutes: int
+    # Signal de rotation gradué (§2.2) : recommandation d'effectif calculée depuis
+    # l'échéance la plus proche (dépôt de bagages compris). None tant que l'effort
+    # de rotation n'est pas configuré. {level, recommended_cleaners, message, …}.
+    signal: dict | None = None
 
 
 class CalendarViewOut(BaseModel):

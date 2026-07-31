@@ -202,3 +202,75 @@ porte une `origin` (`owner` ; `guest` au volet 3) et un `status`
 > planning) et `frontend/js/lib/care.js` (suggère à la saisie, sans aller-retour).
 > Si l'une change, changer l'autre **et** les deux tests (`test_care.py`,
 > `care.test.mjs`).
+
+
+## 6. Planning de l'équipe & grammaire des signaux (V2-23b, volet 2)
+
+### 6.1 Le planning dans le cahier `/s/` — la FENÊTRE, pas le séjour
+
+Le cahier d'équipe `/s/{staff_token}` porte désormais, **en tête**, une **frise
+chronologique** des préparations à venir (`care.build_planning`, pure ; rendue par
+`guide_page._render_planning`). Le planning ne répond qu'à trois questions :
+*depuis quand la maison est libre*, *pour quand elle doit être prête*, *quoi faire*.
+Trois types d'entrées :
+
+- **Fenêtre de préparation** (avant une arrivée occupée) : « libre depuis sam. 01.08
+  à 10:00 · prochaine arrivée 15:00 → fenêtre 5 h », la check-list **quantifiée**
+  (draps/serviettes/welcome pack pour N), et le **signal de rotation** (§6.2). Un
+  **dépôt de bagages** annoncé affiche deux échéances (accessible/présentable à
+  l'heure de dépôt ; tout fini à l'entrée officielle). **Longue vacance** : la
+  fenêtre s'ancre sur l'arrivée (« libre depuis 12 jours », sans urgence).
+- **Intervention en cours de séjour** (draps à J+8, ménage demandé) : la maison est
+  **habitée** → rendez-vous, donc **nom + téléphone** du locataire sur la fiche.
+- **Séjour non occupé** (travaux/indisponible/à qualifier) : **grisé**, « rien à
+  préparer » — un trou inexpliqué fait téléphoner, une ligne grise ferme la question.
+
+**Gating Pro** : le cahier `/s/` est déjà réservé à l'offre Pro (`staff_access`,
+invariant 11) — le planning qu'il contient l'est donc de fait.
+
+**RGPD (minimisation)** : les coordonnées ne s'affichent que pour les séjours **en
+cours ou à venir** (`care._show_contact` : `ends_on ≥ aujourd'hui`), jamais sur
+l'historique — un lien `/s/` partagé ne donne pas accès au répertoire des locataires
+passés. Même régime pour les âges d'enfants. Mention à ajouter à la politique de
+confidentialité (V2-25).
+
+### 6.2 Signal de rotation gradué (hommes-heures, effectif)
+
+La rotation se mesure en **hommes-heures**, pas en heures : la **charge** suit
+l'occupation (`care.turnaround_person_hours`, interpolée par `guest_count`), la
+**ressource** (nombre de personnes envoyées) est une décision d'équipe. Le signal
+(`care.turnaround_signal`) est donc une **recommandation d'effectif** :
+
+| Fenêtre disponible | Signal |
+|---|---|
+| ≥ charge à 1 personne + marge de confort | neutre — rien à signaler |
+| trop court à 1 personne, tenable à plusieurs | **ambre ⇄** — « prévoir 2 personnes » |
+| infaisable même avec `max_cleaners` | **rouge ⚠** |
+
+Le triangle est **strictement réservé au danger** (rotation infaisable, chevauchement
+de deux occupations) — jamais à l'incomplétude. Le calcul part de l'**échéance la
+plus proche** : un dépôt de bagages avance l'échéance et peut faire basculer une
+rotation confortable en rotation serrée. Le signal s'affiche **des deux côtés** :
+sur le calendrier du propriétaire (`RotationOut.signal`, aide à décider avant
+d'accorder une arrivée anticipée) **et** sur le planning de l'équipe.
+
+**Le travail à plusieurs n'est pas parfaitement divisible** (`care_rules.turnaround.
+parallel_efficiency`, défaut 0,75) : la 2ᵉ personne ne rend qu'une fraction d'un
+plein temps (mesure André pour Villa Ballarin : ~6 h à 1, ~4 h à 2). Deux personnes
+valent donc **1,75** fois une seule, pas deux — diviser naïvement par le nombre de
+personnes promettrait des rotations intenables. Le rendement est **explicite et
+configurable** dans l'écran « Réglages d'entretien », jamais appliqué en silence.
+
+⚠ Les hommes-heures restent **à `null`** tant qu'André ne les a pas mesurés →
+`turnaround_signal` renvoie `level='unknown'` (rien de signalé) plutôt qu'une valeur
+inventée.
+
+### 6.3 Grammaire des signaux du calendrier propriétaire (anti-saturation)
+
+L'**incomplétude** (voyageurs/coordonnées manquants, nature à qualifier) est un
+signal **sobre** (pastille neutre « Incomplet »), **jamais le triangle**. Le
+calendrier agrège l'incomplétude **en tête** (« N séjours incomplets », dépliable)
+plutôt qu'un badge répété sur chaque ligne, avec une **saisie rapide en ligne** du
+nombre de voyageurs (le champ manque sur la quasi-totalité des imports). Tout champ
+comptant des **personnes** (capacité, voyageurs, effectif de ménage) est un **entier
+≥ 1** ; seules les **heures** acceptent des décimales.

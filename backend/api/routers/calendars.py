@@ -99,6 +99,7 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
                 if b["linked_booking_id"] is None]
     overlaps = calendars.compute_overlaps(bookings)
     rotations = calendars.compute_rotations(bookings, default_in, default_out)
+    by_id = {str(b["id"]): b for b in bookings}
     return CalendarViewOut(
         property_id=pid,
         default_checkin_time=default_in, default_checkout_time=default_out,
@@ -106,7 +107,26 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
         bookings=[_booking_out(b, default_in, default_out, care_rules=care_rules,
                                today=today) for b in bookings],
         overlaps=[OverlapOut(a=a["id"], b=b["id"]) for a, b in overlaps],
-        rotations=[RotationOut(**r) for r in rotations])
+        rotations=[RotationOut(**r, signal=_rotation_signal(
+            r, by_id, care_rules, default_in, default_out)) for r in rotations])
+
+
+def _rotation_signal(rot: dict, by_id: dict, care_rules: dict | None,
+                     default_in, default_out) -> dict | None:
+    """Signal de rotation gradué (§2.2) pour le calendrier du propriétaire — aide
+    à décider AVANT d'accorder une arrivée anticipée. Le calcul part de l'échéance
+    la plus proche : un **dépôt de bagages** de l'arrivant avance l'échéance et peut
+    faire basculer une rotation confortable en rotation serrée."""
+    arr = by_id.get(str(rot["arriving"]))
+    dep = by_id.get(str(rot["departing"]))
+    if not arr or not dep:
+        return None
+    checkin = arr.get("checkin_time") or default_in
+    deadline = arr.get("luggage_drop_time") or checkin
+    _, checkout = calendars.effective_times(dep, default_in, default_out)
+    window = int((_dt.datetime.combine(rot["on"], deadline)
+                  - _dt.datetime.combine(rot["on"], checkout)).total_seconds() // 60)
+    return care.turnaround_signal(care_rules or {}, arr.get("guest_count"), window)
 
 
 # ── Séjours (saisie directe, complétion, suppression) ────────────────────────

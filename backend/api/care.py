@@ -78,6 +78,13 @@ def default_care_rules() -> dict:
             "full_occupancy_guests": None,        # capacité du logement (borne haute)
             "max_cleaners": 2,
             "comfort_margin_hours": 1,
+            # Le travail à plusieurs n'est PAS parfaitement divisible (§2.3) : on se
+            # coordonne, certaines tâches ne se partagent pas. La 2e personne (et les
+            # suivantes) ne rend qu'une fraction d'un plein temps → `parallel_efficiency`.
+            # 0.75 : mesure André pour Villa Ballarin (~6 h à 1, ~4 h à 2). Diviser
+            # naïvement par le nombre de personnes promettrait des rotations
+            # intenables — la pire erreur pour un outil censé rassurer.
+            "parallel_efficiency": 0.75,
         },
     }
 
@@ -141,6 +148,16 @@ def suggest_equipment(children_ages, care_rules: dict) -> list[str]:
 # Natures qui déclenchent la préparation par l'équipe (« occupé » = quelqu'un dort
 # ici). `private` = même entretien que `reservation`, sans welcome pack.
 _PREPARED_NATURES = ("reservation", "private")
+
+
+def _is_occupied(b: dict) -> bool:
+    """Un séjour occupe le logement (quelqu'un y dort → préparation) : nature
+    préparée (réservation/privé), cycle de vie actif, non rattaché à un autre
+    séjour. Miroir de `calendars._is_occupied` (même règle, gardée alignée) — défini
+    ici pour que le moteur reste pur et sans dépendance au module de synchro."""
+    return (b.get("status") == "active"
+            and b.get("nature") in _PREPARED_NATURES
+            and b.get("linked_booking_id") is None)
 
 
 @dataclass
@@ -329,6 +346,25 @@ def turnaround_person_hours(care_rules: dict, guest_count: int | None) -> float 
     return float(ph_min) + frac * (float(ph_full) - float(ph_min))
 
 
+def _clamp_efficiency(value) -> float:
+    """Rendement de la Nᵉ personne (§2.3), borné à ]0, 1]. Défaut 0.75. On ne
+    descend jamais à 0 (une personne qui n'apporte rien n'a pas de sens) ni au-delà
+    de 1 (elle ne peut pas rendre plus qu'un plein temps)."""
+    try:
+        eff = float(value)
+    except (TypeError, ValueError):
+        eff = 0.75
+    return max(0.05, min(1.0, eff))
+
+
+def _effective_throughput(cleaners: int, efficiency: float) -> float:
+    """Débit (en équivalents plein temps) de `cleaners` personnes travaillant en
+    parallèle. La 1re rend 1 ; chacune des suivantes rend `efficiency`. À 2
+    personnes et efficiency=0.75 : débit 1.75 → une charge de 6 h-homme se fait en
+    6 / 1.75 ≈ 3 h 26 (jamais 3 h : le naïf ÷2 mentirait, §2.3)."""
+    return 1.0 + (max(1, cleaners) - 1) * efficiency
+
+
 def turnaround_signal(care_rules: dict, guest_count: int | None,
                       window_minutes: int) -> dict:
     """Signal de fenêtre de rotation (§1.1) : une fenêtre serrée n'est pas une
@@ -348,6 +384,7 @@ def turnaround_signal(care_rules: dict, guest_count: int | None,
     t = merged_rules(care_rules)["turnaround"]
     max_cleaners = max(1, int(t.get("max_cleaners") or 1))
     margin_h = float(t.get("comfort_margin_hours") or 0)
+    efficiency = _clamp_efficiency(t.get("parallel_efficiency"))
     window_h = window_minutes / 60.0
     ph = turnaround_person_hours(care_rules, guest_count)
 
@@ -356,10 +393,13 @@ def turnaround_signal(care_rules: dict, guest_count: int | None,
                 "recommended_cleaners": None, "window_hours": round(window_h, 2),
                 "message": "Effort de rotation non configuré."}
 
-    # Effectif minimal tenant dans la fenêtre : durée écoulée ≈ charge / effectif.
+    # Effectif minimal tenant dans la fenêtre : la durée écoulée n'est PAS
+    # charge / effectif (le travail à plusieurs n'est pas parfaitement divisible,
+    # §2.3) mais charge / débit_effectif, où la 2e personne (et les suivantes) ne
+    # rend qu'une fraction (`parallel_efficiency`) d'un plein temps.
     recommended = None
     for k in range(1, max_cleaners + 1):
-        if ph / k <= window_h:
+        if ph / _effective_throughput(k, efficiency) <= window_h:
             recommended = k
             break
 
@@ -377,3 +417,163 @@ def turnaround_signal(care_rules: dict, guest_count: int | None,
     return {"level": level, "person_hours": round(ph, 2),
             "recommended_cleaners": recommended,
             "window_hours": round(window_h, 2), "message": msg}
+
+
+# ── Planning du cahier d'équipe : la FENÊTRE, pas le séjour (§2) ──────────────
+#
+# Le planning ne répond qu'à trois questions : *depuis quand la maison est libre*,
+# *pour quand doit-elle être prête*, *quoi faire*. L'entité affichée est donc la
+# FENÊTRE de préparation (entre deux occupations), pas le séjour. À quoi s'ajoutent
+# les interventions **en cours de séjour** (maison habitée → rendez-vous, donc
+# coordonnées du locataire), et les séjours non occupés, **grisés** (« rien à
+# préparer ») : un trou inexpliqué fait téléphoner, une ligne grise ferme la
+# question. Fonction **pure** (aucune base, `today` passé) → entièrement testable.
+
+
+def _effective_times(booking: dict, default_in: _dt.time,
+                     default_out: _dt.time) -> tuple[_dt.time, _dt.time]:
+    """Heures effectives (saisies sinon standard). Miroir de
+    `calendars.effective_times` — dupliqué ici pour garder le moteur pur."""
+    return (booking.get("checkin_time") or default_in,
+            booking.get("checkout_time") or default_out)
+
+
+def _prep_deadline(booking: dict, default_in: _dt.time) -> _dt.time:
+    """Échéance de préparation la plus proche (§2.2) : l'heure de **dépôt de
+    bagages** si elle est annoncée (la maison doit être accessible et présentable
+    pour cette heure-là), sinon l'heure d'arrivée effective. Un dépôt de bagages
+    avance l'échéance et peut resserrer une rotation confortable."""
+    checkin = booking.get("checkin_time") or default_in
+    return booking.get("luggage_drop_time") or checkin
+
+
+def _previous_occupation(booking: dict, occupied: list[dict]) -> dict | None:
+    """Occupation qui **précède** immédiatement `booking` : celle dont le départ
+    est le plus tardif tout en restant ≤ à l'arrivée de `booking` (intervalle
+    semi-ouvert → un départ le jour même est une rotation, pas un chevauchement)."""
+    prev = None
+    for p in occupied:
+        if p["id"] == booking["id"]:
+            continue
+        if p["ends_on"] <= booking["starts_on"]:
+            if prev is None or p["ends_on"] > prev["ends_on"]:
+                prev = p
+    return prev
+
+
+def _show_contact(booking: dict, today: _dt.date) -> bool:
+    """RGPD (§2) : les coordonnées ne s'affichent que pour les séjours **en cours
+    ou à venir** (départ ≥ aujourd'hui) — jamais sur l'historique. Un lien `/s/`
+    partagé ne doit pas donner accès au répertoire des locataires passés."""
+    return booking.get("ends_on") is not None and booking["ends_on"] >= today
+
+
+def build_planning(bookings: list[dict], care_rules: dict,
+                   default_in: _dt.time, default_out: _dt.time, *,
+                   today: _dt.date,
+                   requests_by_booking: dict | None = None) -> list[dict]:
+    """Frise chronologique du cahier d'équipe (§2). Trois types d'entrées, toutes
+    à venir (l'historique n'a rien à faire sur un planning) :
+
+    - `window`  : préparation avant une arrivée occupée — libre depuis / à préparer
+      pour / fenêtre + signal de rotation (recommandation d'effectif) ;
+    - `midstay` : intervention en cours de séjour (draps à J+8, ménage demandé) —
+      maison habitée → rendez-vous, donc nom + contact du locataire ;
+    - `idle`    : séjour non occupé (travaux, indisponible, à qualifier), **grisé**,
+      « rien à préparer » — pour fermer la question plutôt que laisser un trou.
+
+    Toutes les sorties héritent des quantités du moteur d'interventions (§1.3).
+    Purement calculée : rien n'est stocké."""
+    reqs = requests_by_booking or {}
+    active = [b for b in bookings
+              if b.get("status") == "active" and b.get("linked_booking_id") is None]
+    occupied = sorted([b for b in active if _is_occupied(b)],
+                      key=lambda b: (b["starts_on"], b["ends_on"]))
+
+    entries: list[dict] = []
+
+    # (i) Fenêtres de préparation : une par arrivée occupée encore à venir.
+    for b in occupied:
+        if b["starts_on"] < today:
+            continue                          # arrivée déjà passée (déjà préparée)
+        entries.append(_window_entry(b, occupied, care_rules,
+                                     default_in, default_out, today,
+                                     reqs.get(str(b["id"]))))
+
+    # (ii) Interventions en cours de séjour, pour les séjours occupés non terminés.
+    for b in occupied:
+        if b["ends_on"] < today:
+            continue
+        for iv in plan_interventions(b, care_rules, requests=reqs.get(str(b["id"]))):
+            if not iv.needs_appointment or iv.on < today:
+                continue
+            entries.append({
+                "kind": "midstay", "on": iv.on, "booking_id": b["id"],
+                "label": iv.label, "tasks": list(iv.tasks),
+                "guest_name": b.get("guest_name"),
+                "guest_contact": b.get("guest_contact") if _show_contact(b, today) else None,
+                "guest_count": b.get("guest_count"),
+                "nature": b.get("nature")})
+
+    # (iii) Séjours non occupés à venir : grisés, « rien à préparer ».
+    for b in active:
+        if _is_occupied(b) or b["ends_on"] < today:
+            continue
+        entries.append({
+            "kind": "idle", "on": b["starts_on"], "ends_on": b["ends_on"],
+            "booking_id": b["id"], "nature": b.get("nature"),
+            "guest_name": b.get("guest_name")})
+
+    # Tri chronologique ; à date égale, la fenêtre (préparation d'arrivée) d'abord.
+    _order = {"window": 0, "midstay": 1, "idle": 2}
+    entries.sort(key=lambda e: (e["on"], _order.get(e["kind"], 9)))
+    return entries
+
+
+def _window_entry(booking: dict, occupied: list[dict], care_rules: dict,
+                  default_in: _dt.time, default_out: _dt.time,
+                  today: _dt.date, requests: list[dict] | None) -> dict:
+    """Une fenêtre de préparation (§2, entrée (i))."""
+    checkin = booking.get("checkin_time") or default_in
+    luggage = booking.get("luggage_drop_time")
+    deadline = _prep_deadline(booking, default_in)
+
+    prev = _previous_occupation(booking, occupied)
+    free_since_date = free_since_time = None
+    free_days: int | None = None
+    same_day = False
+    window_minutes: int | None = None
+    if prev is not None:
+        _, prev_out = _effective_times(prev, default_in, default_out)
+        free_since_date = prev["ends_on"]
+        free_since_time = prev_out
+        free_days = (booking["starts_on"] - prev["ends_on"]).days
+        same_day = free_days == 0
+        start_dt = _dt.datetime.combine(free_since_date, prev_out)
+        end_dt = _dt.datetime.combine(booking["starts_on"], deadline)
+        window_minutes = int((end_dt - start_dt).total_seconds() // 60)
+
+    # Tâches = préparation d'arrivée du moteur d'interventions (quantifiées).
+    arrival = next((iv for iv in plan_interventions(booking, care_rules,
+                                                    requests=requests)
+                    if iv.kind == "arrival"), None)
+    tasks = list(arrival.tasks) if arrival else []
+
+    # Signal de rotation seulement quand une occupation précède (une fenêtre
+    # après une longue vacance n'a pas d'échéance serrée). Le calcul part de
+    # l'échéance la plus proche (le dépôt de bagages, déjà intégré dans deadline).
+    signal = (turnaround_signal(care_rules, booking.get("guest_count"),
+                                window_minutes)
+              if window_minutes is not None else None)
+
+    return {
+        "kind": "window", "on": booking["starts_on"], "booking_id": booking["id"],
+        "guest_name": booking.get("guest_name"),
+        "nature": booking.get("nature"),
+        "arrival_date": booking["starts_on"], "checkin_time": checkin,
+        "luggage_drop_time": luggage,
+        "free_since_date": free_since_date, "free_since_time": free_since_time,
+        "free_days": free_days, "same_day": same_day,
+        "window_minutes": window_minutes, "signal": signal,
+        "tasks": tasks, "guest_count": booking.get("guest_count"),
+        "children_count": children_count(booking)}

@@ -152,16 +152,33 @@ export async function renderCalendar(view, pid) {
             "Deux séjours confirmés se recouvrent. À vous d'arbitrer (dates iCal en journées entières, il s'agit peut-être d'une rotation volontaire)."))));
     }
 
-    // Rotations mises en évidence.
+    // §2.1 — Agrégation de l'incomplétude EN TÊTE (plutôt qu'un badge répété) :
+    // un signal toujours allumé cesse d'être un signal. Cliquable → panneau de
+    // saisie rapide (le nombre de voyageurs manque sur presque tous les imports).
+    const incomplete = upcoming.filter((b) => (b.missing_info || []).length);
+    if (incomplete.length) body.append(incompleteBanner(incomplete));
+
+    // Rotations mises en évidence, avec signal de rotation gradué (§2.2). Le
+    // triangle n'apparaît QUE pour une rotation infaisable (danger réel) ; sinon
+    // la double flèche neutre — cohérent avec la grammaire graduée (§2.1).
     for (const r of data.rotations || []) {
       const out = bookings.find((b) => b.id === r.departing);
       const inn = bookings.find((b) => b.id === r.arriving);
       if (!out || !inn) continue;
-      body.append(el("div", { class: "cal-rotation" }, icon("arrow-right-left", 17),
+      const sig = r.signal;
+      const danger = sig && sig.level === "red";
+      const amber = sig && sig.level === "amber";
+      const sigLine = (danger || amber)
+        ? el("div", { class: "cal-rot-signal cal-rot-signal-" + sig.level }, sig.message)
+        : null;
+      body.append(el("div", {
+        class: "cal-rotation" + (danger ? " cal-rotation-red" : amber ? " cal-rotation-amber" : "") },
+        icon(danger ? "triangle-alert" : "arrow-right-left", 17),
         el("div", {},
           el("b", {}, `Rotation le ${fmtDayLong(r.on)}`),
           el("div", { class: "muted", style: { fontSize: "13px" } },
-            `Sortie ${fmtTime(out.eff_checkout_time)} → entrée ${fmtTime(inn.eff_checkin_time)} — fenêtre ${fmtGap(r.gap_minutes)}`))));
+            `Sortie ${fmtTime(out.eff_checkout_time)} → entrée ${fmtTime(inn.eff_checkin_time)} — fenêtre ${fmtGap(r.gap_minutes)}`),
+          sigLine)));
     }
 
     // Liste chronologique des séjours À VENIR (en cours compris).
@@ -224,11 +241,14 @@ export async function renderCalendar(view, pid) {
         + (b.children_count ? ` (dont ${b.children_count} enfant(s))` : "") : ""));
 
     // Relance active (§0.6) : ce qui manque encore pour préparer ce séjour.
+    // §2.1 — l'incomplétude n'est PAS un danger : une seule pastille SOBRE (jamais
+    // le triangle, réservé au chevauchement/rotation infaisable), une seule ligne.
+    // Le détail vit dans le title (survol) et dans la fiche ouverte, pas empilé ici.
     const relance = (b.missing_info && b.missing_info.length)
       ? el("div", { class: "booking-relance" },
-        ...b.missing_info.map((m) => el("span", {
-          class: "cal-relance cal-relance-" + m.code, title: m.message },
-          icon("triangle-alert", 12), m.message)))
+        el("span", { class: "cal-incomplete",
+          title: b.missing_info.map((m) => m.message).join("\n") },
+          icon("circle-dashed", 12), "Incomplet"))
       : null;
 
     const who = b.guest_name
@@ -252,6 +272,69 @@ export async function renderCalendar(view, pid) {
       el("div", { class: "booking-dates" }, fmtRange(b.starts_on, b.ends_on)),
       el("div", { class: "booking-body" }, who, meta, times, relance),
       cta);
+  }
+
+  // ── Séjours incomplets : agrégation + saisie rapide (§2.1) ────────────────
+  // Un panneau repliable en tête de liste plutôt qu'un badge sur chaque ligne.
+  // La saisie du nombre de voyageurs y est faite EN LIGNE (le champ manque sur la
+  // quasi-totalité des imports : remplir un par un via la modale serait coûteux).
+  function incompleteBanner(list) {
+    const panel = el("div", { class: "incomplete-panel", hidden: true });
+    for (const b of list) panel.append(quickFixRow(b));
+    const chev = el("span", { class: "qf-chev" }, icon("chevron-down", 16));
+    const head = el("button", {
+      class: "incomplete-head", type: "button", "aria-expanded": "false",
+      onClick: () => {
+        const open = panel.hidden;
+        panel.hidden = !open;
+        head.setAttribute("aria-expanded", open ? "true" : "false");
+        chev.classList.toggle("qf-open", open);
+      },
+    },
+      icon("circle-dashed", 17),
+      el("b", {}, `${list.length} séjour${list.length > 1 ? "s" : ""} incomplet${list.length > 1 ? "s" : ""}`),
+      el("span", { class: "muted qf-sub" }, "à compléter (voyageurs, coordonnées)"),
+      chev);
+    return el("div", { class: "incomplete-box" }, head, panel);
+  }
+
+  function quickFixRow(b) {
+    const missCodes = new Set((b.missing_info || []).map((m) => m.code));
+    const info = el("div", { class: "qf-info" },
+      el("div", { class: "qf-label" },
+        el("b", {}, fmtRange(b.starts_on, b.ends_on)),
+        b.guest_name ? el("span", { class: "muted" }, " · " + b.guest_name) : null),
+      el("div", { class: "qf-tags" },
+        ...(b.missing_info || []).map((m) => el("span", { class: "qf-tag" }, m.message))));
+
+    const actions = el("div", { class: "qf-actions" });
+    // Saisie rapide du nombre de voyageurs (entier ≥ 1, §2.1.5).
+    if (missCodes.has("guest_count_missing")) {
+      const input = el("input", { type: "number", min: "1", step: "1",
+        class: "qf-count", placeholder: "voyageurs", "aria-label": "Nombre de voyageurs" });
+      const save = el("button", { class: "btn btn-sm btn-primary", type: "button" }, "OK");
+      const commit = async () => {
+        const n = Number(input.value);
+        if (!Number.isInteger(n) || n < 1) {
+          toast("Nombre de voyageurs : un entier ≥ 1.", "err"); return;
+        }
+        save.disabled = true; input.disabled = true;
+        try {
+          await api.updateBooking(pid, b.id, { guest_count: n });
+          toast("Nombre de voyageurs enregistré.", "ok");
+          await reload();
+        } catch (e) {
+          if (!handleQuotaError(e)) toast(e.message || "Enregistrement impossible.", "err");
+          save.disabled = false; input.disabled = false;
+        }
+      };
+      save.onclick = commit;
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+      actions.append(input, save);
+    }
+    actions.append(el("button", { class: "btn btn-sm btn-ghost", type: "button",
+      onClick: () => openBookingModal(b) }, "Ouvrir la fiche"));
+    return el("div", { class: "qf-row" }, info, actions);
   }
 
   // ── Flux de calendrier (iCal) ─────────────────────────────────────────────
@@ -368,14 +451,35 @@ export async function renderCalendar(view, pid) {
         .map(([k, v]) => el("option", { value: k, selected: (cr.welcome_pack || "free") === k }, v)));
     const packNote = el("textarea", { rows: "2" }, cr.welcome_pack_note || "");
 
-    // Rotation (hommes-heures) — laissées vides tant qu'André n'a pas mesuré.
+    // Rotation. Les HEURES acceptent des décimales (step 0.5) ; les PERSONNES
+    // (voyageurs, effectif de ménage) sont des ENTIERS ≥ 1 (§2.1.5 : « 6,5
+    // voyageurs » n'a aucun sens) — step "1" + validation à l'enregistrement.
     const phMin = el("input", { type: "number", min: "0", step: "0.5", value: numOrBlank(t.person_hours_min_occupancy) });
     const phFull = el("input", { type: "number", min: "0", step: "0.5", value: numOrBlank(t.person_hours_full_occupancy) });
-    const gMin = el("input", { type: "number", min: "0", value: numOrBlank(t.min_occupancy_guests) });
-    const gFull = el("input", { type: "number", min: "0", value: numOrBlank(t.full_occupancy_guests) });
-    const maxCleaners = el("input", { type: "number", min: "1", max: "6", value: numOrBlank(t.max_cleaners ?? 2) });
+    const gMin = el("input", { type: "number", min: "1", step: "1", value: numOrBlank(t.min_occupancy_guests) });
+    const gFull = el("input", { type: "number", min: "1", step: "1", value: numOrBlank(t.full_occupancy_guests) });
+    const maxCleaners = el("input", { type: "number", min: "1", max: "6", step: "1", value: numOrBlank(t.max_cleaners ?? 2) });
     const margin = el("input", { type: "number", min: "0", step: "0.5", value: numOrBlank(t.comfort_margin_hours ?? 1) });
+    // §2.3 — rendement de la 2ᵉ personne (le travail à plusieurs n'est pas
+    // parfaitement divisible). Explicite et configurable, jamais appliqué en silence.
+    const parEff = el("input", { type: "number", min: "0.1", max: "1", step: "0.05",
+      value: numOrBlank(t.parallel_efficiency ?? 0.75) });
     const numVal = (inp) => (inp.value.trim() === "" ? null : Number(inp.value));
+    // Champs comptant des PERSONNES : entier ≥ 1 (ou vide). Renvoie un message
+    // d'erreur FR sur la première violation, sinon null.
+    const validatePersonFields = () => {
+      for (const [label, inp] of [["Voyageurs à faible occupation", gMin],
+        ["Capacité (pleine occupation)", gFull],
+        ["Nombre max de personnes au ménage", maxCleaners]]) {
+        const raw = inp.value.trim();
+        if (raw === "") continue;
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 1) {
+          return `« ${label} » doit être un nombre entier de personnes (≥ 1).`;
+        }
+      }
+      return null;
+    };
 
     const err = el("div", { class: "errbox hidden" });
     const catBox = el("div", { class: "cat-box" });
@@ -402,11 +506,17 @@ export async function renderCalendar(view, pid) {
             field("Hommes-heures à faible occupation", phMin),
             field("Hommes-heures à pleine occupation", phFull)),
           el("div", { class: "grid-2" },
-            field("Voyageurs à faible occupation", gMin),
-            field("Capacité (pleine occupation)", gFull)),
+            field("Voyageurs à faible occupation", gMin, "Nombre entier."),
+            field("Capacité (pleine occupation)", gFull, "Nombre entier.")),
           el("div", { class: "grid-2" },
-            field("Nombre max de personnes au ménage", maxCleaners),
-            field("Marge de confort (heures)", margin))),
+            field("Nombre max de personnes au ménage", maxCleaners, "Nombre entier."),
+            field("Marge de confort (heures)", margin)),
+          field("Rendement de la 2ᵉ personne", parEff,
+            "Entre 0 et 1 (défaut 0,75). Le travail à plusieurs n'est pas "
+            + "parfaitement divisible : on se coordonne, certaines tâches ne se "
+            + "partagent pas. À 0,75, deux personnes valent 1,75 fois une seule — "
+            + "pas deux. Diviser par le nombre de personnes promettrait des "
+            + "rotations intenables.")),
         el("h3", { class: "care-h" }, "Catalogue de demandes particulières"),
         el("p", { class: "help" }, "Lit bébé, chaise haute, parasol… proposés à la préparation d'un séjour."),
         catBox,
@@ -465,6 +575,10 @@ export async function renderCalendar(view, pid) {
     async function onSave(e) {
       if (e && e.preventDefault) e.preventDefault();
       err.classList.add("hidden");
+      const personErr = validatePersonFields();
+      if (personErr) {
+        err.textContent = personErr; err.classList.remove("hidden"); return;
+      }
       const care_rules = {
         ...cr,
         linen_change_from_day: linenDay.value.trim() === "" ? 0 : Math.max(0, parseInt(linenDay.value, 10) || 0),
@@ -479,6 +593,7 @@ export async function renderCalendar(view, pid) {
           full_occupancy_guests: numVal(gFull),
           max_cleaners: numVal(maxCleaners) || 2,
           comfort_margin_hours: numVal(margin) ?? 1,
+          parallel_efficiency: numVal(parEff) ?? 0.75,
         },
       };
       save.disabled = true; save.textContent = "Enregistrement…";
@@ -520,7 +635,7 @@ export async function renderCalendar(view, pid) {
     const notes = el("textarea", { rows: "2" }, b?.notes || "");
 
     // ── Voyageurs (§1.0) — quantifient toute la préparation de l'équipe ───────
-    const guestCount = el("input", { type: "number", min: "0", max: "100",
+    const guestCount = el("input", { type: "number", min: "1", max: "100", step: "1",
       value: b && b.guest_count != null ? String(b.guest_count) : "",
       placeholder: "ex. 6" });
     let childAges = b && Array.isArray(b.children_ages) ? [...b.children_ages] : [];
@@ -779,6 +894,14 @@ export async function renderCalendar(view, pid) {
       if (end.value <= start.value) {
         err.textContent = "Le départ doit être postérieur à l'arrivée."; err.classList.remove("hidden"); return;
       }
+      // §2.1.5 — le nombre de voyageurs compte des PERSONNES : entier ≥ 1 (ou vide).
+      if (guestCount.value.trim() !== "") {
+        const gc = Number(guestCount.value);
+        if (!Number.isInteger(gc) || gc < 1) {
+          err.textContent = "Le nombre de voyageurs doit être un entier ≥ 1 (ou vide).";
+          err.classList.remove("hidden"); return;
+        }
+      }
       // §0.4 — le cas ROUGE (double réservation) demande un second clic conscient.
       const effectiveRed = lastAnalysis.red.filter((x) => !attachIds.has(x.id));
       if (effectiveRed.length && !redAck) {
@@ -797,7 +920,7 @@ export async function renderCalendar(view, pid) {
         guest_contact: contact.value.trim() || null,
         notes: notes.value.trim() || null,
         nature: natureSel.value,
-        guest_count: guestCount.value === "" ? null : Math.max(0, parseInt(guestCount.value, 10) || 0),
+        guest_count: guestCount.value.trim() === "" ? null : parseInt(guestCount.value, 10),
         children_ages: childAges,
       };
       save.disabled = true; save.textContent = "Enregistrement…";

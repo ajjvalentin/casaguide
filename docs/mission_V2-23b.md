@@ -314,6 +314,60 @@ répertoire des locataires de 2025. Mention à ajouter à la politique de confid
 **Gating Pro** : le planning est un joyau de l'offre Pro (`staff_access`). Signalétique
 V2-22/V2-26 — vitrine badgée, jamais mur au clic.
 
+### 2.1 Corriger la SATURATION DU SIGNAL (constat prod 31/07, côté calendrier)
+
+Après le volet 1, les six cartes du calendrier portent toutes au moins un avertissement,
+toutes avec le **triangle ⚠**. C'est la faute que la grammaire graduée devait prévenir :
+le triangle est le symbole du DANGER, or « nombre de voyageurs non renseigné » est une
+**incomplétude**. Un signal toujours allumé cesse d'être un signal — et le jour où deux
+familles se présenteront à la même porte, plus personne ne le verra.
+
+À livrer :
+
+1. **Marqueur neutre et discret** pour l'incomplétude (pastille sobre, mention
+   « incomplet »). Triangle **strictement réservé** au danger : chevauchement de deux
+   occupations, rotation infaisable.
+2. **Agrégation en tête de liste** — « 5 séjours incomplets », cliquable — plutôt qu'un
+   badge répété sur chaque ligne. Le détail reste dans la carte ouverte.
+3. **Une seule ligne par carte** au lieu de mentions empilées.
+4. **Saisie rapide du nombre de voyageurs** : le champ manquera sur la quasi-totalité des
+   séjours importés ; les remplir un par un via la modale est coûteux. Prévoir une saisie
+   en ligne depuis la liste (ou une vue « compléter les séjours incomplets »).
+5. **Validation des champs de comptage** : l'écran « Réglages d'entretien » a accepté une
+   capacité de « 6,5 voyageurs » (constat 31/07). Tout champ comptant des PERSONNES doit
+   être entier et ≥ 1 (capacité, voyageurs à faible occupation, effectif de ménage,
+   nombre de voyageurs d'un séjour) ; seules les heures acceptent des décimales.
+
+### 2.2 Signal de rotation gradué (point j du tracker)
+
+La charge (§1.1) est en **hommes-heures** ; la durée réelle dépend de l'effectif envoyé.
+Le signal doit donc être une **recommandation d'effectif**, pas une plainte :
+
+| Fenêtre disponible | Signal |
+|---|---|
+| ≥ charge à 1 personne + marge de confort | neutre |
+| trop court à 1 personne, tenable à plusieurs | **ambre ⇄ — « prévoir 2 personnes »** |
+| infaisable même avec `max_cleaners` | **rouge ⚠** |
+
+Le calcul part de l'**échéance la plus proche** : un dépôt de bagages à 11:30 peut faire
+basculer une rotation confortable en rotation serrée. Le signal s'affiche **des deux
+côtés** : sur le calendrier du propriétaire (aide à la décision AVANT d'accorder une
+arrivée anticipée) et sur le planning de l'équipe (organisation de l'effectif).
+
+### 2.3 ⚠ Le travail à plusieurs n'est PAS parfaitement divisible
+
+À confirmer avec André avant implémentation, mais le principe est acquis : ses mesures
+réelles pour Villa Ballarin sont **« 4 à 6 h selon le nombre de personnes qui viennent
+nettoyer »** — soit environ **6 h à une personne, 4 h à deux**. Or 2 × 4 h = 8
+hommes-heures pour un travail qui en coûte 6 en solo : on se croise, on se coordonne,
+certaines tâches ne se partagent pas.
+
+Diviser naïvement la charge par `max_cleaners` promettrait donc des rotations de 3 h que
+l'équipe ne tiendra jamais — **la pire erreur possible pour un outil censé rassurer**.
+Prévoir un rendement explicite et configurable dans `care_rules.turnaround` (par exemple
+`parallel_efficiency`, ~0,75 pour la 2ᵉ personne), documenté en clair dans l'écran de
+réglages plutôt qu'appliqué en silence.
+
 ---
 
 ## Volet 3 — Boucler la boucle : demande du locataire → planning

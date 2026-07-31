@@ -332,6 +332,45 @@ footer{margin-top:38px;font-size:12px;color:var(--muted);text-align:center}
 .staff-empty{background:var(--shell);border:1px solid var(--line);border-radius:12px;
              padding:22px 18px;color:var(--muted);font-size:14.5px;text-align:center;margin-top:16px}
 
+/* ── Planning de l'équipe (V2-23b, §2) : la FENÊTRE, pas le séjour ─────────── */
+.prep-block{margin-top:18px}
+.prep-title{font-size:16px;margin:0 0 10px;color:var(--ink);
+            font-family:"Fraunces",Georgia,serif;font-weight:600}
+.prep-list{display:flex;flex-direction:column;gap:10px}
+.prep-card{display:flex;gap:12px;background:var(--shell);border:1px solid var(--line);
+           border-left:4px solid #B9C4CB;border-radius:12px;padding:12px 14px}
+.prep-when{flex:none;width:74px;font-weight:600;font-size:13px;color:var(--ink);
+           text-transform:capitalize;line-height:1.35}
+.prep-main{flex:1;min-width:0}
+.prep-line{font-size:14px;line-height:1.45;color:var(--ink)}
+.prep-line + .prep-line{margin-top:3px}
+.prep-guest{font-size:13px;color:var(--muted);margin-top:2px}
+.prep-guest a{color:inherit}
+.prep-range{font-size:12.5px;margin-top:2px}
+.prep-luggage{display:block;font-size:12.5px;color:#8A6A2E;background:#FBF3E3;
+              border-radius:8px;padding:6px 9px;margin-top:6px}
+/* Fenêtre : accent selon le signal de rotation (§2.2). Neutre par défaut. */
+.prep-window{border-left-color:var(--sea)}
+.prep-sig-amber{border-left-color:#C98A1E}
+.prep-sig-red{border-left-color:var(--alert,#B4443B)}
+.prep-alert{margin-top:7px;font-size:13px;font-weight:600;border-radius:8px;padding:6px 10px}
+.prep-alert-amber{background:#FBF0DC;color:#8A5A12}
+.prep-alert-red{background:#FDECEC;color:#9B4B4B}
+/* Intervention en cours de séjour : maison habitée (accent distinct). */
+.prep-midstay{border-left-color:#5B7A8C}
+/* Séjour non occupé : grisé, « rien à préparer » (ferme la question). */
+.prep-idle{opacity:.62;border-left-style:dashed}
+.prep-tasks{margin-top:8px;font-size:13px}
+.prep-tasks>span{font-weight:600;color:var(--muted);text-transform:uppercase;
+                 letter-spacing:.03em;font-size:11px}
+.prep-tasks ul{margin:4px 0 0;padding-left:18px}
+.prep-tasks li{margin:1px 0;color:var(--ink)}
+.prep-empty{margin-top:0}
+@media(max-width:460px){
+  .prep-card{flex-direction:column;gap:4px}
+  .prep-when{width:auto}
+}
+
 /* ── Page 404 ────────────────────────────────────────────────────────────── */
 .notfound{min-height:100vh;display:flex;align-items:center;justify-content:center}
 .nf-card{text-align:center;background:var(--shell);border:1px solid var(--line);border-radius:16px;
