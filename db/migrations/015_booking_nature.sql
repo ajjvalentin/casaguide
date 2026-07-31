@@ -42,8 +42,14 @@ UPDATE bookings SET nature = 'reservation' WHERE status = 'confirmed';
 UPDATE bookings SET nature = 'unqualified' WHERE status = 'blocked';
 
 -- ── 3. Statut ramené à un cycle de vie pur ───────────────────────────────────
-UPDATE bookings SET status = 'active' WHERE status IN ('confirmed', 'blocked');
+-- ORDRE CRITIQUE : la contrainte héritée de la 014 n'autorise que
+-- 'confirmed'|'blocked'|'cancelled'. Elle doit être retirée AVANT de migrer les
+-- valeurs, sinon l'UPDATE est refusé par Postgres sur une base existante (constat
+-- prod 31/07 : la migration échouait systématiquement ici ; la suite de tests ne
+-- l'avait pas vu car elle construit sa base depuis schema.sql, où la contrainte
+-- est déjà la nouvelle — une migration se teste contre l'ÉTAT ANTÉRIEUR réel).
 ALTER TABLE bookings DROP CONSTRAINT IF EXISTS bookings_status_check;
+UPDATE bookings SET status = 'active' WHERE status IN ('confirmed', 'blocked');
 ALTER TABLE bookings ADD CONSTRAINT bookings_status_check
     CHECK (status IN ('active', 'cancelled'));
 ALTER TABLE bookings ALTER COLUMN status SET DEFAULT 'active';
