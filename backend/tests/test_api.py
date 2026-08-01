@@ -1589,6 +1589,60 @@ def test_publish_generates_translations_and_serves_es(client):
     assert 'lang="fr"' in de and "[es]" not in de
 
 
+def test_languages_endpoint_lists_only_published(client):
+    """`GET /languages` (V2-21a) : uniquement les langues publiées du registre,
+    ordonnées par sort_order ; jamais les brouillons (nl/de/it/sq)."""
+    r = client.get("/languages")
+    assert r.status_code == 200
+    rows = r.json()
+    codes = [x["code"] for x in rows]
+    assert codes == ["fr", "en", "es"]                 # publiées, dans l'ordre
+    assert all(x["published"] is True for x in rows)
+    assert {"nl", "de", "it", "sq"}.isdisjoint(codes)  # brouillons invisibles
+    fr = next(x for x in rows if x["code"] == "fr")
+    assert fr["name_native"] == "Français"
+
+
+def _set_language_status(code: str, status: str) -> None:
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("UPDATE languages SET status = %s WHERE code = %s",
+                     (status, code))
+        conn.commit()
+
+
+def test_unpublishing_a_language_removes_it_everywhere(client):
+    """TEST CLÉ V2-21a : passer une langue de `published` à `draft` EN BASE la fait
+    disparaître partout (endpoint, sélecteur du guide, /data) SANS redéploiement —
+    le registre est la source unique (invariant 8 étendu aux langues)."""
+    LAST_TRANSLATOR.calls.clear()
+    owner = register(client)
+    set_owner_plan(owner["email"], "pro")
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)
+
+    # État de départ : 'es' publiée → présente dans l'endpoint, le sélecteur et /data.
+    assert "es" in [x["code"] for x in client.get("/languages").json()]
+    assert 'data-lang="es"' in client.get(f"/g/{token}").text
+    assert "es" in client.get(f"/g/{token}/data").json()["property"]["published_langs"]
+
+    try:
+        _set_language_status("es", "draft")   # dépublication à chaud, sans redéploiement
+
+        # 1) Endpoint public : 'es' a disparu.
+        assert "es" not in [x["code"] for x in client.get("/languages").json()]
+        # 2) Sélecteur du guide (SSR) : plus de lien ?lang=es.
+        html = client.get(f"/g/{token}").text
+        assert 'data-lang="es"' not in html
+        # 3) /data : published_langs filtré par le registre.
+        assert "es" not in client.get(f"/g/{token}/data").json()["property"]["published_langs"]
+        # 4) ?lang=es demandé explicitement → repli élégant sur la source (fr).
+        forced = client.get(f"/g/{token}?lang=es")
+        assert 'lang="fr"' in forced.text and "[es]" not in forced.text
+    finally:
+        _set_language_status("es", "published")  # restauration pour les autres tests
+
+
 def test_translation_cost_recorded_and_no_secret_translated(client):
     owner = register(client)
     set_owner_plan(owner["email"], "pro")  # multilingue autorisé (V2-05a)

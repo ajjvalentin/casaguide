@@ -500,6 +500,28 @@ ON CONFLICT (code) DO UPDATE SET
   field_schema = EXCLUDED.field_schema, ai_enrichable = EXCLUDED.ai_enrichable,
   is_sensitive = EXCLUDED.is_sensitive, audience = EXCLUDED.audience;
 
+-- ============================================================================
+-- 4. REGISTRE DES LANGUES (V2-21a) — source unique des langues offertes
+--    Le produit n'offre JAMAIS que les langues `status='published'` (invariant 8
+--    étendu aux langues). fr/en/es = état actuel (published) ; nl/de/it/sq
+--    préparés en 'draft' (générés/relus en V2-21b…n, publiés une à une).
+--    Le DO UPDATE ne touche JAMAIS `status` : c'est un état d'exploitation, pas
+--    une donnée de seed — un rejeu ne dépublie ni ne republie une langue.
+-- ============================================================================
+
+INSERT INTO languages (code, name_native, status, sort_order, register_note) VALUES
+  ('fr', 'Français',   'published', 10, NULL),
+  ('en', 'English',    'published', 20, NULL),
+  ('es', 'Español',    'published', 30, NULL),
+  ('nl', 'Nederlands', 'draft',     40, 'Vouvoiement (u) — le guide s''adresse poliment au voyageur.'),
+  ('de', 'Deutsch',    'draft',     50, 'Vouvoiement (Sie) — le guide s''adresse poliment au voyageur.'),
+  ('it', 'Italiano',   'draft',     60, 'Voi — le guide s''adresse au groupe de voyageurs.'),
+  ('sq', 'Shqip',      'draft',     70, 'Forme de politesse (ju) — le guide s''adresse poliment au voyageur.')
+ON CONFLICT (code) DO UPDATE SET
+  name_native   = EXCLUDED.name_native,
+  sort_order    = EXCLUDED.sort_order,
+  register_note = EXCLUDED.register_note;
+
 COMMIT;
 
 -- Vérification rapide :

@@ -17,6 +17,7 @@ import { navigate } from "../nav.js";
 import { handleQuotaError } from "../quota.js";
 import { analyzeCandidate } from "../lib/overlaps.js";
 import { suggestEquipment } from "../lib/care.js";
+import { publishedLanguageCodes } from "../languages.js";
 
 const PLATFORMS = [
   ["airbnb", "Airbnb"], ["vrbo", "Vrbo / Abritel"], ["booking", "Booking"],
@@ -95,10 +96,11 @@ function relSync(iso) {
 export async function renderCalendar(view, pid) {
   mount(view, el("div", { class: "page" }, loadingBlock("Chargement du calendrier…")));
 
-  let property, data, catalog;
+  let property, data, catalog, publishedLangCodes;
   try {
-    [property, data, catalog] = await Promise.all([
-      api.getProperty(pid), api.calendarView(pid), api.listRequestTypes(pid)]);
+    [property, data, catalog, publishedLangCodes] = await Promise.all([
+      api.getProperty(pid), api.calendarView(pid), api.listRequestTypes(pid),
+      publishedLanguageCodes()]);
   } catch (err) {
     return mount(view, el("div", { class: "page" },
       el("div", { class: "errbox" }, err.message || "Impossible de charger le calendrier.")));
@@ -671,10 +673,13 @@ export async function renderCalendar(view, pid) {
       value: b?.guest_phone || "", placeholder: "+33 6 12 34 56 78" });
     const email = el("input", { type: "email", maxlength: "200",
       value: b?.guest_email || "", placeholder: "prenom@exemple.com" });
-    // Langue du locataire : source du logement + langues PUBLIÉES (dédupliquées),
-    // jamais une liste en dur. « non précisée » reste le défaut.
+    // Langue du locataire : source du logement + langues PUBLIÉES du logement,
+    // mais bornées au REGISTRE (V2-21a, langues publiées du produit) — une langue
+    // dépubliée en base disparaît d'ici sans redéploiement. Jamais de liste en
+    // dur. « non précisée » reste le défaut.
     const langOptions = [property.default_lang, ...(property.published_langs || [])]
-      .filter((c, i, a) => c && a.indexOf(c) === i);
+      .filter((c, i, a) => c && a.indexOf(c) === i)
+      .filter((c) => c === property.default_lang || publishedLangCodes.includes(c));
     const langSel = el("select", {},
       el("option", { value: "", selected: !b?.guest_lang }, "— non précisée —"),
       ...langOptions.map((c) => el("option",

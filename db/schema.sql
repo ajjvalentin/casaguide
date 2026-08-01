@@ -289,6 +289,20 @@ CREATE TABLE property_sections (
 );
 CREATE INDEX idx_psections_property ON property_sections(property_id);
 
+-- Registre des langues du produit (V2-21a) — source unique de vérité des langues
+-- offertes. Le produit n'offre JAMAIS que les langues `status='published'`
+-- (invariant 8 étendu aux langues) : aucune liste de langues en dur ailleurs.
+-- Seed dans seed.sql / migration 019. `register_note` = consigne de registre
+-- (vouvoiement…) imposée au modèle à la génération.
+CREATE TABLE languages (
+    code        TEXT PRIMARY KEY,                  -- 'fr', 'en', 'es', 'nl'…
+    name_native TEXT NOT NULL,                     -- 'Français', 'Shqip'…
+    status      TEXT NOT NULL DEFAULT 'draft'
+                CHECK (status IN ('draft','in_review','published')),
+    sort_order  INT  NOT NULL DEFAULT 0,
+    register_note TEXT
+);
+
 -- Traductions stockées (§9) — régénérées à chaque modification de la source
 CREATE TABLE section_translations (
     section_id  UUID NOT NULL REFERENCES property_sections(id) ON DELETE CASCADE,

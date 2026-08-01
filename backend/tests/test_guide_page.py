@@ -739,9 +739,26 @@ def test_language_selector_rendered_for_hash_preserving_switch():
     """Le sélecteur de langue est rendu (liens ?lang=xx que le client complète du
     hash courant) → l'onglet actif survit au changement de langue (une seule page)."""
     prop = _prop(default_lang="fr", published_langs=["es"])
+    # Le sélecteur est piloté par le REGISTRE (V2-21a) : render_guide reçoit la
+    # carte des langues publiées (code→nom natif). Sans elle, seule la langue
+    # source est offerte.
     html = guide_page.render_guide(prop, [_section("B_wifi", "B", {"fields": []})],
-                                   [], {}, "tok")
+                                   [], {}, "tok",
+                                   lang_names={"fr": "Français", "es": "Español"})
     assert 'class="langs"' in html and 'data-lang="es"' in html
+
+
+def test_language_selector_hidden_when_lang_not_in_registry():
+    """Registre = source unique (V2-21a) : une langue publiée pour le logement mais
+    ABSENTE du registre (ex. dépubliée globalement) ne sort PAS du sélecteur, même
+    si elle reste dans `published_langs`."""
+    prop = _prop(default_lang="fr", published_langs=["es"])
+    # `es` retirée du registre → le sélecteur ne doit proposer que la source, donc
+    # pas de sélecteur du tout (une seule langue).
+    html = guide_page.render_guide(prop, [_section("B_wifi", "B", {"fields": []})],
+                                   [], {}, "tok", lang_names={"fr": "Français"})
+    assert 'data-lang="es"' not in html
+    assert 'class="langs"' not in html
 
 
 def test_single_page_no_new_routes_hashes_are_fixed():

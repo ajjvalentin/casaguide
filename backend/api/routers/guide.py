@@ -86,11 +86,23 @@ def _first_photo_path(sections: list[dict], property_media: list[dict],
     return None
 
 
-def _effective_lang(prop: dict, requested: str | None) -> str:
-    """Langue de rendu : `requested` seulement si c'est une langue publiée et
-    non la langue source ; sinon la langue source (repli, jamais de trou, §9)."""
+def _guide_langs(conn, prop: dict) -> list[str]:
+    """Langues effectivement offertes sur CE guide : langue source + langues
+    publiées du logement, mais bornées au REGISTRE (V2-21a) — une langue passée
+    en 'draft'/'in_review' disparaît du guide même si elle reste dans
+    `published_langs` du logement. Le registre fait foi (invariant 8 étendu)."""
+    registry = repo.published_language_codes(conn)
     default = prop.get("default_lang") or "fr"
-    if requested and requested != default and requested in (prop.get("published_langs") or []):
+    prop_langs = [l for l in (prop.get("published_langs") or []) if l in registry]
+    return [default] + [l for l in prop_langs if l != default]
+
+
+def _effective_lang(conn, prop: dict, requested: str | None) -> str:
+    """Langue de rendu : `requested` seulement si c'est une langue offerte sur ce
+    guide (publiée pour le logement ET dans le registre) et non la langue source ;
+    sinon la langue source (repli, jamais de trou, §9)."""
+    default = prop.get("default_lang") or "fr"
+    if requested and requested != default and requested in _guide_langs(conn, prop):
         return requested
     return default
 
@@ -114,7 +126,10 @@ def _load_guide(conn, token: str, lang: str | None = None):
     pois = repo.guide_pois(conn, pid)
     area_facts = repo.guide_area_facts(conn, prop["country_code"], prop["city"])
 
-    effective = _effective_lang(prop, lang)
+    # Registre des langues (V2-21a) : carte code→nom natif des langues PUBLIÉES,
+    # source unique du sélecteur et du filtrage. Chargée une fois ici.
+    lang_names = {l["code"]: l["name_native"] for l in repo.published_languages(conn)}
+    effective = _effective_lang(conn, prop, lang)
     if effective != (prop.get("default_lang") or "fr"):
         _overlay_translations(conn, pid, effective, sections, pois)
 
@@ -129,7 +144,7 @@ def _load_guide(conn, token: str, lang: str | None = None):
             property_media.append(item)
     for s in sections:
         s["media"] = media_by_section.get(s["code"], [])
-    return prop, sections, pois, area_facts, property_media, effective
+    return prop, sections, pois, area_facts, property_media, effective, lang_names
 
 
 def _overlay_translations(conn, pid: str, lang: str, sections: list[dict],
@@ -166,7 +181,7 @@ def public_guide_page(guide_token: str, conn: Conn, request: Request,
     if not loaded:
         return HTMLResponse(guide_page.render_not_found(), status_code=404,
                             headers=_NOINDEX)
-    prop, sections, pois, area_facts, property_media, effective = loaded
+    prop, sections, pois, area_facts, property_media, effective, lang_names = loaded
     # Vignette de partage (M-25) : première photo du logement, sinon image de
     # marque générée. URL absolue pour les scrapers (WhatsApp/iMessage/e-mail).
     base = _base_url(request)
@@ -179,7 +194,7 @@ def public_guide_page(guide_token: str, conn: Conn, request: Request,
     html = guide_page.render_guide(_property_public(prop), sections, pois,
                                    area_facts, token, lang=effective,
                                    base_url=base, og_image_url=og_image_url,
-                                   watermark=watermark)
+                                   watermark=watermark, lang_names=lang_names)
     return HTMLResponse(html, headers=_public_headers())
 
 
@@ -207,9 +222,15 @@ def public_guide_data(guide_token: str, conn: Conn, lang: str | None = None):
     if not loaded:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Guide introuvable")
-    prop, sections, pois, area_facts, property_media, effective = loaded
+    prop, sections, pois, area_facts, property_media, effective, lang_names = loaded
+    pub = _property_public(prop)
+    # Le registre fait foi (V2-21a) : n'exposer que les langues publiées ET
+    # présentes dans le registre — une langue dépubliée globalement disparaît
+    # aussi du JSON, jamais un sélecteur tiers ne la proposera.
+    pub["published_langs"] = [l for l in (pub.get("published_langs") or [])
+                              if l in lang_names]
     return _json({
-        "property": _property_public(prop),
+        "property": pub,
         "lang": effective,
         "sections": sections,
         "pois": pois,

@@ -90,6 +90,12 @@ window.fetch = async (path, opts = {}) => {
   const json = (body) => new Response(JSON.stringify(body),
     { headers: { "Content-Type": "application/json" } });
   if (path === "/api/properties/p1" && method === "GET") return json(PROP);
+  // Registre des langues (V2-21a) : le sélecteur « langue du locataire » lit les
+  // langues PUBLIÉES du produit et les croise avec published_langs du logement.
+  if (path === "/languages" && method === "GET") return json([
+    { code: "fr", name_native: "Français", published: true },
+    { code: "en", name_native: "English", published: true },
+    { code: "es", name_native: "Español", published: true }]);
   if (path === "/api/properties/p1/calendar" && method === "GET") return json(calData);
   if (path === "/api/properties/p1/request-types" && method === "GET") return json(CATALOG);
   // §3.1 — b1 porte une demande du voyageur EN ATTENTE ; les autres séjours n'en ont pas.

@@ -371,6 +371,31 @@ def mark_trial_reminder_sent(conn, subscription_id: str, days: int, *,
         (now, subscription_id))
 
 
+# ── Registre des langues (V2-21a) ────────────────────────────────────────────
+# Source UNIQUE des langues offertes par le produit : le registre `languages`.
+# Le produit n'offre JAMAIS que les langues `status='published'` (invariant 8
+# étendu aux langues) — plus aucune liste de langues en dur. Une langue passée
+# en 'draft'/'in_review' disparaît partout sans redéploiement.
+
+def published_languages(conn) -> list[dict]:
+    """Langues publiées du registre, ordonnées : [{code, name_native}].
+    Filtre `status='published'`, tri `sort_order`. C'est LA vérité des langues
+    offertes (sélecteur du guide, partage, détection, modale séjour, cibles de
+    traduction)."""
+    rows = conn.execute(
+        "SELECT code, name_native FROM languages "
+        "WHERE status = 'published' ORDER BY sort_order, code"
+    ).fetchall()
+    return [{"code": r["code"], "name_native": r["name_native"]} for r in rows]
+
+
+def published_language_codes(conn) -> list[str]:
+    """Codes des langues publiées, ordonnés (`sort_order`). Raccourci de
+    `published_languages` quand seuls les codes importent (cibles de traduction,
+    filtrage d'un `published_langs` de logement contre le registre)."""
+    return [l["code"] for l in published_languages(conn)]
+
+
 def published_langs(conn, property_id: str) -> list[str]:
     """Langues cibles déjà publiées pour un logement (`properties.published_langs`,
     hors langue source). Liste vide si le logement n'a jamais été traduit."""

@@ -109,6 +109,9 @@ async function fetchBlob(path) {
 }
 
 export const api = {
+  // Registre des langues (V2-21a) — langues PUBLIÉES offertes par le produit.
+  // Source unique (invariant 8 étendu) : jamais de liste de langues en dur.
+  listLanguages:   () => request("GET", "/languages", { auth: false }),
   // Plans & abonnement (V2-05a)
   listPlans:       () => request("GET", "/api/plans", { auth: false }),
   getSubscription: () => request("GET", "/api/subscription"),

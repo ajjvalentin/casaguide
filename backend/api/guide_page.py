@@ -892,11 +892,18 @@ def _render_numbers(area_facts: dict, chapter_color: str, lang: str = "fr") -> s
 # ── Sélecteur de langue (M-09) : liens ?lang=xx, rendu côté serveur ──────────
 
 def _render_langs(default_lang: str, published_langs: list[str],
-                  current_lang: str) -> str:
-    """Sélecteur de langue : la langue source + les langues publiées. Chaque
-    entrée est un lien `?lang=xx` (rendu serveur) ; l'app peut mémoriser le choix
-    (localStorage) et détecter `navigator.language` au premier chargement."""
-    langs = [default_lang] + [l for l in (published_langs or []) if l != default_lang]
+                  current_lang: str, lang_names: dict | None = None) -> str:
+    """Sélecteur de langue : la langue source + les langues publiées, MAIS bornées
+    au registre des langues (V2-21a) — `lang_names` (code→nom natif) est la carte
+    des langues publiées du produit. Une langue absente du registre n'apparaît
+    jamais, même si elle reste dans `published_langs` du logement. Chaque entrée
+    est un lien `?lang=xx` (rendu serveur) ; l'app mémorise le choix (localStorage)
+    et détecte `navigator.language` au premier chargement à partir de ces liens."""
+    names = lang_names or {}
+    # La langue source est toujours offerte ; les autres seulement si publiées ET
+    # dans le registre (clés de `names`).
+    langs = [default_lang] + [l for l in (published_langs or [])
+                              if l != default_lang and l in names]
     if len(langs) <= 1:
         return ""  # une seule langue → pas de sélecteur
     btns = []
@@ -904,8 +911,9 @@ def _render_langs(default_lang: str, published_langs: list[str],
         active = " on" if l == current_lang else ""
         aria = ' aria-current="true"' if l == current_lang else ""
         href = "?lang=" + _esc(l) if l != default_lang else "?lang=" + _esc(default_lang)
+        label = names.get(l) or _LANG_LABELS.get(l, l.upper())
         btns.append(f'<a class="lang{active}" href="{href}" data-lang="{_esc(l)}"{aria} '
-                    f'title="{_esc(_LANG_LABELS.get(l, l.upper()))}">{_esc(l.upper())}</a>')
+                    f'title="{_esc(label)}">{_esc(l.upper())}</a>')
     return f'<div class="langs" aria-label="{_t(current_lang, "lang")}">{"".join(btns)}</div>'
 
 
@@ -970,7 +978,7 @@ def _watermark_html(lang: str) -> str:
 def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  area_facts: dict, token: str, lang: str = "fr", *,
                  base_url: str = "", og_image_url: str | None = None,
-                 watermark: bool = False) -> str:
+                 watermark: bool = False, lang_names: dict | None = None) -> str:
     contact = prop.get("contact") or {}
     name = _esc(prop.get("name") or _t(lang, "home"))
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
@@ -1105,7 +1113,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
 
     sos = _render_sos(area_facts)
     default_lang = prop.get("default_lang") or "fr"
-    langs = _render_langs(default_lang, prop.get("published_langs") or [], lang)
+    langs = _render_langs(default_lang, prop.get("published_langs") or [], lang,
+                          lang_names)
 
     # Liens de partage élégants (M-25) : vignette Open Graph. L'URL canonique de
     # partage porte le slug lisible (le token reste l'autorité).

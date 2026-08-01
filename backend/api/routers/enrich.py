@@ -11,8 +11,6 @@ from typing import Annotated
 
 from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException, status)
 
-from enrich.settings import settings as enrich_settings
-
 from .. import plans, repo
 from ..deps import (
     Conn, CurrentOwner, EnrichmentRunner, OwnedProperty, TranslationRunner,
@@ -24,10 +22,13 @@ from ..schemas import EnrichIn, JobOut
 router = APIRouter(prefix="/api/properties/{property_id}", tags=["enrichment"])
 
 
-def _target_langs(prop: dict) -> list[str]:
-    """Langues cibles de traduction : les langues MVP hors langue source (M-09)."""
+def _target_langs(conn, prop: dict) -> list[str]:
+    """Langues cibles de traduction : les langues PUBLIÉES du registre (V2-21a),
+    hors langue source. Le registre fait foi (invariant 8 étendu aux langues) —
+    plus de liste MVP en dur : publier une langue au registre l'ajoute
+    automatiquement aux cibles de traduction proposées à l'éditeur."""
     source = prop.get("default_lang") or "fr"
-    return [l for l in enrich_settings.translate_langs if l and l != source]
+    return [l for l in repo.published_language_codes(conn) if l and l != source]
 
 
 def schedule_translation(background, conn, prop: dict, runner: TranslationRunner,
@@ -39,7 +40,7 @@ def schedule_translation(background, conn, prop: dict, runner: TranslationRunner
     qui inclut le plan gratuit (`langs=1` → FR seul) : on ne publie alors aucune
     traduction, et les traductions déjà en base ne sont **jamais** touchées
     (invariant 1)."""
-    langs = plans.cap_target_langs(plan, _target_langs(prop))
+    langs = plans.cap_target_langs(plan, _target_langs(conn, prop))
     if not langs:
         return None
     job_id = repo.create_pending_job(conn, str(prop["id"]), "translate")
@@ -93,7 +94,7 @@ def trigger_translation(
     if job_id is None:
         # Distinguer « pas de langue cible du tout » (guide monolingue) de « le
         # plan interdit toute traduction » (plafond `features.langs`).
-        if _target_langs(prop):
+        if _target_langs(conn, prop):
             raise quota_exceeded(
                 f"L'offre « {plan['name']} » ne permet pas de publier de "
                 f"traduction (guide en une seule langue). Passez à une offre "
@@ -107,7 +108,7 @@ def trigger_translation(
 @router.get("/translation-status")
 def translation_status(conn: Conn, prop: OwnedProperty):
     """État des traductions par langue (à jour / périmé) pour l'éditeur (M-09)."""
-    return repo.translation_status(conn, str(prop["id"]), _target_langs(prop))
+    return repo.translation_status(conn, str(prop["id"]), _target_langs(conn, prop))
 
 
 @router.get("/jobs", response_model=list[JobOut])

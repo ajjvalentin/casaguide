@@ -250,6 +250,16 @@ def delete_poi_translation(conn, poi_id: str, lang: str) -> None:
                  (poi_id, lang))
 
 
+def published_language_codes(conn) -> list[str]:
+    """Codes des langues PUBLIÉES du registre (`languages`, V2-21a), ordonnés par
+    `sort_order`. Source unique des cibles de traduction quand aucune n'est
+    imposée par l'appelant (chemin CLI) — plus de liste MVP en dur."""
+    rows = conn.execute(
+        "SELECT code FROM languages WHERE status = 'published' ORDER BY sort_order, code"
+    ).fetchall()
+    return [r["code"] for r in rows]
+
+
 def set_published_langs(conn, property_id: str, langs: list[str]) -> None:
     """Publie la liste des langues traduites disponibles (pilote le sélecteur du
     guide). N'inclut jamais la langue source (déduite au rendu)."""

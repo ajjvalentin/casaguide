@@ -2,9 +2,10 @@
 
 Principe §9 : les traductions sont **générées puis stockées** (jamais de
 traduction à la volée côté voyageur — invariant 4). La langue source est
-`properties.default_lang` (fr par défaut) ; les langues cibles du MVP sont
-`en` et `es` (`settings.translate_langs`). DE/NL et la relecture propriétaire
-sont hors périmètre (V2).
+`properties.default_lang` (fr par défaut) ; les langues cibles viennent du
+REGISTRE des langues (V2-21a) — les langues `published` du produit, hors langue
+source (jamais une liste en dur). L'appelant API les impose déjà (plafonnées par
+le plan) ; en usage CLI, le repli lit le registre (`db.published_language_codes`).
 
 Ce qui est traduit :
   * le contenu **textuel** des sections voyageur (audience='guest') : champs
@@ -171,7 +172,11 @@ def run(property_id: str, *, target_langs: list[str] | None = None,
     with db.connect() as conn:
         prop = db.load_property(conn, property_id)
         source_lang = prop.get("default_lang") or "fr"
-        langs = [l for l in (target_langs or settings.translate_langs)
+        # Cibles : celles imposées par l'appelant (API, déjà plafonnées par le
+        # plan) ; à défaut (chemin CLI) les langues PUBLIÉES du registre (V2-21a) —
+        # jamais une liste MVP en dur (invariant 8 étendu aux langues).
+        fallback = db.published_language_codes(conn)
+        langs = [l for l in (target_langs or fallback)
                  if l and l != source_lang]
 
         if job_id is None:

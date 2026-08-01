@@ -17,8 +17,8 @@ from enrich import db as enrich_db
 from . import repo
 from .assets import RevalidatingStaticFiles, versioned
 from .config import missing_production_config, settings
-from .routers import (auth, billing, calendars, enrich, guide, media, pois,
-                      properties)
+from .routers import (auth, billing, calendars, enrich, guide, languages, media,
+                      pois, properties)
 
 log = logging.getLogger("casaguide.api")
 
@@ -96,6 +96,7 @@ app.include_router(pois.router)
 app.include_router(media.router)
 app.include_router(enrich.router)
 app.include_router(guide.router)
+app.include_router(languages.router)
 
 
 @app.get("/health", tags=["meta"])

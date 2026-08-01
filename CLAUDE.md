@@ -224,6 +224,26 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
     chevauchements et **masqué** de la vue, mais **jamais supprimé** (la synchro le
     recréerait). Aucune valeur codée en dur : les natures vivent dans la contrainte
     CHECK de la base (invariant 8).
+15. **Aucune liste de langues en dur — le registre fait foi (V2-21a, migration 019)** :
+    la table `languages` (`code`, `name_native`, `status` ∈ draft/in_review/
+    published, `sort_order`, `register_note`) est la **source UNIQUE** des langues
+    offertes par le produit (invariant 8 étendu aux langues). Le produit n'offre
+    **JAMAIS** que les langues `status='published'` : une langue en brouillon ou en
+    relecture est **invisible** partout (sélecteur du guide SSR, détection
+    `navigator.language`, menu de partage `?lang=`, modale « langue du locataire »,
+    cibles de traduction, `/g/{token}/data`). Passer une langue de `published` à
+    `draft` **en base** la fait disparaître partout **sans redéploiement**. Tout
+    passe par `repo.published_languages`/`published_language_codes` (backend),
+    `db.published_language_codes` (enrich/CLI), l'endpoint public `GET /languages`
+    et `frontend/js/languages.js` (front) ; le SSR lit la base directement. Le
+    `published_langs` d'un logement est **croisé** avec le registre à la lecture (une
+    langue dépubliée globalement disparaît même si elle reste dans `published_langs`).
+    Le **seed ne touche jamais `status`** (état d'exploitation, pas donnée de seed).
+    `register_note` porte la consigne de registre (vouvoiement…) imposée au modèle,
+    ajustable en base. Vérification : `grep -rnE "'(en|es|de|nl|it|sq)'" backend/api
+    frontend/js` ne doit révéler que des **libellés** d'affichage (repli), jamais une
+    liste qui décide de ce qui est *offert*. (Poster PDF FR/EN/ES M-26 : hors
+    périmètre tant que son inventaire de libellés n'est pas traduit — V2-21b…n.)
 
 ## Commandes
 
@@ -247,6 +267,7 @@ psql -d casaguide -f db/migrations/015_booking_nature.sql # nature du séjour + 
 psql -d casaguide -f db/migrations/016_booking_guests.sql # nb de voyageurs + âges des enfants (V2-23b, volet 1)
 psql -d casaguide -f db/migrations/017_care_rules.sql # règles d'entretien + catalogue de demandes (V2-23b, volet 1)
 psql -d casaguide -f db/migrations/018_guest_contact_split.sql # téléphone/email/langue séparés + backfill (V2-23b, volet 3)
+psql -d casaguide -f db/migrations/019_languages.sql # registre des langues du produit (draft/in_review/published) (V2-21a, volet 1)
 
 # Backend
 cd backend
