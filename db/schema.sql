@@ -303,6 +303,20 @@ CREATE TABLE languages (
     register_note TEXT
 );
 
+-- Traductions des libellés STATIQUES du produit (V2-21a, volet 2). UNE seule
+-- source de vérité des libellés traduits par (langue, clé). Les libellés FR/EN/ES
+-- restent portés par le code (guide_page._UI…) et le seed (name_i18n) ; cette
+-- table ne porte QUE les langues supplémentaires (nl/de/it/sq…), superposées au
+-- rendu SSR pour toute langue publiée. Clés = inventaire i18n/inventory.json.
+CREATE TABLE ui_translations (
+    lang        TEXT NOT NULL REFERENCES languages(code) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (lang, key)
+);
+CREATE INDEX idx_ui_translations_lang ON ui_translations(lang);
+
 -- Traductions stockées (§9) — régénérées à chaque modification de la source
 CREATE TABLE section_translations (
     section_id  UUID NOT NULL REFERENCES property_sections(id) ON DELETE CASCADE,

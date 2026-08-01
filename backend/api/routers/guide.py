@@ -191,10 +191,14 @@ def public_guide_page(guide_token: str, conn: Conn, request: Request,
     # « Créé avec Holaguia » ; les plans payants ne l'ont pas (features.watermark).
     plan = repo.get_plan_by_guide_token(conn, token)
     watermark = plans.wants_watermark(plan) if plan else True
+    # Libellés statiques traduits (V2-21a, volet 2) : superposés au rendu pour une
+    # langue publiée supplémentaire ; vide pour FR/EN/ES (rendu identique).
+    ui_overlay = repo.ui_translations(conn, effective)
     html = guide_page.render_guide(_property_public(prop), sections, pois,
                                    area_facts, token, lang=effective,
                                    base_url=base, og_image_url=og_image_url,
-                                   watermark=watermark, lang_names=lang_names)
+                                   watermark=watermark, lang_names=lang_names,
+                                   ui_overlay=ui_overlay)
     return HTMLResponse(html, headers=_public_headers())
 
 

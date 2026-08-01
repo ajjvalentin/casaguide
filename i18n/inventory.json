@@ -1,0 +1,1605 @@
+{
+  "chapter.A": {
+    "context": "Nom du chapitre A",
+    "en": "Arrival & departure",
+    "es": "Llegada y salida",
+    "fr": "Arrivée & départ",
+    "key": "chapter.A"
+  },
+  "chapter.B": {
+    "context": "Nom du chapitre B",
+    "en": "The home",
+    "es": "El alojamiento",
+    "fr": "Le logement",
+    "key": "chapter.B"
+  },
+  "chapter.C": {
+    "context": "Nom du chapitre C",
+    "en": "Everyday life",
+    "es": "Vida práctica",
+    "fr": "Vie pratique",
+    "key": "chapter.C"
+  },
+  "chapter.D": {
+    "context": "Nom du chapitre D",
+    "en": "Emergencies & health",
+    "es": "Urgencias y salud",
+    "fr": "Urgences & santé",
+    "key": "chapter.D"
+  },
+  "chapter.E": {
+    "context": "Nom du chapitre E",
+    "en": "On-demand services",
+    "es": "Servicios a demanda",
+    "fr": "Services à la demande",
+    "key": "chapter.E"
+  },
+  "chapter.F": {
+    "context": "Nom du chapitre F",
+    "en": "Dining & going out",
+    "es": "Restaurantes y salidas",
+    "fr": "Restaurants & sorties",
+    "key": "chapter.F"
+  },
+  "chapter.G": {
+    "context": "Nom du chapitre G",
+    "en": "Activities & sightseeing",
+    "es": "Actividades y turismo",
+    "fr": "Activités & tourisme",
+    "key": "chapter.G"
+  },
+  "chapter.H": {
+    "context": "Nom du chapitre H",
+    "en": "Getting around",
+    "es": "Transporte",
+    "fr": "Transports",
+    "key": "chapter.H"
+  },
+  "chapter.I": {
+    "context": "Nom du chapitre I",
+    "en": "Information",
+    "es": "Información",
+    "fr": "Informations",
+    "key": "chapter.I"
+  },
+  "chapter_tab.C.around": {
+    "context": "Chapitre C (onglet « around »)",
+    "en": "Shops & services",
+    "es": "Comercios y servicios",
+    "fr": "Commerces & services",
+    "key": "chapter_tab.C.around"
+  },
+  "chapter_tab.C.home": {
+    "context": "Chapitre C (onglet « home »)",
+    "en": "Everyday life — waste & recycling",
+    "es": "Vida práctica — basura y reciclaje",
+    "fr": "Vie pratique — déchets & tri",
+    "key": "chapter_tab.C.home"
+  },
+  "cuisine.american": {
+    "context": "Type de cuisine « american »",
+    "en": "American",
+    "es": "Americano",
+    "fr": "Américain",
+    "key": "cuisine.american"
+  },
+  "cuisine.asian": {
+    "context": "Type de cuisine « asian »",
+    "en": "Asian",
+    "es": "Asiático",
+    "fr": "Asiatique",
+    "key": "cuisine.asian"
+  },
+  "cuisine.barbecue": {
+    "context": "Type de cuisine « barbecue »",
+    "en": "Barbecue",
+    "es": "Barbacoa",
+    "fr": "Grillades",
+    "key": "cuisine.barbecue"
+  },
+  "cuisine.breakfast": {
+    "context": "Type de cuisine « breakfast »",
+    "en": "Breakfast",
+    "es": "Desayuno",
+    "fr": "Petit-déjeuner",
+    "key": "cuisine.breakfast"
+  },
+  "cuisine.burger": {
+    "context": "Type de cuisine « burger »",
+    "en": "Burger",
+    "es": "Hamburguesa",
+    "fr": "Burger",
+    "key": "cuisine.burger"
+  },
+  "cuisine.cafe": {
+    "context": "Type de cuisine « cafe »",
+    "en": "Café",
+    "es": "Cafetería",
+    "fr": "Café",
+    "key": "cuisine.cafe"
+  },
+  "cuisine.chicken": {
+    "context": "Type de cuisine « chicken »",
+    "en": "Chicken",
+    "es": "Pollo",
+    "fr": "Poulet",
+    "key": "cuisine.chicken"
+  },
+  "cuisine.chinese": {
+    "context": "Type de cuisine « chinese »",
+    "en": "Chinese",
+    "es": "Chino",
+    "fr": "Chinois",
+    "key": "cuisine.chinese"
+  },
+  "cuisine.coffee_shop": {
+    "context": "Type de cuisine « coffee_shop »",
+    "en": "Coffee shop",
+    "es": "Cafetería",
+    "fr": "Café",
+    "key": "cuisine.coffee_shop"
+  },
+  "cuisine.fish": {
+    "context": "Type de cuisine « fish »",
+    "en": "Fish",
+    "es": "Pescado",
+    "fr": "Poisson",
+    "key": "cuisine.fish"
+  },
+  "cuisine.french": {
+    "context": "Type de cuisine « french »",
+    "en": "French",
+    "es": "Francés",
+    "fr": "Français",
+    "key": "cuisine.french"
+  },
+  "cuisine.greek": {
+    "context": "Type de cuisine « greek »",
+    "en": "Greek",
+    "es": "Griego",
+    "fr": "Grec",
+    "key": "cuisine.greek"
+  },
+  "cuisine.ice_cream": {
+    "context": "Type de cuisine « ice_cream »",
+    "en": "Ice cream",
+    "es": "Helados",
+    "fr": "Glaces",
+    "key": "cuisine.ice_cream"
+  },
+  "cuisine.indian": {
+    "context": "Type de cuisine « indian »",
+    "en": "Indian",
+    "es": "Indio",
+    "fr": "Indien",
+    "key": "cuisine.indian"
+  },
+  "cuisine.international": {
+    "context": "Type de cuisine « international »",
+    "en": "International",
+    "es": "Internacional",
+    "fr": "International",
+    "key": "cuisine.international"
+  },
+  "cuisine.italian": {
+    "context": "Type de cuisine « italian »",
+    "en": "Italian",
+    "es": "Italiano",
+    "fr": "Italien",
+    "key": "cuisine.italian"
+  },
+  "cuisine.japanese": {
+    "context": "Type de cuisine « japanese »",
+    "en": "Japanese",
+    "es": "Japonés",
+    "fr": "Japonais",
+    "key": "cuisine.japanese"
+  },
+  "cuisine.kebab": {
+    "context": "Type de cuisine « kebab »",
+    "en": "Kebab",
+    "es": "Kebab",
+    "fr": "Kebab",
+    "key": "cuisine.kebab"
+  },
+  "cuisine.mediterranean": {
+    "context": "Type de cuisine « mediterranean »",
+    "en": "Mediterranean",
+    "es": "Mediterráneo",
+    "fr": "Méditerranéen",
+    "key": "cuisine.mediterranean"
+  },
+  "cuisine.mexican": {
+    "context": "Type de cuisine « mexican »",
+    "en": "Mexican",
+    "es": "Mexicano",
+    "fr": "Mexicain",
+    "key": "cuisine.mexican"
+  },
+  "cuisine.pizza": {
+    "context": "Type de cuisine « pizza »",
+    "en": "Pizza",
+    "es": "Pizza",
+    "fr": "Pizza",
+    "key": "cuisine.pizza"
+  },
+  "cuisine.regional": {
+    "context": "Type de cuisine « regional »",
+    "en": "Regional",
+    "es": "Regional",
+    "fr": "Régional",
+    "key": "cuisine.regional"
+  },
+  "cuisine.sandwich": {
+    "context": "Type de cuisine « sandwich »",
+    "en": "Sandwich",
+    "es": "Bocadillos",
+    "fr": "Sandwichs",
+    "key": "cuisine.sandwich"
+  },
+  "cuisine.seafood": {
+    "context": "Type de cuisine « seafood »",
+    "en": "Seafood",
+    "es": "Marisco",
+    "fr": "Fruits de mer",
+    "key": "cuisine.seafood"
+  },
+  "cuisine.spanish": {
+    "context": "Type de cuisine « spanish »",
+    "en": "Spanish",
+    "es": "Español",
+    "fr": "Espagnol",
+    "key": "cuisine.spanish"
+  },
+  "cuisine.steak_house": {
+    "context": "Type de cuisine « steak_house »",
+    "en": "Steakhouse",
+    "es": "Carnes",
+    "fr": "Grillades",
+    "key": "cuisine.steak_house"
+  },
+  "cuisine.sushi": {
+    "context": "Type de cuisine « sushi »",
+    "en": "Sushi",
+    "es": "Sushi",
+    "fr": "Sushi",
+    "key": "cuisine.sushi"
+  },
+  "cuisine.tapas": {
+    "context": "Type de cuisine « tapas »",
+    "en": "Tapas",
+    "es": "Tapas",
+    "fr": "Tapas",
+    "key": "cuisine.tapas"
+  },
+  "cuisine.thai": {
+    "context": "Type de cuisine « thai »",
+    "en": "Thai",
+    "es": "Tailandés",
+    "fr": "Thaïlandais",
+    "key": "cuisine.thai"
+  },
+  "cuisine.vegan": {
+    "context": "Type de cuisine « vegan »",
+    "en": "Vegan",
+    "es": "Vegano",
+    "fr": "Végan",
+    "key": "cuisine.vegan"
+  },
+  "cuisine.vegetarian": {
+    "context": "Type de cuisine « vegetarian »",
+    "en": "Vegetarian",
+    "es": "Vegetariano",
+    "fr": "Végétarien",
+    "key": "cuisine.vegetarian"
+  },
+  "option.private": {
+    "context": "Valeur de champ « private »",
+    "en": "Private space",
+    "es": "Plaza privada",
+    "fr": "Place privée",
+    "key": "option.private"
+  },
+  "option.public": {
+    "context": "Valeur de champ « public »",
+    "en": "Public car park",
+    "es": "Aparcamiento público",
+    "fr": "Parking public",
+    "key": "option.public"
+  },
+  "option.street": {
+    "context": "Valeur de champ « street »",
+    "en": "Street parking",
+    "es": "Aparcamiento en la calle",
+    "fr": "Stationnement dans la rue",
+    "key": "option.street"
+  },
+  "poi_category.airport": {
+    "context": "Catégorie de lieu « airport »",
+    "en": "Airport",
+    "es": "Aeropuerto",
+    "fr": "Aéroport",
+    "key": "poi_category.airport"
+  },
+  "poi_category.atm": {
+    "context": "Catégorie de lieu « atm »",
+    "en": "ATM",
+    "es": "Cajero",
+    "fr": "Distributeur",
+    "key": "poi_category.atm"
+  },
+  "poi_category.babysitter": {
+    "context": "Catégorie de lieu « babysitter »",
+    "en": "Babysitting",
+    "es": "Canguro",
+    "fr": "Baby-sitting",
+    "key": "poi_category.babysitter"
+  },
+  "poi_category.bakery": {
+    "context": "Catégorie de lieu « bakery »",
+    "en": "Bakery",
+    "es": "Panadería",
+    "fr": "Boulangerie",
+    "key": "poi_category.bakery"
+  },
+  "poi_category.bar": {
+    "context": "Catégorie de lieu « bar »",
+    "en": "Bar",
+    "es": "Bar",
+    "fr": "Bar",
+    "key": "poi_category.bar"
+  },
+  "poi_category.beach": {
+    "context": "Catégorie de lieu « beach »",
+    "en": "Beach",
+    "es": "Playa",
+    "fr": "Plage",
+    "key": "poi_category.beach"
+  },
+  "poi_category.bus_station": {
+    "context": "Catégorie de lieu « bus_station »",
+    "en": "Bus station",
+    "es": "Estación de autobuses",
+    "fr": "Gare routière",
+    "key": "poi_category.bus_station"
+  },
+  "poi_category.bus_stop": {
+    "context": "Catégorie de lieu « bus_stop »",
+    "en": "Bus stop",
+    "es": "Parada de bus",
+    "fr": "Arrêt de bus",
+    "key": "poi_category.bus_stop"
+  },
+  "poi_category.cafe": {
+    "context": "Catégorie de lieu « cafe »",
+    "en": "Café",
+    "es": "Cafetería",
+    "fr": "Café",
+    "key": "poi_category.cafe"
+  },
+  "poi_category.charging_station": {
+    "context": "Catégorie de lieu « charging_station »",
+    "en": "EV charging",
+    "es": "Punto de recarga",
+    "fr": "Borne de recharge",
+    "key": "poi_category.charging_station"
+  },
+  "poi_category.doctor": {
+    "context": "Catégorie de lieu « doctor »",
+    "en": "Doctor / dentist",
+    "es": "Médico / dentista",
+    "fr": "Médecin / dentiste",
+    "key": "poi_category.doctor"
+  },
+  "poi_category.family_activity": {
+    "context": "Catégorie de lieu « family_activity »",
+    "en": "Family activity",
+    "es": "Actividad familiar",
+    "fr": "Activité famille",
+    "key": "poi_category.family_activity"
+  },
+  "poi_category.food_delivery": {
+    "context": "Catégorie de lieu « food_delivery »",
+    "en": "Food delivery",
+    "es": "Comida a domicilio",
+    "fr": "Livraison de repas",
+    "key": "poi_category.food_delivery"
+  },
+  "poi_category.fuel": {
+    "context": "Catégorie de lieu « fuel »",
+    "en": "Petrol station",
+    "es": "Gasolinera",
+    "fr": "Station-service",
+    "key": "poi_category.fuel"
+  },
+  "poi_category.hospital": {
+    "context": "Catégorie de lieu « hospital »",
+    "en": "Hospital",
+    "es": "Hospital",
+    "fr": "Hôpital",
+    "key": "poi_category.hospital"
+  },
+  "poi_category.laundry": {
+    "context": "Catégorie de lieu « laundry »",
+    "en": "Laundry",
+    "es": "Lavandería",
+    "fr": "Laverie",
+    "key": "poi_category.laundry"
+  },
+  "poi_category.mall": {
+    "context": "Catégorie de lieu « mall »",
+    "en": "Shopping mall",
+    "es": "Centro comercial",
+    "fr": "Centre commercial",
+    "key": "poi_category.mall"
+  },
+  "poi_category.market": {
+    "context": "Catégorie de lieu « market »",
+    "en": "Local market",
+    "es": "Mercado local",
+    "fr": "Marché local",
+    "key": "poi_category.market"
+  },
+  "poi_category.parking": {
+    "context": "Catégorie de lieu « parking »",
+    "en": "Parking",
+    "es": "Aparcamiento",
+    "fr": "Parking",
+    "key": "poi_category.parking"
+  },
+  "poi_category.pharmacy": {
+    "context": "Catégorie de lieu « pharmacy »",
+    "en": "Pharmacy",
+    "es": "Farmacia",
+    "fr": "Pharmacie",
+    "key": "poi_category.pharmacy"
+  },
+  "poi_category.police": {
+    "context": "Catégorie de lieu « police »",
+    "en": "Police",
+    "es": "Policía",
+    "fr": "Police",
+    "key": "poi_category.police"
+  },
+  "poi_category.post_office": {
+    "context": "Catégorie de lieu « post_office »",
+    "en": "Post office",
+    "es": "Correos",
+    "fr": "Poste",
+    "key": "poi_category.post_office"
+  },
+  "poi_category.rental": {
+    "context": "Catégorie de lieu « rental »",
+    "en": "Rentals (bike, car…)",
+    "es": "Alquiler (bici, coche…)",
+    "fr": "Location (vélo, voiture…)",
+    "key": "poi_category.rental"
+  },
+  "poi_category.restaurant": {
+    "context": "Catégorie de lieu « restaurant »",
+    "en": "Restaurant",
+    "es": "Restaurante",
+    "fr": "Restaurant",
+    "key": "poi_category.restaurant"
+  },
+  "poi_category.sight": {
+    "context": "Catégorie de lieu « sight »",
+    "en": "Sight",
+    "es": "Lugar de interés",
+    "fr": "Site touristique",
+    "key": "poi_category.sight"
+  },
+  "poi_category.sport": {
+    "context": "Catégorie de lieu « sport »",
+    "en": "Sports & leisure",
+    "es": "Deporte y ocio",
+    "fr": "Sport & loisirs",
+    "key": "poi_category.sport"
+  },
+  "poi_category.supermarket": {
+    "context": "Catégorie de lieu « supermarket »",
+    "en": "Supermarket",
+    "es": "Supermercado",
+    "fr": "Supermarché",
+    "key": "poi_category.supermarket"
+  },
+  "poi_category.taxi": {
+    "context": "Catégorie de lieu « taxi »",
+    "en": "Taxi / ride-hailing",
+    "es": "Taxi / VTC",
+    "fr": "Taxi / VTC",
+    "key": "poi_category.taxi"
+  },
+  "poi_category.train_station": {
+    "context": "Catégorie de lieu « train_station »",
+    "en": "Train station",
+    "es": "Estación de tren",
+    "fr": "Gare",
+    "key": "poi_category.train_station"
+  },
+  "poi_category.veterinary": {
+    "context": "Catégorie de lieu « veterinary »",
+    "en": "Veterinary",
+    "es": "Veterinario",
+    "fr": "Vétérinaire",
+    "key": "poi_category.veterinary"
+  },
+  "section.A_access.description": {
+    "context": "Description de la section « A_access » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Étage, interphone, portail, digicode d’immeuble, repères visuels (photo de la façade recommandée).",
+    "key": "section.A_access.description"
+  },
+  "section.A_access.name": {
+    "context": "Nom de la section « A_access »",
+    "en": "Getting to the property",
+    "es": "Acceso al alojamiento",
+    "fr": "Accès au logement",
+    "key": "section.A_access.name"
+  },
+  "section.A_arrival.description": {
+    "context": "Description de la section « A_arrival » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Itinéraires générés automatiquement (GPS, adresse copiable, trajets depuis les aéroports validés). Ajoutez ici vos conseils personnels : péages, sorties, pièges à éviter…",
+    "key": "section.A_arrival.description"
+  },
+  "section.A_arrival.name": {
+    "context": "Nom de la section « A_arrival »",
+    "en": "Getting here from your location",
+    "es": "Cómo llegar desde tu ubicación",
+    "fr": "Venir depuis votre emplacement",
+    "key": "section.A_arrival.name"
+  },
+  "section.A_checkin.description": {
+    "context": "Description de la section « A_checkin » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Heure d’arrivée au plus tôt et déroulé de l’arrivée (autonome ou accueil en personne).",
+    "key": "section.A_checkin.description"
+  },
+  "section.A_checkin.name": {
+    "context": "Nom de la section « A_checkin »",
+    "en": "Check-in",
+    "es": "Llegada",
+    "fr": "Check-in",
+    "key": "section.A_checkin.name"
+  },
+  "section.A_checkout.description": {
+    "context": "Description de la section « A_checkout » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Heure limite de départ et consignes : clés, poubelles, vaisselle, linge, fenêtres…",
+    "key": "section.A_checkout.description"
+  },
+  "section.A_checkout.name": {
+    "context": "Nom de la section « A_checkout »",
+    "en": "Check-out",
+    "es": "Salida",
+    "fr": "Check-out",
+    "key": "section.A_checkout.name"
+  },
+  "section.A_keybox.description": {
+    "context": "Description de la section « A_keybox » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Emplacement de la boîte à clés (photo recommandée) et instructions. Le code lui-même est saisi dans l’espace sécurisé et chiffré.",
+    "key": "section.A_keybox.description"
+  },
+  "section.A_keybox.name": {
+    "context": "Nom de la section « A_keybox »",
+    "en": "Key box & key access",
+    "es": "Caja de llaves y acceso",
+    "fr": "Boîte à clés & accès aux clés",
+    "key": "section.A_keybox.name"
+  },
+  "section.A_parking.description": {
+    "context": "Description de la section « A_parking » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Place privée, stationnement dans la rue ou parking public le plus proche (tarifs, lien).",
+    "key": "section.A_parking.description"
+  },
+  "section.A_parking.name": {
+    "context": "Nom de la section « A_parking »",
+    "en": "Parking",
+    "es": "Aparcamiento",
+    "fr": "Parking",
+    "key": "section.A_parking.name"
+  },
+  "section.B_appliances.description": {
+    "context": "Description de la section « B_appliances » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Climatisation, chauffage, lave-linge, lave-vaisselle, TV, four, cafetière… Une fiche par équipement, avec photos ou notice PDF.",
+    "key": "section.B_appliances.description"
+  },
+  "section.B_appliances.name": {
+    "context": "Nom de la section « B_appliances »",
+    "en": "Indoor appliances",
+    "es": "Equipamiento interior",
+    "fr": "Équipements intérieurs",
+    "key": "section.B_appliances.name"
+  },
+  "section.B_appliances_out.description": {
+    "context": "Description de la section « B_appliances_out » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Plancha, barbecue, stores électriques, éclairage et équipements de la piscine, arrosage, mobilier de jardin… Une fiche par équipement, avec photos (télécommandes, boutons…).",
+    "key": "section.B_appliances_out.description"
+  },
+  "section.B_appliances_out.name": {
+    "context": "Nom de la section « B_appliances_out »",
+    "en": "Outdoor equipment",
+    "es": "Equipamiento exterior",
+    "fr": "Équipements extérieurs",
+    "key": "section.B_appliances_out.name"
+  },
+  "section.B_cleaning.description": {
+    "context": "Description de la section « B_cleaning » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Où trouver draps, serviettes et produits ; consignes de ménage.",
+    "key": "section.B_cleaning.description"
+  },
+  "section.B_cleaning.name": {
+    "context": "Nom de la section « B_cleaning »",
+    "en": "Cleaning & linen",
+    "es": "Limpieza y ropa de casa",
+    "fr": "Ménage & linge",
+    "key": "section.B_cleaning.name"
+  },
+  "section.B_house_rules.description": {
+    "context": "Description de la section « B_house_rules » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Fumeurs, animaux, fêtes, nombre maximum d’occupants, heures de silence. Les règles locales sur le bruit sont pré-remplies automatiquement.",
+    "key": "section.B_house_rules.description"
+  },
+  "section.B_house_rules.name": {
+    "context": "Nom de la section « B_house_rules »",
+    "en": "House rules",
+    "es": "Normas de la casa",
+    "fr": "Règlement intérieur",
+    "key": "section.B_house_rules.name"
+  },
+  "section.B_piscine.description": {
+    "context": "Description de la section « B_piscine » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Entretien (passage du pisciniste), règles d’usage, éclairage nocturne — tout ce que vos voyageurs doivent savoir. Masquez cette section si non concerné.",
+    "key": "section.B_piscine.description"
+  },
+  "section.B_piscine.name": {
+    "context": "Nom de la section « B_piscine »",
+    "en": "The pool",
+    "es": "La piscina",
+    "fr": "La piscine",
+    "key": "section.B_piscine.name"
+  },
+  "section.B_pool.description": {
+    "context": "Description de la section « B_pool » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Règles d’usage du jacuzzi et du barbecue. Masquez cette section si non concerné.",
+    "key": "section.B_pool.description"
+  },
+  "section.B_pool.name": {
+    "context": "Nom de la section « B_pool »",
+    "en": "Hot tub / BBQ",
+    "es": "Jacuzzi / barbacoa",
+    "fr": "Jacuzzi / barbecue",
+    "key": "section.B_pool.name"
+  },
+  "section.B_utilities.description": {
+    "context": "Description de la section « B_utilities » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Emplacements eau / électricité / gaz et que faire en cas de coupure.",
+    "key": "section.B_utilities.description"
+  },
+  "section.B_utilities.name": {
+    "context": "Nom de la section « B_utilities »",
+    "en": "Meters & breakers",
+    "es": "Contadores y cuadro eléctrico",
+    "fr": "Compteurs & disjoncteurs",
+    "key": "section.B_utilities.name"
+  },
+  "section.B_wifi.description": {
+    "context": "Description de la section « B_wifi » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Nom du réseau et emplacement de la box. Le mot de passe est saisi dans l’espace sécurisé et chiffré ; un QR de connexion automatique sera généré.",
+    "key": "section.B_wifi.description"
+  },
+  "section.B_wifi.name": {
+    "context": "Nom de la section « B_wifi »",
+    "en": "Wifi",
+    "es": "Wifi",
+    "fr": "Wifi",
+    "key": "section.B_wifi.name"
+  },
+  "section.C_laundry.description": {
+    "context": "Description de la section « C_laundry » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Laveries les plus proches — utile si le logement n’a pas de lave-linge.",
+    "key": "section.C_laundry.description"
+  },
+  "section.C_laundry.name": {
+    "context": "Nom de la section « C_laundry »",
+    "en": "Laundry",
+    "es": "Lavandería",
+    "fr": "Laverie",
+    "key": "section.C_laundry.name"
+  },
+  "section.C_malls.description": {
+    "context": "Description de la section « C_malls » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Centres commerciaux accessibles, avec horaires et lien vers leur site.",
+    "key": "section.C_malls.description"
+  },
+  "section.C_malls.name": {
+    "context": "Nom de la section « C_malls »",
+    "en": "Shopping malls",
+    "es": "Centros comerciales",
+    "fr": "Centres commerciaux",
+    "key": "section.C_malls.name"
+  },
+  "section.C_markets.description": {
+    "context": "Description de la section « C_markets » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Jours, horaires, emplacement et spécialités des marchés hebdomadaires alentour.",
+    "key": "section.C_markets.description"
+  },
+  "section.C_markets.name": {
+    "context": "Nom de la section « C_markets »",
+    "en": "Local markets",
+    "es": "Mercados locales",
+    "fr": "Marchés locaux",
+    "key": "section.C_markets.name"
+  },
+  "section.C_shops.description": {
+    "context": "Description de la section « C_shops » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Distributeur de billets, bureau de poste, tabac…",
+    "key": "section.C_shops.description"
+  },
+  "section.C_shops.name": {
+    "context": "Nom de la section « C_shops »",
+    "en": "Nearby services",
+    "es": "Servicios cercanos",
+    "fr": "Services de proximité",
+    "key": "section.C_shops.name"
+  },
+  "section.C_supermarkets.description": {
+    "context": "Description de la section « C_supermarkets » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Les commerces les plus proches, avec horaires et distance — suggérés automatiquement, à valider.",
+    "key": "section.C_supermarkets.description"
+  },
+  "section.C_supermarkets.name": {
+    "context": "Nom de la section « C_supermarkets »",
+    "en": "Supermarkets & shops",
+    "es": "Supermercados y comercios",
+    "fr": "Supermarchés & commerces",
+    "key": "section.C_supermarkets.name"
+  },
+  "section.C_trash.description": {
+    "context": "Description de la section « C_trash » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Emplacement des conteneurs (photo + point sur la carte), jours de collecte, consignes de tri locales (pré-remplies automatiquement).",
+    "key": "section.C_trash.description"
+  },
+  "section.C_trash.name": {
+    "context": "Nom de la section « C_trash »",
+    "en": "Trash & recycling",
+    "es": "Basura y reciclaje",
+    "fr": "Poubelles & tri",
+    "key": "section.C_trash.name"
+  },
+  "section.D_contact.description": {
+    "context": "Description de la section « D_contact » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Vos coordonnées (téléphone, WhatsApp, email), vos disponibilités et un contact de secours (voisin, femme de ménage…). Renseignées dans la fiche du logement.",
+    "key": "section.D_contact.description"
+  },
+  "section.D_contact.name": {
+    "context": "Nom de la section « D_contact »",
+    "en": "Contact us",
+    "es": "Contacto",
+    "fr": "Nous contacter",
+    "key": "section.D_contact.name"
+  },
+  "section.D_doctors.description": {
+    "context": "Description de la section « D_doctors » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Médecins, dentistes et vétérinaires proches ; précisez les langues parlées si vous les connaissez.",
+    "key": "section.D_doctors.description"
+  },
+  "section.D_doctors.name": {
+    "context": "Nom de la section « D_doctors »",
+    "en": "Doctors & veterinary",
+    "es": "Médicos y veterinario",
+    "fr": "Médecins & vétérinaire",
+    "key": "section.D_doctors.name"
+  },
+  "section.D_emergency.description": {
+    "context": "Description de la section « D_emergency » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "112, urgences médicales, pompiers, police locale… pré-remplis selon le pays et la commune, à vérifier.",
+    "key": "section.D_emergency.description"
+  },
+  "section.D_emergency.name": {
+    "context": "Nom de la section « D_emergency »",
+    "en": "Emergency numbers",
+    "es": "Números de emergencia",
+    "fr": "Numéros d’urgence",
+    "key": "section.D_emergency.name"
+  },
+  "section.D_hospital.description": {
+    "context": "Description de la section « D_hospital » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Hôpital et urgences 24 h les plus proches, avec adresse, téléphone et itinéraire.",
+    "key": "section.D_hospital.description"
+  },
+  "section.D_hospital.name": {
+    "context": "Nom de la section « D_hospital »",
+    "en": "Nearest hospital",
+    "es": "Hospital más cercano",
+    "fr": "Hôpital le plus proche",
+    "key": "section.D_hospital.name"
+  },
+  "section.D_pharmacy.description": {
+    "context": "Description de la section « D_pharmacy » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Pharmacies proches et lien vers le planning des pharmacies de garde.",
+    "key": "section.D_pharmacy.description"
+  },
+  "section.D_pharmacy.name": {
+    "context": "Nom de la section « D_pharmacy »",
+    "en": "Pharmacies",
+    "es": "Farmacias",
+    "fr": "Pharmacies",
+    "key": "section.D_pharmacy.name"
+  },
+  "section.D_safety.description": {
+    "context": "Description de la section « D_safety » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Extincteur, trousse de premiers secours, détecteurs de fumée, consignes d’évacuation.",
+    "key": "section.D_safety.description"
+  },
+  "section.D_safety.name": {
+    "context": "Nom de la section « D_safety »",
+    "en": "Home safety",
+    "es": "Seguridad del alojamiento",
+    "fr": "Sécurité du logement",
+    "key": "section.D_safety.name"
+  },
+  "section.E_babysitter.description": {
+    "context": "Description de la section « E_babysitter » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Services de garde d’enfants recommandés : agences locales ou personnes de confiance.",
+    "key": "section.E_babysitter.description"
+  },
+  "section.E_babysitter.name": {
+    "context": "Nom de la section « E_babysitter »",
+    "en": "Babysitting",
+    "es": "Canguro",
+    "fr": "Baby-sitting",
+    "key": "section.E_babysitter.name"
+  },
+  "section.E_food_delivery.description": {
+    "context": "Description de la section « E_food_delivery » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Plateformes actives dans la zone (Glovo, Uber Eats, Just Eat…) et restaurants livrant en direct.",
+    "key": "section.E_food_delivery.description"
+  },
+  "section.E_food_delivery.name": {
+    "context": "Nom de la section « E_food_delivery »",
+    "en": "Food delivery",
+    "es": "Comida a domicilio",
+    "fr": "Livraison de repas",
+    "key": "section.E_food_delivery.name"
+  },
+  "section.E_rentals.description": {
+    "context": "Description de la section « E_rentals » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Loueurs proches : vélos, voitures, matériel de plage…",
+    "key": "section.E_rentals.description"
+  },
+  "section.E_rentals.name": {
+    "context": "Nom de la section « E_rentals »",
+    "en": "Rentals (bike, car, beach gear)",
+    "es": "Alquileres (bici, coche, playa)",
+    "fr": "Locations (vélo, voiture, plage)",
+    "key": "section.E_rentals.name"
+  },
+  "section.E_services.description": {
+    "context": "Description de la section « E_services » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Ménage supplémentaire, chef à domicile, massage… vos prestataires recommandés.",
+    "key": "section.E_services.description"
+  },
+  "section.E_services.name": {
+    "context": "Nom de la section « E_services »",
+    "en": "Extra services",
+    "es": "Servicios adicionales",
+    "fr": "Services supplémentaires",
+    "key": "section.E_services.name"
+  },
+  "section.E_taxi.description": {
+    "context": "Description de la section « E_taxi » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Compagnies locales (téléphone, application), station de taxis la plus proche.",
+    "key": "section.E_taxi.description"
+  },
+  "section.E_taxi.name": {
+    "context": "Nom de la section « E_taxi »",
+    "en": "Taxi / ride-hailing",
+    "es": "Taxi / VTC",
+    "fr": "Taxi / VTC",
+    "key": "section.E_taxi.name"
+  },
+  "section.F_bars.description": {
+    "context": "Description de la section « F_bars » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Bars, cafés et vie nocturne selon l’ambiance recherchée.",
+    "key": "section.F_bars.description"
+  },
+  "section.F_bars.name": {
+    "context": "Nom de la section « F_bars »",
+    "en": "Bars & cafés",
+    "es": "Bares y cafeterías",
+    "fr": "Bars & cafés",
+    "key": "section.F_bars.name"
+  },
+  "section.F_restaurants.description": {
+    "context": "Description de la section « F_restaurants » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Vos coups de cœur (ajoutez un commentaire personnel, c’est ce que les voyageurs préfèrent) complétés par des suggestions automatiques par catégorie.",
+    "key": "section.F_restaurants.description"
+  },
+  "section.F_restaurants.name": {
+    "context": "Nom de la section « F_restaurants »",
+    "en": "Recommended restaurants",
+    "es": "Restaurantes recomendados",
+    "fr": "Restaurants recommandés",
+    "key": "section.F_restaurants.name"
+  },
+  "section.G_beaches.description": {
+    "context": "Description de la section « G_beaches » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Plages les plus proches, accès, surveillance ; espaces naturels.",
+    "key": "section.G_beaches.description"
+  },
+  "section.G_beaches.name": {
+    "context": "Nom de la section « G_beaches »",
+    "en": "Beaches & nature",
+    "es": "Playas y naturaleza",
+    "fr": "Plages & nature",
+    "key": "section.G_beaches.name"
+  },
+  "section.G_daytrips.description": {
+    "context": "Description de la section « G_daytrips » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Idées de sorties à moins de 1 h 30 : villes, villages, sites naturels.",
+    "key": "section.G_daytrips.description"
+  },
+  "section.G_daytrips.name": {
+    "context": "Nom de la section « G_daytrips »",
+    "en": "Day trips",
+    "es": "Excursiones de un día",
+    "fr": "Excursions à la journée",
+    "key": "section.G_daytrips.name"
+  },
+  "section.G_events.description": {
+    "context": "Description de la section « G_events » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Fêtes de village, saisons, agenda — avec lien vers l’office de tourisme.",
+    "key": "section.G_events.description"
+  },
+  "section.G_events.name": {
+    "context": "Nom de la section « G_events »",
+    "en": "Events & local festivals",
+    "es": "Eventos y fiestas locales",
+    "fr": "Événements & fêtes locales",
+    "key": "section.G_events.name"
+  },
+  "section.G_family.description": {
+    "context": "Description de la section « G_family » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Parcs aquatiques, aires de jeux, mini-golf, activités par temps de pluie…",
+    "key": "section.G_family.description"
+  },
+  "section.G_family.name": {
+    "context": "Nom de la section « G_family »",
+    "en": "Family & kids activities",
+    "es": "Actividades familiares",
+    "fr": "Activités familles & enfants",
+    "key": "section.G_family.name"
+  },
+  "section.G_sights.description": {
+    "context": "Description de la section « G_sights » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Monuments, musées, parcs — horaires et liens de réservation.",
+    "key": "section.G_sights.description"
+  },
+  "section.G_sights.name": {
+    "context": "Nom de la section « G_sights »",
+    "en": "Sights",
+    "es": "Lugares de interés",
+    "fr": "Sites touristiques",
+    "key": "section.G_sights.name"
+  },
+  "section.G_sport.description": {
+    "context": "Description de la section « G_sport » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Golf, tennis, randonnées, sports nautiques à proximité.",
+    "key": "section.G_sport.description"
+  },
+  "section.G_sport.name": {
+    "context": "Nom de la section « G_sport »",
+    "en": "Sports & leisure",
+    "es": "Deporte y ocio",
+    "fr": "Sport & loisirs",
+    "key": "section.G_sport.name"
+  },
+  "section.H_airport.description": {
+    "context": "Description de la section « H_airport » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Aéroports accessibles et options de transfert.",
+    "key": "section.H_airport.description"
+  },
+  "section.H_airport.name": {
+    "context": "Nom de la section « H_airport »",
+    "en": "Airports",
+    "es": "Aeropuertos",
+    "fr": "Aéroports",
+    "key": "section.H_airport.name"
+  },
+  "section.H_fuel.description": {
+    "context": "Description de la section « H_fuel » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Stations-service et bornes de recharge électrique à proximité (utile en voiture de location).",
+    "key": "section.H_fuel.description"
+  },
+  "section.H_fuel.name": {
+    "context": "Nom de la section « H_fuel »",
+    "en": "Fuel & charging",
+    "es": "Combustible y recarga",
+    "fr": "Carburant & recharge",
+    "key": "section.H_fuel.name"
+  },
+  "section.H_transit.description": {
+    "context": "Description de la section « H_transit » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Arrêts proches, lignes utiles, liens horaires, application locale.",
+    "key": "section.H_transit.description"
+  },
+  "section.H_transit.name": {
+    "context": "Nom de la section « H_transit »",
+    "en": "Public transport",
+    "es": "Transporte público",
+    "fr": "Transports en commun",
+    "key": "section.H_transit.name"
+  },
+  "section.I_insurance.description": {
+    "context": "Description de la section « I_insurance » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Mentions utiles concernant l’assurance et la responsabilité des occupants.",
+    "key": "section.I_insurance.description"
+  },
+  "section.I_insurance.name": {
+    "context": "Nom de la section « I_insurance »",
+    "en": "Insurance & liability",
+    "es": "Seguro y responsabilidad",
+    "fr": "Assurance & responsabilité",
+    "key": "section.I_insurance.name"
+  },
+  "section.I_license.description": {
+    "context": "Description de la section « I_license » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Numéro de licence touristique (obligatoire en Espagne : VT/VUT), affiché dans le guide. Renseigné dans la fiche du logement.",
+    "key": "section.I_license.description"
+  },
+  "section.I_license.name": {
+    "context": "Nom de la section « I_license »",
+    "en": "Property registration",
+    "es": "Registro del alojamiento",
+    "fr": "Enregistrement du logement",
+    "key": "section.I_license.name"
+  },
+  "section.I_tax.description": {
+    "context": "Description de la section « I_tax » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Montant et modalités de la taxe de séjour, si applicable.",
+    "key": "section.I_tax.description"
+  },
+  "section.I_tax.name": {
+    "context": "Nom de la section « I_tax »",
+    "en": "Tourist tax",
+    "es": "Tasa turística",
+    "fr": "Taxe de séjour",
+    "key": "section.I_tax.name"
+  },
+  "section.I_terms.description": {
+    "context": "Description de la section « I_terms » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Rappel des conditions de location et de la caution.",
+    "key": "section.I_terms.description"
+  },
+  "section.I_terms.name": {
+    "context": "Nom de la section « I_terms »",
+    "en": "Terms & deposit",
+    "es": "Condiciones y fianza",
+    "fr": "Conditions & caution",
+    "key": "section.I_terms.name"
+  },
+  "section.S_checklist.description": {
+    "context": "Description de la section « S_checklist » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "La liste des tâches à réaliser entre deux séjours : ménage, vérifications, mise en place. Une fiche par tâche, avec précisions.",
+    "key": "section.S_checklist.description"
+  },
+  "section.S_checklist.name": {
+    "context": "Nom de la section « S_checklist »",
+    "en": "Preparation checklist",
+    "es": "Lista de preparación",
+    "fr": "Check-list de préparation",
+    "key": "section.S_checklist.name"
+  },
+  "section.S_linen.description": {
+    "context": "Description de la section « S_linen » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Le linge à préparer, dimensionné au nombre de voyageurs : parures de lit, serviettes de bain et de plage, plus toute précision utile.",
+    "key": "section.S_linen.description"
+  },
+  "section.S_linen.name": {
+    "context": "Nom de la section « S_linen »",
+    "en": "Linen provision",
+    "es": "Dotación de ropa de casa",
+    "fr": "Dotation en linge",
+    "key": "section.S_linen.name"
+  },
+  "section.S_special.description": {
+    "context": "Description de la section « S_special » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Toute consigne spécifique : orientation des meubles, objets fragiles, plantes à arroser, points de vigilance récurrents.",
+    "key": "section.S_special.description"
+  },
+  "section.S_special.name": {
+    "context": "Nom de la section « S_special »",
+    "en": "Owner's special requests",
+    "es": "Peticiones especiales del propietario",
+    "fr": "Souhaits particuliers du propriétaire",
+    "key": "section.S_special.name"
+  },
+  "section.S_supplies.description": {
+    "context": "Description de la section « S_supplies » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Les consommables à recompléter à chaque préparation : papier toilette, produits d'entretien, sacs poubelle, capsules de café… Indiquez la quantité cible.",
+    "key": "section.S_supplies.description"
+  },
+  "section.S_supplies.name": {
+    "context": "Nom de la section « S_supplies »",
+    "en": "Supplies to check",
+    "es": "Consumibles a comprobar",
+    "fr": "Consommables à vérifier",
+    "key": "section.S_supplies.name"
+  },
+  "section.S_welcome_pack.description": {
+    "context": "Description de la section « S_welcome_pack » (éditeur)",
+    "en": "",
+    "es": "",
+    "fr": "Ce qu'il faut disposer pour accueillir les voyageurs (café, eau, petit mot, produits d'accueil). Ajoutez des photos de la mise en place idéale.",
+    "key": "section.S_welcome_pack.description"
+  },
+  "section.S_welcome_pack.name": {
+    "context": "Nom de la section « S_welcome_pack »",
+    "en": "Welcome pack",
+    "es": "Pack de bienvenida",
+    "fr": "Panier de bienvenue",
+    "key": "section.S_welcome_pack.name"
+  },
+  "ui.address": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Address",
+    "es": "Dirección",
+    "fr": "Adresse",
+    "key": "ui.address"
+  },
+  "ui.all": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "All",
+    "es": "Todo",
+    "fr": "Tout",
+    "key": "ui.all"
+  },
+  "ui.back_services": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "↑ Back to services",
+    "es": "↑ Volver a los servicios",
+    "fr": "↑ Retour aux services",
+    "key": "ui.back_services"
+  },
+  "ui.back_top": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "↑ Back to top",
+    "es": "↑ Volver arriba",
+    "fr": "↑ Haut de page",
+    "key": "ui.back_top"
+  },
+  "ui.call": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Call",
+    "es": "Llamar",
+    "fr": "Appeler",
+    "key": "ui.call"
+  },
+  "ui.copied": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Copied ✓",
+    "es": "Copiado ✓",
+    "fr": "Copié ✓",
+    "key": "ui.copied"
+  },
+  "ui.copy": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Copy",
+    "es": "Copiar",
+    "fr": "Copier",
+    "key": "ui.copy"
+  },
+  "ui.cuisine_filter": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Filter by cuisine",
+    "es": "Filtrar por cocina",
+    "fr": "Filtrer par cuisine",
+    "key": "ui.cuisine_filter"
+  },
+  "ui.drive": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "min by car",
+    "es": "min en coche",
+    "fr": "min en voiture",
+    "key": "ui.drive"
+  },
+  "ui.email": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Email",
+    "es": "Correo",
+    "fr": "Email",
+    "key": "ui.email"
+  },
+  "ui.enlarge": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Enlarge photo",
+    "es": "Ampliar la foto",
+    "fr": "Agrandir la photo",
+    "key": "ui.enlarge"
+  },
+  "ui.eyebrow": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Your stay guide",
+    "es": "Tu guía de estancia",
+    "fr": "Votre guide de séjour",
+    "key": "ui.eyebrow"
+  },
+  "ui.filter": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Filter by theme",
+    "es": "Filtrar por tema",
+    "fr": "Filtrer par thème",
+    "key": "ui.filter"
+  },
+  "ui.footer": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Guide powered by Holaguia — OpenStreetMap data. Enjoy your stay!",
+    "es": "Guía con tecnología de Holaguia — datos de OpenStreetMap. ¡Feliz estancia!",
+    "fr": "Guide propulsé par Holaguia — données OpenStreetMap. Bon séjour !",
+    "key": "ui.footer"
+  },
+  "ui.go_there": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Get directions",
+    "es": "Cómo llegar",
+    "fr": "Y aller",
+    "key": "ui.go_there"
+  },
+  "ui.good_to_know": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Good to know",
+    "es": "Bueno saber en el lugar",
+    "fr": "Bon à savoir sur place",
+    "key": "ui.good_to_know"
+  },
+  "ui.gps": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "GPS coordinates",
+    "es": "Coordenadas GPS",
+    "fr": "Coordonnées GPS",
+    "key": "ui.gps"
+  },
+  "ui.home": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Your accommodation",
+    "es": "Tu alojamiento",
+    "fr": "Votre logement",
+    "key": "ui.home"
+  },
+  "ui.lang": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Language",
+    "es": "Idioma",
+    "fr": "Langue",
+    "key": "ui.lang"
+  },
+  "ui.license": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Tourist licence",
+    "es": "Licencia turística",
+    "fr": "Licence touristique",
+    "key": "ui.license"
+  },
+  "ui.maps_apple": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Apple Maps",
+    "es": "Mapas",
+    "fr": "Plans",
+    "key": "ui.maps_apple"
+  },
+  "ui.nav_take_me": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Take me to the property",
+    "es": "Llévame al alojamiento",
+    "fr": "Me guider vers le logement",
+    "key": "ui.nav_take_me"
+  },
+  "ui.nav_to_home": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Directions to the property",
+    "es": "Cómo llegar al alojamiento",
+    "fr": "Itinéraire vers le logement",
+    "key": "ui.nav_to_home"
+  },
+  "ui.no": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "No",
+    "es": "No",
+    "fr": "Non",
+    "key": "ui.no"
+  },
+  "ui.noise": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Neighbourhood quiet",
+    "es": "Tranquilidad del vecindario",
+    "fr": "Tranquillité du voisinage",
+    "key": "ui.noise"
+  },
+  "ui.numbers": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "All useful numbers",
+    "es": "Todos los números útiles",
+    "fr": "Tous les numéros utiles",
+    "key": "ui.numbers"
+  },
+  "ui.open_in": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Open in",
+    "es": "Abrir en",
+    "fr": "Ouvrir dans",
+    "key": "ui.open_in"
+  },
+  "ui.pdf": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "PDF document",
+    "es": "Documento PDF",
+    "fr": "Document PDF",
+    "key": "ui.pdf"
+  },
+  "ui.photo": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Photo",
+    "es": "Foto",
+    "fr": "Photo",
+    "key": "ui.photo"
+  },
+  "ui.request_cancel": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Cancel",
+    "es": "Cancelar",
+    "fr": "Annuler",
+    "key": "ui.request_cancel"
+  },
+  "ui.request_error": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Could not send. Please try again shortly.",
+    "es": "No se pudo enviar. Inténtalo de nuevo en un momento.",
+    "fr": "Envoi impossible. Réessayez dans un instant.",
+    "key": "ui.request_error"
+  },
+  "ui.request_intro": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Your request will be sent to your host, who will get back to you.",
+    "es": "Tu solicitud se enviará a tu anfitrión, que te responderá.",
+    "fr": "Votre demande sera transmise à votre hôte, qui vous répondra.",
+    "key": "ui.request_intro"
+  },
+  "ui.request_note": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Your message (optional)",
+    "es": "Tu mensaje (opcional)",
+    "fr": "Votre message (facultatif)",
+    "key": "ui.request_note"
+  },
+  "ui.request_send": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Send request",
+    "es": "Enviar solicitud",
+    "fr": "Envoyer la demande",
+    "key": "ui.request_send"
+  },
+  "ui.request_sent": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Request sent ✓",
+    "es": "Solicitud enviada ✓",
+    "fr": "Demande envoyée ✓",
+    "key": "ui.request_sent"
+  },
+  "ui.request_service": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Request this service",
+    "es": "Solicitar este servicio",
+    "fr": "Demander ce service",
+    "key": "ui.request_service"
+  },
+  "ui.route": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Directions",
+    "es": "Cómo llegar",
+    "fr": "Itinéraire",
+    "key": "ui.route"
+  },
+  "ui.services_grid": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Services around you",
+    "es": "Servicios a tu alrededor",
+    "fr": "Services autour de vous",
+    "key": "ui.services_grid"
+  },
+  "ui.share_desc": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Everything for your stay: check-in, wifi, emergencies, shops, restaurants and a map of the area.",
+    "es": "Todo para tu estancia: llegada, wifi, urgencias, comercios, restaurantes y mapa del barrio.",
+    "fr": "Tout pour votre séjour : arrivée, wifi, urgences, commerces, restaurants et carte du quartier.",
+    "key": "ui.share_desc"
+  },
+  "ui.show_less": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Show less",
+    "es": "Reducir",
+    "fr": "Réduire",
+    "key": "ui.show_less"
+  },
+  "ui.show_more": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Show {n} more",
+    "es": "Ver {n} más",
+    "fr": "Voir les {n} autres",
+    "key": "ui.show_more"
+  },
+  "ui.tab_around": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Around you",
+    "es": "A tu alrededor",
+    "fr": "Autour de vous",
+    "key": "ui.tab_around"
+  },
+  "ui.tab_emergency": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Emergencies",
+    "es": "Emergencias",
+    "fr": "Urgences",
+    "key": "ui.tab_emergency"
+  },
+  "ui.tab_home": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "The home",
+    "es": "El alojamiento",
+    "fr": "Le logement",
+    "key": "ui.tab_home"
+  },
+  "ui.tabs": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Guide sections",
+    "es": "Espacios de la guía",
+    "fr": "Espaces du guide",
+    "key": "ui.tabs"
+  },
+  "ui.title_suffix": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Property guide",
+    "es": "Guía del alojamiento",
+    "fr": "Guide du logement",
+    "key": "ui.title_suffix"
+  },
+  "ui.view_route": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "View route",
+    "es": "Ver ruta",
+    "fr": "Voir l'itinéraire",
+    "key": "ui.view_route"
+  },
+  "ui.walk": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "min walk",
+    "es": "min a pie",
+    "fr": "min à pied",
+    "key": "ui.walk"
+  },
+  "ui.waste": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Waste & recycling",
+    "es": "Basura y reciclaje",
+    "fr": "Poubelles & tri",
+    "key": "ui.waste"
+  },
+  "ui.watermark": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Created with Holaguia",
+    "es": "Creado con Holaguia",
+    "fr": "Créé avec Holaguia",
+    "key": "ui.watermark"
+  },
+  "ui.website": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Website",
+    "es": "Sitio web",
+    "fr": "Site web",
+    "key": "ui.website"
+  },
+  "ui.yes": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Yes",
+    "es": "Sí",
+    "fr": "Oui",
+    "key": "ui.yes"
+  }
+}

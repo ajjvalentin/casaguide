@@ -26,6 +26,7 @@ import re
 import unicodedata
 from typing import Any
 
+from . import i18n as _i18n_mod
 from .assets import versioned
 from .poi_icons import category_icon_svg, category_rank
 
@@ -263,8 +264,12 @@ _esc = html.escape
 
 
 def _cuisine_label(value: str, lang: str = "fr") -> str:
-    """Libellé localisé d'un type de cuisine (M-16), repli sur la valeur brute
+    """Libellé localisé d'un type de cuisine (M-16). Overlay des langues publiées
+    supplémentaires (V2-21a) d'abord, puis le code (FR/EN/ES), puis la valeur brute
     embellie (underscores → espaces, capitalisée)."""
+    ov = _i18n_mod.overlaid(_i18n_mod.cuisine_key(value))
+    if ov:
+        return ov
     d = _CUISINE_LABELS.get(value)
     if d:
         return d.get(lang) or d.get("fr") or value
@@ -272,8 +277,19 @@ def _cuisine_label(value: str, lang: str = "fr") -> str:
 
 
 def _t(lang: str, key: str) -> str:
-    """Libellé fixe de l'interface dans `lang` (repli français)."""
-    return _UI.get(lang, {}).get(key) or _UI["fr"][key]
+    """Libellé fixe de l'interface dans `lang`. Priorité à l'overlay des langues
+    publiées supplémentaires (V2-21a, `ui_translations`), puis au code (FR/EN/ES),
+    puis au français. Pour FR/EN/ES l'overlay est vide → rendu identique."""
+    return (_i18n_mod.overlaid(_i18n_mod.ui_key(key))
+            or _UI.get(lang, {}).get(key) or _UI["fr"][key])
+
+
+def _seed_label(lang: str, key: str, i18n: Any, fallback: str = "") -> str:
+    """Libellé de seed localisé (nom de section, catégorie de POI, chapitre par
+    onglet…) : overlay des langues supplémentaires (V2-21a) d'abord, puis le
+    `name_i18n`/`description_i18n` du seed (FR/EN/ES), puis `fallback`. `key` est
+    la clé stable de l'inventaire (`api.i18n.section_name_key(...)` etc.)."""
+    return _i18n_mod.overlaid(key) or _i18n(i18n, lang, fallback)
 
 
 def _i18n(i18n: Any, lang: str = "fr", fallback: str = "") -> str:
@@ -376,7 +392,8 @@ def _render_fields(schema: dict, content: dict, lang: str = "fr") -> str:
             v = _esc(str(val))
             dd = f'<a href="tel:{_tel(str(val))}">{v}</a>'
         elif typ == "select":
-            dd = _esc(_i18n(_OPTION_LABELS.get(val), lang, str(val)))
+            dd = _esc(_seed_label(lang, _i18n_mod.option_key(str(val)),
+                                  _OPTION_LABELS.get(val), str(val)))
         elif typ == "textarea":
             dd = _md_to_html(str(val))
         else:
@@ -572,7 +589,9 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
                     lang: str = "fr") -> str:
     schema = sec.get("field_schema") or {}
     content = sec.get("content") or {}
-    title = _esc(_i18n(sec.get("name_i18n"), lang, sec.get("code", "")))
+    _sc = sec.get("code", "")
+    title = _esc(_seed_label(lang, _i18n_mod.section_name_key(_sc),
+                             sec.get("name_i18n"), _sc))
     parts: list[str] = [f"<h3>{title}</h3>"]
 
     # Section d'arrivée (déclare airport/train_station) : bandeau de navigation
@@ -691,7 +710,8 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
         lst.sort(key=lambda p: (
             0 if (p.get("owner_comment") or "").strip() else 1,
             p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
-        cat_name = _esc(_i18n(lst[0].get("category_name"), lang, code))
+        cat_name = _esc(_seed_label(lang, _i18n_mod.poi_category_key(code),
+                                    lst[0].get("category_name"), code))
         is_resto = code == "restaurant"
         cards: list[str] = []
         for p in lst:
@@ -768,7 +788,8 @@ def _render_service_grid(pois: list[dict], lang: str = "fr") -> str:
         groups.setdefault(p["category_code"], []).append(p)
     tiles: list[str] = []
     for code, lst in sorted(groups.items(), key=lambda kv: category_rank(kv[0])):
-        name = _esc(_i18n(lst[0].get("category_name"), lang, code))
+        name = _esc(_seed_label(lang, _i18n_mod.poi_category_key(code),
+                                lst[0].get("category_name"), code))
         icon = category_icon_svg(code, lst[0].get("category_icon"))
         count = len(lst)
         color = _esc(lst[0].get("map_color") or "#0E5A73")
@@ -920,8 +941,10 @@ def _render_langs(default_lang: str, published_langs: list[str],
 # ── Page complète ────────────────────────────────────────────────────────────
 
 def _chapter_name(ch: str, lang: str) -> str:
-    """Nom localisé d'un chapitre (repli français)."""
-    return (_CHAPTER_NAMES.get(lang, {}).get(ch)
+    """Nom localisé d'un chapitre. Overlay des langues supplémentaires (V2-21a)
+    d'abord, puis le code (FR/EN/ES), puis le repli français."""
+    return (_i18n_mod.overlaid(_i18n_mod.chapter_key(ch))
+            or _CHAPTER_NAMES.get(lang, {}).get(ch)
             or _CHAPTER_NAMES["fr"].get(ch, ch))
 
 
@@ -978,7 +1001,25 @@ def _watermark_html(lang: str) -> str:
 def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  area_facts: dict, token: str, lang: str = "fr", *,
                  base_url: str = "", og_image_url: str | None = None,
-                 watermark: bool = False, lang_names: dict | None = None) -> str:
+                 watermark: bool = False, lang_names: dict | None = None,
+                 ui_overlay: dict | None = None) -> str:
+    """Rend la page du guide dans `lang`. `ui_overlay` (V2-21a) = carte
+    {clé: texte} des libellés statiques traduits pour une langue publiée
+    supplémentaire (nl/de/it/sq…) ; vide pour FR/EN/ES (rendu depuis le code).
+    Posé dans un ContextVar le temps du rendu, restauré ensuite."""
+    _ov_tok = _i18n_mod.set_overlay(ui_overlay)
+    try:
+        return _render_guide_impl(prop, sections, pois, area_facts, token, lang,
+                                  base_url=base_url, og_image_url=og_image_url,
+                                  watermark=watermark, lang_names=lang_names)
+    finally:
+        _i18n_mod.reset_overlay(_ov_tok)
+
+
+def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
+                       area_facts: dict, token: str, lang: str = "fr", *,
+                       base_url: str = "", og_image_url: str | None = None,
+                       watermark: bool = False, lang_names: dict | None = None) -> str:
     contact = prop.get("contact") or {}
     name = _esc(prop.get("name") or _t(lang, "home"))
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
@@ -1003,8 +1044,9 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
         parts = [x for x in inner if x]
         if not parts:
             return ""
-        title = _i18n(_CHAPTER_TAB_NAMES.get((ch, tab)), lang,
-                      _chapter_name(ch, lang)) if tab else _chapter_name(ch, lang)
+        title = (_seed_label(lang, _i18n_mod.chapter_tab_key(ch, tab),
+                             _CHAPTER_TAB_NAMES.get((ch, tab)), _chapter_name(ch, lang))
+                 if tab else _chapter_name(ch, lang))
         return (f'<section class="chapter" data-chapter="{ch}">'
                 f'<h2>{_esc(title)}</h2>'
                 f'<div class="chapline" style="background:{_CHAPTER_COLORS[ch]}"></div>'
@@ -1053,7 +1095,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
         "pois": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"],
                   "chapter": p["chapter"], "category_code": p["category_code"],
                   "color": p.get("map_color"),
-                  "category": _i18n(p.get("category_name"), lang, p["category_code"]),
+                  "category": _seed_label(lang, _i18n_mod.poi_category_key(p["category_code"]),
+                                          p.get("category_name"), p["category_code"]),
                   "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
                   "travel_mode": p.get("travel_mode"), "phone": p.get("phone")}
                  for p in around_pois
@@ -1066,8 +1109,9 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                        if any(p["chapter"] == ch for p in around_pois)]
     chips = [f'<button class="chip on" data-chapter="">{_esc(_t(lang, "all"))}</button>']
     for ch in around_chapters:
-        chip_name = _i18n(_CHAPTER_TAB_NAMES.get((ch, "around")), lang,
-                          _chapter_name(ch, lang))
+        chip_name = _seed_label(lang, _i18n_mod.chapter_tab_key(ch, "around"),
+                                _CHAPTER_TAB_NAMES.get((ch, "around")),
+                                _chapter_name(ch, lang))
         chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(chip_name)}</button>')
     around_inner: list[str] = []
     # Grille de services (V2-12) EN TÊTE de l'onglet, avant la carte : c'est la

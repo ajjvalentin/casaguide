@@ -1643,6 +1643,51 @@ def test_unpublishing_a_language_removes_it_everywhere(client):
         _set_language_status("es", "published")  # restauration pour les autres tests
 
 
+def test_static_ui_labels_served_for_published_language(client):
+    """V2-21a volet 2 — livraison : le SSR sert les libellés STATIQUES traduits
+    (ui_translations) pour une langue publiée supplémentaire ; le non-traduit
+    retombe sur le FR. Test de bout en bout via l'endpoint public /g."""
+    owner = register(client)
+    set_owner_plan(owner["email"], "pro")
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)
+
+    try:
+        with psycopg.connect(settings.db_dsn) as conn:
+            # Publie 'de' au registre + ajoute 'de' aux langues du logement.
+            conn.execute("UPDATE languages SET status='published' WHERE code='de'")
+            conn.execute(
+                "UPDATE properties SET published_langs = "
+                "array(SELECT DISTINCT unnest(published_langs || ARRAY['de'])) "
+                "WHERE id = %s", (pid,))
+            # Libellés statiques traduits (comme après un i18n_import).
+            for key, text in [("ui.eyebrow", "Ihr Aufenthaltsführer"),
+                              ("chapter.A", "Ankunft & Abreise")]:
+                conn.execute(
+                    "INSERT INTO ui_translations (lang, key, text) VALUES "
+                    "('de', %s, %s) ON CONFLICT (lang, key) DO UPDATE SET "
+                    "text = EXCLUDED.text", (key, text))
+            conn.commit()
+
+        de = client.get(f"/g/{token}?lang=de")
+        assert de.status_code == 200
+        assert 'lang="de"' in de.text
+        assert "Ihr Aufenthaltsführer" in de.text          # libellé UI overlayé
+        assert "Ankunft &amp; Abreise" in de.text          # chapitre overlayé (échappé)
+        # Le sélecteur propose bien 'de' (registre + published_langs du logement).
+        assert 'data-lang="de"' in de.text
+        # Un libellé non traduit retombe sur le FR (repli, jamais de trou).
+        assert "Tous les numéros utiles" in de.text or "numéros" in de.text
+        # Non-régression : le rendu FR n'est pas contaminé par l'overlay 'de'.
+        assert "Ihr Aufenthaltsführer" not in client.get(f"/g/{token}").text
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM ui_translations WHERE lang='de'")
+            conn.execute("UPDATE languages SET status='draft' WHERE code='de'")
+            conn.commit()
+
+
 def test_translation_cost_recorded_and_no_secret_translated(client):
     owner = register(client)
     set_owner_plan(owner["email"], "pro")  # multilingue autorisé (V2-05a)

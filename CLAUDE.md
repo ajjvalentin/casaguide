@@ -244,6 +244,21 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
     frontend/js` ne doit révéler que des **libellés** d'affichage (repli), jamais une
     liste qui décide de ce qui est *offert*. (Poster PDF FR/EN/ES M-26 : hors
     périmètre tant que son inventaire de libellés n'est pas traduit — V2-21b…n.)
+    **Libellés statiques (volet 2, migration 020)** : les libellés d'interface du
+    guide voyageur ont une **clé stable** (inventaire `i18n/inventory.json`, généré
+    par `ops/i18n_inventory.py` depuis le code+seed, **jamais à la main** ;
+    `--check` = gate de non-régression). Les traductions des langues
+    **supplémentaires** (nl/de/it/sq) vivent dans **`ui_translations(lang, key,
+    text)`** — **UNE seule source de vérité** ; FR/EN/ES restent portés par le code
+    (`guide_page._UI`) et le seed (`name_i18n`). Le SSR **superpose** l'overlay de
+    la langue effective (`api/i18n.py` ContextVar ; `render_guide(ui_overlay=…)` ;
+    helpers `_t`/`_seed_label`/`_cuisine_label`/`_chapter_name`) → FR/EN/ES
+    **identiques** (overlay vide), langue supplémentaire servie, non traduit → repli
+    FR. Les **clés** sont construites par `api/i18n.py` et utilisées **aux deux
+    bouts** (collecteur d'inventaire ET lookup SSR) : ne jamais forger une clé à la
+    main d'un côté sans l'autre. Export/réimport relecteur : `ops/i18n_export.py
+    --lang xx` (CSV) / `ops/i18n_import.py ui_xx.csv` (idempotent, refuse les clés
+    inconnues). Runbook : `docs/i18n.md`.
 
 ## Commandes
 
@@ -268,6 +283,7 @@ psql -d casaguide -f db/migrations/016_booking_guests.sql # nb de voyageurs + â
 psql -d casaguide -f db/migrations/017_care_rules.sql # règles d'entretien + catalogue de demandes (V2-23b, volet 1)
 psql -d casaguide -f db/migrations/018_guest_contact_split.sql # téléphone/email/langue séparés + backfill (V2-23b, volet 3)
 psql -d casaguide -f db/migrations/019_languages.sql # registre des langues du produit (draft/in_review/published) (V2-21a, volet 1)
+psql -d casaguide -f db/migrations/020_ui_translations.sql # libellés statiques traduits (ui_translations) (V2-21a, volet 2)
 
 # Backend
 cd backend

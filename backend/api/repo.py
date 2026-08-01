@@ -396,6 +396,26 @@ def published_language_codes(conn) -> list[str]:
     return [l["code"] for l in published_languages(conn)]
 
 
+def ui_translations(conn, lang: str) -> dict[str, str]:
+    """Libellés STATIQUES traduits pour `lang` (V2-21a, volet 2) : carte
+    {clé_inventaire: texte} depuis `ui_translations`. Vide pour FR/EN/ES (jamais
+    importées → le SSR retombe sur le code). Superposée au rendu du guide."""
+    rows = conn.execute(
+        "SELECT key, text FROM ui_translations WHERE lang = %s", (lang,)
+    ).fetchall()
+    return {r["key"]: r["text"] for r in rows}
+
+
+def upsert_ui_translation(conn, lang: str, key: str, text: str) -> None:
+    """Écrit/écrase un libellé statique traduit (réimport de relecture). Idempotent
+    (ON CONFLICT sur la clé composite)."""
+    conn.execute(
+        "INSERT INTO ui_translations (lang, key, text) VALUES (%s, %s, %s) "
+        "ON CONFLICT (lang, key) DO UPDATE SET text = EXCLUDED.text, "
+        "updated_at = now()",
+        (lang, key, text))
+
+
 def published_langs(conn, property_id: str) -> list[str]:
     """Langues cibles déjà publiées pour un logement (`properties.published_langs`,
     hors langue source). Liste vide si le logement n'a jamais été traduit."""
