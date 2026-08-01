@@ -66,6 +66,11 @@ class ApiSettings:
     auth_token_ttl_min: int = int(os.getenv("CASAGUIDE_AUTH_TOKEN_TTL_MIN", "60"))
     # Cadence minimale entre deux demandes « mot de passe oublié » par email (secondes)
     forgot_min_interval_s: int = int(os.getenv("CASAGUIDE_FORGOT_MIN_INTERVAL_S", "120"))
+    # Anti-abus des demandes de service du voyageur (V2-23b, §3.1) : cadence minimale
+    # entre deux demandes d'un même guide (le voyageur n'est pas authentifié). Au-delà
+    # → 429. Réglable par CASAGUIDE_GUEST_REQUEST_MIN_INTERVAL_S.
+    guest_request_min_interval_s: int = int(
+        os.getenv("CASAGUIDE_GUEST_REQUEST_MIN_INTERVAL_S", "60"))
     # ── Facturation Stripe (V2-05b) ──────────────────────────────────────────
     # Clé secrète API (sk_test_… en mode Test, sk_live_… en production) et secret
     # de signature des webhooks (whsec_…). Sans SECRET_KEY, les endpoints billing

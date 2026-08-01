@@ -183,7 +183,14 @@ CREATE TABLE bookings (
                   CHECK (source IN ('airbnb', 'vrbo', 'booking', 'direct', 'other')),
     external_uid  TEXT,                             -- UID iCal (NULL si saisie directe)
     guest_name    TEXT,
-    guest_contact TEXT,
+    guest_contact TEXT,                             -- legacy fourre-tout (repli tant que phone/email vides)
+    -- Coordonnées séparées (V2-23b, §3.0) : le téléphone est une ACTION (tel:/
+    -- WhatsApp cliquable pour un rendez-vous), l'email en est une autre (mailto:,
+    -- lien du guide). guest_lang = langue du locataire (?lang=xx du guide, abord
+    -- par l'équipe) — proposée depuis les langues PUBLIÉES, jamais en dur.
+    guest_phone   TEXT,
+    guest_email   TEXT,
+    guest_lang    TEXT,
     notes         TEXT,
     -- Voyageurs (V2-23b, §1.0) — non transportés par l'iCal, saisis à la main.
     -- La checklist d'équipe est QUANTIFIÉE à partir de ces champs (draps/pack pour

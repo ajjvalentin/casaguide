@@ -161,3 +161,49 @@ def trial_reminder_email(days_left: int, dashboard_url: str,
     )
     return Email(subject=subject, text=text, html=_shell(
         f"Votre essai se termine {when}", body_html))
+
+
+def guest_service_request_email(*, property_name: str, service_label: str,
+                                note: str | None, guest_name: str | None,
+                                stay_label: str | None,
+                                calendar_url: str,
+                                full_name: str | None = None) -> Email:
+    """Notification au propriétaire d'une demande de service du voyageur (V2-23b,
+    §3.1). Sobre : la demande est **en attente** — le propriétaire l'accepte ou la
+    refuse depuis son calendrier, où elle devient (si acceptée) une intervention
+    visible par l'équipe. Aucun secret, aucune coordonnée dans le corps."""
+    hello = _greeting(full_name)
+    who = f" (séjour de {guest_name})" if guest_name else ""
+    stay = f" — {stay_label}" if stay_label else ""
+    subject = f"{_BRAND} — nouvelle demande d'un voyageur : {service_label}"
+
+    note_text = f'\n\nMessage du voyageur :\n« {note} »' if note else ""
+    text = (
+        f"{hello}\n\n"
+        f"Un voyageur de « {property_name} »{who}{stay} vient de demander : "
+        f"{service_label}.{note_text}\n\n"
+        "Cette demande est en attente. Vous pouvez l'accepter ou la refuser depuis "
+        "votre calendrier ; une demande acceptée devient une intervention visible "
+        "par votre équipe d'entretien :\n\n"
+        f"{calendar_url}\n\n"
+        f"— {_BRAND}"
+    )
+
+    note_html = (f'<p style="margin:0 0 12px;padding:12px 14px;background:{_SAND};'
+                 f'border-radius:8px;font-style:italic;">'
+                 f"« {_html.escape(note)} »</p>") if note else ""
+    body_html = (
+        f'<p style="margin:0 0 12px;">{_html.escape(hello)}</p>'
+        f'<p style="margin:0 0 12px;">Un voyageur de <strong>'
+        f'{_html.escape(property_name)}</strong>{_html.escape(who)}'
+        f'{_html.escape(stay)} vient de demander : '
+        f'<strong>{_html.escape(service_label)}</strong>.</p>'
+        f"{note_html}"
+        f"{_button(calendar_url, 'Voir la demande')}"
+        f'<p style="margin:0;font-size:14px;color:{_MUTED};">Cette demande est '
+        "<strong>en attente</strong>. Acceptez-la ou refusez-la depuis votre "
+        "calendrier ; acceptée, elle devient une intervention visible par votre "
+        "équipe d'entretien.</p>"
+    )
+    return Email(subject=subject, text=text, html=_shell(
+        "Nouvelle demande d'un voyageur", body_html))

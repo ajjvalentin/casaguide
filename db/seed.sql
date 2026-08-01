@@ -229,7 +229,8 @@ VALUES
 ('B_cleaning', 'B', 160, 'brush-cleaning',
  '{"fr":"Ménage & linge","en":"Cleaning & linen","es":"Limpieza y ropa de casa"}',
  '{"fr":"Où trouver draps, serviettes et produits ; consignes de ménage."}',
- '{"fields":[
+ '{"request":{"label":"Ménage / draps supplémentaires"},
+   "fields":[
     {"key":"linen","type":"textarea","label":{"fr":"Draps et serviettes","en":"Sheets and towels","es":"Sábanas y toallas"}},
     {"key":"supplies","type":"textarea","label":{"fr":"Produits fournis","en":"Supplies provided","es":"Productos disponibles"}}
   ]}', FALSE, FALSE),
@@ -329,7 +330,8 @@ VALUES
 ('E_services', 'E', 440, 'concierge-bell',
  '{"fr":"Services supplémentaires","en":"Extra services","es":"Servicios adicionales"}',
  '{"fr":"Ménage supplémentaire, chef à domicile, massage… vos prestataires recommandés."}',
- '{"repeat":{"key":"services","fields":[
+ '{"request":{"label":"Service supplémentaire"},
+   "repeat":{"key":"services","fields":[
     {"key":"name","type":"text","label":{"fr":"Service","en":"Service","es":"Servicio"}},
     {"key":"contact","type":"text","label":{"fr":"Contact","en":"Contact","es":"Contacto"}}
   ]}}', FALSE, FALSE),

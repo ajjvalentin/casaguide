@@ -39,6 +39,15 @@ const NATURE_LABEL = Object.fromEntries(NATURE_OPTIONS);
 // imprimer « undefined » à l'écran — elle retombe sur « À qualifier ».
 const natureLabel = (n) => NATURE_LABEL[n] || NATURE_LABEL.unqualified;
 const OCCUPIED = new Set(["reservation", "private"]);
+// Libellés humains des langues du locataire (§3.0). La LISTE proposée n'est jamais
+// en dur : elle se lit dans les langues PUBLIÉES du logement + sa langue source
+// (offrir une langue non générée créerait une promesse intenable). Ce dictionnaire
+// ne fait qu'embellir un code présent ; un code inconnu s'affiche brut.
+const LANG_LABELS = {
+  fr: "Français", en: "Anglais", es: "Espagnol", de: "Allemand",
+  nl: "Néerlandais", it: "Italien", pt: "Portugais",
+};
+const langLabel = (c) => LANG_LABELS[c] || c;
 const MONTHS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.",
   "août", "sept.", "oct.", "nov.", "déc."];
 
@@ -152,6 +161,22 @@ export async function renderCalendar(view, pid) {
             "Deux séjours confirmés se recouvrent. À vous d'arbitrer (dates iCal en journées entières, il s'agit peut-être d'une rotation volontaire)."))));
     }
 
+    // §3.1 — Demandes du voyageur EN ATTENTE, agrégées en tête (le propriétaire est
+    // aussi notifié par email). Cliquable → ouvre le premier séjour concerné, où il
+    // accepte/refuse ; acceptée, la demande devient une intervention pour l'équipe.
+    const withReq = active.filter((b) => b.pending_guest_requests);
+    const reqTotal = withReq.reduce((n, b) => n + b.pending_guest_requests, 0);
+    if (reqTotal) {
+      body.append(el("button", { class: "cal-request-banner", type: "button",
+        onClick: () => openBookingModal(withReq[0]) },
+        icon("concierge-bell", 18),
+        el("div", {},
+          el("b", {}, reqTotal === 1 ? "Une demande de voyageur en attente"
+            : `${reqTotal} demandes de voyageur en attente`),
+          el("div", { class: "muted", style: { fontSize: "13px" } },
+            "Ouvrez le séjour pour l'accepter ou la refuser."))));
+    }
+
     // §2.1 — Agrégation de l'incomplétude EN TÊTE (plutôt qu'un badge répété) :
     // un signal toujours allumé cesse d'être un signal. Cliquable → panneau de
     // saisie rapide (le nombre de voyageurs manque sur presque tous les imports).
@@ -232,7 +257,15 @@ export async function renderCalendar(view, pid) {
       overlap ? el("span", { class: "cal-flag cal-flag-overlap", title: "Chevauchement" },
         icon("triangle-alert", 13), "Chevauchement") : null,
       rot ? el("span", { class: "cal-flag cal-flag-rot", title: "Rotation même jour" },
-        icon("arrow-right-left", 13), rot.role === "out" ? "Départ le jour d'une arrivée" : "Arrivée le jour d'un départ") : null);
+        icon("arrow-right-left", 13), rot.role === "out" ? "Départ le jour d'une arrivée" : "Arrivée le jour d'un départ") : null,
+      // §3.1 — demande(s) du voyageur en attente : badge appelant à arbitrer.
+      b.pending_guest_requests
+        ? el("span", { class: "cal-flag cal-flag-request",
+          title: "Demande de service du voyageur à traiter" },
+          icon("concierge-bell", 13),
+          b.pending_guest_requests > 1
+            ? `${b.pending_guest_requests} demandes` : "Demande voyageur")
+        : null);
 
     const times = el("div", { class: "muted booking-times" },
       `Arrivée ${fmtTime(b.eff_checkin_time)}${b.checkin_time ? " (ajustée)" : ""} · `
@@ -631,7 +664,24 @@ export async function renderCalendar(view, pid) {
     const luggageDrop = el("input", { type: "time",
       value: b && b.luggage_drop_time ? fmtTime(b.luggage_drop_time) : "" });
     const guest = el("input", { type: "text", maxlength: "200", value: b?.guest_name || "" });
-    const contact = el("input", { type: "text", maxlength: "200", value: b?.guest_contact || "" });
+    // §3.0 — coordonnées SÉPARÉES : le téléphone est une ACTION (liens Appel/
+    // WhatsApp du planning), l'email en est une autre (mailto:, lien du guide). Un
+    // champ fourre-tout ne pouvait devenir ni l'un ni l'autre.
+    const phone = el("input", { type: "tel", maxlength: "60", inputmode: "tel",
+      value: b?.guest_phone || "", placeholder: "+33 6 12 34 56 78" });
+    const email = el("input", { type: "email", maxlength: "200",
+      value: b?.guest_email || "", placeholder: "prenom@exemple.com" });
+    // Langue du locataire : source du logement + langues PUBLIÉES (dédupliquées),
+    // jamais une liste en dur. « non précisée » reste le défaut.
+    const langOptions = [property.default_lang, ...(property.published_langs || [])]
+      .filter((c, i, a) => c && a.indexOf(c) === i);
+    const langSel = el("select", {},
+      el("option", { value: "", selected: !b?.guest_lang }, "— non précisée —"),
+      ...langOptions.map((c) => el("option",
+        { value: c, selected: b?.guest_lang === c }, langLabel(c))));
+    // Repli : un ancien contact fourre-tout non encore réparti reste affiché en aide.
+    const legacyContact = (b && b.guest_contact && !b.guest_phone && !b.guest_email)
+      ? b.guest_contact : "";
     const notes = el("textarea", { rows: "2" }, b?.notes || "");
 
     // ── Voyageurs (§1.0) — quantifient toute la préparation de l'équipe ───────
@@ -727,7 +777,16 @@ export async function renderCalendar(view, pid) {
           el("div", {}, chipRow), "Le nombre d'enfants s'en déduit.")),
       suggestLine,
       field("Nom du locataire", guest),
-      field("Contact (téléphone / email)", contact),
+      el("div", { class: "grid-2" },
+        field("Téléphone du locataire", phone,
+          "Forme internationale (+33…) : l'équipe compose depuis l'Espagne. Sert aux liens Appel et WhatsApp du planning."),
+        field("Email du locataire", email)),
+      legacyContact
+        ? el("div", { class: "help", style: { marginTop: "-6px" } },
+          `Ancien contact enregistré : ${legacyContact} — répartissez-le ci-dessus.`)
+        : null,
+      field("Langue du locataire", langSel,
+        "L'équipe sait comment l'aborder ; le lien du guide part dans cette langue."),
       field("Notes", notes),
     ];
     // Demandes particulières : uniquement sur un séjour déjà enregistré (il faut
@@ -854,15 +913,37 @@ export async function renderCalendar(view, pid) {
         const org = r.origin === "guest"
           ? el("span", { class: "badge req-guest", title: "Demande du voyageur" }, "voyageur")
           : null;
-        return el("div", { class: "req-row" },
-          el("span", { class: "req-label" }, `${r.label}${r.quantity > 1 ? " ×" + r.quantity : ""}`),
-          org,
-          el("span", { class: "req-status req-" + r.status }, statusLabel(r.status)),
-          el("button", { class: "btn btn-sm btn-ghost", type: "button", "aria-label": "Retirer",
-            onClick: async () => {
-              try { await api.deleteBookingRequest(pid, r.id); await loadRequests(); }
-              catch (e) { toast(e.message || "Suppression impossible.", "err"); }
-            } }, icon("trash-2", 14)));
+        // §3.1 — une demande EN ATTENTE (typiquement du voyageur) s'accepte ou se
+        // refuse : acceptée, elle devient une intervention visible par l'équipe.
+        const setStatus = async (status) => {
+          try { await api.updateBookingRequest(pid, r.id, { status }); await loadRequests(); }
+          catch (e) { toast(e.message || "Mise à jour impossible.", "err"); }
+        };
+        const actions = [];
+        if (r.status === "pending") {
+          actions.push(
+            el("button", { class: "btn btn-sm btn-primary", type: "button",
+              onClick: () => setStatus("accepted") }, "Accepter"),
+            el("button", { class: "btn btn-sm btn-ghost", type: "button",
+              onClick: () => setStatus("declined") }, "Refuser"));
+        }
+        actions.push(el("button", { class: "btn btn-sm btn-ghost", type: "button",
+          "aria-label": "Retirer",
+          onClick: async () => {
+            try { await api.deleteBookingRequest(pid, r.id); await loadRequests(); }
+            catch (e) { toast(e.message || "Suppression impossible.", "err"); }
+          } }, icon("trash-2", 14)));
+        // Note du voyageur affichée sous la ligne (le « pourquoi » de la demande).
+        const note = r.note
+          ? el("div", { class: "req-note muted", style: { fontSize: "12.5px" } }, `« ${r.note} »`)
+          : null;
+        return el("div", { class: "req-row-wrap" },
+          el("div", { class: "req-row" },
+            el("span", { class: "req-label" }, `${r.label}${r.quantity > 1 ? " ×" + r.quantity : ""}`),
+            org,
+            el("span", { class: "req-status req-" + r.status }, statusLabel(r.status)),
+            ...actions),
+          note);
       }
       async function onAdd() {
         if (!active.length) return;
@@ -917,7 +998,9 @@ export async function renderCalendar(view, pid) {
         checkin_time: ci.value || null, checkout_time: co.value || null,
         luggage_drop_time: luggageDrop.value || null,
         guest_name: guest.value.trim() || null,
-        guest_contact: contact.value.trim() || null,
+        guest_phone: phone.value.trim() || null,
+        guest_email: email.value.trim() || null,
+        guest_lang: langSel.value || null,
         notes: notes.value.trim() || null,
         nature: natureSel.value,
         guest_count: guestCount.value.trim() === "" ? null : parseInt(guestCount.value, 10),

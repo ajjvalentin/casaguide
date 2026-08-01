@@ -24,7 +24,8 @@ TODAY = dt.date(2026, 8, 1)
 def _bk(**over):
     b = {"starts_on": dt.date(2026, 8, 10), "ends_on": dt.date(2026, 8, 24),
          "nature": "reservation", "status": "active", "linked_booking_id": None,
-         "guest_count": 6, "children_ages": [], "guest_contact": "+34 600"}
+         "guest_count": 6, "children_ages": [], "guest_contact": None,
+         "guest_phone": "+34 600 11 22 33", "guest_email": None, "guest_lang": None}
     b.update(over)
     return b
 
@@ -136,19 +137,31 @@ def test_missing_info_flags_unqualified():
     assert codes == ["unqualified"]
 
 
-def test_missing_info_flags_guest_count_and_contact():
-    b = _bk(guest_count=None, guest_contact="")
+def test_missing_info_flags_guest_count_and_phone():
+    b = _bk(guest_count=None, guest_phone="", guest_contact="")
     codes = {m["code"] for m in care.missing_info(b, {}, today=TODAY)}
     assert "guest_count_missing" in codes
-    assert "contact_missing" in codes       # 14 nuits → draps à J+8 → rdv
+    assert "phone_missing" in codes         # 14 nuits → draps à J+8 → rdv → tél
 
 
-def test_missing_info_contact_only_when_midstay_intervention():
-    """Un séjour court sans intervention en cours n'exige pas les coordonnées."""
-    b = _bk(starts_on=dt.date(2026, 8, 10), ends_on=dt.date(2026, 8, 13),
-            guest_contact="")
+def test_missing_info_phone_satisfied_by_legacy_contact():
+    """Un legacy `guest_contact` qui ressemble à un téléphone tient lieu de tél
+    (repli tant que la migration/saisie n'a pas séparé les champs)."""
+    b = _bk(guest_phone="", guest_contact="+34 600 11 22 33")
     codes = {m["code"] for m in care.missing_info(b, {}, today=TODAY)}
-    assert "contact_missing" not in codes
+    assert "phone_missing" not in codes
+    # Un email seul ne cale pas un rendez-vous → le téléphone manque toujours.
+    b2 = _bk(guest_phone="", guest_contact="jean@example.com")
+    codes2 = {m["code"] for m in care.missing_info(b2, {}, today=TODAY)}
+    assert "phone_missing" in codes2
+
+
+def test_missing_info_phone_only_when_midstay_intervention():
+    """Un séjour court sans intervention en cours n'exige pas le téléphone."""
+    b = _bk(starts_on=dt.date(2026, 8, 10), ends_on=dt.date(2026, 8, 13),
+            guest_phone="", guest_contact="")
+    codes = {m["code"] for m in care.missing_info(b, {}, today=TODAY)}
+    assert "phone_missing" not in codes
 
 
 def test_missing_info_ignores_past_cancelled_and_linked():
@@ -247,7 +260,8 @@ def _pb(**over):
     b = {"id": "b1", "starts_on": dt.date(2026, 8, 10),
          "ends_on": dt.date(2026, 8, 24), "nature": "reservation",
          "status": "active", "linked_booking_id": None, "guest_count": 6,
-         "children_ages": [], "guest_name": "Dupont", "guest_contact": "+34 600",
+         "children_ages": [], "guest_name": "Dupont", "guest_contact": None,
+         "guest_phone": "+34 600 11 22 33", "guest_email": None, "guest_lang": None,
          "checkin_time": None, "checkout_time": None, "luggage_drop_time": None}
     b.update(over)
     return b
@@ -295,15 +309,28 @@ def test_planning_long_vacancy_anchors_on_arrival():
 
 
 def test_planning_midstay_carries_contact_and_greys_non_occupied():
-    stay = _pb(id="b", starts_on=dt.date(2026, 8, 10), ends_on=dt.date(2026, 8, 24))
+    stay = _pb(id="b", starts_on=dt.date(2026, 8, 10), ends_on=dt.date(2026, 8, 24),
+               guest_phone="+34 600 11 22 33", guest_email="a@b.com",
+               guest_lang="en")
     works = _pb(id="w", starts_on=dt.date(2026, 8, 26), ends_on=dt.date(2026, 8, 28),
-                nature="works", guest_contact="+34 600")
+                nature="works")
     plan = _planning([stay, works])
     mid = next(e for e in plan if e["kind"] == "midstay")
     assert mid["on"] == dt.date(2026, 8, 18)          # draps J+8
-    assert mid["guest_contact"] == "+34 600"          # à venir → coordonnées visibles
+    # À venir → coordonnées visibles (téléphone = action, email + langue en appui).
+    assert mid["guest_phone"] == "+34 600 11 22 33"
+    assert mid["guest_email"] == "a@b.com"
+    assert mid["guest_lang"] == "en"
     idle = next(e for e in plan if e["kind"] == "idle")
     assert idle["nature"] == "works"                  # grisé, « rien à préparer »
+
+
+def test_planning_midstay_hides_contact_for_past_stay():
+    """RGPD : un séjour terminé ne divulgue plus tél/email/langue (§3.0)."""
+    # `today` du planning = TODAY_P ; un séjour dont le départ est passé mais dont
+    # une intervention tombe encore à l'avenir ne doit pas fuiter les coordonnées.
+    show = care._show_contact(_pb(ends_on=dt.date(2025, 1, 1)), today=TODAY_P)
+    assert show is False
 
 
 def test_planning_excludes_past_and_cancelled_and_linked():

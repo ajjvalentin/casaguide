@@ -274,3 +274,52 @@ plutôt qu'un badge répété sur chaque ligne, avec une **saisie rapide en lign
 nombre de voyageurs (le champ manque sur la quasi-totalité des imports). Tout champ
 comptant des **personnes** (capacité, voyageurs, effectif de ménage) est un **entier
 ≥ 1** ; seules les **heures** acceptent des décimales.
+
+
+## 7. Coordonnées séparées & boucle « demande du voyageur » (V2-23b, volet 3)
+
+### 7.1 Téléphone, email et langue séparés (§3.0, migration 018)
+
+Le champ unique « Contact (téléphone / email) » est remplacé par trois colonnes
+(`bookings.guest_phone` / `guest_email` / `guest_lang`). La séparation n'est pas
+cosmétique :
+
+- **Le téléphone est une ACTION.** Une intervention en cours de séjour se cale par
+  appel ou WhatsApp → le planning `/s/` offre des liens `tel:` et **WhatsApp**
+  cliquables depuis le mobile de la personne qui fait le ménage. Encourager la
+  **forme internationale** (`+33…`) : la clientèle est FR/BE/NL/DE/CH, l'équipe
+  compose depuis l'Espagne.
+- **L'email sert autre chose** : lien `mailto:` (lien du guide, mot de bienvenue).
+- **La langue** aide l'équipe à aborder le locataire et permettra d'envoyer le lien
+  du guide dans la bonne langue (`?lang=xx`). La liste proposée dans la modale se
+  lit dans les **langues publiées** du logement (+ sa langue source) — jamais une
+  liste en dur : offrir une langue non générée créerait une promesse intenable.
+
+`guest_contact` **n'est pas supprimée** (aucune perte). La migration 018 **backfille**
+heuristiquement (`@` → email ; ≥ 6 chiffres → téléphone ; ambigu → rien, l'ancienne
+valeur reste affichée en repli). La **relance** (§0.6) dit désormais « **téléphone
+manquant** » (et non « coordonnées ») : seul le téléphone cale un rendez-vous le jour
+même. RGPD : les trois champs suivent le régime des coordonnées (séjours en cours et à
+venir uniquement — visibles sur le planning `/s/`, jamais sur l'historique).
+
+### 7.2 La demande du voyageur atterrit dans le planning (§3.1)
+
+Le cahier voyageur annonce déjà le ménage supplémentaire et les draps sur demande. La
+demande doit atterrir dans le **planning** plutôt que dans un SMS oublié :
+
+- Les sections « sur demande » portent `field_schema.request` dans le seed
+  (`B_cleaning`, `E_services`) → le guide publié affiche un bouton **« Demander ce
+  service »** (rendu serveur, lisible sans JS, enrichi en petit formulaire par
+  `frontend/guide/app.js`).
+- `POST /g/{token}/requests` crée une `booking_requests` en `origin='guest'`,
+  `status='pending'`, rattachée au séjour **en cours** à la date du jour (à défaut au
+  **suivant**). Le libellé vient **toujours** du template de la section, jamais d'une
+  valeur libre du voyageur ; celui-ci peut joindre un message.
+- **Anti-abus** : cadence minimale par guide (`CASAGUIDE_GUEST_REQUEST_MIN_INTERVAL_S`,
+  60 s par défaut → 429). Le voyageur n'est pas authentifié.
+- Le propriétaire est **notifié par email** (best-effort, `no-reply@holaguia.com`) et
+  voit un **badge** dans son calendrier (bandeau agrégé + pastille de ligne). Il
+  **accepte ou refuse** depuis la fiche du séjour ; une demande **acceptée** devient
+  une intervention visible par l'équipe (moteur `care.plan_interventions`).
+- **Invariant 4 préservé** : le POST est une **action** du voyageur, aucun appel
+  externe automatique au rendu du guide.

@@ -17,16 +17,21 @@ d'accès 'link' du MVP (le lien secret tient lieu de clé d'accès, §8).
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import (APIRouter, BackgroundTasks, HTTPException, Request,
+                     Response, status)
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .. import (assets, care, crypto, guide_page, media_files, og_image, plans,
-                repo, storage, wifi)
+from .. import (assets, care, crypto, emails, guide_page, media_files, og_image,
+                plans, repo, storage, wifi)
 from ..config import settings
-from ..deps import Conn
+from ..deps import Conn, Mailer
+from ..schemas import GuestServiceRequestIn, GuestServiceRequestOut
+
+log = logging.getLogger("casaguide.guide")
 
 router = APIRouter(tags=["guide"])
 
@@ -238,6 +243,90 @@ def public_guide_secrets(guide_token: str, conn: Conn):
         "keybox_code": crypto.decrypt(row["keybox_code_enc"]),
         "keybox_notes": row["keybox_notes"],
     }, no_store=True)
+
+
+# ── Demande de service du voyageur (V2-23b, volet 3, §3.1) ───────────────────
+
+def _send_email_bg(background: BackgroundTasks, mailer, to: str, email) -> None:
+    """Envoi best-effort en tâche de fond (même garde-fou que auth._send_email_bg,
+    V2-16) : une exception d'une `BackgroundTask` annulerait la transaction de la
+    requête (rollback) — on l'avale donc, journalisée. La demande est déjà
+    committée avant de programmer la tâche (V2-16b)."""
+    def _run() -> None:
+        try:
+            mailer.send(to, email)
+        except Exception:  # noqa: BLE001 — best-effort : jamais bloquant
+            log.warning("Notification de demande vers %s échouée (ignorée).",
+                        to, exc_info=True)
+    background.add_task(_run)
+
+
+def _stay_label(booking: dict) -> str:
+    """« du 12/08 au 20/08 » — repère de séjour pour l'email au propriétaire."""
+    return (f"du {booking['starts_on'].strftime('%d/%m')} au "
+            f"{booking['ends_on'].strftime('%d/%m/%Y')}")
+
+
+@router.post("/g/{guide_token}/requests", response_model=GuestServiceRequestOut)
+def guest_service_request(guide_token: str, payload: GuestServiceRequestIn,
+                          conn: Conn, request: Request,
+                          background: BackgroundTasks, mailer: Mailer):
+    """Demande d'un service annoncé « sur demande » dans le guide (ménage/draps
+    supplémentaires, service…). Atterrit dans le planning plutôt que dans un SMS
+    oublié : crée une `booking_requests` en `origin='guest'`, `status='pending'`,
+    rattachée au séjour **en cours** (à défaut au suivant), et notifie le
+    propriétaire (il accepte/refuse ; acceptée → intervention visible par l'équipe).
+
+    Le voyageur n'est pas authentifié → **rate-limit par guide** (anti-abus). Le
+    libellé vient TOUJOURS du template de la section (jamais d'une valeur libre).
+    Invariant 4 préservé : action déclenchée par le voyageur, aucun appel externe
+    automatique au rendu."""
+    token = _real_token(guide_token)
+    # 1. La section doit réellement offrir ce service sur CE guide (visible, guest,
+    #    requestable) — sinon rien ne fait foi et on ne révèle rien de plus.
+    label = repo.requestable_section_label(conn, token, payload.section)
+    if not label:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Ce service n'est pas proposé sur ce guide.")
+    # 2. Rattachement au séjour occupé en cours (à défaut, le suivant).
+    booking = repo.current_or_next_booking_by_guide_token(
+        conn, token, _dt.date.today())
+    if not booking:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Aucun séjour n'est enregistré pour le moment. "
+                   "Contactez directement votre hôte.")
+    pid = str(booking["property_id"])
+    # 3. Anti-abus : cadence minimale par guide (le voyageur n'est pas authentifié).
+    since = repo.seconds_since_last_guest_request(conn, pid)
+    if since is not None and since < settings.guest_request_min_interval_s:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Une demande vient d'être envoyée. Patientez quelques minutes "
+                   "avant d'en envoyer une autre.")
+    note = (payload.note or "").strip() or None
+    repo.create_booking_request(
+        conn, str(booking["id"]), request_type_id=None, label=label,
+        quantity=1, note=note, origin="guest", status="pending")
+    # V2-16b : committer AVANT de programmer la tâche de fond (l'email lent ne doit
+    # pas retarder la visibilité de la demande).
+    conn.commit()
+    # 4. Notifier le propriétaire (best-effort — jamais bloquant, jamais de rollback).
+    owner = repo.get_owner_by_property(conn, pid)
+    if owner and owner.get("email"):
+        base = (settings.public_base_url or str(request.base_url)).rstrip("/")
+        prop = repo.get_published_property_by_token(conn, token)
+        email = emails.guest_service_request_email(
+            property_name=(prop["name"] if prop else "votre logement"),
+            service_label=label, note=note,
+            guest_name=booking.get("guest_name"),
+            stay_label=_stay_label(booking),
+            calendar_url=f"{base}/#/properties/{pid}/calendrier",
+            full_name=owner.get("full_name"))
+        _send_email_bg(background, mailer, owner["email"], email)
+    return GuestServiceRequestOut(
+        label=label,
+        message="Votre demande a bien été transmise à votre hôte.")
 
 
 @router.get("/g/{guide_token}/manifest.webmanifest")

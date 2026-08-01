@@ -584,6 +584,63 @@ function initPwa() {
   });
 }
 
+// ── Demander un service (V2-23b, §3.1) ───────────────────────────────────────
+// Les sections « sur demande » portent un bouton rendu côté serveur (`.svc-request`
+// avec ses libellés localisés en data-*). Ici on l'enrichit en petit formulaire :
+// un message facultatif, puis POST vers /g/{token}/requests (ACTION du voyageur —
+// invariant 4 intact). Tout échoue proprement ; sans JS, le bouton reste inerte.
+function initRequestService() {
+  document.querySelectorAll(".svc-request").forEach((box) => {
+    const btn = box.querySelector(".svc-request-btn");
+    if (!btn) return;
+    const L = box.dataset;
+    const section = L.section || "";
+    btn.addEventListener("click", () => openForm(box, btn, section, L));
+  });
+}
+
+function openForm(box, btn, section, L) {
+  if (box.querySelector(".svc-request-form")) return;   // déjà ouvert
+  btn.hidden = true;
+  const note = el("textarea", { class: "svc-note", rows: "2",
+    placeholder: L.note || "", maxlength: "500" });
+  const msg = el("div", { class: "svc-msg", hidden: true });
+  const send = el("button", { type: "button", class: "svc-send" }, L.send || "Envoyer");
+  const cancel = el("button", { type: "button", class: "svc-cancel btn-ghost" },
+    L.cancel || "Annuler");
+  const intro = L.intro ? el("p", { class: "svc-intro" }, L.intro) : null;
+  const form = el("div", { class: "svc-request-form" }, intro, note,
+    el("div", { class: "svc-actions" }, cancel, send));
+
+  const finish = () => { form.remove(); btn.hidden = false; };
+  cancel.addEventListener("click", finish);
+  send.addEventListener("click", async () => {
+    send.disabled = cancel.disabled = true;
+    msg.hidden = true; msg.className = "svc-msg";
+    try {
+      const resp = await fetch(`/g/${encodeURIComponent(token)}/requests`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ section, note: note.value.trim() || null }),
+      });
+      if (!resp.ok) throw new Error(await detail(resp) || (L.error || "Erreur"));
+      // Succès : on remplace le formulaire par un accusé de réception sobre.
+      form.replaceWith(el("div", { class: "svc-done" }, L.sent || "Demande envoyée ✓"));
+    } catch (e) {
+      msg.textContent = e.message || L.error || "Envoi impossible.";
+      msg.hidden = false;
+      send.disabled = cancel.disabled = false;
+    }
+  });
+  form.insertBefore(msg, form.querySelector(".svc-actions"));
+  box.append(form);
+  note.focus();
+}
+
+async function detail(resp) {
+  try { const j = await resp.json(); return typeof j.detail === "string" ? j.detail : ""; }
+  catch (_) { return ""; }
+}
+
 // ── Utilitaires DOM ──────────────────────────────────────────────────────────
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -611,4 +668,5 @@ initCategoryLists();
 initCopy();
 initLightbox();
 initSecrets();
+initRequestService();
 initPwa();

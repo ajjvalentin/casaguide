@@ -59,7 +59,8 @@ def _calendar_out(cal: dict) -> CalendarOut:
 
 def _booking_out(b: dict, default_in, default_out, *,
                  care_rules: dict | None = None,
-                 today: _dt.date | None = None) -> BookingOut:
+                 today: _dt.date | None = None,
+                 pending_requests: int = 0) -> BookingOut:
     eff_in, eff_out = calendars.effective_times(b, default_in, default_out)
     is_direct = b["calendar_id"] is None and b["external_uid"] is None
     # Relance active (§0.6) : ce qui manque pour préparer ce séjour.
@@ -74,11 +75,14 @@ def _booking_out(b: dict, default_in, default_out, *,
         luggage_until_time=b["luggage_until_time"],
         source=b["source"], external_uid=b["external_uid"], is_direct=is_direct,
         guest_name=b["guest_name"], guest_contact=b["guest_contact"],
+        guest_phone=b["guest_phone"], guest_email=b["guest_email"],
+        guest_lang=b["guest_lang"],
         notes=b["notes"], nature=b["nature"], status=b["status"],
         linked_booking_id=b["linked_booking_id"],
         guest_count=b["guest_count"],
         children_count=care.children_count(b),
         children_ages=list(b["children_ages"] or []),
+        pending_guest_requests=pending_requests,
         missing_info=missing)
 
 
@@ -100,12 +104,19 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
     overlaps = calendars.compute_overlaps(bookings)
     rotations = calendars.compute_rotations(bookings, default_in, default_out)
     by_id = {str(b["id"]): b for b in bookings}
+    # Demandes du voyageur EN ATTENTE par séjour (§3.1) → badge dans le calendrier.
+    pending: dict[str, int] = {}
+    for r in repo.list_requests_for_property(conn, pid):
+        if r["origin"] == "guest" and r["status"] == "pending":
+            pending[str(r["booking_id"])] = pending.get(str(r["booking_id"]), 0) + 1
     return CalendarViewOut(
         property_id=pid,
         default_checkin_time=default_in, default_checkout_time=default_out,
         calendars=[_calendar_out(c) for c in repo.list_calendars_with_url(conn, pid)],
         bookings=[_booking_out(b, default_in, default_out, care_rules=care_rules,
-                               today=today) for b in bookings],
+                               today=today,
+                               pending_requests=pending.get(str(b["id"]), 0))
+                  for b in bookings],
         overlaps=[OverlapOut(a=a["id"], b=b["id"]) for a, b in overlaps],
         rotations=[RotationOut(**r, signal=_rotation_signal(
             r, by_id, care_rules, default_in, default_out)) for r in rotations])

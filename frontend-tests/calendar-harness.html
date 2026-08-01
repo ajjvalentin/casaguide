@@ -26,6 +26,7 @@ const iso = (off) => new Date(NOW.getTime() + off * DAY).toISOString().slice(0, 
 const PROP = {
   id: "p1", name: "Villa Ballarin", status: "published",
   address_line1: "Calle 1", city: "Orihuela", default_lang: "fr",
+  published_langs: ["en", "es"],   // §3.0 : le sélecteur de langue lit ces langues
   default_checkin_time: "15:00:00", default_checkout_time: "10:00:00",
 };
 
@@ -34,9 +35,10 @@ const mk = (over) => ({
   luggage_drop_time: null, luggage_until_time: null,
   eff_checkin_time: "15:00:00", eff_checkout_time: "10:00:00",
   source: "direct", external_uid: null, is_direct: true, guest_name: null,
-  guest_contact: null, notes: null, nature: "reservation", status: "active",
+  guest_contact: null, guest_phone: null, guest_email: null, guest_lang: null,
+  notes: null, nature: "reservation", status: "active",
   linked_booking_id: null, guest_count: null, children_count: 0,
-  children_ages: [], missing_info: [], ...over });
+  children_ages: [], missing_info: [], pending_guest_requests: 0, ...over });
 
 // Catalogue de demandes du logement (V2-23b, §1.2).
 const CATALOG = [
@@ -55,7 +57,7 @@ const calData = {
   bookings: [
     mk({ id: "b1", starts_on: iso(30), ends_on: iso(40), source: "direct",
          is_direct: true, guest_name: "Dupont", guest_count: 4, children_count: 1,
-         children_ages: [3] }),
+         children_ages: [3], pending_guest_requests: 1 }),   // §3.1 : demande voyageur en attente
     mk({ id: "b2", calendar_id: "c1", starts_on: iso(40), ends_on: iso(47),
          source: "airbnb", external_uid: "u2", is_direct: false }),
     mk({ id: "b3", starts_on: iso(45), ends_on: iso(50), source: "vrbo",
@@ -78,6 +80,11 @@ const calData = {
 
 const posted = [];
 const patched = [];
+const reqPatched = [];
+// Demande du voyageur EN ATTENTE rattachée à b1 (§3.1).
+const GUEST_REQ = { id: "gr1", booking_id: "b1", request_type_id: null,
+  label: "Ménage / draps supplémentaires", quantity: 1,
+  note: "Draps le mercredi svp", origin: "guest", status: "pending" };
 window.fetch = async (path, opts = {}) => {
   const method = (opts.method || "GET").toUpperCase();
   const json = (body) => new Response(JSON.stringify(body),
@@ -85,7 +92,22 @@ window.fetch = async (path, opts = {}) => {
   if (path === "/api/properties/p1" && method === "GET") return json(PROP);
   if (path === "/api/properties/p1/calendar" && method === "GET") return json(calData);
   if (path === "/api/properties/p1/request-types" && method === "GET") return json(CATALOG);
-  if (/\/bookings\/[^/]+\/requests$/.test(path) && method === "GET") return json([]);
+  // §3.1 — b1 porte une demande du voyageur EN ATTENTE ; les autres séjours n'en ont pas.
+  const reqM = path.match(/\/bookings\/([^/]+)\/requests$/);
+  if (reqM && method === "GET") {
+    return json(reqM[1] === "b1" ? [GUEST_REQ] : []);
+  }
+  const patchReq = path.match(/^\/api\/properties\/p1\/requests\/([^/]+)$/);
+  if (patchReq && method === "PATCH") {
+    const body = JSON.parse(opts.body);
+    reqPatched.push({ id: patchReq[1], ...body });
+    Object.assign(GUEST_REQ, body);
+    if (body.status && body.status !== "pending") {
+      const b1 = calData.bookings.find((x) => x.id === "b1");
+      if (b1) b1.pending_guest_requests = 0;   // arbitrée → plus en attente
+    }
+    return json(GUEST_REQ);
+  }
   if (path === "/api/properties/p1/bookings" && method === "POST") {
     const b = JSON.parse(opts.body);
     posted.push(b);
@@ -183,6 +205,13 @@ try {
       "saisie rapide : PATCH guest_count=5 émis pour un séjour incomplet");
   }
 
+  // ── §3.1 — demande du voyageur en attente : bandeau + badge de ligne ─────
+  const reqBanner = q(".cal-request-banner");
+  chk(!!reqBanner && /demande de voyageur en attente/i.test(reqBanner.textContent),
+    "bandeau : « Une demande de voyageur en attente »");
+  chk(!!q(".booking-row .cal-flag-request"),
+    "badge « Demande voyageur » sur la ligne concernée (b1)");
+
   // §0.h — une nature inconnue tombe sur « À qualifier », jamais « undefined ».
   chk(!/undefined/i.test(app.textContent),
     "aucun « undefined » imprimé (repli de libellé de nature)");
@@ -215,6 +244,24 @@ try {
     "modale : âge d'enfant en chip (« 3 ans »)");
   chk(!!q(".modal-back .req-section") && !!q(".modal-back .req-add select"),
     "modale : section « Demandes particulières » avec le catalogue");
+  // §3.0 — coordonnées SÉPARÉES : téléphone / email / langue.
+  chk(!!q('.modal-back input[type=tel]'), "modale : champ téléphone séparé");
+  chk(!!q('.modal-back input[type=email]'), "modale : champ email séparé");
+  chk(qa('.modal-back select option').some((o) => o.value === "en" || o.value === "es"),
+    "modale : sélecteur de langue alimenté par les langues publiées");
+  // §3.1 — la demande du voyageur (chargée en async) s'accepte ou se refuse.
+  await wait(120);
+  const gReq = q(".modal-back .req-row");
+  chk(!!gReq && /Ménage/.test(gReq.textContent) && !!q(".modal-back .req-guest"),
+    "modale : demande du voyageur affichée avec le badge « voyageur »");
+  const acceptBtn = qa(".modal-back .req-row .btn").find((b) => /Accepter/.test(b.textContent));
+  chk(!!acceptBtn, "modale : bouton « Accepter » sur une demande en attente");
+  if (acceptBtn) {
+    acceptBtn.click();
+    await wait(120);
+    chk(reqPatched.some((p) => p.status === "accepted"),
+      "PATCH /requests : statut « accepted » émis à l'acceptation");
+  }
   q(".modal-back").remove();
 
   // ── Création d'un séjour direct (POST → rechargement → nouvelle ligne) ────
@@ -226,11 +273,22 @@ try {
   dates[0].value = iso(70); dates[1].value = iso(77);
   const nameInput = qa('.modal-back input[type=text]')[0];
   if (nameInput) nameInput.value = "Nouveau Test";
+  // §3.0 — renseigne les coordonnées séparées + la langue.
+  const telIn = q('.modal-back input[type=tel]');
+  const emailIn = q('.modal-back input[type=email]');
+  if (telIn) telIn.value = "+33 6 11 22 33 44";
+  if (emailIn) emailIn.value = "test@example.com";
+  const langSel = qa('.modal-back select').find(
+    (s) => [...s.options].some((o) => o.value === "es"));
+  if (langSel) langSel.value = "es";
   qa(".modal-foot .btn-primary")[0].click();   // Enregistrer (aucun chevauchement → direct)
   await wait(200);
   chk(posted.length === 1, "POST /bookings émis une fois");
   chk(posted[0] && posted[0].starts_on === iso(70) && posted[0].nature === "reservation",
     "POST : dates + nature « réservation » transmises");
+  chk(posted[0] && posted[0].guest_phone === "+33 6 11 22 33 44"
+    && posted[0].guest_email === "test@example.com" && posted[0].guest_lang === "es",
+    "POST : téléphone, email et langue séparés transmis (§3.0)");
   chk(qa(".booking-row").some((r) => /Nouveau Test/.test(r.textContent)),
     "la nouvelle ligne apparaît après rechargement");
 } catch (e) {

@@ -481,6 +481,11 @@ class BookingIn(BaseModel):
     source: _Source = "direct"
     guest_name: str | None = Field(default=None, max_length=200)
     guest_contact: str | None = Field(default=None, max_length=200)
+    # Coordonnées séparées (V2-23b, §3.0) : téléphone (action tel:/WhatsApp), email
+    # (mailto:, lien du guide), langue du locataire (?lang=xx).
+    guest_phone: str | None = Field(default=None, max_length=60)
+    guest_email: str | None = Field(default=None, max_length=200)
+    guest_lang: str | None = Field(default=None, max_length=10)
     notes: str | None = None
     nature: _Nature = "reservation"
     # Voyageurs (V2-23b, §1.0) — le nombre d'enfants se déduit de children_ages.
@@ -500,6 +505,9 @@ class BookingUpdate(BaseModel):
     luggage_until_time: time | None = None
     guest_name: str | None = Field(default=None, max_length=200)
     guest_contact: str | None = Field(default=None, max_length=200)
+    guest_phone: str | None = Field(default=None, max_length=60)
+    guest_email: str | None = Field(default=None, max_length=200)
+    guest_lang: str | None = Field(default=None, max_length=10)
     notes: str | None = None
     nature: _Nature | None = None
     status: _BookingStatus | None = None
@@ -523,7 +531,10 @@ class BookingOut(BaseModel):
     external_uid: str | None = None
     is_direct: bool                            # saisie directe (éditable/supprimable)
     guest_name: str | None = None
-    guest_contact: str | None = None
+    guest_contact: str | None = None           # legacy fourre-tout (repli d'affichage)
+    guest_phone: str | None = None             # téléphone (action tel:/WhatsApp, §3.0)
+    guest_email: str | None = None             # email (mailto:, lien du guide)
+    guest_lang: str | None = None              # langue du locataire (?lang=xx)
     notes: str | None = None
     nature: str                                # sémantique (pilote la préparation)
     status: str                                # cycle de vie ('active' | 'cancelled')
@@ -531,6 +542,9 @@ class BookingOut(BaseModel):
     guest_count: int | None = None             # voyageurs (§1.0)
     children_count: int = 0                     # dérivé de children_ages
     children_ages: list[int] = []
+    # Demandes du voyageur EN ATTENTE rattachées à ce séjour (§3.1) : badge dans le
+    # calendrier → le propriétaire accepte/refuse. 0 pour un séjour sans demande.
+    pending_guest_requests: int = 0
     # Relance active (§0.6) : {code, message} pour ce séjour (voyageurs/coordonnées
     # manquants, nature à qualifier). Vide si rien à signaler.
     missing_info: list[dict] = []
@@ -620,6 +634,22 @@ class BookingRequestOut(BaseModel):
     note: str | None = None
     origin: str
     status: str
+
+
+class GuestServiceRequestIn(BaseModel):
+    """Demande de service depuis le guide voyageur (V2-23b, §3.1). Le voyageur
+    n'est pas authentifié : il ne choisit qu'une **section** offrant le service
+    (le libellé stocké vient du template, jamais d'une valeur libre) et un message
+    facultatif. Le rattachement au séjour et l'origine 'guest' sont posés serveur."""
+    section: str = Field(min_length=1, max_length=60)   # code de la section requestable
+    note: str | None = Field(default=None, max_length=500)
+
+
+class GuestServiceRequestOut(BaseModel):
+    """Accusé de réception d'une demande du voyageur — jamais de détail de séjour."""
+    ok: bool = True
+    label: str
+    message: str
 
 
 class InterventionOut(BaseModel):

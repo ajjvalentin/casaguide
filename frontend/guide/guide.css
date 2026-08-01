@@ -205,6 +205,26 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .qr-wrap .qr-cap{font-size:12.5px;color:var(--muted)}
 .sc-notes{font-size:13px;color:#3C4A52;margin:6px 0 0}
 
+/* ── Demander un service (V2-23b, §3.1) ──────────────────────────────────── */
+.svc-request{margin-top:12px}
+.svc-request-btn{border:1px solid var(--sea);background:var(--sea);color:#fff;border-radius:10px;
+                 padding:9px 16px;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.svc-request-btn:hover{filter:brightness(1.05)}
+.svc-request-form{margin-top:10px;border:1px solid var(--line);background:var(--shell);
+                  border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.svc-intro{margin:0;font-size:13px;color:var(--muted)}
+.svc-note{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;
+          padding:8px 10px;font:inherit;font-size:14px;resize:vertical}
+.svc-actions{display:flex;gap:8px;justify-content:flex-end}
+.svc-send{border:1px solid var(--sea);background:var(--sea);color:#fff;border-radius:8px;
+          padding:7px 16px;font:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+.svc-send:disabled{opacity:.6;cursor:default}
+.svc-cancel{border:1px solid var(--line);background:var(--shell);color:var(--ink);border-radius:8px;
+            padding:7px 14px;font:inherit;font-size:13.5px;cursor:pointer}
+.svc-msg{font-size:13px;color:var(--alert)}
+.svc-done{margin-top:10px;border:1px solid #BFE0C8;background:#EAF6EE;color:#1E5A34;
+          border-radius:10px;padding:10px 14px;font-size:13.5px;font-weight:600}
+
 /* ── Galeries média ──────────────────────────────────────────────────────── */
 .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-top:12px}
 .gphoto{margin:0;position:relative;cursor:zoom-in;border-radius:10px;overflow:hidden;

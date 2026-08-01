@@ -372,6 +372,60 @@ réglages plutôt qu'appliqué en silence.
 
 ## Volet 3 — Boucler la boucle : demande du locataire → planning
 
+### 3.0 SÉPARER TÉLÉPHONE ET EMAIL (constat André 31/07)
+
+Le champ unique « Contact (téléphone / email) » est un raccourci qui coûte cher dès
+qu'on veut S'EN SERVIR. Migration 018 :
+
+```sql
+ALTER TABLE bookings
+  ADD COLUMN IF NOT EXISTS guest_phone TEXT,
+  ADD COLUMN IF NOT EXISTS guest_email TEXT,
+  ADD COLUMN IF NOT EXISTS guest_lang  TEXT;   -- langue du locataire
+```
+
+**La langue du locataire** sert deux fois : l'équipe sait comment aborder les gens à
+l'arrivée, et le lien du guide part directement dans la bonne langue (`?lang=xx`, V2-10).
+**La liste proposée se lit dans le registre des langues (V2-21a) et ne contient QUE les
+langues publiées** — jamais une liste en dur. Trois entrées aujourd'hui, davantage à
+mesure que les relectures aboutissent, sans retoucher ce code. Offrir une langue que le
+produit ne sait pas encore générer créerait une promesse intenable : l'équipe lirait
+« locataire néerlandophone » sans qu'aucun guide néerlandais ne puisse suivre. Si V2-21a
+n'est pas encore livrée au moment du volet 3, lire la liste depuis la source unique qui
+fait foi aujourd'hui, jamais depuis une constante recopiée.
+
+Pourquoi la séparation n'est pas cosmétique :
+
+- **Le téléphone est une ACTION.** Une intervention en cours de séjour se cale par appel
+  ou WhatsApp — le planning doit offrir des liens `tel:` et WhatsApp cliquables depuis le
+  téléphone de la personne qui fait le ménage. Un champ fourre-tout ne peut pas devenir
+  un bouton.
+- **L'email sert autre chose** : transmettre le lien du guide, le mot de bienvenue, et
+  plus tard les envois avant arrivée. Lien `mailto:`.
+- **La validation diffère**, et un champ mélangé ne peut être validé ni comme l'un ni
+  comme l'autre.
+
+**Format international obligatoire pour le téléphone.** La clientèle est française, belge,
+néerlandaise, allemande, suisse ; l'équipe compose depuis l'Espagne. Un « 06 12 34 56 78 »
+saisi tel quel n'est pas joignable. Le champ doit encourager la forme internationale
+(indicatif `+33`…), la conserver telle quelle en base et l'utiliser dans les liens
+`tel:`/WhatsApp — aide à la saisie explicite plutôt que reformatage silencieux.
+
+**Reprise de l'existant** : `guest_contact` n'est PAS supprimée (aucune perte). Backfill
+heuristique — valeur contenant `@` → `guest_email` ; sinon comportant au moins six
+chiffres → `guest_phone` ; ambigu → rien, la valeur d'origine restant affichée en repli
+tant que les deux nouveaux champs sont vides.
+
+**Conséquence sur la relance (§0.6)** : quand une intervention en cours de séjour est
+prévue, c'est le TÉLÉPHONE qui manque, pas « les coordonnées » — le message doit le dire
+(« séjour de 14 jours · draps à J+8 · téléphone manquant »). Un email ne permet pas de
+caler un rendez-vous le jour même.
+
+RGPD inchangé : les deux champs suivent le régime des coordonnées (séjours en cours et à
+venir uniquement).
+
+### 3.1 La demande du voyageur
+
 Le cahier voyageur annonce déjà le ménage supplémentaire et les draps sur demande. La
 demande doit atterrir dans le planning plutôt que dans un SMS oublié.
 

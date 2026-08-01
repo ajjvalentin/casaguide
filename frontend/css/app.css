@@ -537,6 +537,15 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
   border-radius:6px;padding:1px 7px}
 .cal-flag-overlap{background:#FDECEC;color:var(--alert)}
 .cal-flag-rot{background:var(--sand-hi);color:var(--sand-hi-ink)}
+/* §3.1 — demande du voyageur en attente (mer, appelle à arbitrer, sans danger). */
+.cal-flag-request{background:#E7F0FB;color:#12457A}
+.cal-request-banner{display:flex;gap:11px;align-items:center;width:100%;text-align:left;
+  border:1px solid #CFE0F3;background:#EEF5FD;color:#12457A;border-radius:12px;
+  padding:12px 14px;margin-bottom:14px;cursor:pointer;font:inherit}
+.cal-request-banner svg{flex:none}
+.cal-request-banner .muted{color:#3F5B78}
+.req-row-wrap{display:flex;flex-direction:column;gap:2px}
+.req-note{padding-left:2px}
 
 .cancelled-block{margin-bottom:20px}
 .cancelled-block>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600;

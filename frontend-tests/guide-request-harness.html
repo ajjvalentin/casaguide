@@ -1,0 +1,93 @@
+<!doctype html>
+<!-- Harnais headless de « Demander ce service » (V2-23b, §3.1) du guide voyageur.
+     Il pilote le VRAI /frontend/guide/app.js (initRequestService) sur un DOM
+     fidèle au rendu SSR d'une section « requestable » (.svc-request + libellés
+     data-*), et lit le verdict dans #result. Représentatif (leçon V2-18c) :
+     chaque élément est cherché dans l'arbre RÉELLEMENT monté, jamais via une
+     référence interne. -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>guide-request-harness</title></head>
+<body data-token="tok">
+<script>
+  // Pas de service worker ni de carte réseau pendant le test (hermétique).
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+
+  const posted = [];
+  window.__posted = posted;
+  window.fetch = async (path, opts = {}) => {
+    const method = (opts.method || "GET").toUpperCase();
+    const ok = (body) => new Response(JSON.stringify(body),
+      { status: 200, headers: { "Content-Type": "application/json" } });
+    // Secrets chargés par app.js : réponse vide, sans incidence.
+    if (/\/secrets$/.test(path)) return ok({});
+    if (/\/g\/tok\/requests$/.test(path) && method === "POST") {
+      const body = JSON.parse(opts.body);
+      posted.push(body);
+      return ok({ ok: true, label: "Ménage / draps supplémentaires",
+        message: "Votre demande a bien été transmise à votre hôte." });
+    }
+    throw new Error("fetch inattendu : " + method + " " + path);
+  };
+</script>
+
+<main>
+  <article class="sec-card" id="B_cleaning">
+    <h3>Ménage &amp; linge</h3>
+    <div class="svc-request" data-section="B_cleaning"
+      data-intro="Votre demande sera transmise à votre hôte, qui vous répondra."
+      data-note="Votre message (facultatif)"
+      data-send="Envoyer la demande" data-cancel="Annuler"
+      data-sent="Demande envoyée ✓"
+      data-error="Envoi impossible. Réessayez dans un instant.">
+      <button type="button" class="svc-request-btn">Demander ce service</button>
+    </div>
+  </article>
+</main>
+
+<pre id="result">PENDING</pre>
+
+<script id="guide-data" type="application/json">{"property":{"name":"Villa Test"},"pois":[]}</script>
+<script type="module">
+  await import("/frontend/guide/app.js");
+
+  const log = [];
+  let pass = true;
+  const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const q = (sel) => document.querySelector(sel);
+
+  try {
+    await wait(30);
+    const box = q(".svc-request");
+    const btn = q(".svc-request-btn");
+    chk(!!btn && /Demander ce service/.test(btn.textContent), "bouton « Demander ce service » présent");
+
+    // 1. Ouvre le formulaire (le bouton se masque, le formulaire est MONTÉ).
+    btn.click();
+    await wait(20);
+    const form = q(".svc-request-form");
+    chk(!!form, "clic → formulaire de demande monté dans l'arbre");
+    chk(btn.hidden, "bouton masqué pendant la saisie");
+    const note = q(".svc-note");
+    const send = q(".svc-send");
+    chk(!!note && !!send, "champ message + bouton « Envoyer » montés");
+
+    // 2. Envoie la demande (POST /g/tok/requests avec la section + le message).
+    note.value = "Draps mercredi";
+    send.click();
+    await wait(60);
+    chk(window.__posted.length === 1, "POST /g/tok/requests émis une fois");
+    chk(window.__posted[0] && window.__posted[0].section === "B_cleaning"
+      && window.__posted[0].note === "Draps mercredi",
+      "POST : section + message transmis");
+    // 3. Accusé de réception affiché, formulaire retiré.
+    chk(!q(".svc-request-form") && !!q(".svc-done") && /envoyée/i.test(q(".svc-done").textContent),
+      "succès : accusé « Demande envoyée ✓ », formulaire retiré");
+  } catch (e) {
+    pass = false;
+    log.push("✗ exception : " + (e && e.message ? e.message : e));
+  }
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>
+</body>
+</html>

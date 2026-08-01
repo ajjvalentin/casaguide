@@ -145,6 +145,11 @@ _UI: dict[str, dict[str, str]] = {
                       "restaurants et carte du quartier.",
         "footer": "Guide propulsé par Holaguia — données OpenStreetMap. Bon séjour !",
         "watermark": "Créé avec Holaguia",
+        "request_service": "Demander ce service", "request_note": "Votre message (facultatif)",
+        "request_send": "Envoyer la demande", "request_cancel": "Annuler",
+        "request_sent": "Demande envoyée ✓",
+        "request_intro": "Votre demande sera transmise à votre hôte, qui vous répondra.",
+        "request_error": "Envoi impossible. Réessayez dans un instant.",
     },
     "en": {
         "eyebrow": "Your stay guide", "all": "All",
@@ -172,6 +177,11 @@ _UI: dict[str, dict[str, str]] = {
                       "restaurants and a map of the area.",
         "footer": "Guide powered by Holaguia — OpenStreetMap data. Enjoy your stay!",
         "watermark": "Created with Holaguia",
+        "request_service": "Request this service", "request_note": "Your message (optional)",
+        "request_send": "Send request", "request_cancel": "Cancel",
+        "request_sent": "Request sent ✓",
+        "request_intro": "Your request will be sent to your host, who will get back to you.",
+        "request_error": "Could not send. Please try again shortly.",
     },
     "es": {
         "eyebrow": "Tu guía de estancia", "all": "Todo",
@@ -199,6 +209,11 @@ _UI: dict[str, dict[str, str]] = {
                       "restaurantes y mapa del barrio.",
         "footer": "Guía con tecnología de Holaguia — datos de OpenStreetMap. ¡Feliz estancia!",
         "watermark": "Creado con Holaguia",
+        "request_service": "Solicitar este servicio", "request_note": "Tu mensaje (opcional)",
+        "request_send": "Enviar solicitud", "request_cancel": "Cancelar",
+        "request_sent": "Solicitud enviada ✓",
+        "request_intro": "Tu solicitud se enviará a tu anfitrión, que te responderá.",
+        "request_error": "No se pudo enviar. Inténtalo de nuevo en un momento.",
     },
 }
 
@@ -606,6 +621,27 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
         parts.append('<div class="secret-slot" data-secret="keybox" hidden></div>')
 
     parts.append(_render_media(sec.get("media") or [], lang))
+
+    # Demander ce service (V2-23b, §3.1) : les sections « sur demande » (ménage/
+    # draps supplémentaires, services) portent `field_schema.request`. Le bouton est
+    # rendu côté serveur (lisible sans JS) et enrichi en formulaire par app.js ; le
+    # POST vers /g/{token}/requests est une ACTION du voyageur (invariant 4 intact).
+    req = schema.get("request")
+    if req and isinstance(req, dict):
+        code = _esc(sec.get("code") or "")
+        # Libellés localisés portés en data-* (source unique côté serveur, comme
+        # data-copy/data-more-tpl) → app.js enrichit sans dupliquer l'i18n.
+        parts.append(
+            f'<div class="svc-request" data-section="{code}"'
+            f' data-intro="{_esc(_t(lang, "request_intro"))}"'
+            f' data-note="{_esc(_t(lang, "request_note"))}"'
+            f' data-send="{_esc(_t(lang, "request_send"))}"'
+            f' data-cancel="{_esc(_t(lang, "request_cancel"))}"'
+            f' data-sent="{_esc(_t(lang, "request_sent"))}"'
+            f' data-error="{_esc(_t(lang, "request_error"))}">'
+            f'<button type="button" class="svc-request-btn">'
+            f'{_t(lang, "request_service")}</button></div>')
+
     # `id` = code de section (V2-09) : les ancres profondes `#<code>` mènent au
     # bon onglet (résolu côté client) et défilent jusqu'à la section.
     sec_id = _esc(sec.get("code") or "")
@@ -1265,19 +1301,47 @@ def _render_window_entry(e: dict) -> str:
             f'{_render_prep_tasks(e.get("tasks") or [])}</div></article>')
 
 
+# Langue du locataire → libellé humain pour l'équipe (abord à l'arrivée, §3.0).
+_GUEST_LANG_LABELS = {"fr": "français", "en": "anglais", "es": "espagnol",
+                      "de": "allemand", "nl": "néerlandais", "it": "italien",
+                      "pt": "portugais"}
+
+
+def _render_guest_contact_links(e: dict) -> str:
+    """Coordonnées cliquables du locataire pour une intervention en cours de
+    séjour (§3.0) : le téléphone est une ACTION (appel + WhatsApp depuis le mobile
+    de la personne qui fait le ménage), l'email en est une autre (mailto:). Déjà
+    minimisées (RGPD) en amont — `care.build_planning` n'expose ces champs que pour
+    les séjours en cours/à venir. Rien à afficher → chaîne vide."""
+    phone = (e.get("guest_phone") or "").strip()
+    email = (e.get("guest_email") or "").strip()
+    links: list[str] = []
+    if phone:
+        links.append(f'<a class="prep-tel" href="tel:{_tel(phone)}">'
+                     f'📞 {_esc(phone)}</a>')
+        links.append(f'<a class="prep-wa" href="https://wa.me/{_tel(phone).lstrip("+")}" '
+                     f'target="_blank" rel="noopener">WhatsApp</a>')
+    if email:
+        links.append(f'<a class="prep-mail" href="mailto:{_esc(email)}">'
+                     f'✉︎ {_esc(email)}</a>')
+    if not links:
+        return ""
+    return f'<div class="prep-contact">{" · ".join(links)}</div>'
+
+
 def _render_midstay_entry(e: dict) -> str:
-    contact = e.get("guest_contact")
     who = _esc(e.get("guest_name") or "Locataire")
-    if contact:
-        who += f' · <a href="tel:{_tel(contact)}">{_esc(contact)}</a>' \
-            if contact.strip().replace("+", "").replace(" ", "").isdigit() \
-            else f" · {_esc(contact)}"
+    lang = e.get("guest_lang")
+    if lang:
+        label = _GUEST_LANG_LABELS.get(lang, lang)
+        who += f' · <span class="prep-lang">parle {_esc(label)}</span>'
     return (f'<article class="prep-card prep-midstay">'
             f'<div class="prep-when">{_esc(_fmt_wday_dm(e["on"]))}</div>'
             f'<div class="prep-main">'
             f'<div class="prep-line"><b>{_esc(e.get("label") or "Intervention")}</b>'
             f' — maison habitée, sur rendez-vous</div>'
             f'<div class="prep-guest">{who}</div>'
+            f'{_render_guest_contact_links(e)}'
             f'{_render_prep_tasks(e.get("tasks") or [])}</div></article>')
 
 

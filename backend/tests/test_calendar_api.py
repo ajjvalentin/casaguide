@@ -22,6 +22,7 @@ os.environ.setdefault(
     "CASAGUIDE_SECRET_KEY",
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 os.environ.setdefault("CASAGUIDE_PBKDF2_ITER", "10000")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-used")
 os.environ.setdefault("MEDIA_ROOT",
                       os.path.join(tempfile.gettempdir(), "casaguide-test-media"))
 
@@ -31,7 +32,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from api.deps import get_calendar_fetcher  # noqa: E402
+from api.deps import (get_calendar_fetcher, get_mailer,  # noqa: E402
+                      get_translation_runner)
+from api.mailer import ConsoleMailer  # noqa: E402
 from api.main import app  # noqa: E402
 from enrich.settings import settings  # noqa: E402
 
@@ -70,9 +73,15 @@ FEED = FakeFeed()
 def client():
     FEED.text, FEED.error, FEED.calls = _ical(), None, 0
     app.dependency_overrides[get_calendar_fetcher] = lambda: FEED
+    mailer = ConsoleMailer()
+    app.dependency_overrides[get_mailer] = lambda: mailer
+    # Publication d'un guide → tâche de traduction : neutralisée (aucun réseau).
+    app.dependency_overrides[get_translation_runner] = lambda: (
+        lambda *a, **k: None)
     emails: list[str] = []
     c = TestClient(app)
     c.created_emails = emails  # type: ignore[attr-defined]
+    c.mailer = mailer          # type: ignore[attr-defined]
     yield c
     app.dependency_overrides.clear()
     with psycopg.connect(settings.db_dsn) as conn:
@@ -414,7 +423,7 @@ def test_missing_info_surfaces_in_calendar_view(client):
     view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
     codes = {m["code"] for m in view["bookings"][0]["missing_info"]}
     assert "guest_count_missing" in codes
-    assert "contact_missing" in codes
+    assert "phone_missing" in codes         # §3.0 : le téléphone cale le rendez-vous
 
 
 def test_booking_requests_crud(client):
@@ -476,3 +485,121 @@ def test_request_type_add_and_deactivate(client):
     assert r2.status_code == 200 and r2.json()["is_active"] is False
     active = client.get(f"/api/properties/{pid}/request-types", headers=h).json()
     assert any(t["id"] == tid and not t["is_active"] for t in active)
+
+
+# ── Volet 3, §3.0 — coordonnées séparées (téléphone / email / langue) ─────────
+
+def test_booking_carries_split_contact_fields(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    r = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-09-01", "ends_on": "2026-09-08",
+        "guest_name": "Meier", "guest_phone": "+41 79 123 45 67",
+        "guest_email": "meier@example.com", "guest_lang": "de"})
+    assert r.status_code == 201, r.text
+    b = r.json()
+    assert b["guest_phone"] == "+41 79 123 45 67"
+    assert b["guest_email"] == "meier@example.com"
+    assert b["guest_lang"] == "de"
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert view["bookings"][0]["guest_lang"] == "de"
+
+
+# ── Volet 3, §3.1 — demande de service du voyageur → planning ─────────────────
+
+def _publish_with_cleaning(client, h, pid):
+    """Rend B_cleaning (section « requestable ») visible et publie le guide.
+    Renvoie le guide_token public."""
+    client.put(f"/api/properties/{pid}/sections/B_cleaning", headers=h,
+               json={"content": {"linen": "Draps fournis"}, "is_visible": True})
+    client.patch(f"/api/properties/{pid}", headers=h, json={"status": "published"})
+    return client.get(f"/api/properties/{pid}", headers=h).json()["guide_token"]
+
+
+def _booking_covering_today(client, h, pid):
+    today = dt.date.today()
+    r = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": (today - dt.timedelta(days=1)).isoformat(),
+        "ends_on": (today + dt.timedelta(days=5)).isoformat(),
+        "guest_name": "En séjour", "nature": "reservation", "guest_count": 4})
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def test_guest_request_creates_pending_and_notifies(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    token = _publish_with_cleaning(client, h, pid)
+    bid = _booking_covering_today(client, h, pid)
+
+    client.mailer.sent.clear()   # ignore l'email de vérification d'inscription
+    r = client.post(f"/g/{token}/requests",
+                    json={"section": "B_cleaning", "note": "Draps le mercredi svp"})
+    assert r.status_code == 200, r.text
+    assert r.json()["label"] == "Ménage / draps supplémentaires"
+
+    # La demande est rattachée au séjour en cours, en attente, d'origine 'guest'.
+    reqs = client.get(f"/api/properties/{pid}/bookings/{bid}/requests",
+                      headers=h).json()
+    assert len(reqs) == 1
+    assert reqs[0]["origin"] == "guest" and reqs[0]["status"] == "pending"
+    assert reqs[0]["note"] == "Draps le mercredi svp"
+
+    # Le propriétaire est notifié (badge + email best-effort).
+    assert len(client.mailer.sent) == 1
+    to, email = client.mailer.sent[0]
+    assert "demande" in email.subject.lower()
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    row = next(b for b in view["bookings"] if b["id"] == bid)
+    assert row["pending_guest_requests"] == 1
+
+
+def test_guest_request_rate_limited(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    token = _publish_with_cleaning(client, h, pid)
+    _booking_covering_today(client, h, pid)
+    assert client.post(f"/g/{token}/requests",
+                       json={"section": "B_cleaning"}).status_code == 200
+    # Deuxième demande immédiate → 429 (anti-abus par guide, §3.1).
+    assert client.post(f"/g/{token}/requests",
+                       json={"section": "B_cleaning"}).status_code == 429
+
+
+def test_guest_request_unknown_or_hidden_section_404(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    token = _publish_with_cleaning(client, h, pid)
+    _booking_covering_today(client, h, pid)
+    # A_checkin n'est pas « requestable » → 404 (rien ne fait foi).
+    assert client.post(f"/g/{token}/requests",
+                       json={"section": "A_checkin"}).status_code == 404
+
+
+def test_guest_request_without_booking_409(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    token = _publish_with_cleaning(client, h, pid)
+    client.mailer.sent.clear()   # ignore l'email de vérification d'inscription
+    # Guide publié mais aucun séjour enregistré → rien à quoi rattacher.
+    r = client.post(f"/g/{token}/requests", json={"section": "B_cleaning"})
+    assert r.status_code == 409
+    assert client.mailer.sent == []   # aucune notification si rien n'est créé
+
+
+def test_owner_accepts_guest_request(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    token = _publish_with_cleaning(client, h, pid)
+    bid = _booking_covering_today(client, h, pid)
+    client.post(f"/g/{token}/requests", json={"section": "B_cleaning"})
+    rid = client.get(f"/api/properties/{pid}/bookings/{bid}/requests",
+                     headers=h).json()[0]["id"]
+    # Le propriétaire accepte → la demande passe 'accepted'.
+    r = client.patch(f"/api/properties/{pid}/requests/{rid}", headers=h,
+                     json={"status": "accepted"})
+    assert r.status_code == 200 and r.json()["status"] == "accepted"
+    # Elle n'est plus en attente dans le calendrier.
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    row = next(b for b in view["bookings"] if b["id"] == bid)
+    assert row["pending_guest_requests"] == 0

@@ -1352,7 +1352,8 @@ def delete_calendar(conn, property_id: str, calendar_id: str) -> bool:
 _BOOKING_COLS = ("id, property_id, calendar_id, starts_on, ends_on, "
                  "checkin_time, checkout_time, luggage_drop_time, "
                  "luggage_until_time, source, external_uid, "
-                 "guest_name, guest_contact, notes, nature, status, "
+                 "guest_name, guest_contact, guest_phone, guest_email, guest_lang, "
+                 "notes, nature, status, "
                  "guest_count, children_ages, "
                  "linked_booking_id, created_at, updated_at")
 
@@ -1361,7 +1362,8 @@ _BOOKING_COLS = ("id, property_id, calendar_id, starts_on, ends_on, "
 # réactive un 'cancelled' réapparu), jamais la sémantique saisie (invariant 13).
 _BOOKING_UPDATABLE = ("starts_on", "ends_on", "checkin_time", "checkout_time",
                       "luggage_drop_time", "luggage_until_time",
-                      "guest_name", "guest_contact", "notes", "nature", "status",
+                      "guest_name", "guest_contact", "guest_phone", "guest_email",
+                      "guest_lang", "notes", "nature", "status",
                       "source", "linked_booking_id", "guest_count", "children_ages")
 
 
@@ -1390,7 +1392,8 @@ def create_booking(conn, property_id: str, data: dict) -> dict:
     sémantique (réservation, privé, travaux…)."""
     cols = ("starts_on", "ends_on", "checkin_time", "checkout_time",
             "luggage_drop_time", "luggage_until_time", "source",
-            "guest_name", "guest_contact", "notes", "nature",
+            "guest_name", "guest_contact", "guest_phone", "guest_email",
+            "guest_lang", "notes", "nature",
             "guest_count", "children_ages")
     values = [property_id] + [data.get(c) for c in cols]
     placeholders = ", ".join(["%s"] * (len(cols) + 1))
@@ -1645,3 +1648,72 @@ def delete_booking_request(conn, property_id: str, request_id: str) -> bool:
            WHERE r.booking_id = b.id AND r.id = %s AND b.property_id = %s
            RETURNING r.id""", (request_id, property_id)).fetchone()
     return row is not None
+
+
+# ── Demande du voyageur (V2-23b, volet 3, §3.1) ──────────────────────────────
+
+def current_or_next_booking_by_guide_token(conn, token: str, today) -> dict | None:
+    """Séjour **occupé** auquel rattacher une demande du voyageur (§3.1).
+
+    Le lien du guide est propre au logement, pas au séjour : on rattache au séjour
+    EN COURS à la date du jour, à défaut au **suivant**. Occupé = nature
+    reservation/private, actif, non rattaché (miroir de `care._is_occupied`). Le
+    logement doit être **publié** (le guide n'existe que publié). None si aucun
+    séjour occupé n'est en cours ni à venir (ou token inconnu/brouillon).
+
+    Ordre : les séjours qui recouvrent aujourd'hui (`starts_on <= today`) d'abord,
+    puis le plus proche à venir ; on écarte les séjours déjà partis (`ends_on <
+    today`)."""
+    return conn.execute(
+        """SELECT b.id, b.property_id, b.guest_name, b.starts_on, b.ends_on
+             FROM bookings b
+             JOIN properties p ON p.id = b.property_id
+            WHERE p.guide_token = %s AND p.status = 'published'
+              AND b.status = 'active'
+              AND b.nature IN ('reservation', 'private')
+              AND b.linked_booking_id IS NULL
+              AND b.ends_on >= %s
+            ORDER BY (b.starts_on <= %s) DESC, b.starts_on
+            LIMIT 1""",
+        (token, today, today)).fetchone()
+
+
+def requestable_section_label(conn, token: str, code: str) -> str | None:
+    """Libellé FR de la demande d'une section **requestable** visible d'un guide
+    publié, ou None si la section n'existe pas / n'est pas visible / n'est pas
+    requestable (`field_schema.request.label`). Garde-fou : le libellé stocké dans
+    la demande vient TOUJOURS du template (jamais d'une valeur libre du voyageur),
+    et la section doit être réellement offerte sur ce guide (audience guest,
+    visible). Le staff n'a jamais de bouton de demande (invariant 7)."""
+    row = conn.execute(
+        """SELECT t.field_schema -> 'request' ->> 'label' AS label
+             FROM property_sections ps
+             JOIN section_templates t ON t.code = ps.template_code
+             JOIN properties p ON p.id = ps.property_id
+            WHERE p.guide_token = %s AND p.status = 'published'
+              AND ps.template_code = %s AND ps.is_visible = TRUE
+              AND t.audience = 'guest'
+              AND t.field_schema ? 'request'""",
+        (token, code)).fetchone()
+    return row["label"] if row else None
+
+
+def seconds_since_last_guest_request(conn, property_id: str) -> float | None:
+    """Ancienneté (en secondes) de la **dernière** demande d'un voyageur pour ce
+    logement, ou None s'il n'y en a jamais eu. Sert au rate-limit anti-abus (le
+    voyageur n'est pas authentifié → cadence par guide, §3.1)."""
+    row = conn.execute(
+        """SELECT EXTRACT(EPOCH FROM (now() - max(r.created_at))) AS secs
+             FROM booking_requests r
+             JOIN bookings b ON b.id = r.booking_id
+            WHERE b.property_id = %s AND r.origin = 'guest'""",
+        (property_id,)).fetchone()
+    return float(row["secs"]) if row and row["secs"] is not None else None
+
+
+def get_owner_by_property(conn, property_id: str) -> dict | None:
+    """Propriétaire (email, nom) d'un logement — pour la notification de demande."""
+    return conn.execute(
+        """SELECT o.id, o.email, o.full_name
+             FROM owners o JOIN properties p ON p.owner_id = o.id
+            WHERE p.id = %s""", (property_id,)).fetchone()

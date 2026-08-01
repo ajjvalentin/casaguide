@@ -126,6 +126,30 @@ def test_section_without_area_facts_declares_nothing():
     assert '<div class="sec-facts">' not in html
 
 
+# ── V2-23b §3.1 : bouton « Demander ce service » sur les sections requestable ─
+
+def test_requestable_section_shows_request_button():
+    """Une section « sur demande » (field_schema.request) porte le bouton +
+    ses libellés localisés en data-* ; une section ordinaire n'en a pas."""
+    reqable = _section("B_cleaning", "B",
+                       {"request": {"label": "Ménage / draps supplémentaires"},
+                        "fields": []}, content={})
+    plain = _section("A_checkin", "A", {"fields": []})
+    html = guide_page.render_guide(_prop(), [reqable, plain], [], {}, "tok")
+    assert 'class="svc-request-btn"' in html
+    assert "Demander ce service" in html
+    assert 'data-section="B_cleaning"' in html
+    # La section ordinaire ne propose aucun service.
+    assert html.count("svc-request-btn") == 1
+
+
+def test_request_button_localised_es():
+    reqable = _section("E_services", "E",
+                       {"request": {"label": "Service supplémentaire"}}, content={})
+    html = guide_page.render_guide(_prop(), [reqable], [], {}, "tok", lang="es")
+    assert "Solicitar este servicio" in html
+
+
 # ── M-16 : filtre par cuisine + coups de cœur en tête ────────────────────────
 
 def _resto(name, cuisine=None, walk=None, comment=None):
@@ -256,6 +280,28 @@ def test_staff_planning_midstay_shows_contact():
     assert "Changement de draps" in html
     assert "maison habitée" in html
     assert "+34 600 12 34 56" in html                  # coordonnées (séjour à venir)
+
+
+def test_staff_planning_midstay_renders_call_whatsapp_mailto_and_lang():
+    """§3.0 — le téléphone est une ACTION (tel:/WhatsApp), l'email en est une
+    autre (mailto:) ; la langue aide l'équipe à aborder le locataire."""
+    html = _staff_html([_pbk(guest_contact=None, guest_phone="+34 600 12 34 56",
+                             guest_email="famille@example.com", guest_lang="en")])
+    assert 'href="tel:+34600123456"' in html
+    assert "wa.me/34600123456" in html
+    assert 'href="mailto:famille@example.com"' in html
+    assert "parle anglais" in html
+
+
+def test_staff_planning_midstay_hides_contact_for_past_stay():
+    """RGPD : un séjour terminé ne divulgue plus les coordonnées, même si une
+    intervention calculée tomberait encore dans le futur (§3.0)."""
+    past = _pbk(starts_on=_dt.date(2025, 7, 1), ends_on=_dt.date(2025, 7, 15),
+                guest_phone="+34 600 99 88 77")
+    # Un séjour passé est exclu du planning : ses coordonnées ne sortent jamais.
+    planning = care.build_planning([past], {}, _DEF_IN, _DEF_OUT, today=_TODAY)
+    html = guide_page.render_staff(_prop(), [], "stok", planning=planning)
+    assert "+34 600 99 88 77" not in html
 
 
 def test_staff_planning_greys_non_occupied():

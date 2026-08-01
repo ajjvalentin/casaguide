@@ -150,6 +150,35 @@ def suggest_equipment(children_ages, care_rules: dict) -> list[str]:
 _PREPARED_NATURES = ("reservation", "private")
 
 
+def _looks_like_phone(value: str | None) -> bool:
+    """Heuristique : au moins six chiffres, pas d'arobase (miroir du backfill de
+    la migration 018). Sert à repérer un téléphone dans le legacy `guest_contact`."""
+    if not value or "@" in value:
+        return False
+    return sum(c.isdigit() for c in value) >= 6
+
+
+def effective_phone(b: dict) -> str | None:
+    """Téléphone effectif du locataire (§3.0) : `guest_phone` si renseigné, sinon
+    le legacy `guest_contact` **s'il ressemble à un téléphone** (repli tant que la
+    migration/saisie n'a pas séparé les champs). None si aucun téléphone."""
+    phone = (b.get("guest_phone") or "").strip()
+    if phone:
+        return phone
+    legacy = (b.get("guest_contact") or "").strip()
+    return legacy if _looks_like_phone(legacy) else None
+
+
+def effective_email(b: dict) -> str | None:
+    """Email effectif du locataire (§3.0) : `guest_email` si renseigné, sinon le
+    legacy `guest_contact` s'il contient un '@'. None sinon."""
+    email = (b.get("guest_email") or "").strip()
+    if email:
+        return email
+    legacy = (b.get("guest_contact") or "").strip()
+    return legacy if "@" in legacy else None
+
+
 def _is_occupied(b: dict) -> bool:
     """Un séjour occupe le logement (quelqu'un y dort → préparation) : nature
     préparée (réservation/privé), cycle de vie actif, non rattaché à un autre
@@ -302,16 +331,18 @@ def missing_info(booking: dict, care_rules: dict, *,
         out.append({"code": "guest_count_missing",
                     "message": "Nombre de voyageurs non renseigné."})
 
-    # Coordonnées manquantes SEULEMENT si une intervention en cours de séjour est
-    # prévue (elle suppose un rendez-vous avec le locataire).
+    # Téléphone manquant SEULEMENT si une intervention en cours de séjour est
+    # prévue (elle suppose un rendez-vous, calé par appel/WhatsApp — un email ne
+    # permet pas de convenir d'une heure le jour même, §3.0). C'est donc le
+    # TÉLÉPHONE qui manque, pas « les coordonnées ».
     linen_dates = _linen_change_dates(booking, rules.get("linen_change_from_day", 0))
-    if linen_dates and not (booking.get("guest_contact") or "").strip():
+    if linen_dates and effective_phone(booking) is None:
         first = linen_dates[0]
         day = (first - booking["starts_on"]).days
         out.append({
-            "code": "contact_missing",
+            "code": "phone_missing",
             "message": (f"Séjour de {stay_nights(booking)} jours · "
-                        f"draps à J+{day} · coordonnées manquantes.")})
+                        f"draps à J+{day} · téléphone manquant.")})
 
     return out
 
@@ -507,11 +538,17 @@ def build_planning(bookings: list[dict], care_rules: dict,
         for iv in plan_interventions(b, care_rules, requests=reqs.get(str(b["id"]))):
             if not iv.needs_appointment or iv.on < today:
                 continue
+            # RGPD (§2/§3.0) : coordonnées visibles seulement pour un séjour en
+            # cours/à venir. Le téléphone est l'ACTION (rendez-vous par appel/
+            # WhatsApp) ; l'email et la langue complètent l'abord du locataire.
+            show = _show_contact(b, today)
             entries.append({
                 "kind": "midstay", "on": iv.on, "booking_id": b["id"],
                 "label": iv.label, "tasks": list(iv.tasks),
                 "guest_name": b.get("guest_name"),
-                "guest_contact": b.get("guest_contact") if _show_contact(b, today) else None,
+                "guest_phone": effective_phone(b) if show else None,
+                "guest_email": effective_email(b) if show else None,
+                "guest_lang": b.get("guest_lang") if show else None,
                 "guest_count": b.get("guest_count"),
                 "nature": b.get("nature")})
 
