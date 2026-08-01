@@ -293,6 +293,454 @@
     "fr": "Végétarien",
     "key": "cuisine.vegetarian"
   },
+  "field.A_access.details": {
+    "context": "Libellé du champ « details » (section A_access)",
+    "en": "Gate, entry code, landmarks…",
+    "es": "Portal, código, referencias…",
+    "fr": "Portail, digicode, repères…",
+    "key": "field.A_access.details"
+  },
+  "field.A_access.floor": {
+    "context": "Libellé du champ « floor » (section A_access)",
+    "en": "Floor / door",
+    "es": "Piso / puerta",
+    "fr": "Étage / porte",
+    "key": "field.A_access.floor"
+  },
+  "field.A_access.intercom": {
+    "context": "Libellé du champ « intercom » (section A_access)",
+    "en": "Intercom",
+    "es": "Portero automático",
+    "fr": "Interphone",
+    "key": "field.A_access.intercom"
+  },
+  "field.A_checkin.checkin_from": {
+    "context": "Libellé du champ « checkin_from » (section A_checkin)",
+    "en": "Check-in from",
+    "es": "Llegada a partir de",
+    "fr": "Arrivée à partir de",
+    "key": "field.A_checkin.checkin_from"
+  },
+  "field.A_checkin.procedure": {
+    "context": "Libellé du champ « procedure » (section A_checkin)",
+    "en": "Arrival procedure",
+    "es": "Procedimiento de llegada",
+    "fr": "Déroulé de l’arrivée",
+    "key": "field.A_checkin.procedure"
+  },
+  "field.A_checkin.self_checkin": {
+    "context": "Libellé du champ « self_checkin » (section A_checkin)",
+    "en": "Self check-in",
+    "es": "Llegada autónoma",
+    "fr": "Arrivée autonome",
+    "key": "field.A_checkin.self_checkin"
+  },
+  "field.A_checkout.checkout_until": {
+    "context": "Libellé du champ « checkout_until » (section A_checkout)",
+    "en": "Check-out before",
+    "es": "Salida antes de",
+    "fr": "Départ avant",
+    "key": "field.A_checkout.checkout_until"
+  },
+  "field.A_checkout.tasks": {
+    "context": "Libellé du champ « tasks » (section A_checkout)",
+    "en": "Departure tasks",
+    "es": "Tareas de salida",
+    "fr": "Consignes de départ",
+    "key": "field.A_checkout.tasks"
+  },
+  "field.A_keybox.location": {
+    "context": "Libellé du champ « location » (section A_keybox)",
+    "en": "Location and instructions",
+    "es": "Ubicación e instrucciones",
+    "fr": "Emplacement et instructions",
+    "key": "field.A_keybox.location"
+  },
+  "field.A_parking.details": {
+    "context": "Libellé du champ « details » (section A_parking)",
+    "en": "Details",
+    "es": "Detalles",
+    "fr": "Détails",
+    "key": "field.A_parking.details"
+  },
+  "field.A_parking.parking_type": {
+    "context": "Libellé du champ « parking_type » (section A_parking)",
+    "en": "Parking type",
+    "es": "Tipo de aparcamiento",
+    "fr": "Type de stationnement",
+    "key": "field.A_parking.parking_type"
+  },
+  "field.B_appliances.appliances.instructions": {
+    "context": "Libellé du champ « instructions » du groupe « appliances » (section B_appliances)",
+    "en": "Instructions",
+    "es": "Instrucciones",
+    "fr": "Mode d’emploi",
+    "key": "field.B_appliances.appliances.instructions"
+  },
+  "field.B_appliances.appliances.name": {
+    "context": "Libellé du champ « name » du groupe « appliances » (section B_appliances)",
+    "en": "Appliance",
+    "es": "Equipo",
+    "fr": "Équipement",
+    "key": "field.B_appliances.appliances.name"
+  },
+  "field.B_appliances_out.appliances.instructions": {
+    "context": "Libellé du champ « instructions » du groupe « appliances » (section B_appliances_out)",
+    "en": "Instructions",
+    "es": "Instrucciones",
+    "fr": "Mode d’emploi",
+    "key": "field.B_appliances_out.appliances.instructions"
+  },
+  "field.B_appliances_out.appliances.name": {
+    "context": "Libellé du champ « name » du groupe « appliances » (section B_appliances_out)",
+    "en": "Equipment",
+    "es": "Equipo",
+    "fr": "Équipement",
+    "key": "field.B_appliances_out.appliances.name"
+  },
+  "field.B_cleaning.linen": {
+    "context": "Libellé du champ « linen » (section B_cleaning)",
+    "en": "Sheets and towels",
+    "es": "Sábanas y toallas",
+    "fr": "Draps et serviettes",
+    "key": "field.B_cleaning.linen"
+  },
+  "field.B_cleaning.supplies": {
+    "context": "Libellé du champ « supplies » (section B_cleaning)",
+    "en": "Supplies provided",
+    "es": "Productos disponibles",
+    "fr": "Produits fournis",
+    "key": "field.B_cleaning.supplies"
+  },
+  "field.B_house_rules.max_guests": {
+    "context": "Libellé du champ « max_guests » (section B_house_rules)",
+    "en": "Max guests",
+    "es": "Ocupantes máximos",
+    "fr": "Occupants maximum",
+    "key": "field.B_house_rules.max_guests"
+  },
+  "field.B_house_rules.other": {
+    "context": "Libellé du champ « other » (section B_house_rules)",
+    "en": "Other rules",
+    "es": "Otras normas",
+    "fr": "Autres règles",
+    "key": "field.B_house_rules.other"
+  },
+  "field.B_house_rules.parties": {
+    "context": "Libellé du champ « parties » (section B_house_rules)",
+    "en": "Parties allowed",
+    "es": "Se permiten fiestas",
+    "fr": "Fêtes autorisées",
+    "key": "field.B_house_rules.parties"
+  },
+  "field.B_house_rules.pets": {
+    "context": "Libellé du champ « pets » (section B_house_rules)",
+    "en": "Pets allowed",
+    "es": "Se admiten mascotas",
+    "fr": "Animaux autorisés",
+    "key": "field.B_house_rules.pets"
+  },
+  "field.B_house_rules.quiet_hours": {
+    "context": "Libellé du champ « quiet_hours » (section B_house_rules)",
+    "en": "Quiet hours",
+    "es": "Horas de silencio",
+    "fr": "Heures de silence",
+    "key": "field.B_house_rules.quiet_hours"
+  },
+  "field.B_house_rules.smoking": {
+    "context": "Libellé du champ « smoking » (section B_house_rules)",
+    "en": "Smoking allowed",
+    "es": "Se permite fumar",
+    "fr": "Fumeurs autorisés",
+    "key": "field.B_house_rules.smoking"
+  },
+  "field.B_piscine.animaux_interdits": {
+    "context": "Libellé du champ « animaux_interdits » (section B_piscine)",
+    "en": "No pets in the pool",
+    "es": "Mascotas prohibidas en la piscina",
+    "fr": "Animaux interdits dans la piscine",
+    "key": "field.B_piscine.animaux_interdits"
+  },
+  "field.B_piscine.douche_obligatoire": {
+    "context": "Libellé du champ « douche_obligatoire » (section B_piscine)",
+    "en": "Shower required before swimming",
+    "es": "Ducha obligatoria antes del baño",
+    "fr": "Douche obligatoire avant la baignade",
+    "key": "field.B_piscine.douche_obligatoire"
+  },
+  "field.B_piscine.eclairage": {
+    "context": "Libellé du champ « eclairage » (section B_piscine)",
+    "en": "Night lighting (how it works)",
+    "es": "Iluminación nocturna (funcionamiento)",
+    "fr": "Éclairage nocturne (fonctionnement)",
+    "key": "field.B_piscine.eclairage"
+  },
+  "field.B_piscine.entretien": {
+    "context": "Libellé du champ « entretien » (section B_piscine)",
+    "en": "Maintenance (days, times, technician access)",
+    "es": "Mantenimiento (días, horarios, acceso del técnico)",
+    "fr": "Entretien (jours, horaires, accès du pisciniste)",
+    "key": "field.B_piscine.entretien"
+  },
+  "field.B_piscine.horaires": {
+    "context": "Libellé du champ « horaires » (section B_piscine)",
+    "en": "Hours of use",
+    "es": "Horario de uso",
+    "fr": "Horaires d’utilisation",
+    "key": "field.B_piscine.horaires"
+  },
+  "field.B_pool.rules": {
+    "context": "Libellé du champ « rules » (section B_pool)",
+    "en": "Rules and guidelines",
+    "es": "Normas e indicaciones",
+    "fr": "Règles et consignes",
+    "key": "field.B_pool.rules"
+  },
+  "field.B_utilities.electricity": {
+    "context": "Libellé du champ « electricity » (section B_utilities)",
+    "en": "Electricity (panel, breaker)",
+    "es": "Electricidad (cuadro, diferencial)",
+    "fr": "Électricité (tableau, disjoncteur)",
+    "key": "field.B_utilities.electricity"
+  },
+  "field.B_utilities.gas": {
+    "context": "Libellé du champ « gas » (section B_utilities)",
+    "en": "Gas (if any)",
+    "es": "Gas (si procede)",
+    "fr": "Gaz (le cas échéant)",
+    "key": "field.B_utilities.gas"
+  },
+  "field.B_utilities.water": {
+    "context": "Libellé du champ « water » (section B_utilities)",
+    "en": "Water (main valve, heater)",
+    "es": "Agua (llave, calentador)",
+    "fr": "Eau (arrivée, chauffe-eau)",
+    "key": "field.B_utilities.water"
+  },
+  "field.B_wifi.notes": {
+    "context": "Libellé du champ « notes » (section B_wifi)",
+    "en": "Notes (restart, speed…)",
+    "es": "Notas (reinicio, velocidad…)",
+    "fr": "Remarques (redémarrage, débit…)",
+    "key": "field.B_wifi.notes"
+  },
+  "field.B_wifi.router_location": {
+    "context": "Libellé du champ « router_location » (section B_wifi)",
+    "en": "Router location",
+    "es": "Ubicación del router",
+    "fr": "Emplacement de la box",
+    "key": "field.B_wifi.router_location"
+  },
+  "field.C_trash.container_location": {
+    "context": "Libellé du champ « container_location » (section C_trash)",
+    "en": "Container location",
+    "es": "Ubicación de los contenedores",
+    "fr": "Emplacement des conteneurs",
+    "key": "field.C_trash.container_location"
+  },
+  "field.C_trash.schedule": {
+    "context": "Libellé du champ « schedule » (section C_trash)",
+    "en": "Collection days / times",
+    "es": "Días / horarios de recogida",
+    "fr": "Jours / horaires de collecte",
+    "key": "field.C_trash.schedule"
+  },
+  "field.D_contact.availability": {
+    "context": "Libellé du champ « availability » (section D_contact)",
+    "en": "Availability",
+    "es": "Disponibilidad",
+    "fr": "Disponibilités",
+    "key": "field.D_contact.availability"
+  },
+  "field.D_contact.notes": {
+    "context": "Libellé du champ « notes » (section D_contact)",
+    "en": "Notes",
+    "es": "Notas",
+    "fr": "Précisions",
+    "key": "field.D_contact.notes"
+  },
+  "field.D_pharmacy.on_duty_url": {
+    "context": "Libellé du champ « on_duty_url » (section D_pharmacy)",
+    "en": "On-duty pharmacies link",
+    "es": "Enlace farmacias de guardia",
+    "fr": "Lien pharmacies de garde",
+    "key": "field.D_pharmacy.on_duty_url"
+  },
+  "field.D_safety.evacuation": {
+    "context": "Libellé du champ « evacuation » (section D_safety)",
+    "en": "Evacuation instructions",
+    "es": "Instrucciones de evacuación",
+    "fr": "Consignes d’évacuation",
+    "key": "field.D_safety.evacuation"
+  },
+  "field.D_safety.extinguisher": {
+    "context": "Libellé du champ « extinguisher » (section D_safety)",
+    "en": "Fire extinguisher (location)",
+    "es": "Extintor (ubicación)",
+    "fr": "Extincteur (emplacement)",
+    "key": "field.D_safety.extinguisher"
+  },
+  "field.D_safety.first_aid": {
+    "context": "Libellé du champ « first_aid » (section D_safety)",
+    "en": "First-aid kit (location)",
+    "es": "Botiquín (ubicación)",
+    "fr": "Trousse de secours (emplacement)",
+    "key": "field.D_safety.first_aid"
+  },
+  "field.E_food_delivery.platforms": {
+    "context": "Libellé du champ « platforms » (section E_food_delivery)",
+    "en": "Available platforms",
+    "es": "Plataformas disponibles",
+    "fr": "Plateformes disponibles",
+    "key": "field.E_food_delivery.platforms"
+  },
+  "field.E_services.services.contact": {
+    "context": "Libellé du champ « contact » du groupe « services » (section E_services)",
+    "en": "Contact",
+    "es": "Contacto",
+    "fr": "Contact",
+    "key": "field.E_services.services.contact"
+  },
+  "field.E_services.services.name": {
+    "context": "Libellé du champ « name » du groupe « services » (section E_services)",
+    "en": "Service",
+    "es": "Servicio",
+    "fr": "Service",
+    "key": "field.E_services.services.name"
+  },
+  "field.G_daytrips.ideas": {
+    "context": "Libellé du champ « ideas » (section G_daytrips)",
+    "en": "Suggestions",
+    "es": "Sugerencias",
+    "fr": "Suggestions",
+    "key": "field.G_daytrips.ideas"
+  },
+  "field.G_events.events": {
+    "context": "Libellé du champ « events » (section G_events)",
+    "en": "Notable events",
+    "es": "Eventos destacados",
+    "fr": "Événements notables",
+    "key": "field.G_events.events"
+  },
+  "field.G_events.tourism_office_url": {
+    "context": "Libellé du champ « tourism_office_url » (section G_events)",
+    "en": "Tourism office website",
+    "es": "Web de la oficina de turismo",
+    "fr": "Site de l’office de tourisme",
+    "key": "field.G_events.tourism_office_url"
+  },
+  "field.H_transit.app_or_url": {
+    "context": "Libellé du champ « app_or_url » (section H_transit)",
+    "en": "App / timetable website",
+    "es": "App / web de horarios",
+    "fr": "Application / site horaires",
+    "key": "field.H_transit.app_or_url"
+  },
+  "field.H_transit.lines": {
+    "context": "Libellé du champ « lines » (section H_transit)",
+    "en": "Useful lines",
+    "es": "Líneas útiles",
+    "fr": "Lignes utiles",
+    "key": "field.H_transit.lines"
+  },
+  "field.I_insurance.notes": {
+    "context": "Libellé du champ « notes » (section I_insurance)",
+    "en": "Notes",
+    "es": "Menciones",
+    "fr": "Mentions",
+    "key": "field.I_insurance.notes"
+  },
+  "field.I_tax.amount": {
+    "context": "Libellé du champ « amount » (section I_tax)",
+    "en": "Amount",
+    "es": "Importe",
+    "fr": "Montant",
+    "key": "field.I_tax.amount"
+  },
+  "field.I_tax.details": {
+    "context": "Libellé du champ « details » (section I_tax)",
+    "en": "Details",
+    "es": "Modalidades",
+    "fr": "Modalités",
+    "key": "field.I_tax.details"
+  },
+  "field.I_terms.terms": {
+    "context": "Libellé du champ « terms » (section I_terms)",
+    "en": "Terms",
+    "es": "Condiciones",
+    "fr": "Conditions",
+    "key": "field.I_terms.terms"
+  },
+  "field.S_checklist.tasks.details": {
+    "context": "Libellé du champ « details » du groupe « tasks » (section S_checklist)",
+    "en": "Details",
+    "es": "Detalles",
+    "fr": "Précisions",
+    "key": "field.S_checklist.tasks.details"
+  },
+  "field.S_checklist.tasks.task": {
+    "context": "Libellé du champ « task » du groupe « tasks » (section S_checklist)",
+    "en": "Task",
+    "es": "Tarea",
+    "fr": "Tâche",
+    "key": "field.S_checklist.tasks.task"
+  },
+  "field.S_linen.bath_towels": {
+    "context": "Libellé du champ « bath_towels » (section S_linen)",
+    "en": "Bath towels (per guest)",
+    "es": "Toallas de baño (por huésped)",
+    "fr": "Serviettes de bain (par voyageur)",
+    "key": "field.S_linen.bath_towels"
+  },
+  "field.S_linen.beach_towels": {
+    "context": "Libellé du champ « beach_towels » (section S_linen)",
+    "en": "Beach towels (per guest)",
+    "es": "Toallas de playa (por huésped)",
+    "fr": "Serviettes de plage (par voyageur)",
+    "key": "field.S_linen.beach_towels"
+  },
+  "field.S_linen.bed_sets": {
+    "context": "Libellé du champ « bed_sets » (section S_linen)",
+    "en": "Bed sets (per bed)",
+    "es": "Juegos de cama (por cama)",
+    "fr": "Parures de lit (par lit)",
+    "key": "field.S_linen.bed_sets"
+  },
+  "field.S_linen.notes": {
+    "context": "Libellé du champ « notes » (section S_linen)",
+    "en": "Notes (location, rotation, laundry…)",
+    "es": "Notas (ubicación, rotación, lavandería…)",
+    "fr": "Précisions (emplacement, rotation, blanchisserie…)",
+    "key": "field.S_linen.notes"
+  },
+  "field.S_special.wishes": {
+    "context": "Libellé du champ « wishes » (section S_special)",
+    "en": "Special instructions",
+    "es": "Instrucciones especiales",
+    "fr": "Consignes particulières",
+    "key": "field.S_special.wishes"
+  },
+  "field.S_supplies.items.item": {
+    "context": "Libellé du champ « item » du groupe « items » (section S_supplies)",
+    "en": "Supply",
+    "es": "Consumible",
+    "fr": "Consommable",
+    "key": "field.S_supplies.items.item"
+  },
+  "field.S_supplies.items.target": {
+    "context": "Libellé du champ « target » du groupe « items » (section S_supplies)",
+    "en": "Target quantity",
+    "es": "Cantidad objetivo",
+    "fr": "Quantité cible",
+    "key": "field.S_supplies.items.target"
+  },
+  "field.S_welcome_pack.contents": {
+    "context": "Libellé du champ « contents » (section S_welcome_pack)",
+    "en": "Contents and layout",
+    "es": "Contenido y disposición",
+    "fr": "Composition et disposition",
+    "key": "field.S_welcome_pack.contents"
+  },
   "option.private": {
     "context": "Valeur de champ « private »",
     "en": "Private space",

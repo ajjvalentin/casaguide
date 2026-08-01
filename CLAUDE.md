@@ -256,9 +256,21 @@ commit, résultat de test). Mettre aussi à jour le champ `updated`.
     **identiques** (overlay vide), langue supplémentaire servie, non traduit → repli
     FR. Les **clés** sont construites par `api/i18n.py` et utilisées **aux deux
     bouts** (collecteur d'inventaire ET lookup SSR) : ne jamais forger une clé à la
-    main d'un côté sans l'autre. Export/réimport relecteur : `ops/i18n_export.py
-    --lang xx` (CSV) / `ops/i18n_import.py ui_xx.csv` (idempotent, refuse les clés
-    inconnues). Runbook : `docs/i18n.md`.
+    main d'un côté sans l'autre. **Libellés du `field_schema`** (labels de champs,
+    valeurs de `select`, labels de groupes répétables) : **rendus dans le guide
+    voyageur** → recensés au même titre (`field.<section>.<champ>`,
+    `field.<section>.<groupe>.<champ>`, clés **scopées par section** — un même
+    `key` porte un libellé différent selon la section, jamais de collision) et
+    overlayés par `guide_page._render_fields` (via `_seed_label`, donc FR/EN/ES
+    inchangés). Export/réimport relecteur : `ops/i18n_export.py --lang xx` (CSV) /
+    `ops/i18n_import.py ui_xx.csv` (idempotent, refuse les clés inconnues).
+    **Génération des propositions (volet 3)** : `ops/i18n_generate.py` peuple
+    `ui_translations` via Claude (`enrich/translate_ui.py`, traducteur injectable),
+    langue par langue, en imposant le **registre** (`languages.register_note`) ;
+    cibles = registre **hors `api.i18n.SOURCE_LANGS`** (jamais fr/en/es) ;
+    skip-existing par défaut (ne clobbe pas une correction relue), `--dry-run` sans
+    appel API, coût dans `api_costs` (`operation='ui_translate'`, property NULL).
+    Runbook : `docs/i18n.md`.
 
 ## Commandes
 

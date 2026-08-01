@@ -374,14 +374,19 @@ def _fmt_dist(poi: dict, lang: str = "fr") -> tuple[str, str]:
 
 # ── Rendu des champs d'une section (selon field_schema) ──────────────────────
 
-def _render_fields(schema: dict, content: dict, lang: str = "fr") -> str:
+def _render_fields(schema: dict, content: dict, lang: str = "fr",
+                   section_code: str = "") -> str:
     rows: list[str] = []
     for f in schema.get("fields", []):
         key = f.get("key")
         val = content.get(key)
         if val is None or val == "":
             continue
-        label = _esc(_i18n(f.get("label"), lang, key or ""))
+        # Libellé du champ : overlay des langues supplémentaires (V2-21a) d'abord
+        # (clé scopée par section), puis le `label` du seed (FR/EN/ES), puis la clé
+        # brute. Pour FR/EN/ES l'overlay est vide → rendu identique (non-régression).
+        label = _esc(_seed_label(lang, _i18n_mod.field_label_key(section_code, key or ""),
+                                 f.get("label"), key or ""))
         typ = f.get("type")
         if typ == "bool":
             dd = _t(lang, "yes") if val else _t(lang, "no")
@@ -403,7 +408,8 @@ def _render_fields(schema: dict, content: dict, lang: str = "fr") -> str:
     # Groupes répétables (équipements, services…)
     repeat = schema.get("repeat")
     if repeat:
-        arr = content.get(repeat.get("key")) or []
+        rkey = repeat.get("key")
+        arr = content.get(rkey) or []
         cards: list[str] = []
         for item in arr:
             if not isinstance(item, dict):
@@ -413,8 +419,12 @@ def _render_fields(schema: dict, content: dict, lang: str = "fr") -> str:
                 rv = item.get(rf.get("key"))
                 if rv is None or rv == "":
                     continue
+                rlabel = _esc(_seed_label(
+                    lang, _i18n_mod.repeat_field_label_key(
+                        section_code, rkey or "", rf.get("key") or ""),
+                    rf.get("label"), ""))
                 inner.append(
-                    f'<div class="frow"><dt>{_esc(_i18n(rf.get("label"), lang, ""))}</dt>'
+                    f'<div class="frow"><dt>{rlabel}</dt>'
                     f'<dd>{_md_to_html(str(rv)) if rf.get("type") == "textarea" else _esc(str(rv))}</dd></div>')
             if inner:
                 cards.append('<div class="repeat-card"><dl>' + "".join(inner) + "</dl></div>")
@@ -610,7 +620,7 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
         if trans_html:
             parts.append(trans_html)
 
-    fields_html = _render_fields(schema, content, lang)
+    fields_html = _render_fields(schema, content, lang, _sc)
     if fields_html:
         parts.append(fields_html)
 
@@ -1250,7 +1260,9 @@ def _render_staff_section(sec: dict) -> str:
     content = sec.get("content") or {}
     title = _esc(_fr(sec.get("name_i18n"), sec.get("code", "")))
     parts: list[str] = [f"<h3>{title}</h3>"]
-    fields_html = _render_fields(schema, content)
+    # Cahier /s/ resté FR (M-13) : lang='fr' → overlay vide, rendu inchangé ; on
+    # passe tout de même le code de section (cohérence des clés, sans effet ici).
+    fields_html = _render_fields(schema, content, section_code=sec.get("code", ""))
     if fields_html:
         parts.append(fields_html)
     body_html = _md_to_html(sec.get("body_md"))

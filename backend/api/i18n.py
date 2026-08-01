@@ -50,6 +50,20 @@ def option_key(value: str) -> str:
     return f"option.{value}"
 
 
+def field_label_key(section_code: str, field_key: str) -> str:
+    """Clé d'un libellé de champ simple porté par `field_schema.fields[].label`
+    (rendu dans le guide voyageur). Scopée par section : un même `key` (`notes`,
+    `details`…) porte un libellé différent selon la section — pas de collision."""
+    return f"field.{section_code}.{field_key}"
+
+
+def repeat_field_label_key(section_code: str, repeat_key: str, field_key: str) -> str:
+    """Clé d'un libellé de champ d'un groupe répétable
+    (`field_schema.repeat.fields[].label`, ex. « Équipement », « Tâche »). Le
+    segment `repeat_key` la distingue d'un champ simple de même nom."""
+    return f"field.{section_code}.{repeat_key}.{field_key}"
+
+
 def cuisine_key(value: str) -> str:
     return f"cuisine.{value}"
 
@@ -98,13 +112,62 @@ def overlaid(key: str) -> str | None:
 # Les libellés de CODE viennent de `guide_page` (importé DANS la fonction, pas au
 # niveau module → pas de cycle) ; les libellés de SEED viennent de la base.
 
-_SOURCE_LANGS = ("fr", "en", "es")
+# Langues portées par le CODE et le SEED (colonnes source de l'inventaire). Les
+# AUTRES langues du registre (nl/de/it/sq…) vivent dans `ui_translations` et sont
+# superposées au rendu (overlay). Sert à décider quelles langues sont candidates à
+# la génération de propositions (volet 3) : jamais une source.
+SOURCE_LANGS = ("fr", "en", "es")
+_SOURCE_LANGS = SOURCE_LANGS  # alias interne historique
 
 
 def _entry(key: str, context: str, i18n: dict[str, Any] | None) -> dict[str, str]:
     d = i18n or {}
     return {"key": key, "context": context,
             **{lg: (d.get(lg) or "") for lg in _SOURCE_LANGS}}
+
+
+def _collect_field_schema_labels(entries: dict[str, dict[str, str]],
+                                 code: str, schema: Any) -> None:
+    """Recense les libellés d'un `field_schema` de section RENDUS dans le guide
+    voyageur (`guide_page._render_fields`), avec les MÊMES clés que le SSR :
+
+      * `field.<code>.<key>`             — libellé d'un champ simple ;
+      * `field.<code>.<repeat>.<key>`    — libellé d'un champ de groupe répétable ;
+      * `option.<valeur>`                — valeur de `select` non déjà couverte par
+        `_OPTION_LABELS` (le libellé affiché reste celui du code quand il existe).
+
+    Mute `entries` en place. Ne recense jamais les types structurés eux-mêmes
+    (heure, booléen, URL…) : seuls les *libellés* sont traduits, pas les valeurs."""
+    schema = schema or {}
+
+    def _put(e: dict[str, str]) -> None:
+        entries[e["key"]] = e
+
+    for f in schema.get("fields", []):
+        fk = f.get("key")
+        if not fk:
+            continue
+        _put(_entry(field_label_key(code, fk),
+                    f"Libellé du champ « {fk} » (section {code})", f.get("label")))
+        # Valeurs de `select` : le libellé lisible vient de `_OPTION_LABELS`
+        # (recensé en étape 4). On n'ajoute une entrée que pour une valeur NON
+        # couverte (jamais d'écrasement d'un libellé de code par du vide).
+        if f.get("type") == "select":
+            for val in f.get("options") or []:
+                ok = option_key(str(val))
+                if ok not in entries:
+                    _put(_entry(ok, f"Valeur de champ « {val} »", None))
+
+    repeat = schema.get("repeat")
+    if repeat:
+        rk = repeat.get("key") or ""
+        for rf in repeat.get("fields", []):
+            rfk = rf.get("key")
+            if not rfk:
+                continue
+            _put(_entry(repeat_field_label_key(code, rk, rfk),
+                        f"Libellé du champ « {rfk} » du groupe « {rk} » "
+                        f"(section {code})", rf.get("label")))
 
 
 def collect_inventory(conn) -> dict[str, dict[str, str]]:
@@ -142,9 +205,13 @@ def collect_inventory(conn) -> dict[str, dict[str, str]]:
     for value, i18n in gp._CUISINE_LABELS.items():
         add(_entry(cuisine_key(value), f"Type de cuisine « {value} »", i18n))
 
-    # 6. Sections du seed (nom affiché dans le guide + description éditeur).
+    # 6. Sections du seed : nom affiché dans le guide, description éditeur, et les
+    #    LIBELLÉS DU field_schema (labels de champs, options de select, labels de
+    #    groupes répétables) — tous rendus dans le guide voyageur, donc traduisibles
+    #    au même titre que les noms de sections (sinon : repli FR visible dans une
+    #    langue supplémentaire, guide à moitié traduit).
     rows = conn.execute(
-        "SELECT code, name_i18n, description_i18n FROM section_templates "
+        "SELECT code, name_i18n, description_i18n, field_schema FROM section_templates "
         "ORDER BY chapter, sort_order, code").fetchall()
     for r in rows:
         add(_entry(section_name_key(r["code"]),
@@ -152,6 +219,7 @@ def collect_inventory(conn) -> dict[str, dict[str, str]]:
         add(_entry(section_desc_key(r["code"]),
                    f"Description de la section « {r['code']} » (éditeur)",
                    r["description_i18n"]))
+        _collect_field_schema_labels(entries, r["code"], r["field_schema"])
 
     # 7. Catégories de POI du seed (nom affiché dans le guide).
     cats = conn.execute(
