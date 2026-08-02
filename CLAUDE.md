@@ -329,6 +329,7 @@ psql -d casaguide -f db/migrations/017_care_rules.sql # règles d'entretien + ca
 psql -d casaguide -f db/migrations/018_guest_contact_split.sql # téléphone/email/langue séparés + backfill (V2-23b, volet 3)
 psql -d casaguide -f db/migrations/019_languages.sql # registre des langues du produit (draft/in_review/published) (V2-21a, volet 1)
 psql -d casaguide -f db/migrations/020_ui_translations.sql # libellés statiques traduits (ui_translations) (V2-21a, volet 2)
+psql -d casaguide -f db/migrations/021_stay_showcase_tokens.sql # lien de séjour (bookings.stay_token) + lien vitrine (properties.showcase_token) (V2-23c)
 
 # Backend
 cd backend
@@ -1129,6 +1130,43 @@ exposé, peer auth).
     demande.
   - **Bumper `sw.js VERSION`** à toute modif de `frontend/guide/*` (ici v24 → v25 :
     `app.js initRequestService` + `guide.css .svc-request*`).
+
+- Fenêtre « Envoyer le guide » & précédence de langue (V2-23c, volet 3) :
+  - **Les tokens de séjour/vitrine se génèrent À LA DEMANDE, côté propriétaire,
+    jamais côté public.** `repo.ensure_stay_token`/`ensure_showcase_token` utilisent
+    la **même fabrique que `guide_token`** — **hex 128 bits
+    `encode(gen_random_bytes(16),'hex')`** (jamais `token_urlsafe` : tout le système
+    est en hex) — avec une **garde SQL idempotente/atomique** (`UPDATE … WHERE …
+    stay_token IS NULL` **puis relecture**) : deux clics simultanés ne créent qu'un
+    token (la garde tranche en base, pas en Python). Endpoints **authentifiés**
+    (`routers/share.py`, `POST …/showcase-link` & `…/bookings/{bid}/stay-link`,
+    gardés par `OwnedProperty`) → le token n'est **jamais** créé ni renvoyé par une
+    route publique. Le lien **maison** n'a pas d'endpoint (le front le construit
+    depuis le `guide_token` déjà connu — il SURVIT tel quel). `/b/` et `/v/` n'ont
+    **pas de slug décoratif** (`_real_token` ne s'applique qu'à `/g/`).
+  - **La fenêtre ne code AUCUN libellé d'envoi.** Les gabarits email/WhatsApp vivent
+    dans l'inventaire i18n (clés **`ui.send_*`** — FR/EN/ES dans `guide_page._UI`,
+    langues supplémentaires dans `ui_translations`) et sont lus résolus via
+    l'endpoint public **`GET /send-templates?lang=`** (même overlay que le SSR). Le
+    front (`js/components/sendmenu.js`) substitue `{property}`/`{name}` et compose le
+    `mailto:`/`wa.me`. Ajouter une clé `ui.send_*` → régénérer `i18n/inventory.json`
+    (`ops/i18n_inventory.py`, `--check` = gate) comme tout libellé du guide.
+  - **§3.5 — précédence de langue sur `/b/` (une seule source de vérité).** Le SSR
+    expose `data-guest-lang` sur le `<body>` du variant séjour **si et seulement si**
+    `guest_lang` est une langue **offerte** par le guide (publiée + registre —
+    invariant 15 ; sinon repli langue source, attribut absent). `frontend/guide/app.js
+    initLang` lit ce seul attribut : présent → la fiche fait foi, la devinette M-09
+    (`navigator.language`, préférence `localStorage` — souvent héritée d'un autre
+    guide) **ne s'y superpose plus** (un clic explicite sur une puce gagne via
+    `?lang=`) ; **absent → M-09 intact**, exactement comme sur `/g/` (là le serveur
+    ne sait rien du visiteur, la devinette est une qualité). `/g/` n'est **jamais**
+    touché. Toute modif de `frontend/guide/*` (ici `app.js initLang`) → **bumper
+    `sw.js VERSION`** (v28 → v29).
+  - **Le manque devient une invitation (§3.3), jamais un `mailto:` vide** : un séjour
+    sans email (resp. téléphone) désactive le canal et propose « Ajouter un email à
+    ce séjour » (`calendar.openBookingOnLoad` + navigation → ouvre la modale du
+    séjour). Les liens produits par la fenêtre ne portent **jamais** le `guide_token`
+    hors le choix explicite « lien maison ».
 
 - Migrations & amorçage — leçons de l'incident 015 (31/07, à ne jamais réapprendre) :
   1. **Une migration se teste contre l'ÉTAT ANTÉRIEUR RÉEL**, jamais en la rejouant

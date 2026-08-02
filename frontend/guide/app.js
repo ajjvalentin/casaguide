@@ -558,6 +558,15 @@ function initLang() {
     try { localStorage.setItem(LANG_KEY, current); } catch (_) { /* privé */ }
     return;
   }
+  // §3.5 (V2-23c) — lien de séjour dont la FICHE connaît la langue du locataire :
+  // `data-guest-lang` (posé par le SSR `/b/`, UNE seule source de vérité) fait foi.
+  // La langue servie EST déjà `guest_lang` ; on ne laisse NI `navigator.language`
+  // NI la préférence mémorisée (souvent héritée d'un autre guide) l'écraser — le
+  // microcopy promet « le lien part dans cette langue ». Un clic explicite passe
+  // par `?lang=` (traité ci-dessus) et gagne pour cette navigation. Sans
+  // `data-guest-lang` (lien maison `/g/`, ou séjour dont la fiche ne sait pas),
+  // comportement M-09 intact.
+  if (document.body.dataset.guestLang) return;
   const available = new Set(opts.map((a) => a.dataset.lang));
   if (!available.size) return;
 

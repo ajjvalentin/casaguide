@@ -13,7 +13,7 @@ import { handleQuotaError } from "../quota.js";
 import { getOwner } from "../store.js";
 import { COUNTRIES } from "../constants.js";
 import { openPropertyInfoModal } from "../components/propertyinfo.js";
-import { openShareMenu } from "../components/sharemenu.js";
+import { openSendMenu } from "../components/sendmenu.js";
 import { openStaffShareMenu } from "../components/staffshare.js";
 
 const STATUS_LABEL = { draft: "Brouillon", published: "Publié", archived: "Archivé" };
@@ -83,6 +83,10 @@ export async function renderProperties(view) {
         el("button", { class: "btn btn-sm", onClick: () => reEnrich(p) },
           icon("sparkles", 16), "Enrichir"),
         p.status === "published"
+          ? el("button", { class: "btn btn-sm", onClick: () => openSendMenu(p) },
+            icon("send", 16), "Envoyer le guide")
+          : null,
+        p.status === "published"
           ? el("a", { class: "btn btn-sm", href: `/g/${p.guide_token}`, target: "_blank", rel: "noopener" },
             icon("external-link", 16), "Voir le guide")
           : null,
@@ -102,8 +106,8 @@ export async function renderProperties(view) {
       el("span", { class: "door-t" }, icon("book-open", 17), "Guide Locataires"),
       el("span", { class: "door-sub" }, "Compléter & partager le guide"));
     const share = p.status === "published"
-      ? el("button", { class: "door-share", "aria-label": "Copier le lien du guide", title: "Copier le lien du guide",
-        onClick: () => openShareMenu(p) }, icon("link", 15))
+      ? el("button", { class: "door-share", "aria-label": "Envoyer le guide", title: "Envoyer le guide (lien, QR, email, WhatsApp)",
+        onClick: () => openSendMenu(p) }, icon("send", 15))
       : null;
     return el("div", { class: "door door-guide" }, main, share);
   }

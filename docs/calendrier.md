@@ -323,3 +323,69 @@ demande doit atterrir dans le **planning** plutôt que dans un SMS oublié :
   une intervention visible par l'équipe (moteur `care.plan_interventions`).
 - **Invariant 4 préservé** : le POST est une **action** du voyageur, aucun appel
   externe automatique au rendu du guide.
+
+## 8. Les trois liens & la fenêtre « Envoyer le guide » (V2-23c)
+
+Le guide se partage désormais par **trois liens** à la grammaire distincte (préfixes
+publics réservés, cf. CLAUDE.md — `/g/` maison · `/s/` équipe · `/v/` vitrine ·
+`/b/` séjour) :
+
+| Lien | Pour qui | Secrets | Expiration |
+|---|---|---|---|
+| **Maison** `/g/{guide_token}` | occupant sur place (QR imprimé) | réels | aucune |
+| **Séjour** `/b/{stay_token}` | locataire réservé | réels, meurent avec la page | **J+7 après le départ** |
+| **Vitrine** `/v/{showcase_token}` | prospect / annonce / démo | **valeurs d'exemple** (jamais réelles) | aucune |
+
+### 8.1 Génération des tokens à la demande (volets 1/1bis + 3)
+
+Les tokens de séjour et de vitrine sont **générés au premier usage** par la fenêtre
+d'envoi, jamais par une route publique :
+
+- `POST /api/properties/{id}/bookings/{bid}/stay-link` → `{token, url}` (lien `/b/…`) ;
+- `POST /api/properties/{id}/showcase-link` → `{token, url}` (lien `/v/…`).
+
+Fabrique **hex 128 bits `encode(gen_random_bytes(16),'hex')`** — la même que
+`guide_token`/`staff_token` depuis le premier jour. La génération est **idempotente
+et atomique** (`repo.ensure_stay_token`/`ensure_showcase_token` : garde SQL
+`UPDATE … WHERE … AND stay_token IS NULL` puis relecture) : deux clics simultanés ne
+créent qu'un token, un séjour garde le sien. Endpoints **propriétaire authentifiés**
+(garde-fou multi-tenant) — le token n'est **jamais** créé ni renvoyé côté public.
+
+### 8.2 La fenêtre « Envoyer le guide » (volet 3)
+
+Bouton **« Envoyer le guide »** sur la carte du logement (page « Mes logements »,
+`frontend/js/components/sendmenu.js`) — LA surface d'envoi. On choisit **quoi
+envoyer** :
+
+1. **un séjour** (à venir + en cours, jamais l'historique ni les annulés) : le
+   destinataire EST le séjour — langue **pré-sélectionnée** depuis `guest_lang`
+   (modifiable), email et téléphone lus de la fiche ;
+2. **la vitrine** (langue au choix, défaut = langue du logement) ;
+3. **le lien maison** (partage multilingue actuel, pour réimprimer le QR).
+
+Puis un **canal** : copier le lien · QR téléchargeable (PNG nommé proprement,
+`guide-{logement}-{prénom}.png`) · **email** (`mailto:` pré-adressé, sujet/corps
+localisés) · **WhatsApp** (`wa.me/{téléphone}`, même message). Les gabarits sont
+**localisés via l'inventaire i18n** (clés `ui.send_*` — FR/EN/ES portées par le
+code, langues supplémentaires par `ui_translations` ; endpoint public résolveur
+`GET /send-templates?lang=`). **Aucun lien produit par la fenêtre ne contient le
+`guide_token`**, sauf le choix explicite « lien maison ».
+
+**Le manque devient une invitation (§3.3)** : un séjour sans email (resp. sans
+téléphone) désactive le canal et propose **« Ajouter un email à ce séjour »** —
+qui ouvre la modale du séjour dans le calendrier — jamais un `mailto:` vide.
+
+### 8.3 Précédence de langue sur `/b/` (§3.5, acté 02/08)
+
+Sur un lien de **séjour** dont la fiche connaît la langue du locataire, `guest_lang`
+**fait foi** : le SSR l'expose au DOM (`data-guest-lang`, **une seule source de
+vérité**) et `frontend/guide/app.js initLang` **cesse d'y superposer** la devinette
+M-09 (ni `navigator.language`, ni la préférence mémorisée d'un autre guide). Un
+**clic explicite** du visiteur sur une puce gagne (via `?lang=`) et est retenu.
+`guest_lang` **vide** → M-09 **intact**, exactement comme sur `/g/` (le serveur ne
+sait rien du visiteur — la devinette est alors une qualité). Une `guest_lang` non
+publiée au registre retombe sur la langue source (invariant 15) et n'expose pas
+`data-guest-lang`.
+
+*Hors périmètre V2-23c : la surcharge du code de boîte à clés par séjour (volet 2)
+et l'envoi automatique J-7 dans la langue du locataire (V2-23d).*

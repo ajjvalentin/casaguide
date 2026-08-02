@@ -663,3 +663,25 @@ class InterventionOut(BaseModel):
     label: str
     tasks: list[str] = []
     needs_appointment: bool = False
+
+
+class ShareLinkOut(BaseModel):
+    """Lien de partage généré à la demande (V2-23c, volet 3) : lien de séjour
+    (`/b/{stay_token}`) ou lien vitrine (`/v/{showcase_token}`). Le token est
+    généré au premier usage puis réutilisé (idempotent) ; il n'est **jamais** créé
+    ni renvoyé par une route publique (endpoints propriétaire authentifiés)."""
+    token: str
+    url: str
+
+
+class SendTemplatesOut(BaseModel):
+    """Gabarits courts d'envoi du guide (email/WhatsApp) résolus dans une langue
+    (V2-23c, volet 3). Textes portés par l'inventaire i18n (clés `ui.send_*`,
+    FR/EN/ES en code, langues supplémentaires via `ui_translations`). La fenêtre
+    d'envoi compose le `mailto:`/`wa.me` côté client en substituant `{name}`,
+    `{property}` et l'URL."""
+    subject: str
+    hello: str
+    hello_generic: str
+    intro: str
+    signoff: str

@@ -18,7 +18,7 @@ from . import repo
 from .assets import RevalidatingStaticFiles, versioned
 from .config import missing_production_config, settings
 from .routers import (auth, billing, calendars, enrich, guide, languages, media,
-                      pois, properties)
+                      pois, properties, share)
 
 log = logging.getLogger("casaguide.api")
 
@@ -92,6 +92,7 @@ app.include_router(auth.router)
 app.include_router(billing.router)
 app.include_router(properties.router)
 app.include_router(calendars.router)
+app.include_router(share.router)
 app.include_router(pois.router)
 app.include_router(media.router)
 app.include_router(enrich.router)

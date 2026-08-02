@@ -157,6 +157,10 @@ _UI: dict[str, dict[str, str]] = {
         "example_tag": "exemple", "wifi_title": "Connexion Wifi",
         "wifi_network": "Réseau", "wifi_password": "Mot de passe",
         "keybox_title": "Boîte à clés", "keybox_code": "Code",
+        "send_subject": "Votre guide — {property}",
+        "send_hello": "Bonjour {name},", "send_hello_generic": "Bonjour,",
+        "send_intro": "Voici le lien de votre guide :",
+        "send_signoff": "Au plaisir de vous accueillir !",
     },
     "en": {
         "eyebrow": "Your stay guide", "all": "All",
@@ -195,6 +199,10 @@ _UI: dict[str, dict[str, str]] = {
         "example_tag": "example", "wifi_title": "Wifi connection",
         "wifi_network": "Network", "wifi_password": "Password",
         "keybox_title": "Key box", "keybox_code": "Code",
+        "send_subject": "Your guide — {property}",
+        "send_hello": "Hello {name},", "send_hello_generic": "Hello,",
+        "send_intro": "Here is the link to your guide:",
+        "send_signoff": "Looking forward to welcoming you!",
     },
     "es": {
         "eyebrow": "Tu guía de estancia", "all": "Todo",
@@ -233,6 +241,10 @@ _UI: dict[str, dict[str, str]] = {
         "example_tag": "ejemplo", "wifi_title": "Conexión Wifi",
         "wifi_network": "Red", "wifi_password": "Contraseña",
         "keybox_title": "Caja de llaves", "keybox_code": "Código",
+        "send_subject": "Tu guía — {property}",
+        "send_hello": "Hola {name}:", "send_hello_generic": "Hola:",
+        "send_intro": "Aquí tienes el enlace de tu guía:",
+        "send_signoff": "¡Te esperamos!",
     },
 }
 
@@ -1295,6 +1307,15 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # Accueil personnalisé (lien de séjour).
     welcome = (_stay_welcome_html(stay, lang)
                if variant == "stay" and stay else "")
+    # §3.5 (V2-23c) : sur un lien de séjour dont la fiche connaît la langue du
+    # locataire, on l'expose au DOM (`data-guest-lang`, UNE seule source de vérité)
+    # → `app.js` sait que « la fiche sait » et n'y superpose plus ni la préférence
+    # mémorisée ni `navigator.language` (M-09 reste intact sur `/g/` et quand la
+    # fiche ne sait rien). Le routeur ne pose `stay["guest_lang"]` que si la langue
+    # est réellement offerte par ce guide (repli sinon — invariant 15).
+    guest_lang_attr = (f' data-guest-lang="{_esc(stay["guest_lang"])}"'
+                       if variant == "stay" and stay and stay.get("guest_lang")
+                       else "")
     # Le manifeste PWA n'existe que pour le lien maison (`/g/`, QR imprimé, à
     # vie) : installer une PWA depuis un lien de séjour qui meurt à J+7 la
     # casserait (volet 1bis, §3). `manifest=False` sur séjour ET vitrine.
@@ -1320,7 +1341,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}">
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}>
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">

@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- Harnais headless du §3.5 (V2-23c) côté guide : app.js `initLang` sur un lien
+     de séjour dont la fiche connaît la langue (`data-guest-lang`). La devinette
+     M-09 (navigator.language / préférence mémorisée) NE DOIT PLUS écraser la
+     langue servie : `initLang` retourne sans redirection. On pilote le VRAI
+     /frontend/guide/app.js et on espionne location.replace (jamais de navigation
+     réelle sur le chemin correct). Verdict dans #result. Hors frontend/. -->
+<html lang="es">
+<head><meta charset="utf-8"><title>guide-lang-harness</title></head>
+<body data-token="tok" data-lang="es" data-default-lang="fr" data-guest-lang="es">
+<script>
+  // La fiche sait « es » (SSR) ; l'appareil est en anglais et une préférence
+  // « en » traîne (héritée d'un autre guide) : sans le garde §3.5, M-09
+  // redirigerait vers ?lang=en. On veut prouver qu'il n'en fait RIEN.
+  try { Object.defineProperty(navigator, "language", { value: "en-US", configurable: true }); } catch (_) {}
+  try { localStorage.setItem("casaguide:lang", "en"); } catch (_) {}
+  // On observe le RÉSULTAT (location.search) : le chemin correct ne redirige pas,
+  // donc l'URL reste sans ?lang. Un code cassé redirigerait vers ?lang=en (la
+  // navigation réelle rechargerait la page avec la query — signal détectable).
+  // Hermétique : pas d'enregistrement SW, rAF rabattu sur setTimeout.
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+</script>
+
+<!-- Sélecteur de langues (rendu SSR) : les puces que initLang câble. -->
+<div class="langs">
+  <a class="lang" data-lang="fr" href="?lang=fr">Français</a>
+  <a class="lang" data-lang="en" href="?lang=en">English</a>
+  <a class="lang" data-lang="es" href="?lang=es">Español</a>
+</div>
+<main id="content"></main>
+<script id="guide-data" type="application/json">{"property":{},"pois":[]}</script>
+
+<pre id="result">PENDING</pre>
+<script type="module">
+import "/frontend/guide/app.js";   // exécute initLang() au chargement
+
+const log = [];
+let pass = true;
+const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+
+// Laisse tourner un tick (les init sont synchrones, mais on est prudent).
+setTimeout(() => {
+  chk(!location.search.includes("lang"),
+    "guest_lang renseignée → aucune redirection M-09 (search=" + JSON.stringify(location.search) + ")");
+  chk(document.body.dataset.lang === "es",
+    "la langue servie reste celle de la fiche (es)");
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+}, 50);
+</script>

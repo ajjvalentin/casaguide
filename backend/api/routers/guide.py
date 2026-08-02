@@ -310,8 +310,15 @@ def public_stay_page(stay_token: str, conn: Conn, request: Request,
                             headers=_NOINDEX)
     stay, prop_row = loaded
     req_lang = lang or stay.get("guest_lang")
+    # §3.5 : n'exposer `guest_lang` au DOM (data-guest-lang, cf. guide_page) que si
+    # la langue est réellement OFFERTE par ce guide (publiée + registre) — une
+    # `guest_lang` non offerte retombe sur la langue source (invariant 15) et ne
+    # doit pas figer la devinette M-09 sur une langue qu'on ne sait pas servir.
+    gl = stay.get("guest_lang")
+    offered_gl = gl if gl and gl in _guide_langs(conn, prop_row) else None
     stay_ctx = {"guest_name": stay.get("guest_name"),
-                "starts_on": stay["starts_on"], "ends_on": stay["ends_on"]}
+                "starts_on": stay["starts_on"], "ends_on": stay["ends_on"],
+                "guest_lang": offered_gl}
     html = _render_guide_html(conn, prop_row, request, req_lang, variant="stay",
                               stay_ctx=stay_ctx, public_token=stay_token,
                               guide_token=prop_row["guide_token"],

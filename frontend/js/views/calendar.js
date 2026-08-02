@@ -52,6 +52,13 @@ const langLabel = (c) => LANG_LABELS[c] || c;
 const MONTHS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.",
   "août", "sept.", "oct.", "nov.", "déc."];
 
+// Ouverture différée de la modale d'un séjour au prochain rendu du calendrier
+// (V2-23c, volet 3) : la fenêtre « Envoyer le guide » (page « Mes logements »)
+// s'en sert pour l'invitation « Ajouter un email à ce séjour » — elle pose l'id,
+// navigue vers le calendrier, et la modale du séjour s'ouvre là où on l'édite.
+let _pendingOpenBooking = null;
+export function openBookingOnLoad(bookingId) { _pendingOpenBooking = bookingId; }
+
 function todayISO() {
   const d = new Date();
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -130,6 +137,14 @@ export async function renderCalendar(view, pid) {
     body);
   mount(view, page);
   paint();
+
+  // Ouverture différée demandée par la fenêtre d'envoi (invitation « Ajouter un
+  // email à ce séjour ») : on ouvre la modale du séjour ciblé une fois la vue prête.
+  if (_pendingOpenBooking) {
+    const target = (data.bookings || []).find((x) => x.id === _pendingOpenBooking);
+    _pendingOpenBooking = null;
+    if (target) openBookingModal(target);
+  }
 
   // ── Rendu principal (rejoué après chaque changement) ──────────────────────
   function paint() {

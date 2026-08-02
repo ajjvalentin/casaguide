@@ -197,6 +197,12 @@ export const api = {
   deleteCalendar: (id, cid) => request("DELETE", `/api/properties/${id}/calendars/${cid}`),
   syncCalendars:  (id) => request("POST", `/api/properties/${id}/calendar/sync`),
 
+  // Fenêtre « Envoyer le guide » (V2-23c, volet 3) : liens générés à la demande
+  // (idempotents) + gabarits d'envoi localisés (email/WhatsApp).
+  showcaseLink: (id) => request("POST", `/api/properties/${id}/showcase-link`),
+  stayLink:     (id, bid) => request("POST", `/api/properties/${id}/bookings/${bid}/stay-link`),
+  sendTemplates: (lang) => request("GET", `/send-templates?lang=${encodeURIComponent(lang)}`, { auth: false }),
+
   // Règles d'entretien, catalogue & demandes (V2-23b, volet 1)
   listRequestTypes:  (id) => request("GET", `/api/properties/${id}/request-types`),
   createRequestType: (id, b) => request("POST", `/api/properties/${id}/request-types`, { body: b }),

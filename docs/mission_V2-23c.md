@@ -70,7 +70,13 @@ ALTER TABLE properties
 ```
 
 - Tokens générés **à la demande** (premier usage dans la fenêtre d'envoi), même
-  fabrique que `guide_token`/`staff_token` (secrets.token_urlsafe, ≥ 128 bits).
+  fabrique que `guide_token`/`staff_token` : **hex 128 bits,
+  `encode(gen_random_bytes(16),'hex')`** (corrigé 02/08 — le brief disait
+  `token_urlsafe`, quand tout le système est en hex depuis le premier jour).
+  Idempotence par la garde SQL : `UPDATE … SET stay_token = encode(…)
+  WHERE id = :id AND stay_token IS NULL` puis relecture — un séjour garde son
+  token une fois créé, aucune course possible. Même patron pour
+  `showcase_token`.
   Aucun backfill nécessaire (NULL = jamais partagé) — mais le vérifier contre
   l'état antérieur réel comme d'habitude.
 - Le token de séjour vit sur le séjour : il meurt avec lui (annulation → 404
@@ -212,7 +218,7 @@ reproche générique.
 - Sans email/téléphone → boutons désactivés + invitation, jamais un mailto vide.
 - Harnais headless (patron calendar-harness) pour la fenêtre.
 
-### 3.5 Précédence de langue sur `/b/` (décision à acter, constatée le 02/08)
+### 3.5 Précédence de langue sur `/b/` — **ACTÉ par André le 02/08, avec amendement**
 
 Constat en validation réelle : `initLang` (M-09, conçu pour le QR maison) fait
 gagner `localStorage` puis `navigator.language` sur la langue servie — sur
@@ -220,14 +226,24 @@ gagner `localStorage` puis `navigator.language` sur la langue servie — sur
 dans cette langue ») : la préférence mémorisée du visiteur (ou la langue de son
 appareil) écrase `guest_lang`.
 
-Règle proposée (à valider par André au lancement du volet 3) : sur `/b/`
-uniquement — `guest_lang` par défaut ; un **clic explicite** du visiteur sur une
-puce gagne et est retenu ; `navigator.language` **ne devine plus** (la fiche
-sait, l'appareil devine). `/g/` garde le comportement M-09 intact (là, le
-serveur ne sait rien du visiteur — la devinette est une qualité).
-Contre-argument à peser : la langue de l'appareil est parfois plus juste que la
-fiche (réservation faite via un portail dans une autre langue) — tranché en
-faveur de la prévisibilité et de la promesse d'interface, sauf avis contraire.
+**Règle actée** : sur `/b/` uniquement, et **seulement si `guest_lang` est
+renseignée** sur le séjour —
+- `guest_lang` est la langue par défaut (la fiche sait) ;
+- un **clic explicite** du visiteur sur une puce gagne et est **retenu** ;
+- `navigator.language` **ne devine plus**.
+
+**Amendement (André, 02/08)** : `guest_lang` **vide** → comportement M-09
+intact, exactement comme sur `/g/` (localStorage puis navigator.language puis
+défaut). La règle stricte ne s'applique que quand la fiche sait vraiment.
+Constat à l'appui : tous les séjours réels ont `guest_lang` vide aujourd'hui —
+l'amendement fait de M-09 le comportement effectif à la mise en prod, sans
+rupture pour personne.
+
+`/g/` garde le comportement M-09 intact dans tous les cas (là, le serveur ne
+sait rien du visiteur — la devinette est une qualité). Le contre-argument
+(langue de l'appareil parfois plus juste que la fiche, réservation via un
+portail) a été pesé et tranché en faveur de la prévisibilité et de la promesse
+d'interface : la fiche est corrigeable par l'hôte, la devinette non.
 
 ---
 

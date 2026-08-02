@@ -11,7 +11,6 @@ par le pipeline) : aucun calcul géographique ni appel externe côté lecture
 from __future__ import annotations
 
 import json
-import secrets as _secrets
 from typing import Any
 
 # Colonnes publiques d'un logement (jamais de secrets ici)
@@ -1086,44 +1085,39 @@ def get_booking_by_stay_token(conn, token: str) -> dict | None:
     ).fetchone()
 
 
-def _random_token() -> str:
-    """Token secret ≥ 128 bits, même régime que guide_token/staff_token (§8).
-    URL-safe (base64url) : jamais confondable avec le slug d'un lien `/g/…`, qui
-    n'apparaît que devant le guide_token (hex pur)."""
-    return _secrets.token_urlsafe(16)
-
-
 def ensure_stay_token(conn, property_id: str, booking_id: str) -> str | None:
     """Renvoie le `stay_token` du séjour, le générant au **premier usage** (fenêtre
     d'envoi, §3.1). None si le séjour n'appartient pas au logement (garde-fou
-    multi-tenant). Idempotent : réutilise le token déjà posé."""
+    multi-tenant).
+
+    Fabrique : **hex 128 bits `encode(gen_random_bytes(16),'hex')`** — la MÊME que
+    `guide_token`/`staff_token` depuis le premier jour (§1.1, corrigé 02/08). La
+    garde SQL `WHERE … AND stay_token IS NULL` rend la génération **idempotente et
+    atomique** : deux clics simultanés ne créent qu'un token (la garde tranche côté
+    base — le second UPDATE ne voit plus NULL et ne touche rien), puis on **relit**
+    le token effectif. Un séjour garde son token une fois créé."""
+    conn.execute(
+        """UPDATE bookings SET stay_token = encode(gen_random_bytes(16), 'hex')
+           WHERE id = %s AND property_id = %s AND stay_token IS NULL""",
+        (booking_id, property_id))
     row = conn.execute(
         "SELECT stay_token FROM bookings WHERE id = %s AND property_id = %s",
         (booking_id, property_id)).fetchone()
-    if not row:
-        return None
-    if row["stay_token"]:
-        return row["stay_token"]
-    tok = _random_token()
-    conn.execute("UPDATE bookings SET stay_token = %s WHERE id = %s",
-                 (tok, booking_id))
-    return tok
+    return row["stay_token"] if row else None
 
 
 def ensure_showcase_token(conn, owner_id: str, property_id: str) -> str | None:
-    """Renvoie le `showcase_token` du logement, le générant au **premier usage**.
-    Filtre par propriétaire (multi-tenant). Idempotent."""
+    """Renvoie le `showcase_token` du logement, le générant au **premier usage**
+    (même fabrique hex 128 bits et même garde SQL idempotente/atomique que
+    `ensure_stay_token`). Filtre par propriétaire (garde-fou multi-tenant)."""
+    conn.execute(
+        """UPDATE properties SET showcase_token = encode(gen_random_bytes(16), 'hex')
+           WHERE id = %s AND owner_id = %s AND showcase_token IS NULL""",
+        (property_id, owner_id))
     row = conn.execute(
         "SELECT showcase_token FROM properties WHERE id = %s AND owner_id = %s",
         (property_id, owner_id)).fetchone()
-    if not row:
-        return None
-    if row["showcase_token"]:
-        return row["showcase_token"]
-    tok = _random_token()
-    conn.execute("UPDATE properties SET showcase_token = %s WHERE id = %s",
-                 (tok, property_id))
-    return tok
+    return row["showcase_token"] if row else None
 
 
 def guide_sections(conn, property_id: str) -> list[dict]:

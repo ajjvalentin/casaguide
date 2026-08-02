@@ -3307,3 +3307,126 @@ def test_stay_link_defaults_to_guest_lang_without_query(client):
         with _dbdict() as conn:
             conn.execute("UPDATE languages SET status = 'draft' WHERE code = 'de'")
             conn.commit()
+
+
+# ── Fenêtre « Envoyer le guide » (V2-23c, volet 3) ───────────────────────────
+
+def _hex128(tok: str) -> bool:
+    """Token = hex 128 bits (même fabrique que guide_token) : 32 caractères hex."""
+    return len(tok) == 32 and all(c in "0123456789abcdef" for c in tok)
+
+
+def test_stay_link_endpoint_generates_hex_token_idempotent(client):
+    """`POST …/bookings/{bid}/stay-link` : token hex 128 bits, URL `/b/{token}`
+    (sans slug), généré au 1er usage puis réutilisé (double appel = même token)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"], guest_name="Tracy")
+    r1 = client.post(f"/api/properties/{prop['id']}/bookings/{b['id']}/stay-link",
+                     headers=owner["headers"])
+    assert r1.status_code == 200, r1.text
+    tok = r1.json()["token"]
+    assert _hex128(tok)
+    assert r1.json()["url"].endswith(f"/b/{tok}")
+    # Idempotence : deuxième appel → MÊME token.
+    r2 = client.post(f"/api/properties/{prop['id']}/bookings/{b['id']}/stay-link",
+                     headers=owner["headers"])
+    assert r2.json()["token"] == tok
+    # Le lien mène bien au guide de séjour.
+    assert client.get(f"/b/{tok}").status_code == 200
+
+
+def test_showcase_link_endpoint_generates_hex_token_idempotent(client):
+    """`POST …/showcase-link` : token hex 128 bits, URL `/v/{token}`, idempotent."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    r1 = client.post(f"/api/properties/{prop['id']}/showcase-link",
+                     headers=owner["headers"])
+    assert r1.status_code == 200, r1.text
+    tok = r1.json()["token"]
+    assert _hex128(tok) and r1.json()["url"].endswith(f"/v/{tok}")
+    r2 = client.post(f"/api/properties/{prop['id']}/showcase-link",
+                     headers=owner["headers"])
+    assert r2.json()["token"] == tok
+    assert client.get(f"/v/{tok}").status_code == 200
+
+
+def test_share_link_endpoints_require_auth(client):
+    """Le token n'est JAMAIS créé ni renvoyé par une route publique : sans jeton
+    propriétaire, les endpoints de lien répondent 401, et aucun token n'est posé."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"])
+    assert client.post(f"/api/properties/{prop['id']}/showcase-link").status_code == 401
+    assert client.post(
+        f"/api/properties/{prop['id']}/bookings/{b['id']}/stay-link").status_code == 401
+    with _dbdict() as conn:
+        row = conn.execute(
+            "SELECT p.showcase_token AS s, b.stay_token AS t FROM properties p "
+            "JOIN bookings b ON b.property_id = p.id WHERE p.id = %s",
+            (prop["id"],)).fetchone()
+    assert row["s"] is None and row["t"] is None   # rien généré par la tentative anonyme
+
+
+def test_stay_link_endpoint_multi_tenant_guard(client):
+    """Un séjour qui n'appartient pas au logement (ou à un autre propriétaire) →
+    404, jamais un token étranger généré."""
+    o1 = register(client)
+    p1 = _publish_prop(client, o1["headers"])
+    o2 = register(client)
+    p2 = _publish_prop(client, o2["headers"])
+    b2 = _make_booking(client, o2["headers"], p2["id"])
+    # o1 tente de générer le lien du séjour de o2 via SON logement → 404 (séjour absent).
+    r = client.post(f"/api/properties/{p1['id']}/bookings/{b2['id']}/stay-link",
+                    headers=o1["headers"])
+    assert r.status_code == 404
+    # o1 sur le logement de o2 → 404 (OwnedProperty, multi-tenant).
+    r2 = client.post(f"/api/properties/{p2['id']}/bookings/{b2['id']}/stay-link",
+                     headers=o1["headers"])
+    assert r2.status_code == 404
+
+
+def test_stay_page_exposes_guest_lang_only_when_offered(client):
+    """§3.5 : la fiche expose `data-guest-lang` au DOM du séjour **si et seulement
+    si** la langue du locataire est réellement offerte par le guide (une seule
+    source de vérité pour app.js). guest_lang vide OU non offerte → attribut absent
+    (M-09 intact côté client)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    with _dbdict() as conn:                       # le logement offre l'anglais (publié)
+        conn.execute("UPDATE properties SET published_langs = %s WHERE id = %s",
+                     (["en"], pid))
+        conn.commit()
+    # (a) guest_lang='en' offerte → data-guest-lang="en" présent, servi en anglais.
+    b = _make_booking(client, owner["headers"], pid, guest_lang="en")
+    tok = _stay_token(pid, b["id"])
+    r = client.get(f"/b/{tok}")
+    assert 'data-guest-lang="en"' in r.text and 'data-lang="en"' in r.text
+    # (b) guest_lang vide → attribut absent (branche M-09).
+    b2 = _make_booking(client, owner["headers"], pid,
+                       starts_on=str(_date.today() + _td(days=30)),
+                       ends_on=str(_date.today() + _td(days=35)))
+    r2 = client.get(f"/b/{_stay_token(pid, b2['id'])}")
+    assert "data-guest-lang" not in r2.text
+    # (c) guest_lang non offerte (es non publiée sur ce logement) → attribut absent.
+    b3 = _make_booking(client, owner["headers"], pid, guest_lang="es",
+                       starts_on=str(_date.today() + _td(days=40)),
+                       ends_on=str(_date.today() + _td(days=45)))
+    r3 = client.get(f"/b/{_stay_token(pid, b3['id'])}")
+    assert "data-guest-lang" not in r3.text
+
+
+def test_send_templates_localized(client):
+    """`GET /send-templates?lang=` renvoie les gabarits d'envoi résolus (FR/EN/ES
+    depuis le code, langues supplémentaires via ui_translations). Public, jamais un
+    libellé en dur côté front."""
+    r_en = client.get("/send-templates?lang=en")
+    assert r_en.status_code == 200
+    en = r_en.json()
+    assert en["subject"] == "Your guide — {property}"
+    assert "{name}" in en["hello"]
+    fr = client.get("/send-templates?lang=fr").json()
+    assert fr["subject"] == "Votre guide — {property}" and fr != en
+    # Langue inconnue → repli FR propre (jamais de trou).
+    assert client.get("/send-templates?lang=zz").json()["subject"] == fr["subject"]
