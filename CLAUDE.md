@@ -1160,8 +1160,24 @@ exposé, peer auth).
     guide) **ne s'y superpose plus** (un clic explicite sur une puce gagne via
     `?lang=`) ; **absent → M-09 intact**, exactement comme sur `/g/` (là le serveur
     ne sait rien du visiteur, la devinette est une qualité). `/g/` n'est **jamais**
-    touché. Toute modif de `frontend/guide/*` (ici `app.js initLang`) → **bumper
-    `sw.js VERSION`** (v28 → v29).
+    touché.
+  - **§3.5 amendement 2 — le choix de langue se retient SOUS LE GUEST, pas sous la
+    navigation (clé `casaguide:lang:b`).** Une clé `localStorage` **dédiée aux liens de
+    séjour**, `casaguide:lang:b`, **distincte** de la clé globale M-09 `casaguide:lang` :
+    écrite **UNIQUEMENT depuis une page `/b/`** (clic sur une puce **et** branche
+    `?lang=` explicite de `initLang`), **lue par tous les liens `/b/` nus** (tout
+    logement, tout séjour), **jamais lue ni écrite par `/g/`**. Le marqueur « on est sur
+    `/b/` » est le **préfixe de l'`apiBase`** (`apiBase.startsWith("/b/")` — UNE seule
+    source de vérité, celle déjà en place `/g/`·`/b/`·`/v/`), **pas** `data-guest-lang`
+    (qui ne dit que si la fiche connaît la langue). **Précédence sur un lien `/b/` nu**
+    (sans `?lang=`) : **clé guest** si posée & offerte → **`guest_lang`** de la fiche →
+    **M-09** (fiche muette). `?lang=` explicite gagne toujours et alimente la clé guest.
+    Limites assumées : le choix ne suit pas d'un appareil à l'autre (le rappel serveur du
+    guest récurrent, **périmètre owner strict — jamais inter-tenant**, est une mission à
+    part adossée à V2-23d) ; un choix explicite du locataire prime une fiche corrigée
+    après coup. `/g/` garde M-09 intact (le serveur ne sait rien du visiteur — la
+    devinette est une qualité). Toute modif de `frontend/guide/*` (ici `app.js initLang`)
+    → **bumper `sw.js VERSION`** (v29 → v30).
   - **Le manque devient une invitation (§3.3), jamais un `mailto:` vide** : un séjour
     sans email (resp. téléphone) désactive le canal et propose « Ajouter un email à
     ce séjour » (`calendar.openBookingOnLoad` + navigation → ouvre la modale du

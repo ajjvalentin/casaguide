@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- Harnais headless du §3.5 amendement 2 (V2-23c) : la clé guest DÉDIÉE aux liens
+     de séjour (`casaguide:lang:b`) l'emporte sur `guest_lang` ET sur la devinette
+     M-09. Scénario : le locataire a cliqué « English » sur le /b/ d'un séjour (clé
+     guest posée = en) ; il rouvre un lien /b/ NU — d'un AUTRE séjour/logement — dont
+     la fiche sait « de », avec une préférence GLOBALE « es » et un appareil en
+     français. Attendu : `initLang` redirige vers ?lang=en (la clé guest fait foi).
+     Prouve aussi que la clé n'est pas namespacée par logement (token arbitraire).
+     On pilote le VRAI app.js et on lit le RÉSULTAT (location.search). Hors frontend/. -->
+<html lang="de">
+<head><meta charset="utf-8"><title>guide-lang-b-harness</title></head>
+<body data-token="tok" data-api-base="/b/staytok-autre" data-lang="de" data-default-lang="fr" data-guest-lang="de">
+<script>
+  try { Object.defineProperty(navigator, "language", { value: "fr-FR", configurable: true }); } catch (_) {}
+  // Clé guest « en » (posée par un clic sur le /b/ d'un AUTRE séjour) + préférence
+  // globale « es » (M-09, à ignorer ici) + fiche qui sait « de » (à surclasser).
+  try {
+    localStorage.setItem("casaguide:lang:b", "en");
+    localStorage.setItem("casaguide:lang", "es");
+  } catch (_) {}
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+</script>
+
+<div class="langs">
+  <a class="lang" data-lang="fr" href="?lang=fr">Français</a>
+  <a class="lang" data-lang="en" href="?lang=en">English</a>
+  <a class="lang" data-lang="es" href="?lang=es">Español</a>
+  <a class="lang" data-lang="de" href="?lang=de">Deutsch</a>
+</div>
+<main id="content"></main>
+<script id="guide-data" type="application/json">{"property":{},"pois":[]}</script>
+
+<pre id="result">PENDING</pre>
+<script type="module">
+import "/frontend/guide/app.js";   // exécute initLang() au chargement
+
+const log = [];
+let pass = true;
+const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+setTimeout(() => {
+  chk(location.search.includes("lang=en"),
+    "clé guest (casaguide:lang:b=en) surclasse guest_lang(de) + M-09(es) → ?lang=en (search=" + JSON.stringify(location.search) + ")");
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+}, 50);
+</script>

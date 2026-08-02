@@ -113,3 +113,21 @@ test("§3.5 : guest_lang vide → M-09 intact (redirection vers la langue de l'a
   if (r === "SKIP") { t.skip("aucun Chrome/Chromium détecté"); return; }
   assert.equal(r, "PASS", `harnais en échec :\n${r}`);
 });
+
+test("§3.5 amdt 2 : clé guest /b/ surclasse guest_lang + M-09 (sert un autre /b/)", async (t) => {
+  const r = await withServer(async (chrome, port) => {
+    const v = await runHarness(chrome, port, "guide-lang-b-harness.html");
+    return v;
+  });
+  if (r === "SKIP") { t.skip("aucun Chrome/Chromium détecté"); return; }
+  assert.equal(r, "PASS", `harnais en échec :\n${r}`);
+});
+
+test("§3.5 amdt 2 : fiche muette + clé guest posée → clé guest gagne", async (t) => {
+  const r = await withServer(async (chrome, port) => {
+    const v = await runHarness(chrome, port, "guide-lang-b-muet-harness.html");
+    return v;
+  });
+  if (r === "SKIP") { t.skip("aucun Chrome/Chromium détecté"); return; }
+  assert.equal(r, "PASS", `harnais en échec :\n${r}`);
+});

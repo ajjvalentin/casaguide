@@ -25,7 +25,8 @@ const PROP = {
 };
 
 // Séjours : un passé (exclu), un à venir 🇩🇪 avec contact, un à venir sans contact,
-// un annulé (exclu).
+// un annulé (exclu), et — §3.1 amendé — deux natures SANS locataire à venir
+// (works/unavailable, exclues) + une nature `unqualified` à venir (conservée).
 const BOOKINGS = [
   { id: "bpast", guest_name: "Old Guest", starts_on: iso(-20), ends_on: iso(-10),
     status: "active", nature: "reservation", guest_lang: "de",
@@ -38,6 +39,13 @@ const BOOKINGS = [
     guest_email: null, guest_phone: null },
   { id: "bcx", guest_name: "Cancelled", starts_on: iso(12), ends_on: iso(18),
     status: "cancelled", nature: "reservation", guest_lang: "fr" },
+  { id: "bworks", guest_name: "Peinture façade", starts_on: iso(5), ends_on: iso(9),
+    status: "active", nature: "works", guest_lang: "fr" },
+  { id: "bunav", guest_name: "Indispo propriétaire", starts_on: iso(40), ends_on: iso(45),
+    status: "active", nature: "unavailable", guest_lang: "fr" },
+  { id: "bunq", guest_name: "À qualifier", starts_on: iso(50), ends_on: iso(55),
+    status: "active", nature: "unqualified", guest_lang: "fr",
+    guest_email: "unq@ex.com", guest_phone: "+34 600 999 888" },
 ];
 
 const LANGS = [
@@ -110,10 +118,16 @@ try {
   chk(!!targetBtn("Un séjour") && !!targetBtn("Vitrine") && !!targetBtn("Lien maison"),
     "trois cibles : séjour / vitrine / maison");
   const opts = qa(".send-booking option");
-  chk(opts.length === 2, "la liste des séjours exclut l'historique et les annulés (2 à venir, vu " + opts.length + ")");
+  chk(opts.length === 3, "la liste exclut historique, annulés et natures sans locataire (3 envoyables, vu " + opts.length + ")");
   chk(opts.some((o) => o.textContent.includes("Tracy Russel"))
     && !opts.some((o) => o.textContent.includes("Old Guest")),
     "à venir listés, passés exclus");
+  // §3.1 amendé : works/unavailable exclus (pas de locataire), unqualified conservé.
+  chk(!opts.some((o) => o.textContent.includes("Peinture façade"))
+    && !opts.some((o) => o.textContent.includes("Indispo propriétaire")),
+    "natures sans locataire (works/unavailable) exclues de la liste d'envoi");
+  chk(opts.some((o) => o.textContent.includes("À qualifier")),
+    "nature unqualified conservée (souvent un vrai locataire pas encore qualifié)");
 
   // ── 2. Séjour 🇩🇪 : langue pré-sélectionnée de + lien /b/ + email allemand ──
   chk(langActive() && /Deutsch/.test(langActive().textContent),

@@ -70,13 +70,18 @@ export async function openSendMenu(property) {
   const offeredCodes = new Set(offered.map((l) => l.code));
 
   // Séjours envoyables : à venir + en cours (départ ≥ aujourd'hui), jamais annulés,
-  // jamais l'historique (§3.1).
+  // jamais l'historique, et jamais les natures SANS locataire — works/unavailable
+  // exclus (amendé 02/08 après relecture de 7b810a3). `unqualified` reste listé
+  // (import brut souvent un vrai locataire pas encore qualifié), au même titre que
+  // reservation/private (taxonomie nature de V2-23a, invariant 14).
+  const NATURES_SANS_LOCATAIRE = new Set(["works", "unavailable"]);
   let bookings = [];
   try {
     const cal = await api.calendarView(pid);
     const today = todayISO();
     bookings = (cal.bookings || [])
-      .filter((b) => b.status !== "cancelled" && b.ends_on >= today)
+      .filter((b) => b.status !== "cancelled" && b.ends_on >= today
+        && !NATURES_SANS_LOCATAIRE.has(b.nature))
       .sort((a, b) => a.starts_on.localeCompare(b.starts_on));
   } catch (_) { /* la vitrine et la maison restent disponibles sans calendrier */ }
 

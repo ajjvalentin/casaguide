@@ -1,15 +1,19 @@
 <!doctype html>
-<!-- Harnais headless du §3.5 (V2-23c), branche OPPOSÉE : SANS `data-guest-lang`
-     (lien maison /g/, ou séjour dont la fiche ne sait pas), M-09 reste INTACT —
+<!-- Harnais headless du §3.5 (V2-23c), branche OPPOSÉE : lien MAISON /g/ (pas de
+     data-api-base → apiBase=/g/…), SANS `data-guest-lang`. M-09 reste INTACT —
      `initLang` redirige vers la langue de l'appareil si elle est offerte. Prouve
-     que le garde §3.5 est ciblé (il ne neutralise pas M-09 partout). On espionne
-     location.replace sans naviguer. Verdict dans #result. Hors frontend/. -->
+     que le garde §3.5 est ciblé (il ne neutralise pas M-09 partout) ET que /g/
+     n'ouvre JAMAIS la clé guest (casaguide:lang:b posée ici → ignorée : la
+     redirection suit navigator, pas la clé guest). On espionne location.replace
+     sans naviguer. Verdict dans #result. Hors frontend/. -->
 <html lang="fr">
 <head><meta charset="utf-8"><title>guide-lang-m09-harness</title></head>
 <body data-token="tok" data-lang="fr" data-default-lang="fr">
 <script>
   try { Object.defineProperty(navigator, "language", { value: "en-US", configurable: true }); } catch (_) {}
-  try { localStorage.removeItem("casaguide:lang"); } catch (_) {}
+  // Une clé guest « es » traîne : /g/ ne DOIT ni la lire ni s'y plier (M-09 suit
+  // l'appareil → ?lang=en, jamais es).
+  try { localStorage.removeItem("casaguide:lang"); localStorage.setItem("casaguide:lang:b", "es"); } catch (_) {}
   // On observe le RÉSULTAT : M-09 redirige réellement vers ?lang=en (navigation),
   // et l'URL rechargée porte la query — c'est le signal qu'on lit après coup.
   try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}

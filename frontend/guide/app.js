@@ -546,29 +546,60 @@ function secretRow(label, value, { mono } = {}) {
 // au tout premier chargement sans ?lang explicite, on redirige vers la langue
 // préférée (choix mémorisé, sinon navigator.language) si elle est disponible.
 const LANG_KEY = "casaguide:lang";
+// §3.5 amendement 2 (V2-23c) — clé guest DÉDIÉE aux liens de séjour /b/, distincte
+// de LANG_KEY (M-09) : écrite UNIQUEMENT depuis une page /b/ (clic sur une puce, ou
+// branche `?lang=` explicite), lue par TOUS les liens /b/ nus (tout logement, tout
+// séjour), JAMAIS par /g/. Ainsi le choix explicite suit le locataire d'un lien /b/
+// à l'autre sans polluer la devinette M-09 du QR maison (le rappel serveur du guest
+// récurrent, périmètre owner, est une mission à part adossée à V2-23d).
+const B_LANG_KEY = "casaguide:lang:b";
 function initLang() {
   const current = document.body.dataset.lang || "fr";
   const opts = Array.from(document.querySelectorAll(".langs a[data-lang]"));
+  // Marqueur « on est sur un lien de séjour » = le préfixe de l'API base, UNE seule
+  // source de vérité déjà en place (/g/ maison · /b/ séjour · /v/ vitrine) — jamais
+  // `data-guest-lang` (qui, lui, dit seulement si la fiche connaît la langue).
+  const onStay = apiBase.startsWith("/b/");
   opts.forEach((a) => a.addEventListener("click", () => {
-    try { localStorage.setItem(LANG_KEY, a.dataset.lang); } catch (_) { /* privé */ }
+    try {
+      localStorage.setItem(LANG_KEY, a.dataset.lang);
+      if (onStay) localStorage.setItem(B_LANG_KEY, a.dataset.lang);  // clic retenu sous le guest
+    } catch (_) { /* privé */ }
   }));
 
   const hasExplicit = new URLSearchParams(location.search).has("lang");
   if (hasExplicit) {                       // l'URL fixe la langue → on la mémorise
-    try { localStorage.setItem(LANG_KEY, current); } catch (_) { /* privé */ }
+    try {
+      localStorage.setItem(LANG_KEY, current);
+      if (onStay) localStorage.setItem(B_LANG_KEY, current);       // ?lang= explicite alimente la clé guest
+    } catch (_) { /* privé */ }
     return;
   }
-  // §3.5 (V2-23c) — lien de séjour dont la FICHE connaît la langue du locataire :
-  // `data-guest-lang` (posé par le SSR `/b/`, UNE seule source de vérité) fait foi.
-  // La langue servie EST déjà `guest_lang` ; on ne laisse NI `navigator.language`
-  // NI la préférence mémorisée (souvent héritée d'un autre guide) l'écraser — le
-  // microcopy promet « le lien part dans cette langue ». Un clic explicite passe
-  // par `?lang=` (traité ci-dessus) et gagne pour cette navigation. Sans
-  // `data-guest-lang` (lien maison `/g/`, ou séjour dont la fiche ne sait pas),
-  // comportement M-09 intact.
-  if (document.body.dataset.guestLang) return;
+
   const available = new Set(opts.map((a) => a.dataset.lang));
   if (!available.size) return;
+
+  // §3.5 amendement 2 — précédence sur un lien de séjour /b/ NU (sans `?lang=`) :
+  //   clé guest (casaguide:lang:b) si posée et offerte → guest_lang de la fiche →
+  //   M-09 (fiche muette). /g/ ne lit JAMAIS la clé guest (onStay=false) : là
+  //   `data-guest-lang` est absent → on tombe directement dans M-09, intact.
+  if (onStay) {
+    let bpref = null;
+    try { bpref = localStorage.getItem(B_LANG_KEY); } catch (_) { /* privé */ }
+    if (bpref && available.has(bpref)) {
+      if (bpref !== current) location.replace("?lang=" + encodeURIComponent(bpref));
+      return;   // la clé guest fait foi, avant guest_lang et avant la devinette
+    }
+  }
+
+  // §3.5 (V2-23c) — la FICHE connaît la langue du locataire : `data-guest-lang`
+  // (posé par le SSR `/b/`, UNE seule source de vérité) fait foi. La langue servie
+  // EST déjà `guest_lang` ; on ne laisse NI `navigator.language` NI la préférence
+  // mémorisée (souvent héritée d'un autre guide) l'écraser — le microcopy promet
+  // « le lien part dans cette langue ». Un clic explicite passe par `?lang=` (traité
+  // ci-dessus) et gagne. Sans `data-guest-lang` (lien maison `/g/`, ou séjour dont
+  // la fiche ne sait pas), comportement M-09 intact.
+  if (document.body.dataset.guestLang) return;
 
   let pref = null;
   try { pref = localStorage.getItem(LANG_KEY); } catch (_) { /* privé */ }

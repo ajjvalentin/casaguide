@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- Harnais headless du §3.5 amendement 2 (V2-23c) : FICHE MUETTE + clé guest posée
+     → la clé guest gagne. Scénario : un lien /b/ dont la fiche NE connaît PAS la
+     langue du locataire (pas de data-guest-lang) sert le fr par défaut ; une clé
+     guest « es » a été posée par un clic sur un autre /b/ ; l'appareil est en
+     anglais. Sans la clé guest, M-09 redirigerait vers ?lang=en (langue de
+     l'appareil) ; ici la clé guest (es) doit gagner. Attendu : ?lang=es.
+     On pilote le VRAI app.js, on lit location.search. Hors frontend/. -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>guide-lang-b-muet-harness</title></head>
+<body data-token="tok" data-api-base="/b/staytok-muet" data-lang="fr" data-default-lang="fr">
+<script>
+  try { Object.defineProperty(navigator, "language", { value: "en-US", configurable: true }); } catch (_) {}
+  try {
+    localStorage.setItem("casaguide:lang:b", "es");   // clé guest (clic sur un autre /b/)
+    localStorage.removeItem("casaguide:lang");        // aucune préférence globale M-09
+  } catch (_) {}
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+</script>
+
+<div class="langs">
+  <a class="lang" data-lang="fr" href="?lang=fr">Français</a>
+  <a class="lang" data-lang="en" href="?lang=en">English</a>
+  <a class="lang" data-lang="es" href="?lang=es">Español</a>
+</div>
+<main id="content"></main>
+<script id="guide-data" type="application/json">{"property":{},"pois":[]}</script>
+
+<pre id="result">PENDING</pre>
+<script type="module">
+import "/frontend/guide/app.js";
+
+const log = [];
+let pass = true;
+const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+setTimeout(() => {
+  chk(location.search.includes("lang=es"),
+    "fiche muette + clé guest(es) → clé guest gagne sur M-09/navigator(en) → ?lang=es (search=" + JSON.stringify(location.search) + ")");
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+}, 50);
+</script>

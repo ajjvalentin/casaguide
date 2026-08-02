@@ -1,19 +1,22 @@
 <!doctype html>
 <!-- Harnais headless du §3.5 (V2-23c) côté guide : app.js `initLang` sur un lien
-     de séjour dont la fiche connaît la langue (`data-guest-lang`). La devinette
-     M-09 (navigator.language / préférence mémorisée) NE DOIT PLUS écraser la
-     langue servie : `initLang` retourne sans redirection. On pilote le VRAI
+     de séjour /b/ (data-api-base=/b/…) dont la fiche connaît la langue
+     (`data-guest-lang`), SANS clé guest (casaguide:lang:b) posée. Précédence :
+     clé guest absente → `guest_lang` fait foi. La devinette M-09 (navigator.language
+     / préférence GLOBALE casaguide:lang, héritée d'un autre guide) NE DOIT PLUS
+     l'écraser : `initLang` retourne sans redirection. On pilote le VRAI
      /frontend/guide/app.js et on espionne location.replace (jamais de navigation
      réelle sur le chemin correct). Verdict dans #result. Hors frontend/. -->
 <html lang="es">
 <head><meta charset="utf-8"><title>guide-lang-harness</title></head>
-<body data-token="tok" data-lang="es" data-default-lang="fr" data-guest-lang="es">
+<body data-token="tok" data-api-base="/b/staytokA" data-lang="es" data-default-lang="fr" data-guest-lang="es">
 <script>
-  // La fiche sait « es » (SSR) ; l'appareil est en anglais et une préférence
-  // « en » traîne (héritée d'un autre guide) : sans le garde §3.5, M-09
-  // redirigerait vers ?lang=en. On veut prouver qu'il n'en fait RIEN.
+  // La fiche sait « es » (SSR) ; l'appareil est en anglais et une préférence GLOBALE
+  // « en » traîne (casaguide:lang, héritée d'un autre guide). Aucune clé guest
+  // (casaguide:lang:b) n'est posée : sans le garde §3.5, M-09 redirigerait vers
+  // ?lang=en. On veut prouver qu'il n'en fait RIEN (guest_lang gagne).
   try { Object.defineProperty(navigator, "language", { value: "en-US", configurable: true }); } catch (_) {}
-  try { localStorage.setItem("casaguide:lang", "en"); } catch (_) {}
+  try { localStorage.setItem("casaguide:lang", "en"); localStorage.removeItem("casaguide:lang:b"); } catch (_) {}
   // On observe le RÉSULTAT (location.search) : le chemin correct ne redirige pas,
   // donc l'URL reste sans ?lang. Un code cassé redirigerait vers ?lang=en (la
   // navigation réelle rechargerait la page avec la query — signal détectable).

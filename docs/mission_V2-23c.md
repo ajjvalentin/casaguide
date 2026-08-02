@@ -181,7 +181,10 @@ qui ouvre une fenêtre unique — LA surface d'envoi du produit :
 
 ### 3.1 Choisir quoi envoyer
 
-1. **Un séjour** de la liste (à venir + en cours, jamais l'historique) :
+1. **Un séjour** de la liste (à venir + en cours, jamais l'historique, jamais
+   les natures **sans locataire** — works/unavailable exclus, `unqualified`
+   conservé (souvent un vrai locataire pas encore qualifié) ; amendé 02/08
+   après relecture de 7b810a3) :
    « Tracy Russel · 08–22.08 · 🇬🇧 ». Le destinataire EST le séjour — rien à
    retaper : langue **pré-sélectionnée** depuis `guest_lang` (modifiable), email
    et téléphone lus de la fiche.
@@ -238,6 +241,18 @@ défaut). La règle stricte ne s'applique que quand la fiche sait vraiment.
 Constat à l'appui : tous les séjours réels ont `guest_lang` vide aujourd'hui —
 l'amendement fait de M-09 le comportement effectif à la mise en prod, sans
 rupture pour personne.
+
+**Amendement 2 (André, 02/08 au soir, après relecture du volet 3 livré 7b810a3)** :
+le « clic retenu » se mémorise **sous le guest, pas sous la navigation** — clé
+localStorage dédiée aux liens de séjour (`casaguide:lang:b`), distincte de la
+clé globale M-09 : écrite **uniquement** par un clic explicite sur une page
+`/b/`, lue par **tous** les liens `/b/` (tout logement, tout séjour), jamais
+lue ni écrite par `/g/`. Précédence sur un lien `/b/` nu : clé guest si posée
+et offerte → sinon `guest_lang` → sinon (fiche muette) M-09 intact. `?lang=`
+explicite gagne toujours et alimente la clé guest. Limites assumées : le choix
+ne suit pas d'un appareil à l'autre (le rappel côté serveur du guest récurrent
+est une mission à part, adossée à V2-23d, périmètre owner — jamais inter-
+tenant) ; un choix explicite du locataire prime une fiche corrigée après coup.
 
 `/g/` garde le comportement M-09 intact dans tous les cas (là, le serveur ne
 sait rien du visiteur — la devinette est une qualité). Le contre-argument
