@@ -283,3 +283,87 @@ sans `?lang=`.
   (`/g/` maison · `/s/` équipe · `/v/` vitrine · `/b/` séjour).
 - Suite de tests verte, **UN commit** (volet 1 refactoré entier), **hash cité
   au rapport**, `git status` propre vérifié en fin de mission.
+
+> **Livré le 02/08, commit b749a92** — conforme aux 6 items, MAIS la relecture
+> a montré que le correctif de sécurité est incomplet : voir volet 1bis.
+
+---
+
+## Volet 1bis — le guide_token ne doit pas non plus quitter la maison par le DOM
+
+**Le problème (constaté sur b749a92, ligne à ligne)** : la route `/b/` est bonne,
+mais la PAGE `/b/{stay_token}` embarque encore le `guide_token` éternel dans son
+HTML — `data-token` (lu par `app.js` ligne 12 pour appeler `/g/{token}/secrets`),
+chaque URL de média (`media_base=/g/{token}`), le meta og. « Afficher la source »
+suffit à le récupérer ; passé J+7, `/b/` meurt mais `/g/{guide_token}` sert les
+vrais codes à vie. Aggravant : le SW (portée `/`) met la page en cache sur le
+téléphone du locataire — le token y survit sans même ouvrir la source. La faute
+d'origine (`?s=`) est simplement déplacée de l'URL vers le DOM.
+
+**Le patron du correctif existe déjà dans le code : c'est la vitrine.** `/v/` a
+ses propres sous-routes précisément pour que « le vrai guide_token ne transite
+jamais ». Le 1bis applique le même geste à `/b/`.
+
+### À GARDER — tout b749a92
+
+Routes `/b/` et `/v/`, `_resolve_stay(conn, stay_token)`,
+`_render_guide_html`, table des préfixes CLAUDE.md, les 9 tests §1.5.
+On ÉTEND, on ne réécrit pas.
+
+### À FAIRE
+
+0. **Inventaire d'abord** : recenser dans `guide_page.render_guide` et
+   `frontend/guide/app.js` TOUTES les occurrences du token / du préfixe `/g/`
+   qui atterrissent dans le rendu du variant `stay` (data-token, data-stay-token,
+   URLs média, og, liens internes, appels fetch : secrets, data, requests,
+   manifest). Lister avant de coder — c'est la checklist de sortie.
+1. **Sous-routes `/b/{stay_token}/…`**, toutes gardées par `_resolve_stay`
+   (token mort → 404 API, rien révélé) :
+   `GET /b/{t}/data` · `GET /b/{t}/secrets` · `GET /b/{t}/media/{id}` ·
+   `GET /b/{t}/og-image.png` · `POST /b/{t}/requests`.
+   Conséquence assumée et VOULUE : **les secrets meurent à J+8 avec la page**
+   (« page et endpoints meurent ensemble » étendu aux secrets — c'est LE progrès
+   de sécurité du lien de séjour). `/b/{t}/secrets` sert les secrets du logement
+   (la surcharge par séjour = volet 2, pas maintenant) avec la même logique de
+   mode d'accès que `/g/{t}/secrets`.
+2. **Rendu stay sans guide_token** : `_render_guide_html` paramétré pour que le
+   variant `stay` utilise `media_base=/b/{stay_token}`, og sur `/b/…`, et
+   `data-token={stay_token}`. `app.js` déduit son préfixe d'API (`/g/` ou `/b/`)
+   du pathname ou d'un `data-base` — au choix du plus simple, mais UNE seule
+   source de vérité. Le POST des demandes du variant stay part sur
+   `POST /b/{stay_token}/requests` ; la branche `stay_token` du
+   `POST /g/…/requests` et le champ du schema disparaissent si plus aucun
+   appelant (vérifier app.js — pas de code mort).
+3. **`manifest=False` sur `/b/`** (comme la vitrine) : une PWA installée sur un
+   lien qui meurt à J+7 serait cassée ; l'installation reste le métier du QR
+   maison. Aucune route manifest sous `/b/`.
+4. **guide_page.py — libellé de la page neutre** (arbitré 02/08, non livré) :
+   « Ce lien n'est plus valable — demandez un lien à jour à la personne qui vous
+   l'a envoyé », même ton en EN/ES (elle sert désormais `/b/` ET `/v/`, tous cas
+   morts confondus — une vitrine n'« expire » pas et un prospect n'a pas
+   d'hôte). Toujours aucune donnée du logement, noindex, 404.
+5. **Bump SW** (le JS du guide change).
+
+### Tests du 1bis
+
+- **LE test de la mission** : le HTML d'une page `/b/{stay_token}` ne contient
+  le `guide_token` NULLE PART (rendu réel, recherche du token dans le corps
+  complet — pas un test d'endpoint cette fois : c'est précisément le DOM qu'on
+  corrige).
+- `/b/{t}/secrets` : sert pendant le séjour (J-7, J+6), **404 à J+8** et sur
+  séjour annulé/inconnu.
+- Médias et data servis via `/b/…` sur la page séjour ; og aussi.
+- `POST /b/{t}/requests` : rattachement certain au séjour du token ; token mort
+  → 404, zéro rattachement (reprendre le test existant, déplacé sur la nouvelle
+  route).
+- Aucun manifest sous `/b/`.
+- Libellé neutre : la même page (contenu identique) sur `/b/` mort et `/v/`
+  inconnu.
+- Les 9 tests §1.5 restent verts (adapter ceux qui postaient `stay_token` sur
+  `/g/`).
+
+### Livrables du 1bis
+
+UN commit, hash au rapport, `git status` propre, `project_tracker.html` à jour
+(V2-23c volet 1 = livré après 1bis, pas avant), `docs/calendrier.md` §8 si déjà
+rédigé — sinon au volet 3 comme prévu.

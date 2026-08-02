@@ -7,7 +7,11 @@
      référence interne. -->
 <html lang="fr">
 <head><meta charset="utf-8"><title>guide-request-harness</title></head>
-<body data-token="tok">
+<!-- data-api-base = source de vérité UNIQUE du préfixe d'API (V2-23c volet 1bis).
+     Ici un lien de SÉJOUR (`/b/{stay_token}`) : la demande DOIT partir sur
+     `/b/tok/requests`, jamais `/g/{guide_token}/…` (le guide_token ne quitte pas
+     la maison par le DOM). -->
+<body data-api-base="/b/tok">
 <script>
   // Pas de service worker ni de carte réseau pendant le test (hermétique).
   try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
@@ -20,7 +24,7 @@
       { status: 200, headers: { "Content-Type": "application/json" } });
     // Secrets chargés par app.js : réponse vide, sans incidence.
     if (/\/secrets$/.test(path)) return ok({});
-    if (/\/g\/tok\/requests$/.test(path) && method === "POST") {
+    if (/\/b\/tok\/requests$/.test(path) && method === "POST") {
       const body = JSON.parse(opts.body);
       posted.push(body);
       return ok({ ok: true, label: "Ménage / draps supplémentaires",
@@ -72,11 +76,13 @@
     const send = q(".svc-send");
     chk(!!note && !!send, "champ message + bouton « Envoyer » montés");
 
-    // 2. Envoie la demande (POST /g/tok/requests avec la section + le message).
+    // 2. Envoie la demande (POST /b/tok/requests avec la section + le message).
     note.value = "Draps mercredi";
     send.click();
     await wait(60);
-    chk(window.__posted.length === 1, "POST /g/tok/requests émis une fois");
+    chk(window.__posted.length === 1, "POST /b/tok/requests émis une fois");
+    chk(!("stay_token" in window.__posted[0]),
+      "le corps ne porte plus stay_token (rattachement par la route /b/)");
     chk(window.__posted[0] && window.__posted[0].section === "B_cleaning"
       && window.__posted[0].note === "Draps mercredi",
       "POST : section + message transmis");

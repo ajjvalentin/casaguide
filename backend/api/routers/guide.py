@@ -218,38 +218,52 @@ def public_guide_page(guide_token: str, conn: Conn, request: Request,
     if not prop_row:
         return HTMLResponse(guide_page.render_not_found(), status_code=404,
                             headers=_NOINDEX)
-    html = _render_guide_html(conn, prop_row, token, request, lang,
-                              variant="house", stay_ctx=None)
+    html = _render_guide_html(conn, prop_row, request, lang, variant="house",
+                              stay_ctx=None, public_token=token,
+                              guide_token=token, api_base=f"/g/{token}",
+                              manifest=True)
     return HTMLResponse(html, headers=_public_headers())
 
 
-def _render_guide_html(conn, prop_row: dict, token: str, request: Request,
-                       lang: str | None, *, variant: str,
-                       stay_ctx: dict | None) -> str:
+def _render_guide_html(conn, prop_row: dict, request: Request,
+                       lang: str | None, *, variant: str, stay_ctx: dict | None,
+                       public_token: str, guide_token: str, api_base: str,
+                       canonical_path: str | None = None,
+                       manifest: bool = True) -> str:
     """Rendu commun aux liens maison (`/g/`) et séjour (`/b/`) : le lien de séjour
     n'est qu'un rendu différent du MÊME guide (accueil personnalisé, `guest_lang`
-    par défaut), servi via le `guide_token` résolu côté serveur — l'app charge
-    secrets/data/média sur `/g/{token}/…` comme d'habitude."""
+    par défaut).
+
+    Volet 1bis — le `guide_token` éternel ne quitte plus la maison par le DOM :
+    `public_token` est le token du variant (`guide_token` pour la maison,
+    `stay_token` pour le séjour) et `api_base` (`/g/{guide_token}` ou
+    `/b/{stay_token}`) est l'UNIQUE préfixe de tous les appels du client (secrets,
+    demandes, médias, og). Sur `/b/`, le `guide_token` n'apparaît donc NULLE PART
+    dans la page — l'app charge tout sur `/b/{stay_token}/…`, résolu côté serveur."""
     _p, sections, pois, area_facts, property_media, effective, lang_names = \
-        _assemble_guide(conn, prop_row, lang, media_base=f"/g/{token}")
+        _assemble_guide(conn, prop_row, lang, media_base=api_base)
     # Vignette de partage (M-25) : première photo du logement, sinon image de
-    # marque générée. URL absolue pour les scrapers (WhatsApp/iMessage/e-mail).
+    # marque générée. URL absolue pour les scrapers (WhatsApp/iMessage/e-mail),
+    # servie via `api_base` (jamais un `/g/{guide_token}` sur un lien de séjour).
     base = _base_url(request)
-    photo = _first_photo_path(sections, property_media, token)
-    og_image_url = base + (photo or f"/g/{token}/og-image.png")
+    photo = _first_photo_path(sections, property_media, public_token)
+    og_image_url = base + (photo or f"{api_base}/og-image.png")
     # Marque blanche (V2-05a) : le plan gratuit affiche un pied de page discret
     # « Créé avec Holaguia » ; les plans payants ne l'ont pas (features.watermark).
-    plan = repo.get_plan_by_guide_token(conn, token)
+    # Résolu par le `guide_token` du logement (jamais exposé au client sur `/b/`).
+    plan = repo.get_plan_by_guide_token(conn, guide_token)
     watermark = plans.wants_watermark(plan) if plan else True
     # Libellés statiques traduits (V2-21a, volet 2) : superposés au rendu pour une
     # langue publiée supplémentaire ; vide pour FR/EN/ES (rendu identique).
     ui_overlay = repo.ui_translations(conn, effective)
     return guide_page.render_guide(_property_public(prop_row), sections, pois,
-                                   area_facts, token, lang=effective,
+                                   area_facts, public_token, lang=effective,
                                    base_url=base, og_image_url=og_image_url,
                                    watermark=watermark, lang_names=lang_names,
                                    ui_overlay=ui_overlay, variant=variant,
-                                   stay=stay_ctx)
+                                   stay=stay_ctx, api_base=api_base,
+                                   canonical_path=canonical_path,
+                                   manifest=manifest)
 
 
 # ── Lien de SÉJOUR (V2-23c, §1.2/§1.3, amendé 02/08 — préfixe dédié `/b/`) ─────
@@ -261,6 +275,21 @@ def _render_guide_html(conn, prop_row: dict, token: str, request: Request,
 # **envoyé, jamais retapé** → jamais de slug décoratif ; un `/b/{slug}-{token}`
 # n'est donc pas rattrapé (page neutre — décision explicite, couverte par test).
 
+def _load_stay(conn, stay_token: str):
+    """Résout un `stay_token` en (séjour valable, logement publié) — ou None dans
+    tout cas mort (token inconnu, séjour annulé, J+8, logement non publié). Point
+    d'entrée UNIQUE des sous-routes `/b/…` (page, data, secrets, média, og,
+    demandes) : le `guide_token` du logement est résolu ici, côté serveur, et ne
+    quitte jamais la maison (volet 1bis)."""
+    stay = _resolve_stay(conn, stay_token)
+    if not stay:
+        return None
+    prop_row = repo.get_published_property_by_id(conn, str(stay["property_id"]))
+    if not prop_row:
+        return None
+    return stay, prop_row
+
+
 @router.get("/b/{stay_token}", response_class=HTMLResponse)
 def public_stay_page(stay_token: str, conn: Conn, request: Request,
                      lang: str | None = None):
@@ -270,21 +299,114 @@ def public_stay_page(stay_token: str, conn: Conn, request: Request,
 
     Tout cas mort (token inconnu, séjour annulé, J+8 après le départ, logement non
     publié) → la MÊME page neutre que la vitrine — jamais le guide générique, qui
-    exposerait les vrais secrets à un ancien locataire."""
-    stay = _resolve_stay(conn, stay_token)
-    prop_row = (repo.get_published_property_by_id(conn, str(stay["property_id"]))
-                if stay else None)
-    if not prop_row:
+    exposerait les vrais secrets à un ancien locataire.
+
+    Volet 1bis : le rendu utilise `api_base=/b/{stay_token}` et `public_token=
+    stay_token` → le `guide_token` éternel n'apparaît NULLE PART dans le HTML (ni
+    `data-token`, ni URL de média, ni og, ni manifeste — supprimé sur `/b/`)."""
+    loaded = _load_stay(conn, stay_token)
+    if not loaded:
         return HTMLResponse(guide_page.render_stay_expired(), status_code=404,
                             headers=_NOINDEX)
-    token = prop_row["guide_token"]
+    stay, prop_row = loaded
     req_lang = lang or stay.get("guest_lang")
     stay_ctx = {"guest_name": stay.get("guest_name"),
-                "starts_on": stay["starts_on"], "ends_on": stay["ends_on"],
-                "stay_token": stay_token}
-    html = _render_guide_html(conn, prop_row, token, request, req_lang,
-                              variant="stay", stay_ctx=stay_ctx)
+                "starts_on": stay["starts_on"], "ends_on": stay["ends_on"]}
+    html = _render_guide_html(conn, prop_row, request, req_lang, variant="stay",
+                              stay_ctx=stay_ctx, public_token=stay_token,
+                              guide_token=prop_row["guide_token"],
+                              api_base=f"/b/{stay_token}",
+                              canonical_path=f"/b/{stay_token}", manifest=False)
     return HTMLResponse(html, headers=_public_headers())
+
+
+# ── Sous-routes du lien de SÉJOUR `/b/{stay_token}/…` (V2-23c, volet 1bis) ────
+# Le `guide_token` éternel ne quitte JAMAIS la maison par le DOM : l'app d'un lien
+# de séjour charge données/secrets/médias/og sur `/b/{stay_token}/…`, résolus côté
+# serveur via `_load_stay` (le `guide_token` du logement reste interne). TOUTES
+# gardées par `_load_stay` → un token mort (inconnu, séjour annulé, J+8) répond
+# 404, rien révélé : « la page ET les endpoints meurent ensemble », étendu aux
+# secrets — c'est LE progrès de sécurité du séjour (les secrets meurent à J+8).
+
+@router.get("/b/{stay_token}/data")
+def public_stay_data(stay_token: str, conn: Conn, lang: str | None = None):
+    """Guide JSON pré-calculé du séjour (sans aucun secret) — médias servis via
+    `/b/{stay_token}/…`. Langue par défaut = `guest_lang` du locataire (comme la
+    page ; un `?lang=` explicite garde la priorité)."""
+    loaded = _load_stay(conn, stay_token)
+    if not loaded:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Guide introuvable")
+    stay, prop = loaded
+    req_lang = lang or stay.get("guest_lang")
+    _p, sections, pois, area_facts, property_media, effective, lang_names = \
+        _assemble_guide(conn, prop, req_lang, media_base=f"/b/{stay_token}")
+    pub = _property_public(prop)
+    pub["published_langs"] = [l for l in (pub.get("published_langs") or [])
+                              if l in lang_names]
+    return _json({
+        "property": pub,
+        "lang": effective,
+        "sections": sections,
+        "pois": pois,
+        "area_facts": area_facts,
+        "media": property_media,
+    })
+
+
+@router.get("/b/{stay_token}/secrets")
+def public_stay_secrets(stay_token: str, conn: Conn):
+    """Secrets du LOGEMENT servis pendant le séjour (mode 'link', §8). Token mort
+    → 404 : les secrets meurent à J+8 avec la page (§1bis, progrès de sécurité).
+    La surcharge par séjour du code de boîte à clés est le volet 2 — ici on sert
+    ceux du logement, avec la même logique de mode d'accès que `/g/{token}/secrets`."""
+    loaded = _load_stay(conn, stay_token)
+    if not loaded:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Ce lien de séjour n'est plus actif.")
+    _stay, prop = loaded
+    return _json(_secrets_payload(conn, prop["guide_token"]), no_store=True)
+
+
+@router.get("/b/{stay_token}/media/{media_id}")
+def public_stay_media(stay_token: str, media_id: str, conn: Conn):
+    """Média d'un séjour — mêmes garanties de visibilité que `/g` (section visible
+    & 'guest', ou média du logement), résolu via le `guide_token` interne. 404 si
+    token mort ou média non servable, sans rien révéler."""
+    loaded = _load_stay(conn, stay_token)
+    if not loaded:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Média introuvable")
+    _stay, prop = loaded
+    row = repo.get_public_media(conn, prop["guide_token"], media_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Média introuvable")
+    try:
+        data = storage.get_storage().read(row["storage_key"])
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Fichier introuvable")
+    return Response(
+        content=data,
+        media_type=media_files.content_type_for_key(row["storage_key"]),
+        headers=_public_headers(),
+    )
+
+
+@router.get("/b/{stay_token}/og-image.png")
+def public_stay_og_image(stay_token: str, conn: Conn):
+    """Image de marque 1200×630 du séjour (aucune photo). 404 si token mort — le
+    `guide_token` ne transite jamais par la vignette de partage du séjour."""
+    loaded = _load_stay(conn, stay_token)
+    if not loaded:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Introuvable")
+    _stay, prop = loaded
+    place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
+    png = og_image.build_og_image(prop["name"], subtitle=place)
+    return Response(content=png, media_type="image/png",
+                    headers=_public_headers())
 
 
 @router.get("/g/{guide_token}/og-image.png")
@@ -335,7 +457,7 @@ def public_showcase_page(showcase_token: str, conn: Conn, request: Request,
                                    watermark=watermark, lang_names=lang_names,
                                    ui_overlay=ui_overlay, variant="showcase",
                                    canonical_path=f"/v/{showcase_token}",
-                                   manifest=False)
+                                   manifest=False, api_base=f"/v/{showcase_token}")
     return HTMLResponse(html, headers=_public_headers())
 
 
@@ -399,6 +521,31 @@ def public_guide_data(guide_token: str, conn: Conn, lang: str | None = None):
     })
 
 
+def _secrets_payload(conn, guide_token: str) -> dict:
+    """Wifi + code boîte à clés déchiffrés d'un guide publié en mode 'link' (§8),
+    ou objet vide (aucun secret, chiffrement non configuré, mode d'accès non
+    'link'). Mutualisé par `/g/{token}/secrets` et `/b/{stay_token}/secrets` —
+    même logique de mode d'accès, résolue par le `guide_token` du logement."""
+    empty = {"wifi_networks": [], "wifi_ssid": None, "wifi_pass": None,
+             "keybox_code": None, "keybox_notes": None}
+    if not crypto.is_configured():
+        return empty
+    row = repo.get_published_secrets_by_token(conn, guide_token)
+    if not row:
+        return empty
+    # Multi-wifi (M-15) : liste déchiffrée + repli legacy sur le réseau n°1. Les
+    # anciens champs restent alimentés depuis le réseau n°1 (rétrocompat app.js).
+    networks = wifi.networks_from_row(row)
+    net1 = wifi.first_network(networks)
+    return {
+        "wifi_networks": networks,
+        "wifi_ssid": net1["ssid"] if net1 else None,
+        "wifi_pass": net1["pass"] if net1 else None,
+        "keybox_code": crypto.decrypt(row["keybox_code_enc"]),
+        "keybox_notes": row["keybox_notes"],
+    }
+
+
 @router.get("/g/{guide_token}/secrets")
 def public_guide_secrets(guide_token: str, conn: Conn):
     """Wifi et code boîte à clés d'un guide publié en mode 'link' (MVP, §8).
@@ -406,24 +553,7 @@ def public_guide_secrets(guide_token: str, conn: Conn):
     Déchiffrement à la demande — jamais dans la page HTML ni dans `/data`. Renvoie
     un objet vide (jamais 404) si aucun secret, chiffrement non configuré, ou mode
     d'accès non 'link' : le client masque simplement les blocs correspondants."""
-    empty = {"wifi_networks": [], "wifi_ssid": None, "wifi_pass": None,
-             "keybox_code": None, "keybox_notes": None}
-    if not crypto.is_configured():
-        return _json(empty, no_store=True)
-    row = repo.get_published_secrets_by_token(conn, guide_token)
-    if not row:
-        return _json(empty, no_store=True)
-    # Multi-wifi (M-15) : liste déchiffrée + repli legacy sur le réseau n°1. Les
-    # anciens champs restent alimentés depuis le réseau n°1 (rétrocompat app.js).
-    networks = wifi.networks_from_row(row)
-    net1 = wifi.first_network(networks)
-    return _json({
-        "wifi_networks": networks,
-        "wifi_ssid": net1["ssid"] if net1 else None,
-        "wifi_pass": net1["pass"] if net1 else None,
-        "keybox_code": crypto.decrypt(row["keybox_code_enc"]),
-        "keybox_notes": row["keybox_notes"],
-    }, no_store=True)
+    return _json(_secrets_payload(conn, guide_token), no_store=True)
 
 
 # ── Demande de service du voyageur (V2-23b, volet 3, §3.1) ───────────────────
@@ -448,52 +578,31 @@ def _stay_label(booking: dict) -> str:
             f"{booking['ends_on'].strftime('%d/%m/%Y')}")
 
 
-@router.post("/g/{guide_token}/requests", response_model=GuestServiceRequestOut)
-def guest_service_request(guide_token: str, payload: GuestServiceRequestIn,
-                          conn: Conn, request: Request,
-                          background: BackgroundTasks, mailer: Mailer):
-    """Demande d'un service annoncé « sur demande » dans le guide (ménage/draps
-    supplémentaires, service…). Atterrit dans le planning plutôt que dans un SMS
-    oublié : crée une `booking_requests` en `origin='guest'`, `status='pending'`,
-    rattachée au séjour **en cours** (à défaut au suivant), et notifie le
-    propriétaire (il accepte/refuse ; acceptée → intervention visible par l'équipe).
+def _handle_service_request(conn, request: Request, background: BackgroundTasks,
+                            mailer, *, guide_token: str, booking: dict | None,
+                            payload: GuestServiceRequestIn
+                            ) -> GuestServiceRequestOut:
+    """Cœur mutualisé de la demande de service, partagé par le lien maison (`/g`,
+    rattachement deviné « en cours → suivant ») et le lien de séjour (`/b`,
+    rattachement CERTAIN au séjour du token) : la seule différence entre les deux
+    est la résolution du `booking`, faite en amont par l'appelant.
 
-    Le voyageur n'est pas authentifié → **rate-limit par guide** (anti-abus). Le
-    libellé vient TOUJOURS du template de la section (jamais d'une valeur libre).
+    Le libellé vient TOUJOURS du template de la section (jamais d'une valeur libre).
     Invariant 4 préservé : action déclenchée par le voyageur, aucun appel externe
     automatique au rendu."""
-    token = _real_token(guide_token)
     # 1. La section doit réellement offrir ce service sur CE guide (visible, guest,
     #    requestable) — sinon rien ne fait foi et on ne révèle rien de plus.
-    label = repo.requestable_section_label(conn, token, payload.section)
+    label = repo.requestable_section_label(conn, guide_token, payload.section)
     if not label:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Ce service n'est pas proposé sur ce guide.")
-    # 2. Rattachement au séjour. Lien de SÉJOUR (V2-23c) : rattachement CERTAIN au
-    #    séjour du `stay_token` (le token désigne le séjour du logement — plus de
-    #    devinette). Lien maison : repli sur le séjour occupé en cours (à défaut,
-    #    le suivant).
-    if payload.stay_token:
-        # Rattachement CERTAIN par le `stay_token` seul (V2-23c amendé) : le token
-        # désigne le séjour ET son logement — plus aucune dépendance au
-        # `guide_token` de l'URL, plus aucune devinette.
-        stay = _resolve_stay(conn, payload.stay_token)
-        if not stay:
-            # Token de séjour cassé/expiré/annulé : on ne devine pas (ce serait
-            # rattacher au séjour d'un autre) et on ne révèle rien.
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                detail="Ce lien de séjour n'est plus actif.")
-        booking = repo.get_booking(conn, str(stay["property_id"]), str(stay["id"]))
-    else:
-        booking = repo.current_or_next_booking_by_guide_token(
-            conn, token, _dt.date.today())
     if not booking:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Aucun séjour n'est enregistré pour le moment. "
                    "Contactez directement votre hôte.")
     pid = str(booking["property_id"])
-    # 3. Anti-abus : cadence minimale par guide (le voyageur n'est pas authentifié).
+    # 2. Anti-abus : cadence minimale par guide (le voyageur n'est pas authentifié).
     since = repo.seconds_since_last_guest_request(conn, pid)
     if since is not None and since < settings.guest_request_min_interval_s:
         raise HTTPException(
@@ -507,11 +616,11 @@ def guest_service_request(guide_token: str, payload: GuestServiceRequestIn,
     # V2-16b : committer AVANT de programmer la tâche de fond (l'email lent ne doit
     # pas retarder la visibilité de la demande).
     conn.commit()
-    # 4. Notifier le propriétaire (best-effort — jamais bloquant, jamais de rollback).
+    # 3. Notifier le propriétaire (best-effort — jamais bloquant, jamais de rollback).
     owner = repo.get_owner_by_property(conn, pid)
     if owner and owner.get("email"):
         base = (settings.public_base_url or str(request.base_url)).rstrip("/")
-        prop = repo.get_published_property_by_token(conn, token)
+        prop = repo.get_published_property_by_token(conn, guide_token)
         email = emails.guest_service_request_email(
             property_name=(prop["name"] if prop else "votre logement"),
             service_label=label, note=note,
@@ -523,6 +632,42 @@ def guest_service_request(guide_token: str, payload: GuestServiceRequestIn,
     return GuestServiceRequestOut(
         label=label,
         message="Votre demande a bien été transmise à votre hôte.")
+
+
+@router.post("/g/{guide_token}/requests", response_model=GuestServiceRequestOut)
+def guest_service_request(guide_token: str, payload: GuestServiceRequestIn,
+                          conn: Conn, request: Request,
+                          background: BackgroundTasks, mailer: Mailer):
+    """Demande d'un service annoncé « sur demande » depuis le **lien maison** (QR
+    imprimé). Rattachement au séjour **occupé en cours** (à défaut le suivant) —
+    le repli documenté quand on n'a que le `guide_token` (le lien de séjour, lui,
+    rattache de façon CERTAINE via `POST /b/{stay_token}/requests`)."""
+    token = _real_token(guide_token)
+    booking = repo.current_or_next_booking_by_guide_token(
+        conn, token, _dt.date.today())
+    return _handle_service_request(conn, request, background, mailer,
+                                   guide_token=token, booking=booking,
+                                   payload=payload)
+
+
+@router.post("/b/{stay_token}/requests", response_model=GuestServiceRequestOut)
+def stay_service_request(stay_token: str, payload: GuestServiceRequestIn,
+                         conn: Conn, request: Request,
+                         background: BackgroundTasks, mailer: Mailer):
+    """Demande d'un service depuis le **lien de séjour** (V2-23c) : rattachement
+    CERTAIN au séjour du `stay_token` — le token désigne le séjour ET son logement
+    (résolus côté serveur), plus aucune dépendance au `guide_token`, plus aucune
+    devinette. Token mort (inconnu, séjour annulé, J+8) → 404, zéro rattachement
+    deviné : « la page et l'endpoint des demandes meurent ensemble » (§1.3)."""
+    loaded = _load_stay(conn, stay_token)
+    if not loaded:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Ce lien de séjour n'est plus actif.")
+    stay, prop = loaded
+    booking = repo.get_booking(conn, str(stay["property_id"]), str(stay["id"]))
+    return _handle_service_request(conn, request, background, mailer,
+                                   guide_token=prop["guide_token"],
+                                   booking=booking, payload=payload)
 
 
 @router.get("/g/{guide_token}/manifest.webmanifest")

@@ -3,8 +3,9 @@
    Pilote le VRAI /frontend/guide/app.js (initRequestService) dans Chrome headless
    (harnais guide-request-harness.html) : le bouton « Demander ce service » d'une
    section « requestable » ouvre un formulaire MONTÉ, le POST vers
-   /g/{token}/requests transmet la section + le message, et le succès affiche un
-   accusé de réception. Verdict lu dans le DOM dumpé (ignoré si aucun Chrome).
+   `${apiBase}/requests` (ici un lien de séjour → /b/{stay_token}/requests, V2-23c
+   volet 1bis) transmet la section + le message, et le succès affiche un accusé de
+   réception. Verdict lu dans le DOM dumpé (ignoré si aucun Chrome).
 
    Exécuter : node --test frontend-tests/ */
 

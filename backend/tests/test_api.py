@@ -3071,11 +3071,31 @@ def test_stay_link_served_before_expiry_j6(client):
     tok = _stay_token(prop["id"], b["id"])
     r = client.get(f"/b/{tok}")
     assert r.status_code == 200
-    # Le guide (variant séjour) est servi via le guide_token résolu côté serveur.
-    assert f'data-token="{prop["guide_token"]}"' in r.text
     assert prop["name"] in r.text
     assert "Tracy" in r.text           # accueil personnalisé
-    assert 'data-stay-token="' + tok in r.text  # rattachement certain des demandes
+    # Le guide de séjour porte son PROPRE token (data-token) + le préfixe d'API.
+    assert f'data-token="{tok}"' in r.text
+    assert f'data-api-base="/b/{tok}"' in r.text
+
+
+def test_stay_page_never_leaks_guide_token_in_dom(client):
+    """LE test de la mission (volet 1bis) : le HTML rendu de `/b/{stay_token}` ne
+    contient le `guide_token` éternel NULLE PART (recherche dans le corps complet).
+    Ni `data-token`, ni URL de média, ni og, ni manifeste — l'app charge tout sur
+    `/b/{stay_token}/…`. Afficher la source ne doit plus révéler les vrais codes."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    guide_token = prop["guide_token"]
+    b = _make_booking(client, owner["headers"], prop["id"], guest_name="Tracy")
+    tok = _stay_token(prop["id"], b["id"])
+    r = client.get(f"/b/{tok}")
+    assert r.status_code == 200
+    assert guide_token not in r.text          # nulle part dans le DOM
+    assert "/g/" not in r.text                # aucun préfixe maison ne fuite
+    # Le JSON de données du séjour non plus (médias servis via /b/).
+    d = client.get(f"/b/{tok}/data")
+    assert d.status_code == 200
+    assert guide_token not in d.text and "/g/" not in d.text
 
 
 def test_stay_link_expired_j8_serves_neutral_page(client):
@@ -3156,8 +3176,9 @@ def test_b_ignores_decorative_slug(client):
 
 
 def test_service_request_on_dead_stay_token_returns_404(client):
-    """Demande de service portant un stay_token mort → 404, jamais de rattachement
-    (on ne devine pas le séjour sur un token cassé)."""
+    """Demande de service sur un `stay_token` mort → 404, jamais de rattachement (on
+    ne devine pas le séjour sur un token cassé). Volet 1bis : la demande passe
+    désormais par la ROUTE `POST /b/{stay_token}/requests` (plus de champ de corps)."""
     owner = register(client)
     prop = _publish_prop(client, owner["headers"])
     pid = prop["id"]
@@ -3171,14 +3192,90 @@ def test_service_request_on_dead_stay_token_returns_404(client):
     with _dbdict() as conn:
         before = conn.execute("SELECT count(*) AS n FROM booking_requests "
                               "WHERE booking_id = %s", (b["id"],)).fetchone()["n"]
-    r = client.post(f"/g/{prop['guide_token']}/requests",
-                    json={"section": "B_cleaning", "stay_token": tok})
+    r = client.post(f"/b/{tok}/requests", json={"section": "B_cleaning"})
     assert r.status_code == 404
     assert "séjour n'est plus actif" in r.json()["detail"]
     with _dbdict() as conn:
         after = conn.execute("SELECT count(*) AS n FROM booking_requests "
                              "WHERE booking_id = %s", (b["id"],)).fetchone()["n"]
     assert after == before  # aucun rattachement deviné
+
+
+def test_stay_request_attaches_to_token_booking(client):
+    """`POST /b/{stay_token}/requests` : rattachement CERTAIN au séjour du token,
+    sans dépendre du `guide_token` (volet 1bis)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    client.put(f"/api/properties/{pid}/sections/B_cleaning", headers=owner["headers"],
+               json={"content": {}, "is_visible": True})
+    b = _make_booking(client, owner["headers"], pid, guest_name="Tracy")
+    tok = _stay_token(pid, b["id"])
+    r = client.post(f"/b/{tok}/requests", json={"section": "B_cleaning",
+                                                "note": "Draps mercredi"})
+    assert r.status_code == 200, r.text
+    with _dbdict() as conn:
+        rows = conn.execute("SELECT booking_id, origin, status, note FROM "
+                            "booking_requests WHERE booking_id = %s",
+                            (b["id"],)).fetchall()
+    assert len(rows) == 1 and rows[0]["origin"] == "guest"
+    assert rows[0]["status"] == "pending" and rows[0]["note"] == "Draps mercredi"
+
+
+def test_stay_secrets_served_during_stay_and_dead_at_j8(client):
+    """`/b/{t}/secrets` : servi pendant le séjour (J-7, J+6), **404 à J+8** et sur
+    séjour annulé/inconnu — les secrets meurent avec la page (volet 1bis)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    # J-7 (à venir) → servi ; J+6 (dans la fenêtre) → servi.
+    live = _make_booking(client, owner["headers"], pid,
+                         starts_on=str(_date.today() + _td(days=7)),
+                         ends_on=str(_date.today() + _td(days=14)))
+    live_tok = _stay_token(pid, live["id"])
+    assert client.get(f"/b/{live_tok}/secrets").status_code == 200
+    recent = _make_booking(client, owner["headers"], pid,
+                           starts_on=str(_date.today() - _td(days=10)),
+                           ends_on=str(_date.today() - _td(days=6)))
+    assert client.get(f"/b/{_stay_token(pid, recent['id'])}/secrets").status_code == 200
+    # J+8 → 404 (mort avec la page).
+    dead = _make_booking(client, owner["headers"], pid,
+                         starts_on=str(_date.today() - _td(days=12)),
+                         ends_on=str(_date.today() - _td(days=8)))
+    assert client.get(f"/b/{_stay_token(pid, dead['id'])}/secrets").status_code == 404
+    # Inconnu → 404.
+    assert client.get("/b/nope-not-a-token/secrets").status_code == 404
+
+
+def test_stay_no_manifest_route(client):
+    """Aucun manifest sous `/b/` (volet 1bis, §3) : une PWA installée sur un lien
+    qui meurt à J+7 serait cassée. La page séjour ne pose pas de lien de manifeste."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"])
+    tok = _stay_token(prop["id"], b["id"])
+    r = client.get(f"/b/{tok}")
+    assert r.status_code == 200
+    assert "manifest" not in r.text.lower()
+    # Pas de route manifest sous /b/ (l'API ne la sert pas → SPA/attrape-tout).
+    m = client.get(f"/b/{tok}/manifest.webmanifest")
+    assert "application/manifest+json" not in m.headers.get("content-type", "")
+
+
+def test_stay_media_and_og_served_via_b_prefix(client):
+    """Médias et og servis via `/b/…` (jamais `/g/{guide_token}`) : l'og-image du
+    séjour répond, et le HTML pointe l'og vers `/b/…`."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"])
+    tok = _stay_token(prop["id"], b["id"])
+    # L'og-image du séjour est servie (aucune photo → image de marque).
+    assert client.get(f"/b/{tok}/og-image.png").status_code == 200
+    # Le HTML référence l'og sur /b/ (jamais /g/).
+    r = client.get(f"/b/{tok}")
+    assert f"/b/{tok}/og-image.png" in r.text
+    # Un média sur un token mort → 404.
+    assert client.get("/b/nope-not-a-token/media/deadbeef").status_code == 404
 
 
 def test_stay_link_defaults_to_guest_lang_without_query(client):

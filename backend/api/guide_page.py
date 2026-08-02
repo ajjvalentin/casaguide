@@ -1067,7 +1067,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  watermark: bool = False, lang_names: dict | None = None,
                  ui_overlay: dict | None = None, variant: str = "house",
                  stay: dict | None = None, canonical_path: str | None = None,
-                 manifest: bool = True) -> str:
+                 manifest: bool = True, api_base: str | None = None) -> str:
     """Rend la page du guide dans `lang`. `ui_overlay` (V2-21a) = carte
     {clé: texte} des libellés statiques traduits pour une langue publiée
     supplémentaire (nl/de/it/sq…) ; vide pour FR/EN/ES (rendu depuis le code).
@@ -1076,12 +1076,19 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
     Trois liens (V2-23c) via `variant` :
       - `house`    : lien maison (QR imprimé), comportement historique ;
       - `stay`     : lien de séjour — accueil personnalisé (`stay`={guest_name,
-        starts_on, ends_on, stay_token}), demandes rattachées au séjour (le
-        `stay_token` est posé en `data-stay-token`) ;
+        starts_on, ends_on}), demandes rattachées au séjour ;
       - `showcase` : lien vitrine — secrets d'EXEMPLE (jamais réels), demandes
         désactivées, bandeau « Aperçu du guide ».
     `canonical_path` surcharge l'URL canonique (og:url) — utile pour la vitrine
-    (`/v/{token}`). `manifest=False` retire le lien de manifeste (vitrine)."""
+    (`/v/{token}`) et le séjour (`/b/{token}`). `manifest=False` retire le lien
+    de manifeste (vitrine + séjour).
+
+    `api_base` (V2-23c volet 1bis) = préfixe de TOUS les appels du client (secrets,
+    demandes, médias, og) — `/g/{guide_token}` (maison), `/b/{stay_token}` (séjour),
+    `/v/{showcase_token}` (vitrine). C'est l'UNIQUE source de vérité du DOM : posé
+    en `data-api-base`, il garantit que le `guide_token` éternel ne transite jamais
+    par la page d'un lien de séjour (le token de l'URL désigne à lui seul l'API).
+    Défaut : `/g/{token}` (rétrocompat)."""
     _ov_tok = _i18n_mod.set_overlay(ui_overlay)
     try:
         return _render_guide_impl(prop, sections, pois, area_facts, token, lang,
@@ -1089,7 +1096,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                                   watermark=watermark, lang_names=lang_names,
                                   variant=variant, stay=stay,
                                   canonical_path=canonical_path,
-                                  manifest=manifest)
+                                  manifest=manifest,
+                                  api_base=api_base or f"/g/{token}")
     finally:
         _i18n_mod.reset_overlay(_ov_tok)
 
@@ -1122,7 +1130,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                        watermark: bool = False, lang_names: dict | None = None,
                        variant: str = "house", stay: dict | None = None,
                        canonical_path: str | None = None,
-                       manifest: bool = True) -> str:
+                       manifest: bool = True, api_base: str = "") -> str:
     secrets_example = variant == "showcase"
     requests_enabled = variant != "showcase"
     contact = prop.get("contact") or {}
@@ -1287,11 +1295,11 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # Accueil personnalisé (lien de séjour).
     welcome = (_stay_welcome_html(stay, lang)
                if variant == "stay" and stay else "")
+    # Le manifeste PWA n'existe que pour le lien maison (`/g/`, QR imprimé, à
+    # vie) : installer une PWA depuis un lien de séjour qui meurt à J+7 la
+    # casserait (volet 1bis, §3). `manifest=False` sur séjour ET vitrine.
     manifest_link = (f'<link rel="manifest" href="/g/{_esc(token)}/manifest.webmanifest">'
                      if manifest else "")
-    # Le stay_token pilote le rattachement CERTAIN des demandes côté client.
-    stay_attr = (f' data-stay-token="{_esc(stay["stay_token"])}"'
-                 if variant == "stay" and stay and stay.get("stay_token") else "")
 
     return f"""<!DOCTYPE html>
 <html lang="{_esc(lang)}">
@@ -1312,7 +1320,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{stay_attr}>
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}">
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">
@@ -1657,24 +1665,33 @@ def render_staff_locked(prop: dict) -> str:
 
 
 def render_stay_expired() -> str:
-    """Page neutre du lien de séjour expiré / invalide (V2-23c, §1.3). AUCUNE
-    donnée du logement (pas même le nom) : un ancien locataire — ou un lien de
-    séjour cassé — ne doit jamais retomber sur les vrais secrets. Jamais indexé."""
+    """Page neutre servie pour TOUS les cas morts des préfixes `/b/` (séjour) et
+    `/v/` (vitrine) — token inconnu, séjour annulé, lien de séjour expiré (V2-23c,
+    §1.2/§1.5). AUCUNE donnée du logement (pas même le nom) : un ancien locataire —
+    ou un lien cassé — ne doit jamais retomber sur les vrais secrets. Jamais indexé.
+
+    Libellé neutre volet 1bis (§4) : la même page sert un séjour expiré ET une
+    vitrine inconnue (une vitrine n'« expire » pas, un prospect n'a pas d'« hôte »)
+    → un ton unique, valable dans les deux cas, en FR/EN/ES."""
     return f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Lien expiré</title>
+<title>Lien non valable</title>
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
 <body>
 <div class="wrap notfound">
   <div class="nf-card">
     <div class="nf-emoji">⌛</div>
-    <h1>Ce lien a expiré</h1>
-    <p>Ce lien de séjour n'est plus actif. Demandez le lien à jour à votre hôte.</p>
+    <h1>Ce lien n'est plus valable</h1>
+    <p>Demandez un lien à jour à la personne qui vous l'a envoyé.</p>
+    <p lang="en">This link is no longer valid — please ask the person who sent it
+       to you for an up-to-date link.</p>
+    <p lang="es">Este enlace ya no es válido. Pídele un enlace actualizado a la
+       persona que te lo envió.</p>
   </div>
 </div>
 </body>

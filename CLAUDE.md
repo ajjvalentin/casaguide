@@ -71,7 +71,22 @@ confondables (ni en code, ni dans les journaux) :
 est *envoyé, jamais retapé* → `/b/{slug}-{token}` n'est pas rattrapé. Les cas
 morts des **nouveaux** préfixes (`/b/` inconnu/annulé/expiré, `/v/` inconnu)
 servent **la même page neutre** (`guide_page.render_stay_expired`, aucune donnée
-du logement) ; `/g/` et `/s/` gardent `render_not_found`.
+du logement, libellé neutre FR/EN/ES) ; `/g/` et `/s/` gardent `render_not_found`.
+
+**Le `guide_token` ne quitte JAMAIS la maison — ni par l'URL, ni par le DOM
+(V2-23c volet 1bis).** `/b/` et `/v/` ont chacun leurs **sous-routes** dédiées, si
+bien que le rendu d'un lien de séjour ne contient le `guide_token` éternel **nulle
+part** (ni `data-token`, ni URL de média, ni og, ni manifeste) : `app.js` déduit
+son préfixe d'API d'**une seule source de vérité**, `data-api-base` (`/g/{guide_
+token}` maison · `/b/{stay_token}` séjour · `/v/{showcase_token}` vitrine). Les
+sous-routes séjour `GET /b/{t}/data|secrets|media/{id}|og-image.png` et `POST
+/b/{t}/requests` sont **toutes gardées par `_resolve_stay`** (token mort → 404) →
+« la page ET les endpoints meurent ensemble », **secrets compris** (les vrais codes
+meurent à J+8 avec la page — c'est LE progrès de sécurité du lien de séjour). Le
+`stay_token` se rattache de façon **certaine** par la **route** `POST /b/{t}/
+requests` (plus de `stay_token` dans le corps ni le schema). **Pas de manifeste PWA
+sur `/b/` ni `/v/`** (`manifest=False`) : installer une PWA depuis un lien qui meurt
+à J+7 la casserait — l'installation reste le métier du QR maison `/g/`.
 
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
 

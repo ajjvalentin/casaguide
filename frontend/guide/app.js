@@ -9,9 +9,13 @@
 
 import { qrCanvas, wifiPayload } from "./qr.js";
 
-const token = document.body.dataset.token || location.pathname.split("/")[2] || "";
-// Lien de séjour (V2-23c) : rattache les demandes au séjour DU TOKEN (certitude).
-const stayToken = document.body.dataset.stayToken || "";
+// Préfixe d'API — UNE SEULE source de vérité (V2-23c volet 1bis). Le SSR le pose
+// en `data-api-base` : `/g/{guide_token}` (maison), `/b/{stay_token}` (séjour),
+// `/v/{showcase_token}` (vitrine). Tous les appels (secrets, demandes, médias) en
+// dérivent → sur un lien de séjour, le `guide_token` éternel ne transite JAMAIS
+// par le DOM. Repli robuste : `/g/{data-token ou segment d'URL}` (anciens rendus).
+const apiBase = document.body.dataset.apiBase
+  || `/g/${document.body.dataset.token || location.pathname.split("/")[2] || ""}`;
 let GUIDE = { property: {}, pois: [] };
 try { GUIDE = JSON.parse(document.getElementById("guide-data")?.textContent || "{}"); }
 catch (_) { /* données de carte absentes : la page reste utilisable */ }
@@ -466,7 +470,7 @@ async function initSecrets() {
   if (!slots.length) return;
   let sec;
   try {
-    const resp = await fetch(`/g/${encodeURIComponent(token)}/secrets`);
+    const resp = await fetch(`${apiBase}/secrets`);
     if (!resp.ok) return;
     sec = await resp.json();
   } catch (_) { return; } // hors-ligne au premier chargement : blocs simplement masqués
@@ -589,8 +593,9 @@ function initPwa() {
 // ── Demander un service (V2-23b, §3.1) ───────────────────────────────────────
 // Les sections « sur demande » portent un bouton rendu côté serveur (`.svc-request`
 // avec ses libellés localisés en data-*). Ici on l'enrichit en petit formulaire :
-// un message facultatif, puis POST vers /g/{token}/requests (ACTION du voyageur —
-// invariant 4 intact). Tout échoue proprement ; sans JS, le bouton reste inerte.
+// un message facultatif, puis POST vers `${apiBase}/requests` (ACTION du voyageur —
+// invariant 4 intact). Sur un lien de séjour, `apiBase=/b/{stay_token}` rattache
+// la demande au séjour du token côté serveur. Sans JS, le bouton reste inerte.
 function initRequestService() {
   document.querySelectorAll(".svc-request").forEach((box) => {
     const btn = box.querySelector(".svc-request-btn");
@@ -620,10 +625,9 @@ function openForm(box, btn, section, L) {
     send.disabled = cancel.disabled = true;
     msg.hidden = true; msg.className = "svc-msg";
     try {
-      const resp = await fetch(`/g/${encodeURIComponent(token)}/requests`, {
+      const resp = await fetch(`${apiBase}/requests`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ section, note: note.value.trim() || null,
-          stay_token: stayToken || null }),
+        body: JSON.stringify({ section, note: note.value.trim() || null }),
       });
       if (!resp.ok) throw new Error(await detail(resp) || (L.error || "Erreur"));
       // Succès : on remplace le formulaire par un accusé de réception sobre.

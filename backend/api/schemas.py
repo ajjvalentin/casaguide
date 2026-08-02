@@ -643,9 +643,10 @@ class GuestServiceRequestIn(BaseModel):
     facultatif. Le rattachement au séjour et l'origine 'guest' sont posés serveur."""
     section: str = Field(min_length=1, max_length=60)   # code de la section requestable
     note: str | None = Field(default=None, max_length=500)
-    # Lien de SÉJOUR (V2-23c) : rattache la demande au séjour DU TOKEN (certitude,
-    # plus de devinette « en cours → suivant »). Absent = lien maison (repli).
-    stay_token: str | None = Field(default=None, max_length=128)
+    # V2-23c volet 1bis : plus de `stay_token` dans le corps. Le rattachement
+    # CERTAIN au séjour passe par la ROUTE `POST /b/{stay_token}/requests` (le
+    # token de l'URL désigne le séjour côté serveur) ; le lien maison utilise
+    # `POST /g/{guide_token}/requests` (rattachement deviné « en cours → suivant »).
 
 
 class GuestServiceRequestOut(BaseModel):
