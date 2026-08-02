@@ -633,6 +633,12 @@ exposé, peer auth).
   sinon les visiteurs (et le back-office, qui importe `guide/qr.js`) reçoivent
   l'ancienne version — symptôme vécu le 14/07 : page blanche du back-office
   (import ES cassé sur un module périmé).
+- **SW & `/secrets` `no-store` (choix assumé)** : `sw.js` met en cache les réponses
+  `/g|/b/…/secrets` (via `cache.put` en `networkFirst`) **malgré** leur en-tête HTTP
+  `no-store` — c'est **voulu** : le mot de passe wifi doit rester lisible hors-ligne
+  AVANT d'avoir le wifi (scénario porte d'entrée). Le `no-store` HTTP reste pour les
+  **caches partagés/proxies** (le SW est un cache privé, sur l'appareil du voyageur).
+  Même régime sur le lien de séjour `/b/` (branche miroir de `/g/`, v28).
 - Serveurs OSM publics : 1 req/s max, User-Agent obligatoire → en production,
   prévoir OSRM auto-hébergé et/ou un fournisseur géré.
 - Ajout manuel de POI (M-22) : `GET /api/properties/{id}/pois/search` est un

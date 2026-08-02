@@ -1043,6 +1043,9 @@ def test_guide_page_404_is_clean_html(client):
     assert "text/html" in r.headers["content-type"]
     assert r.headers["X-Robots-Tag"].startswith("noindex")
     assert "Guide introuvable" in r.text
+    # Le lien CSS doit être interpolé (f-string), jamais littéral.
+    assert "/guide/guide.css" in r.text
+    assert "{versioned" not in r.text
 
 
 def test_guide_secrets_only_link_mode(client):

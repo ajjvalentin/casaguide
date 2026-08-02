@@ -27,7 +27,7 @@
 // `__ASSET_VERSION__` est remplacé à la volée par le SHA git du déploiement
 // (route /guide/sw.js, M-11) : chaque déploiement change le nom des caches → le
 // SW se réactive et purge les anciens, sans bump manuel en production.
-const VERSION = "casaguide-guide-v27-__ASSET_VERSION__";
+const VERSION = "casaguide-guide-v28-__ASSET_VERSION__";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 const TILES = `${VERSION}-tiles`;
@@ -143,6 +143,20 @@ self.addEventListener("fetch", (event) => {
 
   // Espace du guide voyageur.
   if (url.pathname.startsWith("/g/")) {
+    if (/\/media\/[^/]+$/.test(url.pathname)) {
+      event.respondWith(cacheFirst(req, RUNTIME)); // vignettes déjà vues
+    } else {
+      event.respondWith(networkFirst(req, RUNTIME)); // page, /data, /secrets
+    }
+    return;
+  }
+
+  // Lien de séjour /b/ : MIROIR de /g/ — le voyageur a ce lien en poche devant
+  // la porte, il doit être consultable hors-ligne (scénario « avant d'avoir
+  // configuré le wifi »). Compromis assumé : hors ligne, une copie cachée peut
+  // survivre à J+7 sur l'appareil ; en ligne, networkFirst la remplace par la
+  // page neutre servie par le serveur (le token mort meurt côté réseau).
+  if (url.pathname.startsWith("/b/")) {
     if (/\/media\/[^/]+$/.test(url.pathname)) {
       event.respondWith(cacheFirst(req, RUNTIME)); // vignettes déjà vues
     } else {

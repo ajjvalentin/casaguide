@@ -1700,7 +1700,7 @@ def render_stay_expired() -> str:
 
 def render_not_found() -> str:
     """Page 404 propre : token inconnu ou logement non publié (on ne révèle rien)."""
-    return """<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="utf-8">
