@@ -212,6 +212,23 @@ reproche générique.
 - Sans email/téléphone → boutons désactivés + invitation, jamais un mailto vide.
 - Harnais headless (patron calendar-harness) pour la fenêtre.
 
+### 3.5 Précédence de langue sur `/b/` (décision à acter, constatée le 02/08)
+
+Constat en validation réelle : `initLang` (M-09, conçu pour le QR maison) fait
+gagner `localStorage` puis `navigator.language` sur la langue servie — sur
+`/b/`, cela contredit le microcopy de la modale séjour (« le lien du guide part
+dans cette langue ») : la préférence mémorisée du visiteur (ou la langue de son
+appareil) écrase `guest_lang`.
+
+Règle proposée (à valider par André au lancement du volet 3) : sur `/b/`
+uniquement — `guest_lang` par défaut ; un **clic explicite** du visiteur sur une
+puce gagne et est retenu ; `navigator.language` **ne devine plus** (la fiche
+sait, l'appareil devine). `/g/` garde le comportement M-09 intact (là, le
+serveur ne sait rien du visiteur — la devinette est une qualité).
+Contre-argument à peser : la langue de l'appareil est parfois plus juste que la
+fiche (réservation faite via un portail dans une autre langue) — tranché en
+faveur de la prévisibilité et de la promesse d'interface, sauf avis contraire.
+
 ---
 
 ## Livrables transverses
@@ -367,3 +384,16 @@ On ÉTEND, on ne réécrit pas.
 UN commit, hash au rapport, `git status` propre, `project_tracker.html` à jour
 (V2-23c volet 1 = livré après 1bis, pas avant), `docs/calendrier.md` §8 si déjà
 rédigé — sinon au volet 3 comme prévu.
+
+### Constats de la validation réelle (02/08) — préexistants, hors V2-23c
+
+Relevés sur le HTML brut de `/b/` (Villa Ballarin, guest_lang=de) ; à verser aux
+missions concernées, rien à corriger ici :
+1. **`area_facts` monolingue** : urgences, règles de bruit, consignes de tri
+   restent en français sur toute page traduite (le contenu IA n'est jamais
+   traduit) → mission « outillage i18n ».
+2. **`og:locale` figé `fr_FR`** quel que soit le rendu → même mission,
+   cosmétique.
+3. **Sites POI sans schéma** (ex. `delishclub.es`) rendus en liens relatifs
+   cassés (`/b/delishclub.es`, idem sous `/g/`) → normaliser `https://` au rendu
+   ou à la saisie ; backlog.
