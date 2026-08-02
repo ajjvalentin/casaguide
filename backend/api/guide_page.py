@@ -151,6 +151,12 @@ _UI: dict[str, dict[str, str]] = {
         "request_sent": "Demande envoyée ✓",
         "request_intro": "Votre demande sera transmise à votre hôte, qui vous répondra.",
         "request_error": "Envoi impossible. Réessayez dans un instant.",
+        "stay_hello": "Bonjour {name},", "stay_hello_generic": "Bienvenue !",
+        "stay_dates": "Votre séjour du {start} au {end}",
+        "showcase_banner": "Aperçu du guide",
+        "example_tag": "exemple", "wifi_title": "Connexion Wifi",
+        "wifi_network": "Réseau", "wifi_password": "Mot de passe",
+        "keybox_title": "Boîte à clés", "keybox_code": "Code",
     },
     "en": {
         "eyebrow": "Your stay guide", "all": "All",
@@ -183,6 +189,12 @@ _UI: dict[str, dict[str, str]] = {
         "request_sent": "Request sent ✓",
         "request_intro": "Your request will be sent to your host, who will get back to you.",
         "request_error": "Could not send. Please try again shortly.",
+        "stay_hello": "Hello {name},", "stay_hello_generic": "Welcome!",
+        "stay_dates": "Your stay from {start} to {end}",
+        "showcase_banner": "Guide preview",
+        "example_tag": "example", "wifi_title": "Wifi connection",
+        "wifi_network": "Network", "wifi_password": "Password",
+        "keybox_title": "Key box", "keybox_code": "Code",
     },
     "es": {
         "eyebrow": "Tu guía de estancia", "all": "Todo",
@@ -215,6 +227,12 @@ _UI: dict[str, dict[str, str]] = {
         "request_sent": "Solicitud enviada ✓",
         "request_intro": "Tu solicitud se enviará a tu anfitrión, que te responderá.",
         "request_error": "No se pudo enviar. Inténtalo de nuevo en un momento.",
+        "stay_hello": "Hola {name},", "stay_hello_generic": "¡Bienvenido/a!",
+        "stay_dates": "Tu estancia del {start} al {end}",
+        "showcase_banner": "Vista previa de la guía",
+        "example_tag": "ejemplo", "wifi_title": "Conexión Wifi",
+        "wifi_network": "Red", "wifi_password": "Contraseña",
+        "keybox_title": "Caja de llaves", "keybox_code": "Código",
     },
 }
 
@@ -592,11 +610,40 @@ def _render_transport(pois: list[dict], home_lat: Any, home_lon: Any,
             f'{"".join(trips)}</div>')
 
 
+# ── Secrets d'exemple pour le lien vitrine (V2-23c) ──────────────────────────
+# Le lien vitrine (`/v/…`) montre le vrai produit à un prospect SANS jamais
+# révéler un secret réel : on remplace wifi/boîte à clés par des valeurs d'EXEMPLE
+# explicitement marquées. Le rendu ne touche JAMAIS `property_secrets` (invariant
+# V2-23c) — ces valeurs sont des littéraux, aucune donnée sensible ne transite.
+
+def _example_row(label: str, value: str, lang: str, *, mono: bool = False) -> str:
+    tag = f'<span class="sc-eg">— {_esc(_t(lang, "example_tag"))}</span>'
+    vcls = "v mono" if mono else "v"
+    return (f'<div class="sc-row"><span class="k">{_esc(label)}</span>'
+            f'<span class="{vcls}">{_esc(value)} {tag}</span></div>')
+
+
+def _example_wifi_card(lang: str) -> str:
+    return (f'<div class="secret-card sc-example">'
+            f'<div class="sc-title">📶 {_esc(_t(lang, "wifi_title"))}</div>'
+            f'{_example_row(_t(lang, "wifi_network"), "Villa-Wifi", lang)}'
+            f'{_example_row(_t(lang, "wifi_password"), "MotDePasseWifi", lang, mono=True)}'
+            f'</div>')
+
+
+def _example_keybox_card(lang: str) -> str:
+    return (f'<div class="secret-card sc-example">'
+            f'<div class="sc-title">🔑 {_esc(_t(lang, "keybox_title"))}</div>'
+            f'{_example_row(_t(lang, "keybox_code"), "1234", lang, mono=True)}'
+            f'</div>')
+
+
 # ── Section complète ─────────────────────────────────────────────────────────
 
 def _render_section(sec: dict, contact: dict, tourism_license: str | None,
                     area_facts: dict | None = None, arrival: dict | None = None,
-                    lang: str = "fr") -> str:
+                    lang: str = "fr", *, requests_enabled: bool = True,
+                    secrets_example: bool = False) -> str:
     schema = sec.get("field_schema") or {}
     content = sec.get("content") or {}
     _sc = sec.get("code", "")
@@ -643,11 +690,17 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
         parts.append(f'<p class="license"><span class="lic-lbl">{_t(lang, "license")}</span>'
                      f'<span class="lic-val">{_esc(tourism_license)}</span></p>')
 
-    # Emplacements réservés aux secrets (remplis côté client depuis /secrets)
-    if "wifi_pass" in (schema.get("secrets") or []):
-        parts.append('<div class="secret-slot" data-secret="wifi" hidden></div>')
-    if "keybox_code" in (schema.get("secrets") or []):
-        parts.append('<div class="secret-slot" data-secret="keybox" hidden></div>')
+    # Emplacements réservés aux secrets. Lien maison/séjour : slots remplis côté
+    # client depuis /secrets (déchiffrement à la demande). Lien VITRINE (V2-23c) :
+    # valeurs d'EXEMPLE rendues côté serveur (jamais de secret réel, jamais de slot
+    # → pas de fetch de secrets).
+    _secrets = schema.get("secrets") or []
+    if "wifi_pass" in _secrets:
+        parts.append(_example_wifi_card(lang) if secrets_example
+                     else '<div class="secret-slot" data-secret="wifi" hidden></div>')
+    if "keybox_code" in _secrets:
+        parts.append(_example_keybox_card(lang) if secrets_example
+                     else '<div class="secret-slot" data-secret="keybox" hidden></div>')
 
     parts.append(_render_media(sec.get("media") or [], lang))
 
@@ -656,7 +709,7 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
     # rendu côté serveur (lisible sans JS) et enrichi en formulaire par app.js ; le
     # POST vers /g/{token}/requests est une ACTION du voyageur (invariant 4 intact).
     req = schema.get("request")
-    if req and isinstance(req, dict):
+    if requests_enabled and req and isinstance(req, dict):
         code = _esc(sec.get("code") or "")
         # Libellés localisés portés en data-* (source unique côté serveur, comme
         # data-copy/data-more-tpl) → app.js enrichit sans dupliquer l'i18n.
@@ -1012,24 +1065,66 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  area_facts: dict, token: str, lang: str = "fr", *,
                  base_url: str = "", og_image_url: str | None = None,
                  watermark: bool = False, lang_names: dict | None = None,
-                 ui_overlay: dict | None = None) -> str:
+                 ui_overlay: dict | None = None, variant: str = "house",
+                 stay: dict | None = None, canonical_path: str | None = None,
+                 manifest: bool = True) -> str:
     """Rend la page du guide dans `lang`. `ui_overlay` (V2-21a) = carte
     {clé: texte} des libellés statiques traduits pour une langue publiée
     supplémentaire (nl/de/it/sq…) ; vide pour FR/EN/ES (rendu depuis le code).
-    Posé dans un ContextVar le temps du rendu, restauré ensuite."""
+    Posé dans un ContextVar le temps du rendu, restauré ensuite.
+
+    Trois liens (V2-23c) via `variant` :
+      - `house`    : lien maison (QR imprimé), comportement historique ;
+      - `stay`     : lien de séjour — accueil personnalisé (`stay`={guest_name,
+        starts_on, ends_on, stay_token}), demandes rattachées au séjour (le
+        `stay_token` est posé en `data-stay-token`) ;
+      - `showcase` : lien vitrine — secrets d'EXEMPLE (jamais réels), demandes
+        désactivées, bandeau « Aperçu du guide ».
+    `canonical_path` surcharge l'URL canonique (og:url) — utile pour la vitrine
+    (`/v/{token}`). `manifest=False` retire le lien de manifeste (vitrine)."""
     _ov_tok = _i18n_mod.set_overlay(ui_overlay)
     try:
         return _render_guide_impl(prop, sections, pois, area_facts, token, lang,
                                   base_url=base_url, og_image_url=og_image_url,
-                                  watermark=watermark, lang_names=lang_names)
+                                  watermark=watermark, lang_names=lang_names,
+                                  variant=variant, stay=stay,
+                                  canonical_path=canonical_path,
+                                  manifest=manifest)
     finally:
         _i18n_mod.reset_overlay(_ov_tok)
+
+
+def _fmt_date_num(d: Any) -> str:
+    """Date en JJ/MM/AAAA (numérique, neutre en langue). Repli sûr si absente."""
+    try:
+        return d.strftime("%d/%m/%Y")
+    except Exception:  # noqa: BLE001 — jamais bloquant sur un accueil
+        return str(d or "")
+
+
+def _stay_welcome_html(stay: dict, lang: str) -> str:
+    """Accueil personnalisé du lien de séjour (V2-23c, §1.3) : « Bonjour {prénom},
+    votre séjour du {arrivée} au {départ} ». Accueil générique si le nom manque."""
+    name = (stay.get("guest_name") or "").strip()
+    first = name.split()[0] if name else ""
+    hello = (_t(lang, "stay_hello").format(name=_esc(first)) if first
+             else _esc(_t(lang, "stay_hello_generic")))
+    dates = _esc(_t(lang, "stay_dates")).format(
+        start=_esc(_fmt_date_num(stay.get("starts_on"))),
+        end=_esc(_fmt_date_num(stay.get("ends_on"))))
+    return (f'<div class="stay-welcome"><span class="sw-hi">{hello}</span> '
+            f'<span class="sw-dates">{dates}</span></div>')
 
 
 def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                        area_facts: dict, token: str, lang: str = "fr", *,
                        base_url: str = "", og_image_url: str | None = None,
-                       watermark: bool = False, lang_names: dict | None = None) -> str:
+                       watermark: bool = False, lang_names: dict | None = None,
+                       variant: str = "house", stay: dict | None = None,
+                       canonical_path: str | None = None,
+                       manifest: bool = True) -> str:
+    secrets_example = variant == "showcase"
+    requests_enabled = variant != "showcase"
     contact = prop.get("contact") or {}
     name = _esc(prop.get("name") or _t(lang, "home"))
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
@@ -1079,7 +1174,9 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
             tab = _SECTION_TAB_OVERRIDES.get(s.get("code"), default_tab)
             sec_by_tab.setdefault(tab, []).append(
                 _render_section(s, contact, prop.get("tourism_license"),
-                                area_facts, arrival_ctx, lang))
+                                area_facts, arrival_ctx, lang,
+                                requests_enabled=requests_enabled,
+                                secrets_example=secrets_example))
         chapter_card_pois = _chapter_card_pois(ch)
         if poi_tab == "around":
             around_card_pois.extend(chapter_card_pois)
@@ -1171,13 +1268,30 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                           lang_names)
 
     # Liens de partage élégants (M-25) : vignette Open Graph. L'URL canonique de
-    # partage porte le slug lisible (le token reste l'autorité).
+    # partage porte le slug lisible (le token reste l'autorité). La vitrine (V2-23c)
+    # surcharge par son propre chemin `/v/{token}` (jamais un `/g/…` qui ne
+    # résoudrait pas).
     plain_name = prop.get("name") or _t(lang, "home")
     share_title = f"{plain_name} — {_t(lang, 'title_suffix')}"
-    og_url = (base_url.rstrip("/") + share_path(prop.get("name"), token)) if base_url else ""
+    _path = canonical_path if canonical_path is not None else share_path(prop.get("name"), token)
+    og_url = (base_url.rstrip("/") + _path) if base_url else ""
     og_html = _og_tags(title=share_title, desc=_t(lang, "share_desc"),
                        url=og_url, image=og_image_url,
                        locale=_OG_LOCALE.get(lang, "fr_FR"))
+
+    # Bandeau « Aperçu du guide » (vitrine) : honnêteté vis-à-vis du prospect, et
+    # le propriétaire voit d'un coup d'œil quel lien il a envoyé.
+    showcase_banner = (f'<div class="showcase-banner">'
+                       f'{_esc(_t(lang, "showcase_banner"))}</div>'
+                       if variant == "showcase" else "")
+    # Accueil personnalisé (lien de séjour).
+    welcome = (_stay_welcome_html(stay, lang)
+               if variant == "stay" and stay else "")
+    manifest_link = (f'<link rel="manifest" href="/g/{_esc(token)}/manifest.webmanifest">'
+                     if manifest else "")
+    # Le stay_token pilote le rattachement CERTAIN des demandes côté client.
+    stay_attr = (f' data-stay-token="{_esc(stay["stay_token"])}"'
+                 if variant == "stay" and stay and stay.get("stay_token") else "")
 
     return f"""<!DOCTYPE html>
 <html lang="{_esc(lang)}">
@@ -1189,7 +1303,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <script>document.documentElement.className += " js";</script>
 <title>{name} — {_esc(_t(lang, "title_suffix"))}</title>
 {og_html}
-<link rel="manifest" href="/g/{_esc(token)}/manifest.webmanifest">
+{manifest_link}
 <link rel="apple-touch-icon" href="/guide/icon-192.png">
 <link rel="icon" href="/guide/icon-192.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -1198,8 +1312,9 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}">
+<body data-token="{_esc(token)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{stay_attr}>
 <div class="wrap">
+  {showcase_banner}
   <header class="guide-head">
     <div class="hrow">
       <div>
@@ -1209,6 +1324,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
       </div>
       {langs}
     </div>
+    {welcome}
     {sos}
   </header>
   {tabs_nav}
@@ -1534,6 +1650,31 @@ def render_staff_locked(prop: dict) -> str:
     <p>Le guide de l'équipe d'entretien de « {name} » est disponible avec
        l'offre&nbsp;Pro. Demandez à votre hôte d'activer l'offre Pro pour
        accéder au cahier de préparation.</p>
+  </div>
+</div>
+</body>
+</html>"""
+
+
+def render_stay_expired() -> str:
+    """Page neutre du lien de séjour expiré / invalide (V2-23c, §1.3). AUCUNE
+    donnée du logement (pas même le nom) : un ancien locataire — ou un lien de
+    séjour cassé — ne doit jamais retomber sur les vrais secrets. Jamais indexé."""
+    return f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Lien expiré</title>
+<link rel="stylesheet" href="{versioned('/guide/guide.css')}">
+</head>
+<body>
+<div class="wrap notfound">
+  <div class="nf-card">
+    <div class="nf-emoji">⌛</div>
+    <h1>Ce lien a expiré</h1>
+    <p>Ce lien de séjour n'est plus actif. Demandez le lien à jour à votre hôte.</p>
   </div>
 </div>
 </body>

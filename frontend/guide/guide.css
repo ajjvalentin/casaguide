@@ -204,6 +204,22 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
                 border:1px solid var(--line);border-radius:8px;padding:6px}
 .qr-wrap .qr-cap{font-size:12.5px;color:var(--muted)}
 .sc-notes{font-size:13px;color:#3C4A52;margin:6px 0 0}
+.sc-row .v.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:16px}
+/* Secrets d'exemple (lien vitrine V2-23c) : marque discrète « — exemple ». */
+.secret-card.sc-example{opacity:.9}
+.sc-row .sc-eg{font-family:'Instrument Sans',system-ui,sans-serif;font-size:12px;font-weight:500;
+               color:var(--muted);letter-spacing:0;margin-left:4px;white-space:nowrap}
+
+/* Bandeau « Aperçu du guide » (lien vitrine V2-23c). */
+.showcase-banner{margin:0 0 12px;background:#FBEFD9;border:1px solid #E9D3A6;color:#7A5A18;
+                 border-radius:10px;padding:7px 14px;font-size:13px;font-weight:600;text-align:center;
+                 letter-spacing:.02em}
+
+/* Accueil personnalisé (lien de séjour V2-23c). */
+.stay-welcome{margin-top:12px;padding:10px 14px;background:var(--shell);border:1px solid var(--line);
+              border-radius:12px;font-size:14.5px;line-height:1.4}
+.stay-welcome .sw-hi{font-family:Fraunces,serif;font-weight:600}
+.stay-welcome .sw-dates{color:var(--muted)}
 
 /* ── Demander un service (V2-23b, §3.1) ──────────────────────────────────── */
 .svc-request{margin-top:12px}

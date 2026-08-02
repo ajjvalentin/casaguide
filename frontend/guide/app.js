@@ -10,6 +10,8 @@
 import { qrCanvas, wifiPayload } from "./qr.js";
 
 const token = document.body.dataset.token || location.pathname.split("/")[2] || "";
+// Lien de séjour (V2-23c) : rattache les demandes au séjour DU TOKEN (certitude).
+const stayToken = document.body.dataset.stayToken || "";
 let GUIDE = { property: {}, pois: [] };
 try { GUIDE = JSON.parse(document.getElementById("guide-data")?.textContent || "{}"); }
 catch (_) { /* données de carte absentes : la page reste utilisable */ }
@@ -620,7 +622,8 @@ function openForm(box, btn, section, L) {
     try {
       const resp = await fetch(`/g/${encodeURIComponent(token)}/requests`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ section, note: note.value.trim() || null }),
+        body: JSON.stringify({ section, note: note.value.trim() || null,
+          stay_token: stayToken || null }),
       });
       if (!resp.ok) throw new Error(await detail(resp) || (L.error || "Erreur"));
       // Succès : on remplace le formulaire par un accusé de réception sobre.

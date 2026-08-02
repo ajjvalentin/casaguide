@@ -41,6 +41,11 @@ _FRONTEND_DIR = Path(__file__).resolve().parents[3] / "frontend"
 # Cache court (le contenu ne change qu'à (re)publication)
 _NOINDEX = {"X-Robots-Tag": "noindex, nofollow"}
 
+# Lien de séjour (V2-23c, §1.3) : expire J+7 après le départ — un ancien locataire
+# ne garde pas l'accès au code de la boîte à clés. Le seuil vit ici, jamais
+# éparpillé en littéral.
+STAY_EXPIRY_DAYS = 7
+
 
 def _public_headers(no_store: bool = False) -> dict[str, str]:
     cache = "no-store" if no_store else f"public, max-age={settings.guide_cache_seconds}"
@@ -107,20 +112,18 @@ def _effective_lang(conn, prop: dict, requested: str | None) -> str:
     return default
 
 
-def _load_guide(conn, token: str, lang: str | None = None):
-    """Charge un guide publié : (prop, sections, pois, area_facts, media, lang).
-    404 sinon.
+def _assemble_guide(conn, prop: dict, lang: str | None, *, media_base: str):
+    """Assemble le contenu d'un guide publié à partir de son logement `prop` :
+    (prop, sections, pois, area_facts, media, lang effective, noms de langues).
 
     Les médias des sections **visibles** (et ceux du logement) sont rattachés à
-    leur section ; chacun porte l'URL de son endpoint public. Un média de section
-    masquée n'est jamais listé (invariant de visibilité, M-12).
+    leur section ; chacun porte l'URL de son endpoint public (`media_base`, ex.
+    `/g/{token}` pour le lien maison/séjour, `/v/{token}` pour la vitrine). Un
+    média de section masquée n'est jamais listé (invariant de visibilité, M-12).
 
     Si une langue traduite est demandée (M-09), le contenu **textuel** des
     sections et des POI est overlayé depuis les traductions stockées ; tout
     segment non traduit retombe sur le français (repli élégant, §9)."""
-    prop = repo.get_published_property_by_token(conn, token)
-    if not prop:
-        return None
     pid = str(prop["id"])
     sections = repo.guide_sections(conn, pid)
     pois = repo.guide_pois(conn, pid)
@@ -137,7 +140,7 @@ def _load_guide(conn, token: str, lang: str | None = None):
     property_media: list = []
     for m in repo.guide_media(conn, pid):
         item = {"id": str(m["id"]), "kind": m["kind"], "caption": m["caption"],
-                "sort_order": m["sort_order"], "url": f"/g/{token}/media/{m['id']}"}
+                "sort_order": m["sort_order"], "url": f"{media_base}/media/{m['id']}"}
         if m["section_code"]:
             media_by_section.setdefault(m["section_code"], []).append(item)
         else:
@@ -145,6 +148,15 @@ def _load_guide(conn, token: str, lang: str | None = None):
     for s in sections:
         s["media"] = media_by_section.get(s["code"], [])
     return prop, sections, pois, area_facts, property_media, effective, lang_names
+
+
+def _load_guide(conn, token: str, lang: str | None = None):
+    """Charge un guide publié par son `guide_token` (lien maison/séjour). None si
+    token inconnu / non publié. Voir `_assemble_guide`."""
+    prop = repo.get_published_property_by_token(conn, token)
+    if not prop:
+        return None
+    return _assemble_guide(conn, prop, lang, media_base=f"/g/{token}")
 
 
 def _overlay_translations(conn, pid: str, lang: str, sections: list[dict],
@@ -169,19 +181,57 @@ def _overlay_translations(conn, pid: str, lang: str, sections: list[dict],
                 p["owner_comment"] = tr["owner_comment"]
 
 
+def _stay_expired(booking: dict, today: _dt.date) -> bool:
+    """Le lien de séjour expire J+7 après le départ (V2-23c, §1.3)."""
+    return today > booking["ends_on"] + _dt.timedelta(days=STAY_EXPIRY_DAYS)
+
+
+def _resolve_stay(conn, stay_token: str) -> dict | None:
+    """Résout un `stay_token` en séjour valable (V2-23c). None dans les 3 cas
+    morts : token inconnu, séjour annulé, ou lien expiré (J+8). Le router sert
+    alors la page neutre (jamais le guide générique en silence : un lien de séjour
+    cassé ne retombe pas sur les vrais secrets).
+
+    Amendé 02/08 (préfixe dédié `/b/`) : plus de contrôle « même logement » — le
+    `stay_token` désigne à lui seul le séjour ET son logement (résolu côté serveur
+    par le router), il ne voyage plus accolé à un `guide_token` dans l'URL."""
+    booking = repo.get_booking_by_stay_token(conn, stay_token)
+    if (not booking
+            or booking["status"] != "active"
+            or _stay_expired(booking, _dt.date.today())):
+        return None
+    return booking
+
+
 @router.get("/g/{guide_token}", response_class=HTMLResponse)
 def public_guide_page(guide_token: str, conn: Conn, request: Request,
                       lang: str | None = None):
-    """Page HTML du guide voyageur, rendue dans `lang` si c'est une langue
-    publiée (M-09 ; repli sur la langue source sinon). 404 propre si token
-    inconnu / non publié. Accepte le lien de partage `/g/{slug}-{token}` (M-25) :
-    le slug est décoratif, seul le token fait foi."""
+    """Page HTML du guide voyageur — **lien maison** (QR imprimé, à vie), rendue
+    dans `lang` si c'est une langue publiée (M-09 ; repli sur la langue source
+    sinon). 404 propre si token inconnu / non publié. Accepte le lien de partage
+    `/g/{slug}-{token}` (M-25) : le slug est décoratif, seul le token fait foi.
+
+    Le lien de SÉJOUR a son propre préfixe `/b/{stay_token}` (V2-23c) : le
+    `guide_token` éternel ne voyage plus jamais dans l'URL envoyée au locataire."""
     token = _real_token(guide_token)
-    loaded = _load_guide(conn, token, lang)
-    if not loaded:
+    prop_row = repo.get_published_property_by_token(conn, token)
+    if not prop_row:
         return HTMLResponse(guide_page.render_not_found(), status_code=404,
                             headers=_NOINDEX)
-    prop, sections, pois, area_facts, property_media, effective, lang_names = loaded
+    html = _render_guide_html(conn, prop_row, token, request, lang,
+                              variant="house", stay_ctx=None)
+    return HTMLResponse(html, headers=_public_headers())
+
+
+def _render_guide_html(conn, prop_row: dict, token: str, request: Request,
+                       lang: str | None, *, variant: str,
+                       stay_ctx: dict | None) -> str:
+    """Rendu commun aux liens maison (`/g/`) et séjour (`/b/`) : le lien de séjour
+    n'est qu'un rendu différent du MÊME guide (accueil personnalisé, `guest_lang`
+    par défaut), servi via le `guide_token` résolu côté serveur — l'app charge
+    secrets/data/média sur `/g/{token}/…` comme d'habitude."""
+    _p, sections, pois, area_facts, property_media, effective, lang_names = \
+        _assemble_guide(conn, prop_row, lang, media_base=f"/g/{token}")
     # Vignette de partage (M-25) : première photo du logement, sinon image de
     # marque générée. URL absolue pour les scrapers (WhatsApp/iMessage/e-mail).
     base = _base_url(request)
@@ -194,11 +244,46 @@ def public_guide_page(guide_token: str, conn: Conn, request: Request,
     # Libellés statiques traduits (V2-21a, volet 2) : superposés au rendu pour une
     # langue publiée supplémentaire ; vide pour FR/EN/ES (rendu identique).
     ui_overlay = repo.ui_translations(conn, effective)
-    html = guide_page.render_guide(_property_public(prop), sections, pois,
+    return guide_page.render_guide(_property_public(prop_row), sections, pois,
                                    area_facts, token, lang=effective,
                                    base_url=base, og_image_url=og_image_url,
                                    watermark=watermark, lang_names=lang_names,
-                                   ui_overlay=ui_overlay)
+                                   ui_overlay=ui_overlay, variant=variant,
+                                   stay=stay_ctx)
+
+
+# ── Lien de SÉJOUR (V2-23c, §1.2/§1.3, amendé 02/08 — préfixe dédié `/b/`) ─────
+# `/b/{stay_token}` : le logement est résolu CÔTÉ SERVEUR depuis le séjour du
+# token → le `guide_token` éternel (lien maison) ne voyage JAMAIS dans l'URL
+# envoyée au locataire (correctif de sécurité : sur l'ancienne forme
+# `/g/{guide_token}?s=…`, retirer `?s=` après J+7 suffisait à retrouver les vrais
+# codes). `_real_token()` ne s'applique PAS à `/b/` : un lien de séjour est
+# **envoyé, jamais retapé** → jamais de slug décoratif ; un `/b/{slug}-{token}`
+# n'est donc pas rattrapé (page neutre — décision explicite, couverte par test).
+
+@router.get("/b/{stay_token}", response_class=HTMLResponse)
+def public_stay_page(stay_token: str, conn: Conn, request: Request,
+                     lang: str | None = None):
+    """Page HTML du guide en variant « séjour » : accueil personnalisé (nom +
+    dates du séjour), langue par défaut = `guest_lang` du locataire (un `?lang=`
+    explicite garde la priorité, §1.3), demandes rattachées au séjour du token.
+
+    Tout cas mort (token inconnu, séjour annulé, J+8 après le départ, logement non
+    publié) → la MÊME page neutre que la vitrine — jamais le guide générique, qui
+    exposerait les vrais secrets à un ancien locataire."""
+    stay = _resolve_stay(conn, stay_token)
+    prop_row = (repo.get_published_property_by_id(conn, str(stay["property_id"]))
+                if stay else None)
+    if not prop_row:
+        return HTMLResponse(guide_page.render_stay_expired(), status_code=404,
+                            headers=_NOINDEX)
+    token = prop_row["guide_token"]
+    req_lang = lang or stay.get("guest_lang")
+    stay_ctx = {"guest_name": stay.get("guest_name"),
+                "starts_on": stay["starts_on"], "ends_on": stay["ends_on"],
+                "stay_token": stay_token}
+    html = _render_guide_html(conn, prop_row, token, request, req_lang,
+                              variant="stay", stay_ctx=stay_ctx)
     return HTMLResponse(html, headers=_public_headers())
 
 
@@ -215,6 +300,77 @@ def public_og_image(guide_token: str, conn: Conn):
     png = og_image.build_og_image(prop["name"], subtitle=place)
     return Response(content=png, media_type="image/png",
                     headers=_public_headers())
+
+
+# ── Lien VITRINE (V2-23c, §1.4) ──────────────────────────────────────────────
+# Préfixe distinct `/v/…` : un token vitrine ne peut jamais être confondu avec un
+# guide réel (ni côté code, ni dans les journaux). Même gabarit que le guide (but :
+# montrer le vrai produit) MAIS secrets d'EXEMPLE (jamais réels — le rendu ne
+# touche jamais `property_secrets`), demandes désactivées, bandeau « Aperçu ».
+
+@router.get("/v/{showcase_token}", response_class=HTMLResponse)
+def public_showcase_page(showcase_token: str, conn: Conn, request: Request,
+                         lang: str | None = None):
+    """Page vitrine d'un logement publié (prospect/annonce/démo). 404 propre si le
+    token est inconnu / non publié. Ne montre JAMAIS un secret réel."""
+    prop = repo.get_property_by_showcase_token(conn, showcase_token)
+    if not prop:
+        # Même page neutre que le lien de séjour mort (§1.2/§1.5) : les cas morts
+        # des NOUVEAUX préfixes (`/b/` et `/v/`) servent la même page — jamais un
+        # guide, jamais une donnée du logement.
+        return HTMLResponse(guide_page.render_stay_expired(), status_code=404,
+                            headers=_NOINDEX)
+    _p, sections, pois, area_facts, property_media, effective, lang_names = \
+        _assemble_guide(conn, prop, lang, media_base=f"/v/{showcase_token}")
+    base = _base_url(request)
+    photo = _first_photo_path(sections, property_media, showcase_token)
+    og_image_url = base + (photo or f"/v/{showcase_token}/og-image.png")
+    ui_overlay = repo.ui_translations(conn, effective)
+    # Watermark : même règle que le guide (plan gratuit → marque « Créé avec
+    # Holaguia »), résolu par le propriétaire du logement de la vitrine.
+    watermark = plans.wants_watermark(plans.get_plan(conn, str(prop["owner_id"])))
+    html = guide_page.render_guide(_property_public(prop), sections, pois,
+                                   area_facts, showcase_token, lang=effective,
+                                   base_url=base, og_image_url=og_image_url,
+                                   watermark=watermark, lang_names=lang_names,
+                                   ui_overlay=ui_overlay, variant="showcase",
+                                   canonical_path=f"/v/{showcase_token}",
+                                   manifest=False)
+    return HTMLResponse(html, headers=_public_headers())
+
+
+@router.get("/v/{showcase_token}/og-image.png")
+def showcase_og_image(showcase_token: str, conn: Conn):
+    """Image de marque de la vitrine (aucune photo). 404 si non publié."""
+    prop = repo.get_property_by_showcase_token(conn, showcase_token)
+    if not prop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Introuvable")
+    place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
+    png = og_image.build_og_image(prop["name"], subtitle=place)
+    return Response(content=png, media_type="image/png",
+                    headers=_public_headers())
+
+
+@router.get("/v/{showcase_token}/media/{media_id}")
+def showcase_media(showcase_token: str, media_id: str, conn: Conn):
+    """Sert un média d'une vitrine — mêmes garanties de visibilité que le guide
+    (section visible & 'guest', ou média du logement). 404 sinon. Le vrai
+    `guide_token` ne transite jamais par la vitrine (progrès de sécurité)."""
+    row = repo.get_showcase_media(conn, showcase_token, media_id)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Média introuvable")
+    try:
+        data = storage.get_storage().read(row["storage_key"])
+    except FileNotFoundError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Fichier introuvable")
+    return Response(
+        content=data,
+        media_type=media_files.content_type_for_key(row["storage_key"]),
+        headers=_public_headers(),
+    )
 
 
 @router.get("/g/{guide_token}/data")
@@ -313,9 +469,24 @@ def guest_service_request(guide_token: str, payload: GuestServiceRequestIn,
     if not label:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Ce service n'est pas proposé sur ce guide.")
-    # 2. Rattachement au séjour occupé en cours (à défaut, le suivant).
-    booking = repo.current_or_next_booking_by_guide_token(
-        conn, token, _dt.date.today())
+    # 2. Rattachement au séjour. Lien de SÉJOUR (V2-23c) : rattachement CERTAIN au
+    #    séjour du `stay_token` (le token désigne le séjour du logement — plus de
+    #    devinette). Lien maison : repli sur le séjour occupé en cours (à défaut,
+    #    le suivant).
+    if payload.stay_token:
+        # Rattachement CERTAIN par le `stay_token` seul (V2-23c amendé) : le token
+        # désigne le séjour ET son logement — plus aucune dépendance au
+        # `guide_token` de l'URL, plus aucune devinette.
+        stay = _resolve_stay(conn, payload.stay_token)
+        if not stay:
+            # Token de séjour cassé/expiré/annulé : on ne devine pas (ce serait
+            # rattacher au séjour d'un autre) et on ne révèle rien.
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="Ce lien de séjour n'est plus actif.")
+        booking = repo.get_booking(conn, str(stay["property_id"]), str(stay["id"]))
+    else:
+        booking = repo.current_or_next_booking_by_guide_token(
+            conn, token, _dt.date.today())
     if not booking:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

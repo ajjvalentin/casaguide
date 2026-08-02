@@ -3009,3 +3009,201 @@ def test_subscription_exposes_has_stripe_customer(billing):
                 headers=owner["headers"])
     after = client.get("/api/subscription", headers=owner["headers"]).json()
     assert after["has_stripe_customer"] is True
+
+
+# ── Lien de séjour /b/ & lien vitrine /v/ (V2-23c, volet 1 refactoré — §1.5) ──
+# Le lien de SÉJOUR a son propre préfixe `/b/{stay_token}` : le logement est
+# résolu côté serveur, le `guide_token` éternel ne voyage jamais dans l'URL du
+# locataire. Les cas morts des NOUVEAUX préfixes (`/b/` et `/v/`) servent la MÊME
+# page neutre. `_real_token()` ne s'applique pas à `/b/` (lien envoyé, jamais
+# retapé). Préfixes réservés : /g/ maison · /s/ équipe · /v/ vitrine · /b/ séjour.
+
+from datetime import date as _date, timedelta as _td  # noqa: E402
+
+from api import guide_page as _gp  # noqa: E402
+
+
+def _dbdict():
+    return psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row)
+
+
+def _publish_prop(client, headers, **over):
+    """Logement publié minimal (pas d'enrichissement requis pour /b/ et /v/)."""
+    prop = make_property(client, headers, **over)
+    r = client.patch(f"/api/properties/{prop['id']}", headers=headers,
+                     json={"status": "published"})
+    assert r.status_code == 200, r.text
+    return prop
+
+
+def _make_booking(client, headers, pid, **over):
+    body = {"starts_on": str(_date.today() - _td(days=1)),
+            "ends_on": str(_date.today() + _td(days=5)), "nature": "reservation"}
+    body.update(over)
+    r = client.post(f"/api/properties/{pid}/bookings", headers=headers, json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _stay_token(pid, booking_id):
+    with _dbdict() as conn:
+        tok = repo.ensure_stay_token(conn, pid, booking_id)
+        conn.commit()
+    return tok
+
+
+def _showcase_token(email, pid):
+    with _dbdict() as conn:
+        owner = conn.execute("SELECT id FROM owners WHERE email = %s",
+                             (email,)).fetchone()
+        tok = repo.ensure_showcase_token(conn, str(owner["id"]), pid)
+        conn.commit()
+    return tok
+
+
+def test_stay_link_served_before_expiry_j6(client):
+    """J+6 après le départ (dans la fenêtre de 7 j) → guide servi, accueil séjour."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"], guest_name="Tracy",
+                      starts_on=str(_date.today() - _td(days=10)),
+                      ends_on=str(_date.today() - _td(days=6)))
+    tok = _stay_token(prop["id"], b["id"])
+    r = client.get(f"/b/{tok}")
+    assert r.status_code == 200
+    # Le guide (variant séjour) est servi via le guide_token résolu côté serveur.
+    assert f'data-token="{prop["guide_token"]}"' in r.text
+    assert prop["name"] in r.text
+    assert "Tracy" in r.text           # accueil personnalisé
+    assert 'data-stay-token="' + tok in r.text  # rattachement certain des demandes
+
+
+def test_stay_link_expired_j8_serves_neutral_page(client):
+    """J+8 après le départ → page neutre (aucune donnée du logement, pas le nom)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"], guest_name="Tracy",
+                      starts_on=str(_date.today() - _td(days=12)),
+                      ends_on=str(_date.today() - _td(days=8)))
+    tok = _stay_token(prop["id"], b["id"])
+    r = client.get(f"/b/{tok}")
+    assert r.status_code == 404
+    assert r.text == _gp.render_stay_expired()
+    assert prop["name"] not in r.text and "Tracy" not in r.text
+
+
+def test_stay_link_cancelled_serves_neutral_page(client):
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"])
+    tok = _stay_token(prop["id"], b["id"])
+    client.patch(f"/api/properties/{prop['id']}/bookings/{b['id']}",
+                 headers=owner["headers"], json={"status": "cancelled"})
+    r = client.get(f"/b/{tok}")
+    assert r.status_code == 404 and r.text == _gp.render_stay_expired()
+
+
+def test_stay_and_showcase_dead_cases_share_same_neutral_page(client):
+    """Préfixes croisés : un guide_token/showcase_token sous /b/, un stay_token/
+    guide_token sous /v/ → TOUS la même page neutre, jamais un guide."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"])
+    stay = _stay_token(prop["id"], b["id"])
+    show = _showcase_token(owner["email"], prop["id"])
+    guide = prop["guide_token"]
+    neutral = _gp.render_stay_expired()
+    for path in (f"/b/{guide}", f"/b/{show}", f"/b/unknown-nope",
+                 f"/v/{stay}", f"/v/{guide}", f"/v/unknown-nope"):
+        r = client.get(path)
+        assert r.status_code == 404, path
+        assert r.text == neutral, path
+    # Contrôle : les vrais liens fonctionnent (200), jamais confondus.
+    assert client.get(f"/b/{stay}").status_code == 200
+    assert client.get(f"/v/{show}").status_code == 200
+
+
+def test_showcase_has_no_secrets_route_and_not_swallowed_by_spa(client):
+    """§1.5 : aucune route secrets sous /v/ (404 de l'API), et un chemin /v/…
+    non capté ne tombe pas en silence dans l'attrape-tout de la SPA (index.html)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    show = _showcase_token(owner["email"], prop["id"])
+    r = client.get(f"/v/{show}/secrets")
+    assert r.status_code == 404
+    # La SPA renverrait 200 + index.html : on vérifie qu'elle n'avale pas /v/….
+    assert "<title>Holaguia" not in r.text and "js/app.js" not in r.text
+
+
+def test_b_captured_by_api_not_spa(client):
+    """/b/ est capté par l'API (page neutre), pas par l'attrape-tout SPA (200)."""
+    r = client.get("/b/definitely-not-a-token")
+    assert r.status_code == 404
+    assert r.text == _gp.render_stay_expired()
+    assert "js/app.js" not in r.text
+
+
+def test_b_ignores_decorative_slug(client):
+    """`_real_token()` NE s'applique PAS à /b/ : un lien de séjour est envoyé,
+    jamais retapé → `/b/{slug}-{token}` n'est pas rattrapé (page neutre)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"])
+    tok = _stay_token(prop["id"], b["id"])
+    assert client.get(f"/b/{tok}").status_code == 200          # token nu → servi
+    r = client.get(f"/b/villa-mar-azul-{tok}")                 # slug décoratif
+    assert r.status_code == 404 and r.text == _gp.render_stay_expired()
+
+
+def test_service_request_on_dead_stay_token_returns_404(client):
+    """Demande de service portant un stay_token mort → 404, jamais de rattachement
+    (on ne devine pas le séjour sur un token cassé)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    # Section « sur demande » visible (B_cleaning est requestable au seed).
+    client.put(f"/api/properties/{pid}/sections/B_cleaning", headers=owner["headers"],
+               json={"content": {}, "is_visible": True})
+    b = _make_booking(client, owner["headers"], pid)
+    tok = _stay_token(pid, b["id"])
+    client.patch(f"/api/properties/{pid}/bookings/{b['id']}",
+                 headers=owner["headers"], json={"status": "cancelled"})
+    with _dbdict() as conn:
+        before = conn.execute("SELECT count(*) AS n FROM booking_requests "
+                              "WHERE booking_id = %s", (b["id"],)).fetchone()["n"]
+    r = client.post(f"/g/{prop['guide_token']}/requests",
+                    json={"section": "B_cleaning", "stay_token": tok})
+    assert r.status_code == 404
+    assert "séjour n'est plus actif" in r.json()["detail"]
+    with _dbdict() as conn:
+        after = conn.execute("SELECT count(*) AS n FROM booking_requests "
+                             "WHERE booking_id = %s", (b["id"],)).fetchone()["n"]
+    assert after == before  # aucun rattachement deviné
+
+
+def test_stay_link_defaults_to_guest_lang_without_query(client):
+    """guest_lang='de' → guide servi en allemand sans ?lang= ; un ?lang= explicite
+    garde la priorité. La langue doit être publiée au registre (invariant 15)."""
+    with _dbdict() as conn:
+        conn.execute("UPDATE languages SET status = 'published' WHERE code = 'de'")
+        conn.commit()
+    try:
+        owner = register(client)
+        prop = _publish_prop(client, owner["headers"])
+        # Le logement offre l'allemand (rempli à la publication en prod ; ici direct).
+        with _dbdict() as conn:
+            conn.execute("UPDATE properties SET published_langs = %s WHERE id = %s",
+                         (["de"], prop["id"]))
+            conn.commit()
+        b = _make_booking(client, owner["headers"], prop["id"], guest_lang="de")
+        tok = _stay_token(prop["id"], b["id"])
+        r = client.get(f"/b/{tok}")
+        assert r.status_code == 200
+        assert '<html lang="de"' in r.text and 'data-lang="de"' in r.text
+        # ?lang= explicite garde la priorité (repli langue source ici : fr).
+        r2 = client.get(f"/b/{tok}?lang=fr")
+        assert '<html lang="fr"' in r2.text
+    finally:
+        with _dbdict() as conn:
+            conn.execute("UPDATE languages SET status = 'draft' WHERE code = 'de'")
+            conn.commit()

@@ -97,6 +97,9 @@ CREATE TABLE properties (
     -- l'équipe d'entretien (§M-13). Même mécanique que guide_token (128 bits).
     staff_token      TEXT NOT NULL UNIQUE
                      DEFAULT encode(gen_random_bytes(16), 'hex'),
+    -- Lien VITRINE (V2-23c) : prospect/annonce/démo. N'expose JAMAIS un secret
+    -- réel (valeurs d'exemple). Généré à la demande (NULL tant que non partagé).
+    showcase_token   TEXT UNIQUE,
     access_mode      TEXT NOT NULL DEFAULT 'link',
                      -- 'link' (MVP) | 'pin' | 'stay_dates' (V2)
     access_pin_hash  TEXT,                         -- si access_mode = 'pin'
@@ -183,6 +186,9 @@ CREATE TABLE bookings (
                   CHECK (source IN ('airbnb', 'vrbo', 'booking', 'direct', 'other')),
     external_uid  TEXT,                             -- UID iCal (NULL si saisie directe)
     guest_name    TEXT,
+    -- Lien de SÉJOUR (V2-23c) : personnalisé, rattachement certain des demandes,
+    -- expire J+7 après le départ. Généré à la demande (NULL tant que non partagé).
+    stay_token    TEXT UNIQUE,
     guest_contact TEXT,                             -- legacy fourre-tout (repli tant que phone/email vides)
     -- Coordonnées séparées (V2-23b, §3.0) : le téléphone est une ACTION (tel:/
     -- WhatsApp cliquable pour un rendez-vous), l'email en est une autre (mailto:,

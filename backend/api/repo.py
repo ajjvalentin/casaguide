@@ -11,6 +11,7 @@ par le pipeline) : aucun calcul géographique ni appel externe côté lecture
 from __future__ import annotations
 
 import json
+import secrets as _secrets
 from typing import Any
 
 # Colonnes publiques d'un logement (jamais de secrets ici)
@@ -1032,6 +1033,99 @@ def get_published_property_by_token(conn, token: str) -> dict | None:
     ).fetchone()
 
 
+def get_published_property_by_id(conn, property_id: str) -> dict | None:
+    """Logement publié désigné par son id (V2-23c, lien de séjour `/b/`). Mêmes
+    colonnes publiques que `get_published_property_by_token`, **plus le
+    `guide_token`** : le lien de séjour résout le logement côté serveur depuis le
+    séjour du token, puis rend le guide via le `guide_token` (fetches internes de
+    l'app : secrets/data/média). None si brouillon/archivé ou id inconnu."""
+    return conn.execute(
+        """SELECT id, name, address_line1, address_line2, postal_code,
+                  city, region, country_code,
+                  ST_Y(geom) AS lat, ST_X(geom) AS lon,
+                  default_lang, published_langs, access_mode, guide_token,
+                  contact_name, contact_phone, contact_whatsapp, contact_email,
+                  contact_backup, tourism_license
+           FROM properties
+           WHERE id = %s AND status = 'published'""",
+        (property_id,),
+    ).fetchone()
+
+
+def get_property_by_showcase_token(conn, token: str) -> dict | None:
+    """Logement publié désigné par son **lien vitrine** (V2-23c). Mêmes colonnes
+    publiques que `get_published_property_by_token` (jamais de secret). None si le
+    token est inconnu ou le logement non publié — on ne révèle rien. Le préfixe
+    d'URL est distinct (`/v/…`) : un token vitrine ne peut jamais être confondu
+    avec un guide réel (ni côté code, ni dans les journaux)."""
+    return conn.execute(
+        """SELECT id, owner_id, name, address_line1, address_line2, postal_code,
+                  city, region, country_code,
+                  ST_Y(geom) AS lat, ST_X(geom) AS lon,
+                  default_lang, published_langs, access_mode,
+                  contact_name, contact_phone, contact_whatsapp, contact_email,
+                  contact_backup, tourism_license
+           FROM properties
+           WHERE showcase_token = %s AND status = 'published'""",
+        (token,),
+    ).fetchone()
+
+
+def get_booking_by_stay_token(conn, token: str) -> dict | None:
+    """Séjour désigné par son **lien de séjour** (V2-23c), quel que soit son
+    statut/nature (le router arbitre : logement du guide, actif, non expiré). None
+    si le token est inconnu — le lien meurt avec le séjour (annulation/suppression
+    → 404, on ne révèle rien). `guest_lang` pilote la langue par défaut du rendu ;
+    `guest_name`/dates l'accueil personnalisé."""
+    return conn.execute(
+        """SELECT id, property_id, guest_name, guest_lang,
+                  starts_on, ends_on, status
+           FROM bookings
+           WHERE stay_token = %s""",
+        (token,),
+    ).fetchone()
+
+
+def _random_token() -> str:
+    """Token secret ≥ 128 bits, même régime que guide_token/staff_token (§8).
+    URL-safe (base64url) : jamais confondable avec le slug d'un lien `/g/…`, qui
+    n'apparaît que devant le guide_token (hex pur)."""
+    return _secrets.token_urlsafe(16)
+
+
+def ensure_stay_token(conn, property_id: str, booking_id: str) -> str | None:
+    """Renvoie le `stay_token` du séjour, le générant au **premier usage** (fenêtre
+    d'envoi, §3.1). None si le séjour n'appartient pas au logement (garde-fou
+    multi-tenant). Idempotent : réutilise le token déjà posé."""
+    row = conn.execute(
+        "SELECT stay_token FROM bookings WHERE id = %s AND property_id = %s",
+        (booking_id, property_id)).fetchone()
+    if not row:
+        return None
+    if row["stay_token"]:
+        return row["stay_token"]
+    tok = _random_token()
+    conn.execute("UPDATE bookings SET stay_token = %s WHERE id = %s",
+                 (tok, booking_id))
+    return tok
+
+
+def ensure_showcase_token(conn, owner_id: str, property_id: str) -> str | None:
+    """Renvoie le `showcase_token` du logement, le générant au **premier usage**.
+    Filtre par propriétaire (multi-tenant). Idempotent."""
+    row = conn.execute(
+        "SELECT showcase_token FROM properties WHERE id = %s AND owner_id = %s",
+        (property_id, owner_id)).fetchone()
+    if not row:
+        return None
+    if row["showcase_token"]:
+        return row["showcase_token"]
+    tok = _random_token()
+    conn.execute("UPDATE properties SET showcase_token = %s WHERE id = %s",
+                 (tok, property_id))
+    return tok
+
+
 def guide_sections(conn, property_id: str) -> list[dict]:
     """Sections **voyageur** visibles d'un guide (audience='guest'), avec les
     métadonnées de leur template. Les sections 'staff' (cahier de l'équipe
@@ -1102,6 +1196,24 @@ def get_public_media(conn, token: str, media_id: str) -> dict | None:
              AND (m.section_id IS NULL
                   OR (ps.is_visible = TRUE AND t.audience = 'guest'))""",
         (media_id, token),
+    ).fetchone()
+
+
+def get_showcase_media(conn, showcase_token: str, media_id: str) -> dict | None:
+    """Média d'un logement **publié** servi via son lien vitrine (V2-23c). Mêmes
+    garanties de visibilité que `get_public_media` (section visible & 'guest', ou
+    média de niveau logement), mais résolu par `showcase_token` : le vrai
+    `guide_token` ne transite jamais par la page vitrine (progrès de sécurité)."""
+    return conn.execute(
+        """SELECT m.kind, m.storage_key
+           FROM media m
+           JOIN properties pr ON pr.id = m.property_id
+           LEFT JOIN property_sections ps ON ps.id = m.section_id
+           LEFT JOIN section_templates t ON t.code = ps.template_code
+           WHERE m.id = %s AND pr.showcase_token = %s AND pr.status = 'published'
+             AND (m.section_id IS NULL
+                  OR (ps.is_visible = TRUE AND t.audience = 'guest'))""",
+        (media_id, showcase_token),
     ).fetchone()
 
 
