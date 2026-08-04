@@ -389,3 +389,54 @@ publiée au registre retombe sur la langue source (invariant 15) et n'expose pas
 
 *Hors périmètre V2-23c : la surcharge du code de boîte à clés par séjour (volet 2)
 et l'envoi automatique J-7 dans la langue du locataire (V2-23d).*
+
+## 9. « Envoyer par Holaguia » — l'email HTML part du backend (V2-23d, volet 1)
+
+Les `mailto:`/`wa.me` de la fenêtre (§8.2) dépendent de la messagerie du
+propriétaire et sont peu vendeurs. **V2-23d ajoute un canal principal** : un email
+HTML soigné (gabarit transactionnel V2-08 — sable/encre/mer, vignette du logement,
+bouton d'action) **envoyé depuis le serveur**.
+
+### 9.1 L'endpoint (`routers/send.py`)
+
+`POST /api/properties/{id}/send-guide` (authentifié, garde multi-tenant
+`OwnedProperty`) — corps `SendGuideIn` : `kind` (`stay`|`showcase`), `booking_id`
+(requis si `stay`), `lang` (validée contre le **registre**, invariant 15 → 422
+sinon), `recipient` (défaut : email de la fiche pour un séjour, `care.effective_email` ;
+**requis** pour la vitrine). Le **token est assuré côté serveur**
+(`ensure_stay_token`/`ensure_showcase_token`) — le client n'envoie **jamais**
+d'URL, et le `guide_token` éternel ne figure ni dans le lien (`/b/`·`/v/`) ni dans
+le corps. **Envoi SYNCHRONE** (le propriétaire attend la confirmation) ; une panne
+SMTP → **502 propre** (jamais un 500 nu) et **aucune** trace écrite.
+`GET …/last-send?kind=&booking_id=` renvoie le dernier envoi (« déjà envoyé le… »).
+
+### 9.2 Gabarits localisés (`emails.guide_stay_email` / `guide_showcase_email`)
+
+Contrairement aux emails owner (restés FR), ces deux emails partent **vers le
+voyageur/prospect** → ils sont **localisés**. Copies FR/EN/ES dans `emails._EMAIL` ;
+langues supplémentaires (nl/de/it/sq) via l'overlay `ui_translations` — nouveau
+domaine d'inventaire **`email.*`** (`i18n.email_key`), repli FR sans trou (même
+mécanique que `guide_page._t`). Le bouton pointe vers `/b/{stay_token}?lang=` ou
+`/v/{showcase_token}?lang=`. Version texte jointe (multipart, comme V2-08). Copies
+FR actées (André, 02/08).
+
+Le `mailto:`/`wa.me` de secours se différencie **aussi** par cible :
+`GET /send-templates?kind=stay|showcase|house` — séjour/vitrine partagent les copies
+de l'email (`email.*`, texte brut) ; la **maison** garde le gabarit utilitaire
+générique `ui.send_*`.
+
+### 9.3 Traçage (`guide_sends`, migration 022)
+
+Une ligne par envoi **réussi** (`id`, `property_id`, `booking_id` NULL pour la
+vitrine, `kind`, `lang`, `recipient`, `sent_at`), écrite **après** l'envoi SMTP.
+C'est la mémoire dont l'**automatisation J-7** (volet 2, **en RESTE**) aura besoin
+(« déjà envoyé ? ») et l'affichage « envoyé le… » de la fenêtre. Aucun backfill
+(rien n'est amorcé à la création).
+
+Côté front (`sendmenu.js`), « Envoyer par Holaguia » est le **premier** canal du
+séjour et de la vitrine (états : envoi en cours → « Envoyé ✓ » → erreur) ; la
+vitrine exige un **email saisi** ; le reste passe en « ou via votre messagerie ».
+La **maison** reste inchangée (lien utilitaire, pas d'email backend).
+
+*Hors périmètre V2-23d volet 1 : l'automatisation J-7 elle-même (volet 2), le suivi
+d'ouverture, les pièces jointes.*

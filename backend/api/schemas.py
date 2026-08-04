@@ -674,6 +674,35 @@ class ShareLinkOut(BaseModel):
     url: str
 
 
+class SendGuideIn(BaseModel):
+    """Envoi du guide par le backend (V2-23d, volet 1) : « Envoyer par Holaguia ».
+    Le client n'envoie JAMAIS d'URL — le token est assuré côté serveur
+    (`ensure_stay_token`/`ensure_showcase_token`). `kind='stay'` exige `booking_id` ;
+    `recipient` est facultatif pour un séjour (défaut : email de la fiche) et
+    **requis** pour la vitrine (aucun destinataire de fiche)."""
+    kind: Literal["stay", "showcase"]
+    booking_id: str | None = None
+    lang: str | None = None
+    recipient: EmailStr | None = None
+
+
+class SendGuideOut(BaseModel):
+    """Confirmation d'un envoi réussi (V2-23d) : destinataire servi + horodatage."""
+    recipient: str
+    kind: str
+    lang: str
+    sent_at: datetime
+
+
+class LastSendOut(BaseModel):
+    """Dernier envoi du guide pour une cible (fenêtre d'envoi, V2-23d). `sent`
+    False si jamais envoyé (aucun autre champ significatif)."""
+    sent: bool
+    recipient: str | None = None
+    lang: str | None = None
+    sent_at: datetime | None = None
+
+
 class SendTemplatesOut(BaseModel):
     """Gabarits courts d'envoi du guide (email/WhatsApp) résolus dans une langue
     (V2-23c, volet 3). Textes portés par l'inventaire i18n (clés `ui.send_*`,

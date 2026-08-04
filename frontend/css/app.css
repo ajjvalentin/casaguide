@@ -287,6 +287,21 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .send-qr canvas{width:150px;height:150px}
 .send-invite-wrap{display:flex;flex-direction:column;gap:4px}
 .send-invite{align-self:flex-start;border-style:dashed}
+/* « Envoyer par Holaguia » — canal principal (V2-23d) */
+.send-holaguia{display:flex;flex-direction:column;gap:9px;background:var(--sand);
+  border:1px solid var(--line);border-radius:12px;padding:14px}
+.send-holaguia-title{display:flex;align-items:center;gap:7px;font-weight:600;
+  color:var(--ink);font-size:14px}
+.send-holaguia-title [data-lucide]{width:15px;height:15px;color:var(--sea)}
+.send-holaguia-btn{align-self:flex-start}
+.send-recipient{width:100%}
+.send-status{display:flex;align-items:center;gap:6px;font-size:13px;min-height:1px}
+.send-status.ok{color:var(--ok)}
+.send-status.ok [data-lucide]{width:15px;height:15px}
+.send-status.err{color:var(--err,#B4322B)}
+.send-last{font-size:12.5px}
+.send-or{font-size:12.5px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.04em;margin-top:2px}
 
 /* ── Éditeur de guide (M-03) ──────────────────────────────────────────────── */
 .editor{display:grid;grid-template-columns:270px 1fr;gap:22px;align-items:start}

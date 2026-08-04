@@ -1,10 +1,12 @@
 <!doctype html>
-<!-- Harnais headless de la fenêtre « Envoyer le guide » (V2-23c, volet 3).
-     Pilote le VRAI /frontend/js/components/sendmenu.js avec un fetch simulé
-     (aucune requête réseau) : liste des séjours, langues offertes, liens générés
-     à la demande, gabarits d'envoi localisés. On teste le composant SUR SON ARBRE
-     RENDU (querySelector du DOM monté), jamais via une référence interne (leçon
-     V2-18c). Verdict dans #result, lu par send.test.mjs. Hors frontend/. -->
+<!-- Harnais headless de la fenêtre « Envoyer le guide » (V2-23c volet 3 + V2-23d
+     volet 1). Pilote le VRAI /frontend/js/components/sendmenu.js avec un fetch
+     simulé (aucune requête réseau) : liste des séjours, langues offertes, liens à
+     la demande, gabarits localisés kind-aware, ET le canal « Envoyer par Holaguia »
+     (email backend synchrone, états, vitrine → email obligatoire). On teste le
+     composant SUR SON ARBRE RENDU (querySelector du DOM monté), jamais via une
+     référence interne (leçon V2-18c). Verdict dans #result, lu par send.test.mjs.
+     Hors frontend/. -->
 <meta charset="utf-8">
 <title>send-harness</title>
 <div id="app"></div>
@@ -55,27 +57,54 @@ const LANGS = [
   { code: "de", name_native: "Deutsch", published: true },
 ];
 
+// Gabarits kind-aware (V2-23d) : maison = générique ; séjour/vitrine = copies de
+// vente distinctes. Le séjour 🇩🇪 garde un intro allemand (assertion de langue).
 const TEMPLATES = {
-  fr: { subject: "Votre guide — {property}", hello: "Bonjour {name},",
-    hello_generic: "Bonjour,", intro: "Voici le lien de votre guide :",
-    signoff: "Au plaisir de vous accueillir !" },
-  de: { subject: "Ihr Reiseführer — {property}", hello: "Hallo {name},",
-    hello_generic: "Hallo,", intro: "Hier ist der Link zu Ihrem Reiseführer:",
-    signoff: "Wir freuen uns auf Sie!" },
+  house: {
+    fr: { subject: "Votre guide — {property}", hello: "Bonjour {name},",
+      hello_generic: "Bonjour,", intro: "Voici le lien de votre guide :",
+      signoff: "Au plaisir de vous accueillir !" },
+    de: { subject: "Ihr Reiseführer — {property}", hello: "Hallo {name},",
+      hello_generic: "Hallo,", intro: "Hier ist der Link zu Ihrem Reiseführer:",
+      signoff: "Wir freuen uns auf Sie!" },
+  },
+  stay: {
+    fr: { subject: "Votre guide pour {property} — séjour du {start} au {end}",
+      hello: "Bonjour {name},", hello_generic: "Bonjour,",
+      intro: "voici votre guide personnel pour votre séjour.", signoff: "" },
+    de: { subject: "Ihr Reiseführer für {property} — Aufenthalt vom {start} bis {end}",
+      hello: "Hallo {name},", hello_generic: "Hallo,",
+      intro: "Hier ist der Link zu Ihrem Reiseführer:", signoff: "" },
+  },
+  showcase: {
+    fr: { subject: "Découvrez {property} en visite guidée", hello: "Bonjour,",
+      hello_generic: "Bonjour,", intro: "avant même de réserver, visitez {property}…",
+      signoff: "À votre disposition pour toute question." },
+  },
 };
 
-// Compteurs d'appels serveur (idempotence : un même séjour ne re-génère pas).
+// Compteurs / journaux (idempotence des tokens + envois backend).
 window.__calls = { stay: {}, showcase: 0 };
+window.__sends = [];
 
 window.fetch = async (path, opts = {}) => {
   const j = (body) => new Response(JSON.stringify(body),
     { status: 200, headers: { "Content-Type": "application/json" } });
   if (path === "/languages") return j(LANGS);
   if (path.startsWith("/send-templates")) {
-    const lg = new URLSearchParams(path.split("?")[1]).get("lang") || "fr";
-    return j(TEMPLATES[lg] || TEMPLATES.fr);
+    const p = new URLSearchParams(path.split("?")[1]);
+    const lg = p.get("lang") || "fr", kind = p.get("kind") || "house";
+    const set = TEMPLATES[kind] || TEMPLATES.house;
+    return j(set[lg] || set.fr);
   }
   if (path.endsWith("/calendar")) return j({ property_id: "p1", bookings: BOOKINGS });
+  if (path.includes("/last-send")) return j({ sent: false });
+  if (path.includes("/send-guide") && opts.method === "POST") {
+    const body = JSON.parse(opts.body || "{}");
+    window.__sends.push(body);
+    return j({ recipient: body.recipient, kind: body.kind, lang: body.lang,
+      sent_at: "2026-08-02T21:05:00+02:00" });
+  }
   const stayM = path.match(/\/bookings\/([^/]+)\/stay-link$/);
   if (stayM && opts.method === "POST") {
     const bid = stayM[1];
@@ -99,7 +128,9 @@ const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const targetBtn = (label) => qa(".send-target").find((b) => b.textContent.includes(label));
 const langActive = () => q(".send-lang.active");
-const linkVal = () => (q(".send-channels input") || {}).value || "";
+// Le champ « Lien à partager » est readonly ; ne pas confondre avec le champ
+// « destinataire » (input.send-recipient) de la vitrine.
+const linkVal = () => (qa(".send-channels input").find((i) => i.readOnly) || {}).value || "";
 const channelAnchors = () => qa(".send-channels a");
 const mailtoHref = () => {
   const a = channelAnchors().find((x) => (x.getAttribute("href") || "").startsWith("mailto:"));
@@ -109,6 +140,8 @@ const waHref = () => {
   const a = channelAnchors().find((x) => (x.getAttribute("href") || "").includes("wa.me"));
   return a ? a.getAttribute("href") : null;
 };
+const holaBtn = () => q(".send-holaguia-btn");
+const holaStatus = () => q(".send-holaguia .send-status");
 
 try {
   await openSendMenu(PROP);
@@ -122,14 +155,13 @@ try {
   chk(opts.some((o) => o.textContent.includes("Tracy Russel"))
     && !opts.some((o) => o.textContent.includes("Old Guest")),
     "à venir listés, passés exclus");
-  // §3.1 amendé : works/unavailable exclus (pas de locataire), unqualified conservé.
   chk(!opts.some((o) => o.textContent.includes("Peinture façade"))
     && !opts.some((o) => o.textContent.includes("Indispo propriétaire")),
     "natures sans locataire (works/unavailable) exclues de la liste d'envoi");
   chk(opts.some((o) => o.textContent.includes("À qualifier")),
     "nature unqualified conservée (souvent un vrai locataire pas encore qualifié)");
 
-  // ── 2. Séjour 🇩🇪 : langue pré-sélectionnée de + lien /b/ + email allemand ──
+  // ── 2. Séjour 🇩🇪 : langue pré-sélectionnée + lien /b/ + email allemand ────
   chk(langActive() && /Deutsch/.test(langActive().textContent),
     "langue pré-sélectionnée depuis guest_lang (Deutsch actif)");
   chk(linkVal().includes("/b/stay_bde"), "lien de séjour /b/… (v=" + linkVal() + ")");
@@ -142,6 +174,21 @@ try {
   chk(wa.includes("wa.me/34600111222"), "WhatsApp vers le téléphone de la fiche (chiffres)");
   chk(wa.includes("Hallo Tracy,"), "message WhatsApp en allemand");
 
+  // ── 2bis. « Envoyer par Holaguia » : canal PRINCIPAL du séjour ────────────
+  chk(q(".send-channels").firstChild.classList.contains("send-holaguia"),
+    "« Envoyer par Holaguia » est le premier canal du séjour");
+  chk(!!holaBtn(), "bouton d'envoi backend présent (séjour avec email)");
+  chk(!!q(".send-or"), "les autres canaux passent en « ou via votre messagerie »");
+  holaBtn().click(); await wait(60);
+  chk(/Envoyé ✓/.test((holaStatus() || {}).textContent || ""),
+    "après envoi : état « Envoyé ✓ » lu dans le DOM monté");
+  const sent = window.__sends[0] || {};
+  chk(sent.kind === "stay" && sent.booking_id === "bde"
+    && sent.recipient === "tracy@ex.com" && sent.lang === "de",
+    "POST /send-guide : kind/booking/recipient/lang corrects (vu " + JSON.stringify(sent) + ")");
+  chk(!("url" in sent) && !("token" in sent),
+    "le client n'envoie JAMAIS d'URL ni de token (assurés côté serveur)");
+
   // ── 3. Idempotence : changer de langue ne re-génère pas le token du séjour ─
   const frPill = qa(".send-lang").find((p) => /Français/.test(p.textContent));
   frPill.click(); await wait(60);
@@ -149,21 +196,35 @@ try {
   chk(linkVal().includes("/b/stay_bde") && linkVal().includes("lang=fr"),
     "la langue choisie force ?lang= sur le lien de séjour");
 
-  // ── 4. Vitrine → /v/… ; aucun guide_token ────────────────────────────────
+  // ── 4. Vitrine → /v/… ; email OBLIGATOIRE ; aucun guide_token ─────────────
   targetBtn("Vitrine").click(); await wait(80);
   chk(linkVal().includes("/v/showtok"), "vitrine → lien /v/… (v=" + linkVal() + ")");
   chk(!linkVal().includes("gtok"), "le lien vitrine ne contient jamais le guide_token");
+  chk(!!q(".send-recipient"), "vitrine : champ « destinataire » à saisir");
+  chk(holaBtn() && holaBtn().disabled, "vitrine : bouton d'envoi désactivé tant qu'aucun email valide");
+  const inp = q(".send-recipient");
+  inp.value = "pas-un-email"; inp.dispatchEvent(new Event("input")); await wait(20);
+  chk(holaBtn().disabled, "email invalide → bouton toujours désactivé");
+  inp.value = "buyer@ex.com"; inp.dispatchEvent(new Event("input")); await wait(20);
+  chk(!holaBtn().disabled, "email valide → bouton activé");
+  holaBtn().click(); await wait(60);
+  const shSend = window.__sends.find((s) => s.kind === "showcase") || {};
+  chk(shSend.recipient === "buyer@ex.com" && shSend.lang === "fr"
+    && !("booking_id" in shSend),
+    "POST vitrine : kind=showcase, recipient saisi, sans booking (vu " + JSON.stringify(shSend) + ")");
 
-  // ── 5. Lien maison → contient bien le guide_token (choix explicite) ───────
+  // ── 5. Lien maison → contient bien le guide_token ; PAS d'envoi backend ───
   targetBtn("Lien maison").click(); await wait(80);
   chk(linkVal().includes("/g/") && linkVal().includes("gtok"),
     "lien maison = /g/{slug}-{guide_token} (choix explicite, v=" + linkVal() + ")");
+  chk(!holaBtn() && !q(".send-or"),
+    "maison : pas d'« Envoyer par Holaguia » (lien utilitaire, pas d'email backend)");
 
-  // ── 6. Le manque devient une invitation (jamais un mailto vide) ───────────
+  // ── 6. Le manque devient une invitation (jamais un envoi vide) ────────────
   targetBtn("Un séjour").click(); await wait(80);
   const sel = q(".send-booking");
   sel.value = "bnc"; sel.dispatchEvent(new Event("change")); await wait(80);
-  chk(!mailtoHref(), "séjour sans email → aucun bouton mailto");
+  chk(!holaBtn(), "séjour sans email → pas de bouton « Envoyer par Holaguia »");
   const invites = qa(".send-invite").map((b) => b.textContent).join(" | ");
   chk(/Ajouter un email à ce séjour/.test(invites), "invitation « Ajouter un email à ce séjour »");
   chk(/Ajouter un téléphone à ce séjour/.test(invites), "invitation « Ajouter un téléphone à ce séjour »");

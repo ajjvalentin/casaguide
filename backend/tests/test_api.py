@@ -3430,3 +3430,192 @@ def test_send_templates_localized(client):
     assert fr["subject"] == "Votre guide — {property}" and fr != en
     # Langue inconnue → repli FR propre (jamais de trou).
     assert client.get("/send-templates?lang=zz").json()["subject"] == fr["subject"]
+
+
+# ── « Envoyer par Holaguia » : email HTML du guide, backend (V2-23d, volet 1) ──
+# L'email part du serveur (synchrone). Le token est assuré côté serveur ; le
+# `guide_token` éternel ne figure JAMAIS dans le lien envoyé. Chaque envoi réussi
+# est tracé (`guide_sends`) ; une panne SMTP → 502 propre, aucune trace.
+
+from api.deps import get_mailer  # noqa: E402
+from api.mailer import ConsoleMailer  # noqa: E402
+
+
+def _use_mailer(m):
+    app.dependency_overrides[get_mailer] = lambda: m
+
+
+class _BoomMailer:
+    """Mailer qui échoue toujours (panne SMTP simulée)."""
+    def __init__(self):
+        self.sent = []
+
+    def send(self, to, email):
+        raise RuntimeError("SMTP down")
+
+
+def _offer_langs(pid, langs):
+    """Force les langues publiées d'un logement (sans passer par l'enrichissement)
+    — suffisant pour exercer l'offre de langues de l'envoi."""
+    with _dbdict() as conn:
+        conn.execute("UPDATE properties SET published_langs = %s WHERE id = %s",
+                     (langs, pid))
+        conn.commit()
+
+
+def test_send_guide_requires_auth(client):
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    b = _make_booking(client, owner["headers"], prop["id"], guest_email="g@ex.com")
+    r = client.post(f"/api/properties/{prop['id']}/send-guide",
+                    json={"kind": "stay", "booking_id": b["id"]})
+    assert r.status_code == 401
+
+
+def test_send_guide_foreign_property_404(client):
+    """Multi-tenant : un autre propriétaire ne peut pas envoyer le guide d'un
+    logement qui n'est pas le sien (OwnedProperty → 404)."""
+    owner1 = register(client)
+    prop = _publish_prop(client, owner1["headers"])
+    b = _make_booking(client, owner1["headers"], prop["id"], guest_email="g@ex.com")
+    owner2 = register(client)
+    r = client.post(f"/api/properties/{prop['id']}/send-guide",
+                    headers=owner2["headers"],
+                    json={"kind": "stay", "booking_id": b["id"]})
+    assert r.status_code == 404
+
+
+def test_send_guide_foreign_booking_404(client):
+    """Un séjour d'un AUTRE logement du même propriétaire → 404 (get_booking filtre
+    par logement)."""
+    owner = register(client)
+    propa = _publish_prop(client, owner["headers"])
+    propb = _publish_prop(client, owner["headers"], name="Casa B")
+    b = _make_booking(client, owner["headers"], propb["id"], guest_email="g@ex.com")
+    r = client.post(f"/api/properties/{propa['id']}/send-guide",
+                    headers=owner["headers"],
+                    json={"kind": "stay", "booking_id": b["id"]})
+    assert r.status_code == 404
+
+
+def test_send_guide_stay_email_content_and_trace(client):
+    """Séjour : email HTML soigné, bon token /b/, bonne langue, JAMAIS le
+    guide_token ; trace écrite et exposée par /last-send."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid, guide_token = prop["id"], prop["guide_token"]
+    _offer_langs(pid, ["fr", "en", "es"])
+    b = _make_booking(client, owner["headers"], pid, guest_name="Tracy Russel",
+                      guest_email="tracy@ex.com", guest_lang="fr")
+    m = ConsoleMailer()          # installé APRÈS l'inscription (email de vérif à part)
+    _use_mailer(m)
+
+    r = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                    json={"kind": "stay", "booking_id": b["id"], "lang": "en"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["recipient"] == "tracy@ex.com" and out["lang"] == "en"
+    assert out["kind"] == "stay" and out["sent_at"]
+
+    assert len(m.sent) == 1
+    to, email = m.sent[0]
+    assert to == "tracy@ex.com"
+    tok = _stay_token(pid, b["id"])              # idempotent → le token servi
+    assert f"/b/{tok}" in email.html
+    assert "lang=en" in email.html               # langue choisie forcée sur le lien
+    assert "Open the guide" in email.html        # bouton EN
+    assert "Tracy" in email.html                 # accueil personnalisé
+    # Le guide_token éternel ne fuite JAMAIS (ni HTML ni texte).
+    assert guide_token not in email.html and guide_token not in email.text
+    assert "/g/" not in email.html
+
+    # Trace écrite + exposée par /last-send.
+    ls = client.get(f"/api/properties/{pid}/last-send",
+                    headers=owner["headers"],
+                    params={"kind": "stay", "booking_id": b["id"]}).json()
+    assert ls["sent"] is True and ls["recipient"] == "tracy@ex.com"
+    assert ls["lang"] == "en" and ls["sent_at"]
+
+
+def test_send_guide_showcase_differs_and_requires_recipient(client):
+    """Vitrine : destinataire OBLIGATOIRE (422 sinon) ; gabarit distinct du séjour ;
+    lien /v/, jamais le guide_token."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid, guide_token = prop["id"], prop["guide_token"]
+    m = ConsoleMailer()
+    _use_mailer(m)
+
+    # Sans destinataire → 422 (aucun email de fiche pour la vitrine).
+    r0 = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                     json={"kind": "showcase"})
+    assert r0.status_code == 422
+    assert not m.sent
+
+    r = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                    json={"kind": "showcase", "recipient": "buyer@ex.com"})
+    assert r.status_code == 200, r.text
+    to, email = m.sent[0]
+    assert to == "buyer@ex.com"
+    show = _showcase_token(owner["email"], pid)
+    assert f"/v/{show}" in email.html
+    assert guide_token not in email.html and "/g/" not in email.html
+    # Distinct du gabarit séjour (sujet & corps de vente).
+    assert "visite guidée" in email.subject.lower()
+    assert "avant même de réserver" in email.html
+
+    ls = client.get(f"/api/properties/{pid}/last-send", headers=owner["headers"],
+                    params={"kind": "showcase"}).json()
+    assert ls["sent"] is True and ls["recipient"] == "buyer@ex.com"
+
+
+def test_send_guide_smtp_failure_is_clean_and_leaves_no_trace(client):
+    """Panne SMTP → 502 propre (jamais un 500 nu), AUCUNE ligne guide_sends."""
+    boom = _BoomMailer()
+    _use_mailer(boom)
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    b = _make_booking(client, owner["headers"], pid, guest_email="g@ex.com")
+    r = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                    json={"kind": "stay", "booking_id": b["id"]})
+    assert r.status_code == 502
+    # Aucune trace : /last-send ne voit rien.
+    ls = client.get(f"/api/properties/{pid}/last-send", headers=owner["headers"],
+                    params={"kind": "stay", "booking_id": b["id"]}).json()
+    assert ls["sent"] is False
+    with _dbdict() as conn:
+        n = conn.execute("SELECT count(*) AS n FROM guide_sends WHERE property_id = %s",
+                         (pid,)).fetchone()["n"]
+    assert n == 0
+
+
+def test_send_guide_rejects_unoffered_language(client):
+    """Langue non offerte par le guide → 422 (invariant 15 : jamais une promesse
+    intenable)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    b = _make_booking(client, owner["headers"], pid, guest_email="g@ex.com")
+    m = ConsoleMailer()
+    _use_mailer(m)
+    # published_langs vide → seule la langue source est offerte ; 'de' non offerte.
+    r = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                    json={"kind": "stay", "booking_id": b["id"], "lang": "de"})
+    assert r.status_code == 422
+    assert not m.sent
+
+
+def test_send_templates_kind_aware(client):
+    """`/send-templates?kind=` : séjour & vitrine ont des copies distinctes (celles
+    de l'email HTML), la maison garde le gabarit utilitaire générique."""
+    house = client.get("/send-templates?lang=fr").json()
+    stay = client.get("/send-templates?lang=fr&kind=stay").json()
+    show = client.get("/send-templates?lang=fr&kind=showcase").json()
+    assert house["subject"] == "Votre guide — {property}"
+    assert "séjour du" in stay["subject"] and "{start}" in stay["subject"]
+    assert "visite guidée" in show["subject"].lower()
+    assert show["signoff"] and not stay["signoff"]  # signoff : vitrine seulement
+    # EN aussi (repli jamais un trou).
+    en_stay = client.get("/send-templates?lang=en&kind=stay").json()
+    assert "stay from" in en_stay["subject"]

@@ -254,6 +254,22 @@ CREATE TABLE booking_requests (
 );
 CREATE INDEX idx_booking_requests_booking ON booking_requests(booking_id);
 
+-- Traçage des envois du guide par le backend (V2-23d, §1). Une ligne par envoi
+-- « Envoyer par Holaguia » RÉUSSI (jamais sur échec) : mémoire du dernier envoi
+-- (fenêtre d'envoi + socle de l'automatisation J-7, volet 2). booking_id NULL
+-- pour un envoi de vitrine (kind='showcase').
+CREATE TABLE guide_sends (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    property_id UUID NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    booking_id  UUID REFERENCES bookings(id) ON DELETE SET NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('stay', 'showcase')),
+    lang        TEXT NOT NULL,
+    recipient   TEXT NOT NULL,
+    sent_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_guide_sends_property ON guide_sends(property_id, sent_at DESC);
+CREATE INDEX idx_guide_sends_booking ON guide_sends(booking_id, sent_at DESC);
+
 -- ============================================================================
 -- 3. STRUCTURE DU GUIDE — sections pré-définies (§4)
 -- ============================================================================

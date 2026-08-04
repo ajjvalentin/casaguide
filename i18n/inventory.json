@@ -293,6 +293,90 @@
     "fr": "Végétarien",
     "key": "cuisine.vegetarian"
   },
+  "email.button": {
+    "context": "Email d'envoi du guide",
+    "en": "Open the guide",
+    "es": "Abrir la guía",
+    "fr": "Ouvrir le guide",
+    "key": "email.button"
+  },
+  "email.footer": {
+    "context": "Email d'envoi du guide",
+    "en": "Guide powered by Holaguia. Enjoy your stay!",
+    "es": "Guía con tecnología de Holaguia. ¡Feliz estancia!",
+    "fr": "Guide propulsé par Holaguia. Bon séjour !",
+    "key": "email.footer"
+  },
+  "email.showcase_hello": {
+    "context": "Email d'envoi du guide",
+    "en": "Hello,",
+    "es": "Hola:",
+    "fr": "Bonjour,",
+    "key": "email.showcase_hello"
+  },
+  "email.showcase_intro": {
+    "context": "Email d'envoi du guide",
+    "en": "even before booking, explore {property} as if you were already there: the neighbourhood, access and parking, nearby beaches and restaurants, the amenities — the full guide our guests receive.",
+    "es": "antes incluso de reservar, visita {property} como si ya estuvieras allí: el barrio, el acceso y el aparcamiento, las playas y restaurantes cercanos, los equipamientos — la guía completa que reciben nuestros viajeros.",
+    "fr": "avant même de réserver, visitez {property} comme si vous y étiez : le quartier, l'accès et le parking, les plages et restaurants à proximité, les équipements — le guide complet que reçoivent nos voyageurs.",
+    "key": "email.showcase_intro"
+  },
+  "email.showcase_signoff": {
+    "context": "Email d'envoi du guide",
+    "en": "I'm here for any questions — looking forward to welcoming you!",
+    "es": "Quedo a tu disposición para cualquier pregunta. ¡Un placer darte la bienvenida!",
+    "fr": "À votre disposition pour toute question — au plaisir de vous accueillir !",
+    "key": "email.showcase_signoff"
+  },
+  "email.showcase_subject": {
+    "context": "Email d'envoi du guide",
+    "en": "Discover {property} on a guided tour",
+    "es": "Descubre {property} en una visita guiada",
+    "fr": "Découvrez {property} en visite guidée",
+    "key": "email.showcase_subject"
+  },
+  "email.showcase_title": {
+    "context": "Email d'envoi du guide",
+    "en": "Your guided tour",
+    "es": "Tu visita guiada",
+    "fr": "Votre visite guidée",
+    "key": "email.showcase_title"
+  },
+  "email.stay_hello": {
+    "context": "Email d'envoi du guide",
+    "en": "Hello {name},",
+    "es": "Hola {name}:",
+    "fr": "Bonjour {name},",
+    "key": "email.stay_hello"
+  },
+  "email.stay_hello_generic": {
+    "context": "Email d'envoi du guide",
+    "en": "Hello,",
+    "es": "Hola:",
+    "fr": "Bonjour,",
+    "key": "email.stay_hello_generic"
+  },
+  "email.stay_intro": {
+    "context": "Email d'envoi du guide",
+    "en": "here is your personal guide for your stay: arrival and access, wifi, great local spots, beaches, useful numbers — everything is here, available offline.",
+    "es": "aquí tienes tu guía personal para tu estancia: llegada y acceso, wifi, buenas direcciones, playas, números útiles — todo está aquí, disponible sin conexión.",
+    "fr": "voici votre guide personnel pour votre séjour : arrivée et accès, wifi, bonnes adresses, plages, numéros utiles — tout y est, consultable hors connexion.",
+    "key": "email.stay_intro"
+  },
+  "email.stay_subject": {
+    "context": "Email d'envoi du guide",
+    "en": "Your guide for {property} — stay from {start} to {end}",
+    "es": "Tu guía para {property} — estancia del {start} al {end}",
+    "fr": "Votre guide pour {property} — séjour du {start} au {end}",
+    "key": "email.stay_subject"
+  },
+  "email.stay_title": {
+    "context": "Email d'envoi du guide",
+    "en": "Your stay guide",
+    "es": "Tu guía de estancia",
+    "fr": "Votre guide de séjour",
+    "key": "email.stay_title"
+  },
   "field.A_access.details": {
     "context": "Libellé du champ « details » (section A_access)",
     "en": "Gate, entry code, landmarks…",

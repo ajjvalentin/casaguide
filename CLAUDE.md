@@ -330,6 +330,7 @@ psql -d casaguide -f db/migrations/018_guest_contact_split.sql # téléphone/ema
 psql -d casaguide -f db/migrations/019_languages.sql # registre des langues du produit (draft/in_review/published) (V2-21a, volet 1)
 psql -d casaguide -f db/migrations/020_ui_translations.sql # libellés statiques traduits (ui_translations) (V2-21a, volet 2)
 psql -d casaguide -f db/migrations/021_stay_showcase_tokens.sql # lien de séjour (bookings.stay_token) + lien vitrine (properties.showcase_token) (V2-23c)
+psql -d casaguide -f db/migrations/022_guide_sends.sql # traçage des envois du guide par le backend (guide_sends) (V2-23d)
 
 # Backend
 cd backend
@@ -1131,6 +1132,33 @@ exposé, peer auth).
   - **Bumper `sw.js VERSION`** à toute modif de `frontend/guide/*` (ici v24 → v25 :
     `app.js initRequestService` + `guide.css .svc-request*`).
 
+- « Envoyer par Holaguia » — l'email HTML du guide part du backend (V2-23d, volet 1) :
+  - **L'envoi est SYNCHRONE et le token est assuré côté serveur.** `POST /api/
+    properties/{id}/send-guide` (`routers/send.py`, gardé par `OwnedProperty` +
+    `CurrentOwner`, patron `share.py`) assure le token (`ensure_stay_token`/
+    `ensure_showcase_token`) puis envoie l'email HTML localisé (`emails.guide_stay_
+    email`/`guide_showcase_email`) **avant** de répondre (le propriétaire attend la
+    confirmation). Le client **n'envoie JAMAIS d'URL** — le `guide_token` éternel ne
+    figure ni dans le lien (`/b/`·`/v/`) ni dans le corps (couvert par test). Une
+    **panne SMTP → 502 propre** (jamais un 500 nu) et **aucune** ligne `guide_sends`
+    (la trace n'est écrite qu'APRÈS un envoi réussi). Comme les routes qui écrivent
+    puis programment (V2-16b) : `conn.commit()` **explicite** après la trace.
+  - **Les emails d'envoi sont LOCALISÉS** (contrairement aux emails owner restés FR) :
+    copies FR/EN/ES dans `emails._EMAIL`, langues supplémentaires (nl/de/it/sq) via
+    l'overlay `ui_translations` (nouveau domaine d'inventaire **`email.*`**,
+    `i18n.email_key`, repli FR sans trou — même mécanique que `guide_page._t`). Toute
+    clé `email.*` ajoutée → régénérer `i18n/inventory.json` (`ops/i18n_inventory.py`,
+    `--check` = gate). La langue d'envoi est **validée contre le registre** (invariant
+    15) → 422 si non offerte par le guide (jamais une promesse intenable).
+  - **`/send-templates` est kind-aware** (`?kind=stay|showcase|house`) : séjour &
+    vitrine partagent les copies de l'email HTML (`email.*`, texte brut adapté pour
+    mailto/wa.me) ; la **maison garde** le gabarit utilitaire générique `ui.send_*`
+    (lien du QR, pas d'email backend). Côté front (`sendmenu.js`), « Envoyer par
+    Holaguia » est le **premier** canal du séjour et de la vitrine (états : envoi →
+    « Envoyé ✓ » → erreur), la vitrine exige un **email saisi** (bouton désactivé
+    sinon), le reste passe en « ou via votre messagerie ». `guide_sends` mémorise le
+    dernier envoi (`GET …/last-send`, affiché dans la fenêtre) — c'est le socle du
+    **J-7 automatique (volet 2, en RESTE)**.
 - Fenêtre « Envoyer le guide » & précédence de langue (V2-23c, volet 3) :
   - **Les tokens de séjour/vitrine se génèrent À LA DEMANDE, côté propriétaire,
     jamais côté public.** `repo.ensure_stay_token`/`ensure_showcase_token` utilisent

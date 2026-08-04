@@ -1,11 +1,13 @@
-/* Fenêtre « Envoyer le guide » (V2-23c, volet 3).
+/* Fenêtre « Envoyer le guide » (V2-23c volet 3 + V2-23d volet 1).
 
    Pilote le VRAI /frontend/js/components/sendmenu.js dans Chrome headless
    (harnais send-harness.html, fetch simulé) : liste des séjours à venir (jamais
    l'historique), séjour 🇩🇪 → lien /b/… + langue pré-sélectionnée + email/WhatsApp
    en allemand, idempotence du token, vitrine → /v/…, aucun guide_token hors « lien
-   maison », le manque devient une invitation. Verdict lu dans le DOM dumpé (test
-   ignoré proprement si aucun Chrome). Patron calendar-harness / properties-doors.
+   maison », le manque devient une invitation. V2-23d : canal PRINCIPAL « Envoyer
+   par Holaguia » (POST /send-guide, états, jamais d'URL côté client), vitrine →
+   email obligatoire (bouton désactivé sans email valide). Verdict lu dans le DOM
+   dumpé (test ignoré proprement si aucun Chrome).
 
    Exécuter : node --test frontend-tests/ */
 

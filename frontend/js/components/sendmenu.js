@@ -49,6 +49,20 @@ function firstName(name) {
 // Chiffres d'un numéro pour wa.me (jamais d'espaces ni de signe). Vide si absent.
 function waDigits(phone) { return String(phone || "").replace(/\D/g, ""); }
 
+// « JJ/MM » depuis un ISO « AAAA-MM-JJ » (dates du sujet de séjour).
+function ddmm(iso) { const [, m, d] = (iso || "").split("-"); return `${d}/${m}`; }
+
+function isEmail(v) { return /.+@.+\..+/.test((v || "").trim()); }
+
+// « 02/08 à 21h05 » — repère du dernier envoi.
+function fmtSentAt(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const dd = pad(d.getDate()), mm = pad(d.getMonth() + 1);
+  const hh = pad(d.getHours()), mi = pad(d.getMinutes());
+  return `${dd}/${mm} à ${hh}h${mi}`;
+}
+
 export async function openSendMenu(property) {
   const pid = property.id;
   const defLang = (property.default_lang || "fr").toLowerCase();
@@ -90,7 +104,8 @@ export async function openSendMenu(property) {
   let booking = bookings[0] || null;
   let lang = pickLang();
   const linkCache = {};   // baseUrl mémorisé par cible (token généré une fois)
-  const tplCache = {};    // gabarits d'envoi mémorisés par langue
+  const tplCache = {};    // gabarits d'envoi mémorisés par (kind:langue)
+  const sendCache = {};   // dernier envoi mémorisé par cible (« envoyé le… »)
   const channels = el("div", { class: "send-channels" });  // canaux (rerendus)
 
   function pickLang() {
@@ -178,6 +193,8 @@ export async function openSendMenu(property) {
   // ── Canaux (lien / QR / email / WhatsApp) ────────────────────────────────
   function channelsBox() { return channels; }
 
+  const targetKey = () => target === "stay" ? `stay:${booking.id}` : "showcase";
+
   async function refreshChannels() {
     clear(channels);
     channels.append(el("div", { class: "muted", style: { fontSize: "13px" } }, "Préparation du lien…"));
@@ -197,11 +214,98 @@ export async function openSendMenu(property) {
       ? guideShareUrl(property, lang)                         // slug + ?lang gérés par share.js
       : (lang === natural ? baseUrl : `${baseUrl}?lang=${encodeURIComponent(lang)}`);
 
-    const tpl = await templates(lang);
+    const kind = target === "house" ? "house" : target;
+    const tpl = await templates(lang, kind);
+    if (target !== "house") await loadLastSend();
 
     clear(channels);
+    // « Envoyer par Holaguia » (V2-23d) : canal PRINCIPAL du séjour et de la
+    // vitrine (l'email HTML part du backend). La maison reste un lien utilitaire
+    // (QR imprimé), sans envoi backend. Le reste (lien/QR/messagerie) suit.
+    if (target !== "house") {
+      channels.append(holaguiaChannel());
+      channels.append(el("div", { class: "send-or" }, "ou via votre messagerie"));
+    }
     channels.append(linkRow(url), qrRow(url), emailRow(url, tpl), whatsappRow(url, tpl));
     refreshIcons();
+  }
+
+  // Dernier envoi (« envoyé le… ») — chargé une fois par cible, jamais bloquant.
+  async function loadLastSend() {
+    const key = targetKey();
+    if (key in sendCache) return;
+    try {
+      const r = await api.lastSend(pid,
+        { kind: target, booking_id: target === "stay" ? booking.id : undefined });
+      sendCache[key] = r && r.sent ? { recipient: r.recipient, sent_at: r.sent_at } : null;
+    } catch (_) { sendCache[key] = null; }
+  }
+
+  function lastSendInfo() {
+    const info = sendCache[targetKey()];
+    if (!info) return el("span", {});
+    return el("div", { class: "send-last muted" },
+      `Déjà envoyé le ${fmtSentAt(info.sent_at)} à ${info.recipient}.`);
+  }
+
+  // Canal principal : l'email HTML soigné part du backend (V2-23d). États :
+  // envoi en cours → « Envoyé ✓ » → erreur avec message. Le token est assuré
+  // côté serveur (jamais d'URL envoyée par le client).
+  function holaguiaChannel() {
+    const box = el("div", { class: "send-holaguia" });
+    const title = el("div", { class: "send-holaguia-title" },
+      icon("send", 15), "Envoyer par Holaguia");
+    const status = el("div", { class: "send-status" });
+
+    // Séjour sans email → invitation (§3.3), jamais un envoi à personne.
+    if (target === "stay" && !(booking.guest_email || "")) {
+      box.append(title, inviteRow("mail", "Ajouter un email à ce séjour",
+        "Ce séjour n'a pas d'email — ajoutez-en un pour l'envoyer par Holaguia."));
+      return box;
+    }
+
+    const btn = el("button", { class: "btn btn-primary btn-sm send-holaguia-btn", type: "button" },
+      "Envoyer le guide");
+    let recipientInput = null;
+    box.append(title);
+
+    if (target === "showcase") {
+      // La vitrine n'a pas de destinataire de fiche → email saisi obligatoire.
+      recipientInput = el("input", { type: "email", class: "send-recipient",
+        placeholder: "email@exemple.com",
+        onInput: () => { btn.disabled = !isEmail(recipientInput.value); } });
+      btn.disabled = true;
+      box.append(el("div", { class: "field" },
+        el("label", {}, "Adresse du destinataire"), recipientInput));
+    } else {
+      box.append(el("div", { class: "muted", style: { fontSize: "13px" } },
+        "Destinataire : " + booking.guest_email));
+    }
+
+    btn.addEventListener("click", async () => {
+      const recipient = target === "showcase"
+        ? (recipientInput.value || "").trim() : booking.guest_email;
+      if (target === "showcase" && !isEmail(recipient)) return;
+      btn.disabled = true;
+      status.className = "send-status";
+      clear(status); status.append(el("span", { class: "muted" }, "Envoi en cours…"));
+      try {
+        const r = await api.sendGuide(pid, {
+          kind: target, lang, recipient,
+          booking_id: target === "stay" ? booking.id : undefined,
+        });
+        status.className = "send-status ok"; clear(status);
+        status.append(icon("check", 15), "Envoyé ✓ à " + r.recipient);
+        refreshIcons();
+        sendCache[targetKey()] = { recipient: r.recipient, sent_at: r.sent_at };
+      } catch (err) {
+        btn.disabled = false; status.className = "send-status err"; clear(status);
+        status.append(err.message || "Envoi impossible. Réessayez dans un instant.");
+      }
+    });
+
+    box.append(btn, status, lastSendInfo());
+    return box;
   }
 
   // Base du lien (token généré une seule fois côté serveur, puis mémorisé).
@@ -216,11 +320,12 @@ export async function openSendMenu(property) {
     return r.url;
   }
 
-  async function templates(lg) {
-    if (tplCache[lg]) return tplCache[lg];
-    try { tplCache[lg] = await api.sendTemplates(lg); }
-    catch (_) { tplCache[lg] = await api.sendTemplates(defLang).catch(() => null); }
-    return tplCache[lg];
+  async function templates(lg, kind) {
+    const key = `${kind}:${lg}`;
+    if (tplCache[key]) return tplCache[key];
+    try { tplCache[key] = await api.sendTemplates(lg, kind); }
+    catch (_) { tplCache[key] = await api.sendTemplates(defLang, kind).catch(() => null); }
+    return tplCache[key];
   }
 
   function linkRow(url) {
@@ -260,12 +365,17 @@ export async function openSendMenu(property) {
   // libellé en dur). {name} = prénom du locataire (séjour), sinon salutation neutre.
   function compose(url, tpl) {
     const who = target === "stay" ? firstName(booking.guest_name) : "";
+    // Substitution des variables des gabarits kind-aware (V2-23d) : {property}
+    // partout, {start}/{end} pour le sujet de séjour.
+    const sub = (s) => (s || "").replace(/\{property\}/g, property.name)
+      .replace("{start}", target === "stay" && booking ? ddmm(booking.starts_on) : "")
+      .replace("{end}", target === "stay" && booking ? ddmm(booking.ends_on) : "");
     const greeting = tpl
       ? (who ? tpl.hello.replace("{name}", who) : tpl.hello_generic)
       : (who ? `Bonjour ${who},` : "Bonjour,");
-    const intro = tpl ? tpl.intro : "Voici le lien de votre guide :";
+    const intro = sub(tpl ? tpl.intro : "Voici le lien de votre guide :");
     const signoff = tpl ? tpl.signoff : "";
-    const subject = (tpl ? tpl.subject : "Votre guide — {property}").replace("{property}", property.name);
+    const subject = sub(tpl ? tpl.subject : "Votre guide — {property}");
     const emailBody = `${greeting}\n\n${intro}\n${url}${signoff ? "\n\n" + signoff : ""}`;
     const shortMsg = `${greeting} ${intro} ${url}`;
     return { subject, emailBody, shortMsg };

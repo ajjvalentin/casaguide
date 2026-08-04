@@ -201,7 +201,14 @@ export const api = {
   // (idempotents) + gabarits d'envoi localisés (email/WhatsApp).
   showcaseLink: (id) => request("POST", `/api/properties/${id}/showcase-link`),
   stayLink:     (id, bid) => request("POST", `/api/properties/${id}/bookings/${bid}/stay-link`),
-  sendTemplates: (lang) => request("GET", `/send-templates?lang=${encodeURIComponent(lang)}`, { auth: false }),
+  sendTemplates: (lang, kind = "house") =>
+    request("GET", `/send-templates?lang=${encodeURIComponent(lang)}&kind=${encodeURIComponent(kind)}`,
+            { auth: false }),
+  // « Envoyer par Holaguia » : l'email HTML part du backend (V2-23d, volet 1).
+  sendGuide: (id, b) => request("POST", `/api/properties/${id}/send-guide`, { body: b }),
+  lastSend:  (id, q) => request("GET",
+    `/api/properties/${id}/last-send?kind=${encodeURIComponent(q.kind)}`
+    + (q.booking_id ? `&booking_id=${encodeURIComponent(q.booking_id)}` : "")),
 
   // Règles d'entretien, catalogue & demandes (V2-23b, volet 1)
   listRequestTypes:  (id) => request("GET", `/api/properties/${id}/request-types`),

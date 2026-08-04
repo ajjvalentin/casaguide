@@ -1120,6 +1120,38 @@ def ensure_showcase_token(conn, owner_id: str, property_id: str) -> str | None:
     return row["showcase_token"] if row else None
 
 
+def record_guide_send(conn, *, property_id: str, booking_id: str | None,
+                      kind: str, lang: str, recipient: str) -> dict:
+    """Journalise un envoi du guide RÉUSSI (V2-23d) et renvoie la ligne créée.
+    Écrit uniquement APRÈS un envoi SMTP réussi (jamais sur échec) — mémoire du
+    dernier envoi (fenêtre) et socle de l'automatisation J-7 (volet 2)."""
+    return conn.execute(
+        """INSERT INTO guide_sends (property_id, booking_id, kind, lang, recipient)
+           VALUES (%s, %s, %s, %s, %s)
+           RETURNING id, property_id, booking_id, kind, lang, recipient, sent_at""",
+        (property_id, booking_id, kind, lang, recipient)).fetchone()
+
+
+def last_guide_send(conn, property_id: str, *, kind: str,
+                    booking_id: str | None) -> dict | None:
+    """Dernier envoi du guide pour une cible : un séjour donné (kind='stay' +
+    booking_id) ou la vitrine du logement (kind='showcase'). None si jamais
+    envoyé. Sert à afficher « envoyé le … » dans la fenêtre d'envoi."""
+    if kind == "stay":
+        row = conn.execute(
+            """SELECT kind, lang, recipient, sent_at FROM guide_sends
+               WHERE property_id = %s AND kind = 'stay' AND booking_id = %s
+               ORDER BY sent_at DESC LIMIT 1""",
+            (property_id, booking_id)).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT kind, lang, recipient, sent_at FROM guide_sends
+               WHERE property_id = %s AND kind = 'showcase'
+               ORDER BY sent_at DESC LIMIT 1""",
+            (property_id,)).fetchone()
+    return row
+
+
 def guide_sections(conn, property_id: str) -> list[dict]:
     """Sections **voyageur** visibles d'un guide (audience='guest'), avec les
     métadonnées de leur template. Les sections 'staff' (cahier de l'équipe

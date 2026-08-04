@@ -26,6 +26,7 @@ from typing import Any
 # ── Clés stables de l'inventaire ─────────────────────────────────────────────
 # Convention : <domaine>.<identifiant>[.<champ>]. Domaines :
 #   ui.*             — libellés d'interface du guide (guide_page._UI)
+#   email.*          — libellés des emails d'envoi du guide (emails._EMAIL, V2-23d)
 #   chapter.*        — noms de chapitres (_CHAPTER_NAMES)
 #   chapter_tab.*    — noms de chapitre spécialisés par onglet (_CHAPTER_TAB_NAMES)
 #   option.*         — libellés de valeurs de select (_OPTION_LABELS)
@@ -36,6 +37,12 @@ from typing import Any
 
 def ui_key(k: str) -> str:
     return f"ui.{k}"
+
+
+def email_key(k: str) -> str:
+    """Clé d'un libellé d'email LOCALISÉ (envoi du guide, V2-23d). Domaine `email.*`
+    superposable via `ui_translations` pour les langues supplémentaires (repli FR)."""
+    return f"email.{k}"
 
 
 def chapter_key(ch: str) -> str:
@@ -186,6 +193,13 @@ def collect_inventory(conn) -> dict[str, dict[str, str]]:
     for k in gp._UI["fr"]:
         i18n = {lg: gp._UI.get(lg, {}).get(k) for lg in _SOURCE_LANGS}
         add(_entry(ui_key(k), "Guide voyageur — libellé d'interface", i18n))
+
+    # 1bis. Libellés des emails d'envoi du guide (V2-23d) : localisés vers le
+    #       voyageur/prospect (contrairement aux emails owner restés FR).
+    from . import emails as em  # import différé (pas de cycle : emails → i18n)
+    for k in em._EMAIL["fr"]:
+        i18n = {lg: em._EMAIL.get(lg, {}).get(k) for lg in _SOURCE_LANGS}
+        add(_entry(email_key(k), "Email d'envoi du guide", i18n))
 
     # 2. Noms de chapitres.
     for ch in gp._CHAPTER_NAMES["fr"]:
