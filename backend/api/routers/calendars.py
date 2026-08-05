@@ -20,7 +20,7 @@ from .. import calendars, care, crypto, repo
 from ..deps import (CalendarFetcher, Conn, OwnedProperty, get_calendar_fetcher,
                     require_write_access)
 from ..schemas import (
-    BookingIn, BookingOut, BookingRequestIn, BookingRequestOut,
+    BookingIn, BookingKeyboxOut, BookingOut, BookingRequestIn, BookingRequestOut,
     BookingRequestUpdate, BookingUpdate, CalendarCreateOut, CalendarIn,
     CalendarOut, CalendarViewOut, DeleteBookingOut, InterventionOut, OverlapOut,
     RequestTypeIn, RequestTypeOut, RequestTypeUpdate, RotationOut, SyncNowOut,
@@ -41,6 +41,17 @@ def _require_crypto():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Chiffrement non configuré (CASAGUIDE_SECRET_KEY absente)")
+
+
+def _encode_keybox(code: str | None) -> bytes | None:
+    """Chiffre la surcharge du code de boîte à clés d'un séjour (V2-23c volet 2),
+    ou None si vide (repli sur le code du logement). Exige la clé UNIQUEMENT si une
+    valeur est réellement fournie (un séjour sans surcharge ne dépend pas du
+    chiffrement)."""
+    if not code:
+        return None
+    _require_crypto()
+    return crypto.encrypt(code)
 
 
 def _calendar_out(cal: dict) -> CalendarOut:
@@ -150,7 +161,9 @@ def create_booking(payload: BookingIn, conn: Conn, prop: OwnedProperty):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Le départ doit être postérieur à l'arrivée (au moins une nuit).")
-    b = repo.create_booking(conn, str(prop["id"]), payload.model_dump())
+    data = payload.model_dump()
+    data["keybox_code_enc"] = _encode_keybox(data.pop("keybox_code"))
+    b = repo.create_booking(conn, str(prop["id"]), data)
     return _booking_out(b, prop["default_checkin_time"],
                         prop["default_checkout_time"],
                         care_rules=prop["care_rules"])
@@ -161,6 +174,10 @@ def create_booking(payload: BookingIn, conn: Conn, prop: OwnedProperty):
 def update_booking(booking_id: str, payload: BookingUpdate, conn: Conn,
                    prop: OwnedProperty):
     fields = payload.model_dump(exclude_unset=True)
+    # Surcharge du code de boîte à clés (V2-23c volet 2) : chiffrée avant stockage ;
+    # présente et vide → NULL (repli sur le code du logement).
+    if "keybox_code" in fields:
+        fields["keybox_code_enc"] = _encode_keybox(fields.pop("keybox_code"))
     # Rattachement d'un bloc miroir (§0.5) : la cible doit être un autre séjour du
     # même logement (jamais soi-même). `None` = détacher (toujours autorisé).
     if fields.get("linked_booking_id") is not None:
@@ -193,6 +210,23 @@ def update_booking(booking_id: str, payload: BookingUpdate, conn: Conn,
     return _booking_out(b, prop["default_checkin_time"],
                         prop["default_checkout_time"],
                         care_rules=prop["care_rules"])
+
+
+@router.get("/bookings/{booking_id}/keybox", response_model=BookingKeyboxOut)
+def get_booking_keybox(booking_id: str, conn: Conn, prop: OwnedProperty):
+    """Surcharge déchiffrée du code de boîte à clés d'un séjour, pour pré-remplir la
+    modale (V2-23c volet 2). Réservé au propriétaire (`OwnedProperty`) — même chemin
+    d'édition que les secrets du logement (`GET .../secrets`). La surcharge ne
+    transite JAMAIS par `GET /calendar` ni `BookingOut` : c'est l'unique lecture.
+    404 si le séjour n'appartient pas au logement (garde-fou multi-tenant)."""
+    row = repo.get_booking_keybox_enc(conn, str(prop["id"]), booking_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Séjour introuvable")
+    enc = row["keybox_code_enc"]
+    if enc is not None:
+        _require_crypto()
+    return BookingKeyboxOut(keybox_code=crypto.decrypt(enc))
 
 
 @router.delete("/bookings/{booking_id}", response_model=DeleteBookingOut,

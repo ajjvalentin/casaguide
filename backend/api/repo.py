@@ -1091,10 +1091,22 @@ def get_booking_by_stay_token(conn, token: str) -> dict | None:
     `guest_name`/dates l'accueil personnalisé."""
     return conn.execute(
         """SELECT id, property_id, guest_name, guest_lang,
-                  starts_on, ends_on, status
+                  starts_on, ends_on, status, keybox_code_enc
            FROM bookings
            WHERE stay_token = %s""",
         (token,),
+    ).fetchone()
+
+
+def get_booking_keybox_enc(conn, property_id: str, booking_id: str) -> dict | None:
+    """Surcharge chiffrée du code de boîte à clés d'un séjour (V2-23c volet 2),
+    pour l'édition par le propriétaire. **Isolée de `_BOOKING_COLS`** à dessein :
+    la surcharge ne doit JAMAIS fuir dans `BookingOut` / `GET /calendar` / une
+    liste (même régime que `property_secrets`). None si le séjour n'appartient pas
+    au logement (garde-fou multi-tenant)."""
+    return conn.execute(
+        "SELECT keybox_code_enc FROM bookings WHERE id = %s AND property_id = %s",
+        (booking_id, property_id),
     ).fetchone()
 
 
@@ -1560,7 +1572,8 @@ _BOOKING_UPDATABLE = ("starts_on", "ends_on", "checkin_time", "checkout_time",
                       "luggage_drop_time", "luggage_until_time",
                       "guest_name", "guest_contact", "guest_phone", "guest_email",
                       "guest_lang", "notes", "nature", "status",
-                      "source", "linked_booking_id", "guest_count", "children_ages")
+                      "source", "linked_booking_id", "guest_count", "children_ages",
+                      "keybox_code_enc")
 
 
 def list_bookings(conn, property_id: str) -> list[dict]:
@@ -1590,7 +1603,7 @@ def create_booking(conn, property_id: str, data: dict) -> dict:
             "luggage_drop_time", "luggage_until_time", "source",
             "guest_name", "guest_contact", "guest_phone", "guest_email",
             "guest_lang", "notes", "nature",
-            "guest_count", "children_ages")
+            "guest_count", "children_ages", "keybox_code_enc")
     values = [property_id] + [data.get(c) for c in cols]
     placeholders = ", ".join(["%s"] * (len(cols) + 1))
     return conn.execute(

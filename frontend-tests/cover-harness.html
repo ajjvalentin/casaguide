@@ -123,6 +123,29 @@ try {
     "après retrait : retour au repli, « Retirer » de nouveau masqué");
   chk(lastUpdate && lastUpdate.cover_media_id === null,
     "onChange remonte la couverture retirée (null)");
+
+  // ── 5. Glisser-déposer (V2-30 reliquat) : fichier lâché sur l'aperçu ──────
+  const fireDnd = (node, type, files) => {
+    const dtObj = new DataTransfer();
+    for (const f of files) dtObj.items.add(f);
+    const ev = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "dataTransfer", { value: dtObj });
+    node.dispatchEvent(ev);
+  };
+  const preview = q(".cover-preview");
+  const file2 = new File([PNG1], "facade2.png", { type: "image/png" });
+  fireDnd(preview, "dragover", [file2]);
+  chk(preview.classList.contains("over"), "glisser : l'aperçu prend l'état survol .over");
+  const uploadsBefore = window.__uploads.length;
+  fireDnd(preview, "drop", [file2]);
+  await wait(60);
+  chk(!preview.classList.contains("over"), "après dépôt : état survol .over retiré");
+  chk(window.__uploads.length === uploadsBefore + 1
+    && window.__uploads[window.__uploads.length - 1].hasFile
+    && window.__uploads[window.__uploads.length - 1].hasSection === false,
+    "glisser-déposer : upload du fichier SANS section_code (média du logement)");
+  chk(window.__puts[window.__puts.length - 1].media_id === "m-new",
+    "glisser-déposer : la photo déposée devient la couverture (PUT /cover)");
 } catch (e) {
   pass = false;
   log.push("✗ exception : " + (e && e.message ? e.message : e));

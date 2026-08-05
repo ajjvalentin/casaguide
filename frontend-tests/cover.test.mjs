@@ -4,8 +4,9 @@
    cover-harness.html, fetch simulé) : état vide (repli « première photo du
    guide »), « Choisir parmi les photos du guide » (picker → PUT /cover),
    téléversement d'une photo dédiée (upload SANS section → PUT /cover), « Retirer »
-   (PUT /cover media_id=null). Verdict lu dans le DOM dumpé (test ignoré proprement
-   si aucun Chrome).
+   (PUT /cover media_id=null), et glisser-déposer d'un fichier sur l'aperçu (V2-30
+   reliquat : même geste que les zones photos des sections). Verdict lu dans le DOM
+   dumpé (test ignoré proprement si aucun Chrome).
 
    Exécuter : node --test frontend-tests/ */
 

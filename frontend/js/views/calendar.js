@@ -702,6 +702,20 @@ export async function renderCalendar(view, pid) {
     // Repli : un ancien contact fourre-tout non encore réparti reste affiché en aide.
     const legacyContact = (b && b.guest_contact && !b.guest_phone && !b.guest_email)
       ? b.guest_contact : "";
+    // Surcharge du code de boîte à clés pour CE séjour (V2-23c volet 2) : vide =
+    // code du logement. La valeur (chiffrée en base) n'est jamais dans BookingOut ;
+    // on la charge à l'ouverture par le chemin d'édition dédié (comme les secrets).
+    const keybox = el("input", { type: "text", maxlength: "100", autocomplete: "off",
+      placeholder: "Code du logement par défaut" });
+    // Ne jamais ÉCRASER une surcharge existante tant qu'on ne l'a pas lue : un
+    // nouveau séjour part « chargé » (rien à préserver) ; un séjour existant n'est
+    // « chargé » qu'après la lecture réussie (sinon on omet le champ à la sauvegarde).
+    let keyboxLoaded = isNew;
+    if (b) {
+      api.bookingKeybox(pid, b.id)
+        .then((k) => { keybox.value = k.keybox_code || ""; keyboxLoaded = true; })
+        .catch(() => { /* pas de surcharge lisible : ne pas la clobber en sauvant */ });
+    }
     const notes = el("textarea", { rows: "2" }, b?.notes || "");
 
     // ── Voyageurs (§1.0) — quantifient toute la préparation de l'équipe ───────
@@ -807,6 +821,9 @@ export async function renderCalendar(view, pid) {
         : null,
       field("Langue du locataire", langSel,
         "L'équipe sait comment l'aborder ; le lien du guide part dans cette langue."),
+      field("Code de boîte à clés pour ce séjour", keybox,
+        "Laissez vide pour utiliser celui du logement. Il n'est visible que par le "
+        + "lien de séjour et expire avec lui."),
       field("Notes", notes),
     ];
     // Demandes particulières : uniquement sur un séjour déjà enregistré (il faut
@@ -1026,6 +1043,9 @@ export async function renderCalendar(view, pid) {
         guest_count: guestCount.value.trim() === "" ? null : parseInt(guestCount.value, 10),
         children_ages: childAges,
       };
+      // La surcharge n'est envoyée que si on a pu la lire (sinon on ne la touche
+      // pas : omettre le champ laisse le PATCH la préserver côté serveur).
+      if (keyboxLoaded) payload.keybox_code = keybox.value.trim() || null;
       save.disabled = true; save.textContent = "Enregistrement…";
       try {
         let bookingId;

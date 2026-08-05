@@ -3313,6 +3313,114 @@ def test_stay_link_defaults_to_guest_lang_without_query(client):
             conn.commit()
 
 
+# ── Surcharge du code de boîte à clés par séjour (V2-23c, volet 2) ───────────
+# Le logement porte le code par défaut (property_secrets) ; un séjour peut le
+# REMPLACER le temps de sa fenêtre. La surcharge n'est servie que par
+# /b/{stay_token}/secrets (elle meurt à J+8 avec la page) ; /g/ (lien maison) et un
+# AUTRE séjour du même logement servent le code du logement. Elle ne transite JAMAIS
+# par GET /calendar ni BookingOut, et est chiffrée en base (invariant 5).
+
+def _set_property_keybox(client, headers, pid, code):
+    r = client.put(f"/api/properties/{pid}/secrets", headers=headers,
+                   json={"wifi_ssid": "Net", "wifi_pass": "pw", "keybox_code": code})
+    assert r.status_code == 200, r.text
+
+
+def test_stay_keybox_override_served_only_on_its_stay(client):
+    """Surcharge posée → /b/ du séjour la sert ; /b/ d'un AUTRE séjour du même
+    logement et /g/ (lien maison) servent le code du logement."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    _set_property_keybox(client, owner["headers"], pid, "1111")   # code du logement
+    a = _make_booking(client, owner["headers"], pid, keybox_code="9999")  # surchargé
+    b = _make_booking(client, owner["headers"], pid)                       # sans
+    tok_a, tok_b = _stay_token(pid, a["id"]), _stay_token(pid, b["id"])
+    assert client.get(f"/b/{tok_a}/secrets").json()["keybox_code"] == "9999"
+    assert client.get(f"/b/{tok_b}/secrets").json()["keybox_code"] == "1111"
+    assert client.get(
+        f"/g/{prop['guide_token']}/secrets").json()["keybox_code"] == "1111"
+    # Lecture d'édition (chemin réservé au propriétaire) → la surcharge en clair.
+    k = client.get(f"/api/properties/{pid}/bookings/{a['id']}/keybox",
+                   headers=owner["headers"])
+    assert k.status_code == 200 and k.json()["keybox_code"] == "9999"
+
+
+def test_stay_keybox_override_cleared_falls_back(client):
+    """Surcharge vidée (champ vide → NULL) → repli sur le code du logement."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    _set_property_keybox(client, owner["headers"], pid, "1111")
+    a = _make_booking(client, owner["headers"], pid, keybox_code="9999")
+    tok = _stay_token(pid, a["id"])
+    assert client.get(f"/b/{tok}/secrets").json()["keybox_code"] == "9999"
+    r = client.patch(f"/api/properties/{pid}/bookings/{a['id']}",
+                     headers=owner["headers"], json={"keybox_code": ""})
+    assert r.status_code == 200
+    assert client.get(f"/b/{tok}/secrets").json()["keybox_code"] == "1111"
+    assert client.get(f"/api/properties/{pid}/bookings/{a['id']}/keybox",
+                      headers=owner["headers"]).json()["keybox_code"] is None
+
+
+def test_stay_keybox_override_dies_at_j8(client):
+    """La surcharge meurt avec la page : à J+8, /b/{t}/secrets répond 404 (le vrai
+    code du séjour disparaît avec le lien — LE progrès de sécurité du séjour)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    _set_property_keybox(client, owner["headers"], pid, "1111")
+    dead = _make_booking(client, owner["headers"], pid, keybox_code="9999",
+                         starts_on=str(_date.today() - _td(days=12)),
+                         ends_on=str(_date.today() - _td(days=8)))
+    tok = _stay_token(pid, dead["id"])
+    assert client.get(f"/b/{tok}/secrets").status_code == 404
+
+
+def test_stay_keybox_never_in_calendar_or_booking_out(client):
+    """La surcharge ne fuit JAMAIS : ni le code ni le bytea dans BookingOut (create/
+    patch) ni dans GET /calendar (invariant : lecture d'édition dédiée uniquement)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    a = _make_booking(client, owner["headers"], pid, keybox_code="9999")
+    assert "9999" not in json.dumps(a) and "keybox" not in json.dumps(a)
+    patched = client.patch(f"/api/properties/{pid}/bookings/{a['id']}",
+                           headers=owner["headers"], json={"guest_name": "X"})
+    assert "9999" not in patched.text and "keybox" not in patched.text
+    cal = client.get(f"/api/properties/{pid}/calendar", headers=owner["headers"])
+    assert cal.status_code == 200
+    assert "9999" not in cal.text and "keybox" not in cal.text
+
+
+def test_stay_keybox_encrypted_in_db(client):
+    """Chiffrement effectif : la colonne bookings.keybox_code_enc n'est pas le clair
+    (même vérification que property_secrets / ical_url_enc)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    a = _make_booking(client, owner["headers"], prop["id"], keybox_code="9999")
+    with psycopg.connect(settings.db_dsn) as conn:
+        row = conn.execute("SELECT keybox_code_enc FROM bookings WHERE id = %s",
+                           (a["id"],)).fetchone()
+    enc = bytes(row[0])
+    assert b"9999" not in enc and crypto.decrypt(enc) == "9999"
+
+
+def test_stay_keybox_multi_tenant(client):
+    """Un intrus ne peut ni lire ni écrire la surcharge d'un séjour étranger → 404
+    (le logement, dans l'URL, n'est pas possédé)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    a = _make_booking(client, owner["headers"], pid, keybox_code="9999")
+    intruder = register(client)
+    assert client.get(f"/api/properties/{pid}/bookings/{a['id']}/keybox",
+                      headers=intruder["headers"]).status_code == 404
+    assert client.patch(f"/api/properties/{pid}/bookings/{a['id']}",
+                        headers=intruder["headers"],
+                        json={"keybox_code": "0000"}).status_code == 404
+
+
 # ── Fenêtre « Envoyer le guide » (V2-23c, volet 3) ───────────────────────────
 
 def _hex128(tok: str) -> bool:

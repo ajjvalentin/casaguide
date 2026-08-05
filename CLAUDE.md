@@ -88,6 +88,22 @@ requests` (plus de `stay_token` dans le corps ni le schema). **Pas de manifeste 
 sur `/b/` ni `/v/`** (`manifest=False`) : installer une PWA depuis un lien qui meurt
 à J+7 la casserait — l'installation reste le métier du QR maison `/g/`.
 
+**La surcharge du code de boîte à clés MEURT AVEC LE LIEN (V2-23c volet 2,
+migration 024).** Le logement porte le code par défaut (`property_secrets`) ; un
+**séjour** peut le **remplacer** (`bookings.keybox_code_enc`, chiffré AES **comme
+`property_secrets`** — mêmes helpers `api/crypto`, clé hors base, invariant 5 ;
+jamais une seconde implémentation). C'est la « surcharge welcome pack » (V2-23b)
+appliquée aux secrets : le logement porte le défaut, le séjour peut le remplacer,
+le moteur lit à travers (`guide.py _secrets_payload(keybox_override=…)`, le repli
+vit **côté serveur, une seule fois**). Seul `GET /b/{t}/secrets` sert la surcharge
+→ elle **meurt à J+8 avec la page** (`_resolve_stay`), comme le reste des secrets du
+séjour. Le lien **maison** `/g/{t}/secrets` **ignore** les surcharges (acté : le QR
+imprimé sert toujours le code du logement) ; la vitrine `/v/` n'a **aucune** route
+secrets. La surcharge ne transite **JAMAIS** par `GET /calendar`/`BookingOut`/une
+liste (absente de `repo._BOOKING_COLS` — même régime que les secrets du logement) :
+l'unique lecture d'édition est `GET .../bookings/{bid}/keybox` (propriétaire,
+patron des secrets). NULL = pas de surcharge → code du logement (zéro backfill).
+
 ## Architecture frontend (`frontend/`, M-03/M-04/M-05)
 
 - **SPA sans build** : HTML + modules ES natifs, servie en statique par FastAPI
@@ -332,6 +348,7 @@ psql -d casaguide -f db/migrations/020_ui_translations.sql # libellés statiques
 psql -d casaguide -f db/migrations/021_stay_showcase_tokens.sql # lien de séjour (bookings.stay_token) + lien vitrine (properties.showcase_token) (V2-23c)
 psql -d casaguide -f db/migrations/022_guide_sends.sql # traçage des envois du guide par le backend (guide_sends) (V2-23d)
 psql -d casaguide -f db/migrations/023_property_cover.sql # photo de couverture du logement (properties.cover_media_id) (V2-30)
+psql -d casaguide -f db/migrations/024_booking_keybox_override.sql # surcharge du code de boîte à clés par séjour (bookings.keybox_code_enc, chiffré) (V2-23c volet 2)
 
 # Backend
 cd backend

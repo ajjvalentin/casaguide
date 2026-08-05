@@ -497,6 +497,9 @@ class BookingIn(BaseModel):
     # Voyageurs (V2-23b, §1.0) — le nombre d'enfants se déduit de children_ages.
     guest_count: int | None = Field(default=None, ge=0, le=100)
     children_ages: list[int] | None = None
+    # Surcharge du code de boîte à clés pour CE séjour (V2-23c volet 2) : chiffré
+    # avant stockage (jamais en clair). Vide → NULL = code du logement.
+    keybox_code: str | None = Field(default=None, max_length=100)
 
 
 class BookingUpdate(BaseModel):
@@ -520,6 +523,17 @@ class BookingUpdate(BaseModel):
     linked_booking_id: UUID | None = None
     guest_count: int | None = Field(default=None, ge=0, le=100)
     children_ages: list[int] | None = None
+    # Surcharge du code de boîte à clés (V2-23c volet 2). Présent → écrit
+    # (chiffré) ; vide/null → NULL = repli sur le code du logement. Jamais renvoyé
+    # dans BookingOut (lecture d'édition par `GET .../bookings/{id}/keybox`).
+    keybox_code: str | None = Field(default=None, max_length=100)
+
+
+class BookingKeyboxOut(BaseModel):
+    """Surcharge déchiffrée du code de boîte à clés d'un séjour (V2-23c volet 2),
+    servie UNIQUEMENT au propriétaire authentifié pour pré-remplir la modale — même
+    chemin réservé que l'édition des secrets. None = pas de surcharge."""
+    keybox_code: str | None = None
 
 
 class BookingOut(BaseModel):

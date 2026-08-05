@@ -333,7 +333,7 @@ publics réservés, cf. CLAUDE.md — `/g/` maison · `/s/` équipe · `/v/` vit
 | Lien | Pour qui | Secrets | Expiration |
 |---|---|---|---|
 | **Maison** `/g/{guide_token}` | occupant sur place (QR imprimé) | réels | aucune |
-| **Séjour** `/b/{stay_token}` | locataire réservé | réels, meurent avec la page | **J+7 après le départ** |
+| **Séjour** `/b/{stay_token}` | locataire réservé | réels (**code de boîte à clés surchargeable par séjour**, §8.4), meurent avec la page | **J+7 après le départ** |
 | **Vitrine** `/v/{showcase_token}` | prospect / annonce / démo | **valeurs d'exemple** (jamais réelles) | aucune |
 
 ### 8.1 Génération des tokens à la demande (volets 1/1bis + 3)
@@ -387,8 +387,37 @@ sait rien du visiteur — la devinette est alors une qualité). Une `guest_lang`
 publiée au registre retombe sur la langue source (invariant 15) et n'expose pas
 `data-guest-lang`.
 
-*Hors périmètre V2-23c : la surcharge du code de boîte à clés par séjour (volet 2)
-et l'envoi automatique J-7 dans la langue du locataire (V2-23d).*
+### 8.4 Surcharge du code de boîte à clés par séjour (volet 2, migration 024)
+
+Le logement porte **un** code de boîte à clés par défaut (`property_secrets.
+keybox_code_enc`). Un **séjour** peut le **remplacer** le temps de sa fenêtre —
+c'est la « surcharge welcome pack » (V2-23b) appliquée aux secrets : le logement
+porte le défaut, le séjour peut le remplacer, le moteur lit à travers.
+
+- **Modèle** : `bookings.keybox_code_enc` (BYTEA), chiffrée **AES** exactement comme
+  `property_secrets` (mêmes helpers `api/crypto`, clé hors base, invariant 5). NULL =
+  pas de surcharge → code du logement (comportement d'origine, zéro backfill).
+- **Saisie** : champ facultatif de la modale séjour, « Code de boîte à clés pour ce
+  séjour — laisser vide pour utiliser celui du logement ». Écrit par l'API séjour
+  authentifiée (`POST`/`PATCH .../bookings/{id}`, `keybox_code` en clair → chiffré
+  **côté serveur** avant insertion) ; **vider le champ remet NULL**.
+- **Lecture pour l'édition** : le code déchiffré n'est accessible au propriétaire
+  que par un **chemin réservé** — `GET /api/properties/{id}/bookings/{bid}/keybox`
+  (le même patron que l'édition des secrets du logement). Il ne transite **JAMAIS**
+  par `GET /calendar` ni `BookingOut` ni aucune liste (couvert par test :
+  `keybox_code_enc` est absent de `_BOOKING_COLS`).
+- **Rendu** : `GET /b/{stay_token}/secrets` sert la surcharge si le séjour du token
+  en porte une, **sinon** le code du logement (le repli vit **côté serveur, une
+  seule fois** dans `guide.py _secrets_payload(keybox_override=…)`). Le lien
+  **maison** `/g/{token}/secrets` **ignore** les surcharges (acté : le QR imprimé
+  sert toujours le code du logement). La **vitrine** `/v/` n'a aucune route secrets.
+- **Invariant — la surcharge meurt avec le lien** : `/b/{t}/secrets` est gardé par
+  `_resolve_stay` (token mort → 404). La surcharge disparaît donc **à J+8 avec la
+  page**, exactement comme les codes du logement servis via `/b/` : c'est le progrès
+  de sécurité du lien de séjour, étendu au code personnalisé.
+
+*Hors périmètre V2-23c : la surcharge du **wifi** par séjour (non demandée) et
+l'envoi automatique J-7 dans la langue du locataire (V2-23d).*
 
 ## 9. « Envoyer par Holaguia » — l'email HTML part du backend (V2-23d, volet 1)
 

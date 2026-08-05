@@ -189,6 +189,11 @@ CREATE TABLE bookings (
     -- Lien de SÉJOUR (V2-23c) : personnalisé, rattachement certain des demandes,
     -- expire J+7 après le départ. Généré à la demande (NULL tant que non partagé).
     stay_token    TEXT UNIQUE,
+    -- Surcharge du code de boîte à clés pour CE séjour (V2-23c volet 2, migration
+    -- 024) : chiffrée AES (même régime que property_secrets, invariant 5). NULL =
+    -- pas de surcharge → code du logement. Servie UNIQUEMENT par /b/{stay_token}/
+    -- secrets → meurt à J+8 avec la page ; /g/ sert toujours le code du logement.
+    keybox_code_enc BYTEA,
     guest_contact TEXT,                             -- legacy fourre-tout (repli tant que phone/email vides)
     -- Coordonnées séparées (V2-23b, §3.0) : le téléphone est une ACTION (tel:/
     -- WhatsApp cliquable pour un rendez-vous), l'email en est une autre (mailto:,

@@ -194,6 +194,7 @@ export const api = {
   createBooking:  (id, b) => request("POST", `/api/properties/${id}/bookings`, { body: b }),
   updateBooking:  (id, bid, b) => request("PATCH", `/api/properties/${id}/bookings/${bid}`, { body: b }),
   deleteBooking:  (id, bid) => request("DELETE", `/api/properties/${id}/bookings/${bid}`),
+  bookingKeybox:  (id, bid) => request("GET", `/api/properties/${id}/bookings/${bid}/keybox`),
   listCalendars:  (id) => request("GET", `/api/properties/${id}/calendars`),
   addCalendar:    (id, b) => request("POST", `/api/properties/${id}/calendars`, { body: b }),
   deleteCalendar: (id, cid) => request("DELETE", `/api/properties/${id}/calendars/${cid}`),

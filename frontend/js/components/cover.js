@@ -51,6 +51,22 @@ export function buildCoverBlock(property, { onChange } = {}) {
   chooseBtn.addEventListener("click", openPicker);
   removeBtn.addEventListener("click", () => applyCover(null));
 
+  // Glisser-déposer (V2-30, reliquat) : même geste que les zones photos des
+  // sections (components/media.js). Un fichier lâché sur l'aperçu le téléverse
+  // comme couverture (flux upload sans section, comme le bouton « Téléverser »).
+  ["dragover", "dragenter"].forEach((ev) => preview.addEventListener(ev, (e) => {
+    if (e.dataTransfer?.types?.includes("Files")) {
+      e.preventDefault(); preview.classList.add("over");
+    }
+  }));
+  ["dragleave", "dragend"].forEach((ev) =>
+    preview.addEventListener(ev, () => preview.classList.remove("over")));
+  preview.addEventListener("drop", (e) => {
+    preview.classList.remove("over");
+    const f = e.dataTransfer?.files?.[0];
+    if (f) { e.preventDefault(); e.stopPropagation(); uploadCover(f); }
+  });
+
   const block = el("div", { class: "cover-block field-group" },
     el("h3", { class: "form-subhead" }, "Photo de couverture"),
     el("p", { class: "help", style: { margin: "0 0 8px" } },

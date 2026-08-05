@@ -387,16 +387,24 @@ def public_stay_data(stay_token: str, conn: Conn, lang: str | None = None):
 
 @router.get("/b/{stay_token}/secrets")
 def public_stay_secrets(stay_token: str, conn: Conn):
-    """Secrets du LOGEMENT servis pendant le séjour (mode 'link', §8). Token mort
-    → 404 : les secrets meurent à J+8 avec la page (§1bis, progrès de sécurité).
-    La surcharge par séjour du code de boîte à clés est le volet 2 — ici on sert
-    ceux du logement, avec la même logique de mode d'accès que `/g/{token}/secrets`."""
+    """Secrets servis pendant le séjour (mode 'link', §8). Token mort → 404 : les
+    secrets meurent à J+8 avec la page (§1bis, progrès de sécurité).
+
+    Volet 2 — le code de boîte à clés peut être **surchargé par séjour** : si le
+    séjour du token en porte un (`keybox_code_enc`), il REMPLACE celui du logement ;
+    sinon repli sur le code du logement. La logique de repli vit ici, une seule
+    fois. Le wifi et le mode d'accès restent ceux du logement."""
     loaded = _load_stay(conn, stay_token)
     if not loaded:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Ce lien de séjour n'est plus actif.")
-    _stay, prop = loaded
-    return _json(_secrets_payload(conn, prop["guide_token"]), no_store=True)
+    stay, prop = loaded
+    override = None
+    enc = stay.get("keybox_code_enc")
+    if enc is not None and crypto.is_configured():
+        override = crypto.decrypt(enc)
+    return _json(_secrets_payload(conn, prop["guide_token"],
+                                  keybox_override=override), no_store=True)
 
 
 @router.get("/b/{stay_token}/media/{media_id}")
@@ -553,11 +561,17 @@ def public_guide_data(guide_token: str, conn: Conn, lang: str | None = None):
     })
 
 
-def _secrets_payload(conn, guide_token: str) -> dict:
+def _secrets_payload(conn, guide_token: str,
+                     keybox_override: str | None = None) -> dict:
     """Wifi + code boîte à clés déchiffrés d'un guide publié en mode 'link' (§8),
     ou objet vide (aucun secret, chiffrement non configuré, mode d'accès non
     'link'). Mutualisé par `/g/{token}/secrets` et `/b/{stay_token}/secrets` —
-    même logique de mode d'accès, résolue par le `guide_token` du logement."""
+    même logique de mode d'accès, résolue par le `guide_token` du logement.
+
+    `keybox_override` (V2-23c volet 2) : surcharge du code de boîte à clés propre à
+    UN séjour (déchiffrée en amont par l'appelant `/b/`). Non-None → elle REMPLACE
+    le code du logement (le moteur lit à travers) ; None → code du logement. Le lien
+    maison `/g/` ne passe jamais d'override (il sert toujours le code du logement)."""
     empty = {"wifi_networks": [], "wifi_ssid": None, "wifi_pass": None,
              "keybox_code": None, "keybox_notes": None}
     if not crypto.is_configured():
@@ -569,11 +583,13 @@ def _secrets_payload(conn, guide_token: str) -> dict:
     # anciens champs restent alimentés depuis le réseau n°1 (rétrocompat app.js).
     networks = wifi.networks_from_row(row)
     net1 = wifi.first_network(networks)
+    keybox = (keybox_override if keybox_override is not None
+              else crypto.decrypt(row["keybox_code_enc"]))
     return {
         "wifi_networks": networks,
         "wifi_ssid": net1["ssid"] if net1 else None,
         "wifi_pass": net1["pass"] if net1 else None,
-        "keybox_code": crypto.decrypt(row["keybox_code_enc"]),
+        "keybox_code": keybox,
         "keybox_notes": row["keybox_notes"],
     }
 
