@@ -92,6 +92,9 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .badge-secret{background:#EFE9F7;color:var(--lock)}
 .badge-ai{background:#EAF3F6;color:var(--sea)}
 .badge-suggested{background:#FFF1E2;color:var(--prog)}
+/* Pastille NEUTRE (V2-31) : une suggestion n'est pas une alerte — les lieux
+   suggérés se comptent en ton sobre, jamais en orange d'alarme. */
+.badge-neutral{background:#EEF2F4;color:#54636B}
 .badge-approved{background:#E7F3EA;color:var(--ok)}
 .badge-edited{background:#EAF3F6;color:var(--sea)}
 .badge-rejected{background:#F3E9E9;color:var(--alert)}
@@ -236,6 +239,21 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .prop-card .poi-counts{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
 .prop-card .actions{display:flex;gap:8px;margin-top:auto;padding-top:4px;flex-wrap:wrap}
 
+/* ── Menu « ⋯ » de la carte (V2-31) : les gestes rares et destructeurs (supprimer
+   le logement) quittent le premier plan — plus jamais à un clic de « Voir le
+   guide ». Popover ancré au bouton, fermé au clic extérieur. */
+.card-menu{position:relative;display:inline-flex}
+.menu-pop{position:absolute;right:0;bottom:calc(100% + 6px);z-index:20;min-width:220px;
+          background:var(--card,#fff);border:1px solid var(--line,#E4DFD5);border-radius:12px;
+          box-shadow:0 12px 30px rgba(30,42,50,.16);padding:6px;display:flex;flex-direction:column}
+.menu-pop.hidden{display:none}
+.menu-item{display:flex;align-items:center;gap:9px;width:100%;text-align:left;
+           background:none;border:0;padding:9px 11px;border-radius:8px;cursor:pointer;
+           font-size:13.5px;color:var(--ink,#1E2A32)}
+.menu-item:hover{background:#F3EFE7}
+.menu-item.danger{color:var(--alert)}
+.menu-item.danger:hover{background:#F7ECEC}
+
 /* ── Double porte de la carte (V2-26) : Guide Locataires / Équipe d'entretien ─
    Deux entrées principales, dominantes visuellement ; les actions secondaires
    (Suggestions, Enrichir, aperçu, suppression) restent dans .actions dessous. */
@@ -340,9 +358,12 @@ input,select,textarea{font-family:inherit;font-size:15px;color:var(--ink)}
 .section-panel .sp-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:4px}
 .section-panel h2{font-size:23px}
 .section-panel .sp-desc{color:var(--muted);font-size:14px;margin:6px 0 18px}
-.section-panel .sp-toolbar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;
+.section-panel .sp-toolbar{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;
                            border-top:1px solid var(--line-soft);margin-top:18px;padding-top:16px}
 .section-panel .sp-toolbar .spacer{flex:1}
+/* Bascule + son aide d'une phrase (V2-31) : empilées, l'aide sous l'interrupteur. */
+.sp-toggle{display:flex;flex-direction:column;gap:5px;align-items:flex-start}
+.sp-toggle .switch-help{max-width:340px;margin:0}
 .savehint{font-size:12px;color:var(--muted)}
 kbd{font-family:inherit;background:#F1ECE2;border-radius:5px;padding:1px 6px;font-size:11.5px;
     border:1px solid var(--line)}

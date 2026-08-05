@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -3900,6 +3901,38 @@ def test_auto_send_opt_out_skips_property(client):
         n = conn.execute("SELECT count(*) AS n FROM guide_sends WHERE booking_id = %s",
                          (b["id"],)).fetchone()["n"]
     assert n == 0
+
+
+def test_auto_send_logs_stay_in_human_terms_not_uuid(client, caplog):
+    """Journal du J-7 en langage humain (audit UX V2-31, principe 0.4) : la ligne
+    d'envoi nomme le séjour « séjour <nom> · <dates> · <logement> », jamais l'UUID.
+    Un échec SMTP produit un `failure_labels` lisible (repris par le rapport CLI)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"], name="Villa Ballarin")
+    pid = prop["id"]
+    rcpt = f"human-{uuid.uuid4().hex[:8]}@ex.com"
+    b = _auto_booking(client, owner["headers"], pid, guest_name="Tracy Russel",
+                      guest_email=rcpt)
+    m = _SelectiveMailer()
+    with caplog.at_level(logging.INFO, logger="casaguide.guidesend"):
+        with _dbdict() as conn:
+            guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                    today=_date.today())
+    line = next(r.getMessage() for r in caplog.records if rcpt in r.getMessage())
+    assert "séjour Tracy Russel · " in line       # nom effectif, pas l'UUID
+    assert "Villa Ballarin" in line                # logement nommé
+    assert str(b["id"]) not in line                # aucun identifiant technique
+
+    # Un séjour sans nom → « sans nom » (jamais un trou). Et l'échec est lisible.
+    boom = f"boom-{uuid.uuid4().hex[:8]}@ex.com"
+    bb = _auto_booking(client, owner["headers"], pid, guest_email=boom)
+    mf = _SelectiveMailer(fail_for=[boom])
+    with _dbdict() as conn:
+        rep = guidesend.run_auto_send(conn, mf, base_url="https://holaguia.com",
+                                      today=_date.today())
+    assert str(bb["id"]) in rep.failures           # id gardé (programmatique)
+    label = next(l for l in rep.failure_labels if "sans nom" in l)
+    assert "Villa Ballarin" in label and str(bb["id"]) not in label
 
 
 def test_manual_send_guide_rejects_cancelled_booking(client):

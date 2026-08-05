@@ -1,0 +1,109 @@
+<!doctype html>
+<!-- Harnais headless des libellés & liaisons de la carte du logement (V2-31, volet 1).
+     Pilote le VRAI /frontend/js/views/properties.js avec un fetch simulé (aucune
+     requête réseau) et un profil Pro. On teste le composant SUR SON ARBRE RENDU
+     (querySelector), jamais via une référence interne (leçon V2-18c). Vérifie :
+     pastilles reformulées & neutres → bonne cible, « Informations » libellé (plus
+     de sigle nu), corbeille sortie du premier plan (menu « ⋯ »), confirmation de
+     suppression NOMMANT le logement. Verdict dans #result.
+     Ce fichier vit hors de frontend/ (jamais servi publiquement en statique). -->
+<meta charset="utf-8">
+<title>properties-labels-harness</title>
+<div id="app"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { renderProperties } from "/frontend/js/views/properties.js";
+import { setOwner, setToken } from "/frontend/js/store.js";
+
+const PROP = {
+  id: "p1", name: "Villa Ardon", status: "published",
+  address_line1: "Calle 1", postal_code: "03189", city: "Orihuela",
+  guide_token: "gtok", staff_token: "abc123def456abc123def456abc123de", default_lang: "fr",
+};
+const STATS = { completion_pct: 0, pois_suggested: 96, pois_approved: 90,
+  pois_edited: 2, pois_total: 188 };
+
+window.fetch = async (path) => {
+  const body = path === "/api/properties" ? [PROP]
+    : path.includes("/stats") ? STATS
+    : (() => { throw new Error("fetch inattendu : " + path); })();
+  return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+};
+setToken("t");
+setOwner({ staff_access: true, on_trial: false });
+
+const log = [];
+let pass = true;
+const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const app = document.getElementById("app");
+const q = (sel, root = document) => root.querySelector(sel);
+const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+try {
+  await renderProperties(app);
+  await wait(60);   // fillStats est chargé en asynchrone après le rendu
+
+  // ── Pastilles reformulées, NEUTRES et cliquables vers le bon filtre ────────
+  const counts = q(".poi-counts");
+  chk(!!counts, "bloc des pastilles POI rendu");
+  const sugg = qa("a", counts).find((a) => /lieux suggérés/.test(a.textContent));
+  chk(!!sugg && /96 lieux suggérés/.test(sugg.textContent),
+    "pastille « 96 lieux suggérés » (plus « à valider ») — v=" + (sugg && sugg.textContent));
+  chk(!!sugg && sugg.getAttribute("href") === "#/properties/p1/pois/suggested",
+    "pastille suggérés → écran Suggestions, filtre À valider");
+  chk(!!sugg && sugg.classList.contains("badge-neutral") && !sugg.classList.contains("badge-suggested"),
+    "pastille suggérés = visuel NEUTRE (pas l'orange d'alarme)");
+  const kept = qa("a", counts).find((a) => /lieux dans le guide/.test(a.textContent));
+  chk(!!kept && /92 lieux dans le guide/.test(kept.textContent),
+    "pastille « 92 lieux dans le guide » (plus « retenus ») — v=" + (kept && kept.textContent));
+  chk(!!kept && kept.getAttribute("href") === "#/properties/p1/pois/kept",
+    "pastille retenus → écran Suggestions, filtre Retenus");
+
+  // ── Vocabulaire des actions : dit ce que le système FAIT ───────────────────
+  const actions = q(".actions");
+  chk(!!qa("button", actions).find((b) => /Rechercher les lieux/.test(b.textContent)),
+    "action « Rechercher les lieux » (plus « Enrichir »)");
+  const rech = qa("button", actions).find((b) => /Rechercher les lieux/.test(b.textContent));
+  chk(!!rech && /repère automatiquement les lieux utiles/.test(rech.title || ""),
+    "« Rechercher les lieux » : aide au survol présente");
+  chk(!!qa("button", actions).find((b) => /Lieux suggérés/.test(b.textContent)),
+    "action « Lieux suggérés » (plus « Suggestions »)");
+
+  // ── L'icône maison reçoit son libellé « Informations » (plus de sigle nu) ──
+  const infoBtn = qa("button", actions).find((b) => /Informations/.test(b.textContent));
+  chk(!!infoBtn && !!q('[data-lucide="home"]', infoBtn),
+    "bouton « Informations » (icône maison + libellé, plus jamais nu)");
+
+  // ── La corbeille quitte le premier plan : menu « ⋯ », jamais visible d'emblée ─
+  const menuBtn = q(".card-menu-btn", actions);
+  chk(!!menuBtn, "menu « ⋯ » présent en bout de carte");
+  // Aucune corbeille au premier plan : tout trash-2 est confiné au popover (caché).
+  chk(qa('[data-lucide="trash-2"]', actions).every((i) => i.closest(".menu-pop")),
+    "corbeille absente du premier plan (uniquement dans le menu ⋯)");
+  const pop = q(".menu-pop", actions);
+  chk(!!pop && pop.classList.contains("hidden"), "menu ⋯ fermé au départ");
+
+  // Ouverture du menu → l'entrée « Supprimer le logement… » apparaît
+  menuBtn.click();
+  await wait(20);
+  chk(!pop.classList.contains("hidden"), "clic sur ⋯ : le menu s'ouvre");
+  const del = qa(".menu-item", pop).find((b) => /Supprimer le logement…/.test(b.textContent));
+  chk(!!del, "menu ⋯ contient « Supprimer le logement… »");
+
+  // ── Confirmation de suppression NOMMANT le logement ───────────────────────
+  del.click();
+  await wait(30);
+  const back = q(".modal-back");
+  chk(!!back, "clic « Supprimer » : une modale de confirmation s'ouvre");
+  const title = back && q(".modal-head h3");
+  chk(!!title && /Supprimer Villa Ardon ?/.test(title.textContent),
+    "la confirmation NOMME le logement dans son titre — v=" + (title && title.textContent));
+  chk(!!back && /Le guide, les séjours et les photos/.test(back.textContent),
+    "la confirmation dit ce qui sera supprimé (guide, séjours, photos)");
+} catch (e) {
+  pass = false;
+  log.push("✗ exception : " + (e && e.message ? e.message : e) + "\n" + (e && e.stack ? e.stack : ""));
+}
+document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>

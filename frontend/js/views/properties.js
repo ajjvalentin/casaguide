@@ -73,15 +73,19 @@ export async function renderProperties(view) {
       // Double porte (V2-26) : le guide voyageur et le cahier d'équipe sont deux
       // produits pour deux publics → deux entrées dominantes.
       el("div", { class: "prop-doors" }, guideDoor(p), staffDoor(p)),
-      // Actions secondaires (jamais dominantes) : suggestions, enrichissement,
-      // aperçu, fiche, suppression.
+      // Actions secondaires (jamais dominantes). Les gestes fréquents restent
+      // visibles ; le rare et destructeur (supprimer) passe dans le menu « ⋯ »
+      // (V2-31). Le vocabulaire dit ce que le système FAIT (« Rechercher les
+      // lieux », « Lieux suggérés »), plus jamais un jargon nu ni un sigle seul.
       el("div", { class: "actions" },
         el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${p.id}/calendrier`) },
           icon("calendar-days", 16), "Calendrier"),
         el("button", { class: "btn btn-sm", onClick: () => navigate(`#/properties/${p.id}/pois`) },
-          icon("map-pin-check", 16), "Suggestions"),
-        el("button", { class: "btn btn-sm", onClick: () => reEnrich(p) },
-          icon("sparkles", 16), "Enrichir"),
+          icon("map-pin-check", 16), "Lieux suggérés"),
+        el("button", { class: "btn btn-sm",
+          title: "Holaguia repère automatiquement les lieux utiles autour de votre adresse : commerces, plages, restaurants, urgences…",
+          onClick: () => reEnrich(p) },
+          icon("sparkles", 16), "Rechercher les lieux"),
         p.status === "published"
           ? el("button", { class: "btn btn-sm", onClick: () => openSendMenu(p) },
             icon("send", 16), "Envoyer le guide")
@@ -90,12 +94,37 @@ export async function renderProperties(view) {
           ? el("a", { class: "btn btn-sm", href: `/g/${p.guide_token}`, target: "_blank", rel: "noopener" },
             icon("external-link", 16), "Voir le guide")
           : null,
-        el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Informations du logement", title: "Informations du logement",
-          onClick: () => editInfo(p) }, icon("home", 16)),
+        // L'icône maison reçoit son libellé (plus jamais un sigle nu — principe 0.1).
+        el("button", { class: "btn btn-sm btn-ghost", title: "Fiche du logement (nom, adresse, contact, position)",
+          onClick: () => editInfo(p) }, icon("home", 16), "Informations"),
         el("span", { style: { flex: "1" } }),
-        el("button", { class: "btn btn-sm btn-ghost", "aria-label": "Supprimer", onClick: () => removeProperty(p) },
-          icon("trash-2", 16))));
+        cardMenu(p)));
     return card;
+  }
+
+  // Menu « ⋯ » de la carte (V2-31) : abrite les gestes rares et destructeurs, à
+  // commencer par la suppression du logement — elle ne vit plus à un clic de
+  // « Voir le guide ». Popover ancré au bouton, refermé au clic extérieur.
+  function cardMenu(p) {
+    const pop = el("div", { class: "menu-pop hidden", role: "menu" },
+      el("button", { class: "menu-item danger", role: "menuitem", onClick: () => { close(); removeProperty(p); } },
+        icon("trash-2", 15), "Supprimer le logement…"));
+    const btn = el("button", { class: "btn btn-sm btn-ghost card-menu-btn",
+      "aria-label": "Plus d'actions", "aria-haspopup": "menu", "aria-expanded": "false",
+      onClick: (e) => { e.stopPropagation(); toggle(); } }, icon("ellipsis", 16));
+    const wrap = el("div", { class: "card-menu" }, btn, pop);
+    const onAway = (ev) => { if (!wrap.contains(ev.target)) close(); };
+    function close() {
+      pop.classList.add("hidden"); btn.setAttribute("aria-expanded", "false");
+      document.removeEventListener("click", onAway);
+    }
+    function toggle() {
+      const open = pop.classList.toggle("hidden") === false;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) setTimeout(() => document.addEventListener("click", onAway), 0);
+      else document.removeEventListener("click", onAway);
+    }
+    return wrap;
   }
 
   // Porte « Guide Locataires » (V2-26) : ouvre l'éditeur en contexte voyageur.
@@ -163,19 +192,20 @@ export async function renderProperties(view) {
         el("b", {}, s.completion_pct + " %")),
       el("div", { class: "meter mini" }, el("i", { style: { width: s.completion_pct + "%" } })),
       el("div", { class: "poi-counts" },
-        // Pastilles cliquables (V2-11) : chemin le plus court vers l'action.
-        // Deep-link vers la vue POI avec le bon filtre pré-sélectionné.
+        // Pastilles cliquables (V2-11) → écran « Lieux suggérés » avec le bon
+        // filtre. Libellés reformulés et NEUTRES (V2-31) : une suggestion n'est
+        // pas une alerte (« 96 lieux suggérés », jamais « 96 à valider » orange).
         s.pois_suggested
-          ? el("a", { class: "badge badge-suggested badge-link",
+          ? el("a", { class: "badge badge-neutral badge-link",
             href: `#/properties/${p.id}/pois/suggested`,
-            "aria-label": `Valider les ${s.pois_suggested} lieux en attente` },
-            s.pois_suggested + " à valider")
+            "aria-label": `Examiner les ${s.pois_suggested} lieux suggérés` },
+            s.pois_suggested + " lieux suggérés")
           : null,
         s.pois_approved || s.pois_edited
           ? el("a", { class: "badge badge-approved badge-link",
             href: `#/properties/${p.id}/pois/kept`,
-            "aria-label": `Voir les ${s.pois_approved + s.pois_edited} lieux retenus` },
-            (s.pois_approved + s.pois_edited) + " retenus")
+            "aria-label": `Voir les ${s.pois_approved + s.pois_edited} lieux dans le guide` },
+            (s.pois_approved + s.pois_edited) + " lieux dans le guide")
           : null,
         !s.pois_total ? el("span", { class: "muted", style: { fontSize: "12px" } }, "Pas encore enrichi") : null));
   }
@@ -188,8 +218,11 @@ export async function renderProperties(view) {
   }
 
   async function removeProperty(p) {
-    if (!(await confirmDialog(`Supprimer définitivement « ${p.name} » et tout son guide ?`,
-      { title: "Supprimer le logement", okLabel: "Supprimer", danger: true }))) return;
+    // Confirmation qui NOMME le logement et dit exactement ce qui disparaît
+    // (V2-31) : l'action la plus destructrice du produit ne surprend jamais.
+    if (!(await confirmDialog(
+      `Le guide, les séjours et les photos de « ${p.name} » seront supprimés définitivement. Cette action est irréversible.`,
+      { title: `Supprimer ${p.name} ?`, okLabel: "Supprimer le logement", danger: true }))) return;
     try {
       await api.deleteProperty(p.id);
       toast("Logement supprimé.", "ok");

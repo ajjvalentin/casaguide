@@ -89,6 +89,13 @@ try {
   chk(!!qa("button, a").find((b) => /Copier le lien/.test(b.textContent)), "voyageur : action « Copier le lien » (guide) présente");
   chk(!!qa("button, a").find((b) => /Traductions/.test(b.textContent)), "voyageur : bouton « Traductions » présent");
 
+  // ── Les deux bascules du pied de section sont expliquées d'une phrase (V2-31) ─
+  const helps = qa(".sp-toggle .switch-help").map((h) => h.textContent);
+  chk(helps.some((h) => /masquer cette rubrique aux voyageurs/.test(h)),
+    "aide « Visible dans le guide » rendue sous la bascule");
+  chk(helps.some((h) => /alimente votre indicateur d'avancement/.test(h)),
+    "aide « Section complétée » rendue sous la bascule");
+
   // La bascule ouvre bien l'éditeur staff (via le hash)
   location.hash = "";
   toStaff.click();

@@ -98,8 +98,9 @@ def main(argv: list[str] | None = None) -> int:
              " (dry-run)" if args.dry_run else "", report.candidates,
              report.sent, report.reminders, len(report.failures))
     if report.failures:
+        # Rapport lisible par un humain (audit UX, principe 0.4) : jamais l'UUID.
         log.warning("Séjours en échec (ré-essai demain) : %s",
-                    ", ".join(report.failures))
+                    " ; ".join(report.failure_labels))
     return 0
 
 

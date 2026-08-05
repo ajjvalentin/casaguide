@@ -24,6 +24,28 @@ from . import care, emails, i18n, repo
 log = logging.getLogger("casaguide.guidesend")
 
 
+# ── Désignation HUMAINE d'un séjour pour les journaux (audit UX, principe 0.4) ─
+# « Aucune surface lue par un humain ne parle en identifiants techniques » : le
+# journal du J-7 disait « séjour 3ccdc040… » (« une référence pour un
+# programmeur », André). Il dit désormais « séjour Tracy Russel · 08–22.08 ·
+# Villa Ballarin ». Toutes les données sont déjà dans la ligne candidate jointe.
+
+def _fmt_stay_dates(start: _dt.date, end: _dt.date) -> str:
+    """Dates d'un séjour en format compact : « 08–22.08 » (même mois) ou
+    « 28.08–03.09 » (mois différents)."""
+    if (start.year, start.month) == (end.year, end.month):
+        return f"{start.day:02d}–{end.day:02d}.{start.month:02d}"
+    return f"{start.day:02d}.{start.month:02d}–{end.day:02d}.{end.month:02d}"
+
+
+def booking_label(row: dict) -> str:
+    """Désignation lisible d'un séjour pour les logs et le rapport du script J-7 :
+    « séjour <nom ou « sans nom »> · <dates> · <logement> ». Jamais l'UUID."""
+    name = (row.get("guest_name") or "").strip() or "sans nom"
+    dates = _fmt_stay_dates(row["starts_on"], row["ends_on"])
+    return f"séjour {name} · {dates} · {row['property_name']}"
+
+
 # ── Construction de l'email de séjour (partagée manuel ↔ automatique) ────────
 
 def offered_langs(conn, prop: dict) -> list[str]:
@@ -105,6 +127,7 @@ class AutoSendReport:
     sent: int = 0                # emails envoyés + tracés
     reminders: int = 0           # éligibles sans email (relance calendrier)
     failures: list[str] = field(default_factory=list)  # booking_id en échec SMTP
+    failure_labels: list[str] = field(default_factory=list)  # même échecs, lisibles
 
 
 def _prop_of(row: dict) -> dict:
@@ -137,16 +160,15 @@ def run_auto_send(conn, mailer, *, base_url: str, today: _dt.date,
     report = AutoSendReport(candidates=len(rows), reminders=len(plan.to_remind))
 
     for r in plan.to_remind:
-        log.info("· relance : séjour %s dans la fenêtre, email manquant (%s).",
-                 r["id"], r["property_name"])
+        log.info("· relance : %s — dans la fenêtre, email manquant.",
+                 booking_label(r))
 
     for booking in plan.to_send:
         pid = str(booking["property_id"])
         bid = str(booking["id"])
         recipient = care.effective_email(booking)   # garanti non nul par le moteur
         if dry_run:
-            log.info("[dry-run] envoi séjour %s → %s (%s)", bid, recipient,
-                     booking["property_name"])
+            log.info("[dry-run] envoi : %s → %s", booking_label(booking), recipient)
             report.sent += 1
             continue
         try:
@@ -161,15 +183,16 @@ def run_auto_send(conn, mailer, *, base_url: str, today: _dt.date,
             mailer.send(recipient, email)
         except Exception:  # noqa: BLE001 — best-effort : jamais bloquant (V2-16)
             conn.rollback()   # défait l'éventuel stay_token créé (regénéré demain)
-            log.warning("Envoi automatique du guide (séjour %s) échoué — non tracé, "
-                        "ré-essai au prochain passage.", bid, exc_info=True)
+            log.warning("Envoi automatique du guide échoué (%s) — non tracé, "
+                        "ré-essai au prochain passage.", booking_label(booking),
+                        exc_info=True)
             report.failures.append(bid)
+            report.failure_labels.append(booking_label(booking))
             continue
         # Trace APRÈS envoi réussi (verrou d'idempotence) + commit explicite (V2-16b).
         repo.record_guide_send(conn, property_id=pid, booking_id=bid, kind="stay",
                                lang=lang, recipient=recipient, origin="auto")
         conn.commit()
         report.sent += 1
-        log.info("· envoyé : séjour %s → %s (%s, %s)", bid, recipient,
-                 booking["property_name"], lang)
+        log.info("· envoyé : %s → %s (%s)", booking_label(booking), recipient, lang)
     return report

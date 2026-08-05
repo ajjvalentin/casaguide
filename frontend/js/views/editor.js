@@ -258,8 +258,17 @@ export async function renderEditor(view, pid, context) {
       form.node,
       buildMediaPanel({ propertyId: pid, sectionCode: sec.code }).node,
       el("div", { class: "sp-toolbar" },
-        el("label", { class: "switch" }, visibleSwitch, el("span", { class: "track" }), el("span", {}, "Visible dans le guide")),
-        el("label", { class: "switch" }, completedSwitch, el("span", { class: "track" }), el("span", {}, "Section complétée")),
+        // Les deux bascules sont expliquées d'une phrase (V2-31, ton du modèle
+        // étape 1) : « Section complétée » nourrit l'indicateur d'avancement —
+        // personne ne coche une case dont il ignore le rôle.
+        el("div", { class: "sp-toggle" },
+          el("label", { class: "switch" }, visibleSwitch, el("span", { class: "track" }), el("span", {}, "Visible dans le guide")),
+          el("div", { class: "help switch-help" },
+            "Décochez pour masquer cette rubrique aux voyageurs ; elle reste modifiable ici.")),
+        el("div", { class: "sp-toggle" },
+          el("label", { class: "switch" }, completedSwitch, el("span", { class: "track" }), el("span", {}, "Section complétée")),
+          el("div", { class: "help switch-help" },
+            "Cochez quand la rubrique est prête — c'est ce qui alimente votre indicateur d'avancement.")),
         el("span", { class: "spacer" }),
         el("span", { class: "savehint" }, el("kbd", {}, navigator.platform.includes("Mac") ? "⌘S" : "Ctrl+S")),
         saveBtn));
