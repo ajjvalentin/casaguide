@@ -349,6 +349,7 @@ psql -d casaguide -f db/migrations/021_stay_showcase_tokens.sql # lien de séjou
 psql -d casaguide -f db/migrations/022_guide_sends.sql # traçage des envois du guide par le backend (guide_sends) (V2-23d)
 psql -d casaguide -f db/migrations/023_property_cover.sql # photo de couverture du logement (properties.cover_media_id) (V2-30)
 psql -d casaguide -f db/migrations/024_booking_keybox_override.sql # surcharge du code de boîte à clés par séjour (bookings.keybox_code_enc, chiffré) (V2-23c volet 2)
+psql -d casaguide -f db/migrations/025_auto_send_guide.sql # envoi auto du guide à J-7 : properties.auto_send_guide + guide_sends.origin (V2-23d volet 2)
 
 # Backend
 cd backend
@@ -1176,7 +1177,37 @@ exposé, peer auth).
     « Envoyé ✓ » → erreur), la vitrine exige un **email saisi** (bouton désactivé
     sinon), le reste passe en « ou via votre messagerie ». `guide_sends` mémorise le
     dernier envoi (`GET …/last-send`, affiché dans la fenêtre) — c'est le socle du
-    **J-7 automatique (volet 2, en RESTE)**.
+    **J-7 automatique (volet 2)**.
+- Envoi automatique du guide à J-7 (V2-23d, volet 2, migration 025) :
+  - **Le registre `guide_sends` EST le verrou d'idempotence.** La sélection
+    (`api.care.select_auto_sends`, PURE) supprime tout séjour ayant déjà une ligne
+    `guide_sends` kind='stay' — **manuelle OU auto** (`already_sent`). Corollaire
+    **assumé** : un envoi manuel à J-60 supprime l'automatique (le guide est déjà
+    chez le locataire). Ne jamais ajouter un second verrou (flag sur `bookings`, job
+    qui basculerait des lignes…) : le registre suffit, un re-run le même jour
+    n'envoie rien deux fois. La trace `origin='auto'` est écrite **APRÈS** l'envoi
+    réussi + `conn.commit()` explicite ; un échec SMTP ne trace RIEN (ré-essai
+    demain, séjour encore dans la fenêtre) et **n'arrête pas la boucle** (V2-16).
+  - **La fenêtre est un `≤`, pas un `== J-7`** (rattrapage) : `today ≤ starts_on ≤
+    today+7`. Un timer en panne deux jours ne saute personne. Le `≥ today` borne
+    l'arrivée (on n'envoie pas pour un séjour déjà commencé).
+  - **Voie unique manuel ↔ auto** : la construction de l'email de séjour vit dans
+    `api/guidesend.py` (`build_stay_email` + helpers langue/vignette/lien/overlay),
+    partagée par `routers/send.py` (manuel) et `run_auto_send` (auto). Ne jamais
+    dupliquer la construction — toute évolution (langue, image, lien) se fait là.
+  - **Cible : natures `reservation`/`private` seules**, `status='active'`, non
+    rattaché (`_is_occupied`), logement `auto_send_guide` vrai **et** publié.
+    L'interrupteur `properties.auto_send_guide` est **par logement, défaut TRUE**
+    (le DEFAULT couvre l'existant → **aucun rattrapage post-migration**). Un envoi
+    MANUEL reste permis sur toute nature (le propriétaire sait ce qu'il fait) sauf
+    un séjour **annulé** → **422** (lien mort, garde ajoutée au volet 2).
+  - **Timer : fuseau EXPLICITE** (`OnCalendar=… 09:00:00 Europe/Madrid`). Sans
+    suffixe, `OnCalendar` est en heure **locale du serveur** (VPS souvent UTC) → le
+    guide partirait à la mauvaise heure. Ne jamais retirer le suffixe de fuseau.
+  - **Relance §0.6** : `care.missing_info(..., auto_send_guide=…)` ajoute le motif
+    `auto_send_email_missing` UNIQUEMENT si le logement a l'option active ET que le
+    séjour éligible entre dans la fenêtre J-7 SANS email — pastille sobre, jamais un
+    email de relance séparé.
 - Fenêtre « Envoyer le guide » & précédence de langue (V2-23c, volet 3) :
   - **Les tokens de séjour/vitrine se génèrent À LA DEMANDE, côté propriétaire,
     jamais côté public.** `repo.ensure_stay_token`/`ensure_showcase_token` utilisent

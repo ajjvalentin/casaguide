@@ -122,6 +122,10 @@ CREATE TABLE properties (
     -- ménage en cours de séjour, welcome pack, tranches d'âge & équipement suggéré,
     -- effort de rotation en hommes-heures. Voir db/migrations/017.
     care_rules       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- Envoi automatique du guide 7 jours avant l'arrivée (V2-23d volet 2) —
+    -- interrupteur par logement, défaut ACTIVÉ. Le planificateur J-7 (timer
+    -- quotidien, ops/send_guides.py) n'envoie que si ce drapeau est vrai.
+    auto_send_guide  BOOLEAN NOT NULL DEFAULT TRUE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -270,6 +274,10 @@ CREATE TABLE guide_sends (
     kind        TEXT NOT NULL CHECK (kind IN ('stay', 'showcase')),
     lang        TEXT NOT NULL,
     recipient   TEXT NOT NULL,
+    -- Origine de l'envoi (V2-23d volet 2) : 'manual' (fenêtre du back-office) ou
+    -- 'auto' (planificateur J-7). Le registre reste le verrou d'idempotence : une
+    -- ligne kind='stay' (quelle que soit l'origine) empêche tout renvoi automatique.
+    origin      TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'auto')),
     sent_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_guide_sends_property ON guide_sends(property_id, sent_at DESC);

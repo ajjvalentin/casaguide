@@ -1,0 +1,16 @@
+# Déclencheur quotidien de l'envoi automatique du guide à J-7 Holaguia — V2-23d
+# À 09:00 heure de Madrid : l'email d'hôte se lit au petit-déjeuner.
+#
+# FUSEAU EXPLICITE (piège) : `OnCalendar` sans suffixe est en heure LOCALE du
+# serveur — un VPS en UTC déclencherait à 09:00 UTC (10:00/11:00 Madrid selon la
+# saison). Le suffixe de fuseau (systemd ≥ v240) fixe l'heure à Europe/Madrid quel
+# que soit le fuseau du serveur, DST comprise. Ne jamais retirer ce suffixe.
+[Unit]
+Description=Envoi automatique du guide à J-7 Holaguia (quotidien, 09:00 Europe/Madrid)
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 Europe/Madrid
+Persistent=true
+
+[Install]
+WantedBy=timers.target

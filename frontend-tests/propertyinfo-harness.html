@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- Harnais headless de la fiche « Informations du logement » (propertyinfo.js).
+     Cible V2-23d volet 2 : l'interrupteur « Envoi automatique du guide à J-7 »
+     est VISIBLE (défaut activé quand property.auto_send_guide !== false) et
+     PERSISTÉ (décoché → le PATCH porte auto_send_guide=false). On teste le
+     composant SUR SON ARBRE RENDU (querySelector du DOM monté), jamais via une
+     référence interne (leçon V2-18c). fetch simulé (aucun réseau), verdict dans
+     #result lu par propertyinfo.test.mjs. Hors frontend/. -->
+<meta charset="utf-8">
+<title>propertyinfo-harness</title>
+<style>.hidden{display:none}</style>
+<div id="app"></div>
+<div id="toasts"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { openPropertyInfoModal } from "/frontend/js/components/propertyinfo.js";
+import { setToken } from "/frontend/js/store.js";
+
+const PROP = { id: "p1", name: "Villa Ballarin", address_line1: "Calle 1",
+  city: "Orihuela", country_code: "ES", auto_send_guide: true,
+  geocode_source: "manual", cover_media_id: null };
+
+window.__patches = [];   // corps des PATCH /api/properties/p1
+
+window.fetch = async (path, opts = {}) => {
+  const method = (opts.method || "GET").toUpperCase();
+  const json = (body) => new Response(JSON.stringify(body),
+    { status: 200, headers: { "Content-Type": "application/json" } });
+  // Liste des photos du guide (bloc couverture monté par la modale).
+  if (path === "/api/properties/p1/media" && method === "GET") return json([]);
+  // Enregistrement de la fiche.
+  if (path === "/api/properties/p1" && method === "PATCH") {
+    const body = JSON.parse(opts.body || "{}");
+    window.__patches.push(body);
+    return json({ ...PROP, ...body });
+  }
+  throw new Error("fetch inattendu : " + method + " " + path);
+};
+setToken("t");
+
+const log = [];
+let pass = true;
+const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+const switchFor = (text) => qa(".modal .switch").find((l) => l.textContent.includes(text));
+
+try {
+  let saved = null;
+  openPropertyInfoModal(PROP, { onSaved: (u) => { saved = u; } });
+  await wait(40);
+
+  // ── 1. Interrupteur visible + coché par défaut (auto_send_guide !== false) ──
+  const row = switchFor("Envoi automatique du guide à J-7");
+  chk(!!row, "interrupteur « Envoi automatique du guide à J-7 » monté dans la modale");
+  const box = row && row.querySelector("input[type=checkbox]");
+  chk(!!box && box.checked, "coché par défaut (property.auto_send_guide vrai)");
+  chk(/7 jours avant l'arrivée/.test((switchFor("Envoi automatique du guide à J-7")
+      .parentElement.textContent) || ""), "ligne d'aide présente sous l'interrupteur");
+
+  // ── 2. Décocher + enregistrer → le PATCH porte auto_send_guide=false ────────
+  box.checked = false;
+  const save = qa(".modal-foot button").find((b) => b.textContent.includes("Enregistrer"));
+  chk(!!save, "bouton « Enregistrer » présent");
+  save.click();
+  await wait(60);
+  const patch = window.__patches[window.__patches.length - 1] || {};
+  chk(patch.auto_send_guide === false,
+    "PATCH /properties porte auto_send_guide=false (vu " + JSON.stringify(patch.auto_send_guide) + ")");
+  chk(saved && saved.auto_send_guide === false,
+    "onSaved remonte le logement mis à jour (auto_send_guide=false)");
+} catch (e) {
+  pass = false;
+  log.push("✗ exception : " + (e && e.message ? e.message : e));
+}
+document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>

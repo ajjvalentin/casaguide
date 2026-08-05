@@ -454,21 +454,57 @@ Le `mailto:`/`wa.me` de secours se différencie **aussi** par cible :
 de l'email (`email.*`, texte brut) ; la **maison** garde le gabarit utilitaire
 générique `ui.send_*`.
 
-### 9.3 Traçage (`guide_sends`, migration 022)
+### 9.3 Traçage (`guide_sends`, migration 022 + `origin` migration 025)
 
 Une ligne par envoi **réussi** (`id`, `property_id`, `booking_id` NULL pour la
-vitrine, `kind`, `lang`, `recipient`, `sent_at`), écrite **après** l'envoi SMTP.
-C'est la mémoire dont l'**automatisation J-7** (volet 2, **en RESTE**) aura besoin
-(« déjà envoyé ? ») et l'affichage « envoyé le… » de la fenêtre. Aucun backfill
-(rien n'est amorcé à la création).
+vitrine, `kind`, `lang`, `recipient`, **`origin`** `'manual'|'auto'`, `sent_at`),
+écrite **après** l'envoi SMTP. C'est la mémoire de l'affichage « envoyé le… » de la
+fenêtre **et le verrou d'idempotence de l'automatisation J-7** (§9.4 : « déjà
+envoyé ? »). Aucun backfill (le `DEFAULT 'manual'` couvre les lignes du volet 1).
 
 Côté front (`sendmenu.js`), « Envoyer par Holaguia » est le **premier** canal du
 séjour et de la vitrine (états : envoi en cours → « Envoyé ✓ » → erreur) ; la
 vitrine exige un **email saisi** ; le reste passe en « ou via votre messagerie ».
 La **maison** reste inchangée (lien utilitaire, pas d'email backend).
 
-*Hors périmètre V2-23d volet 1 : l'automatisation J-7 elle-même (volet 2), le suivi
-d'ouverture, les pièces jointes.*
+### 9.4 Envoi automatique du guide à J-7 (volet 2, migration 025)
+
+Sept jours avant l'arrivée, le guide du séjour part **tout seul** par email (l'hôte
+le lit au petit-déjeuner). Timer systemd quotidien **09:00 Europe/Madrid**
+(`ops/send_guides.py` + `casaguide-send-guides.{service,timer}`, patron
+`sync_calendars`) → **cœur testable** `api.guidesend.run_auto_send`.
+
+**Sélection PURE** (`api.care.select_auto_sends`, testable sans base) :
+
+- logement `properties.auto_send_guide` vrai (**interrupteur par logement, défaut
+  activé**, migration 025) **et** publié ;
+- séjour de nature **`reservation`/`private`**, `status='active'`, non rattaché
+  (`_is_occupied`) — jamais `unqualified`/`works`/`unavailable`/annulé ;
+- **fenêtre d'arrivée** `today ≤ starts_on ≤ today+7`. Le `≤` (et non `== J-7`)
+  fait le **rattrapage** : un timer en panne deux jours ne saute personne, tout
+  séjour encore dans la fenêtre non servi reste candidat ;
+- **pas déjà envoyé** : une ligne `guide_sends` kind='stay' (manuelle **ou** auto)
+  fait office de verrou → un re-run le même jour n'envoie rien deux fois.
+  *Conséquence assumée : un envoi manuel à J-60 supprime l'automatique* (le guide
+  est déjà dans la boîte du locataire) ;
+- **email effectif absent** (`care.effective_email`) → pas candidat à l'envoi mais
+  candidat à la **relance** (sortie séparée `AutoSendPlan.to_remind`).
+
+**Envoi** par la MÊME voie que le volet 1 (voie unique `api/guidesend.py`, partagée
+avec le canal manuel) : `ensure_stay_token` + `emails.guide_stay_email` (langue =
+`guest_lang` si offerte, sinon langue du logement — invariant 15). La trace
+`guide_sends origin='auto'` est écrite **APRÈS un envoi réussi** avec un
+`conn.commit()` explicite. Un échec SMTP sur un séjour est journalisé, **non tracé**
+(ré-essai au passage du lendemain — encore dans la fenêtre) et **n'arrête pas la
+boucle** (best-effort, leçon V2-16). `--dry-run` : plan sans envoi.
+
+**Relance §0.6** : quand `auto_send_guide` est actif, un séjour éligible entrant
+dans la fenêtre J-7 **sans email** ajoute le motif `missing_info` **`auto_send_
+email_missing`** (« Séjour dans 7 jours — email manquant pour l'envoi automatique
+du guide ») — pastille calendrier sobre, jamais un email de relance séparé.
+
+*Hors périmètre volet 2 : opt-out par séjour (V2-31), suivi d'ouverture, pièces
+jointes, envoi automatique de la vitrine (n'a pas de sens).*
 
 ## 10. Photo de couverture du logement (V2-30)
 

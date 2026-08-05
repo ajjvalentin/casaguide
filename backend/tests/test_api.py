@@ -44,7 +44,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # racine backend/
 
-from api import billing_stripe, crypto, repo  # noqa: E402
+from api import billing_stripe, care, crypto, guidesend, repo  # noqa: E402
 from api.config import settings as api_settings  # noqa: E402
 from api.deps import (  # noqa: E402
     get_distance_computer, get_enrichment_runner, get_stripe,
@@ -3731,6 +3731,220 @@ def test_send_templates_kind_aware(client):
     # EN aussi (repli jamais un trou).
     en_stay = client.get("/send-templates?lang=en&kind=stay").json()
     assert "stay from" in en_stay["subject"]
+
+
+# ── Envoi automatique du guide à J-7 (V2-23d, volet 2) ──────────────────────
+# `guidesend.run_auto_send` contre le vrai PostgreSQL, mailer injecté. Trace
+# origin='auto' APRÈS envoi réussi + commit ; le registre est le verrou
+# d'idempotence ; un échec SMTP ne trace rien et n'arrête pas la boucle.
+
+class _SelectiveMailer:
+    """Mailer inspectable : échoue pour les destinataires de `fail_for`."""
+    def __init__(self, fail_for=()):
+        self.sent = []
+        self.fail_for = set(fail_for)
+
+    def send(self, to, email):
+        if to in self.fail_for:
+            raise RuntimeError("SMTP down for " + to)
+        self.sent.append((to, email))
+
+
+def _auto_booking(client, headers, pid, **over):
+    """Séjour dans la fenêtre J-7 (arrivée à J+3)."""
+    body = {"starts_on": str(_date.today() + _td(days=3)),
+            "ends_on": str(_date.today() + _td(days=8)), "nature": "reservation"}
+    body.update(over)
+    r = client.post(f"/api/properties/{pid}/bookings", headers=headers, json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_auto_send_end_to_end_traces_origin_auto_and_is_idempotent(client):
+    """Bout-en-bout : email envoyé (bon /b/ token, jamais le guide_token), trace
+    origin='auto' + langue ; re-run = zéro double (le registre verrouille).
+
+    `run_auto_send` balaie TOUS les logements (rattrapage ops) → les assertions
+    sont **scopées** au séjour créé (destinataire unique), jamais aux compteurs
+    globaux d'un `AutoSendReport` partagé avec d'éventuels restes de base."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid, guide_token = prop["id"], prop["guide_token"]
+    _offer_langs(pid, ["fr", "en", "es"])
+    rcpt = f"e2e-{uuid.uuid4().hex[:8]}@ex.com"
+    b = _auto_booking(client, owner["headers"], pid, guest_name="Tracy Russel",
+                      guest_email=rcpt, guest_lang="en")
+    m = _SelectiveMailer()
+    with _dbdict() as conn:
+        guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                today=_date.today())
+    email = next(e for to, e in m.sent if to == rcpt)   # scopé au destinataire
+    tok = _stay_token(pid, b["id"])
+    # EN est la langue « naturelle » du lien (guest_lang offerte) → lien nu, corps EN.
+    assert f"/b/{tok}" in email.html and "Open the guide" in email.html
+    assert guide_token not in email.html and "/g/" not in email.html
+
+    with _dbdict() as conn:
+        row = conn.execute(
+            "SELECT origin, lang, recipient FROM guide_sends "
+            "WHERE booking_id = %s", (b["id"],)).fetchone()
+    assert row["origin"] == "auto" and row["lang"] == "en" and row["recipient"] == rcpt
+
+    # Re-run le même jour : le registre verrouille → aucun nouvel envoi ni trace.
+    m2 = _SelectiveMailer()
+    with _dbdict() as conn:
+        guidesend.run_auto_send(conn, m2, base_url="https://holaguia.com",
+                                today=_date.today())
+    assert rcpt not in [to for to, _ in m2.sent]
+    with _dbdict() as conn:
+        n = conn.execute("SELECT count(*) AS n FROM guide_sends WHERE booking_id = %s",
+                         (b["id"],)).fetchone()["n"]
+    assert n == 1
+
+
+def test_auto_send_falls_back_to_source_lang_when_guest_lang_unoffered(client):
+    """guest_lang non offerte par le guide → repli langue source (invariant 15)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])   # published_langs vide → fr seule
+    pid = prop["id"]
+    b = _auto_booking(client, owner["headers"], pid,
+                      guest_email=f"fb-{uuid.uuid4().hex[:8]}@ex.com",
+                      guest_lang="de")               # 'de' non offerte
+    m = _SelectiveMailer()
+    with _dbdict() as conn:
+        guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                today=_date.today())
+    with _dbdict() as conn:
+        row = conn.execute("SELECT lang FROM guide_sends WHERE booking_id = %s",
+                           (b["id"],)).fetchone()
+    assert row["lang"] == "fr"
+
+
+def test_auto_send_manual_send_suppresses_auto(client):
+    """Un envoi MANUEL préexistant (verrou du registre) supprime l'automatique."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    rcpt = f"manu-{uuid.uuid4().hex[:8]}@ex.com"
+    b = _auto_booking(client, owner["headers"], pid, guest_email=rcpt)
+    _use_mailer(ConsoleMailer())
+    r = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                    json={"kind": "stay", "booking_id": b["id"]})
+    assert r.status_code == 200
+    m = _SelectiveMailer()
+    with _dbdict() as conn:
+        guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                today=_date.today())
+    assert rcpt not in [to for to, _ in m.sent]      # jamais renvoyé
+    with _dbdict() as conn:
+        rows = conn.execute("SELECT origin FROM guide_sends WHERE booking_id = %s",
+                            (b["id"],)).fetchall()
+    assert [r["origin"] for r in rows] == ["manual"]  # une seule trace, manuelle
+
+
+def test_auto_send_smtp_failure_leaves_no_trace_and_continues(client):
+    """Un échec SMTP sur un séjour : aucune trace, réessai demain ; les AUTRES
+    séjours continuent (un échec n'arrête pas la boucle)."""
+    owner = register(client)
+    propa = _publish_prop(client, owner["headers"])
+    propb = _publish_prop(client, owner["headers"], name="Casa B")
+    boom = f"boom-{uuid.uuid4().hex[:8]}@ex.com"
+    okr = f"ok-{uuid.uuid4().hex[:8]}@ex.com"
+    ba = _auto_booking(client, owner["headers"], propa["id"], guest_email=boom)
+    bb = _auto_booking(client, owner["headers"], propb["id"], guest_email=okr)
+    m = _SelectiveMailer(fail_for=[boom])
+    with _dbdict() as conn:
+        rep = guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                      today=_date.today())
+    assert okr in [to for to, _ in m.sent]           # l'autre séjour continue
+    assert boom not in [to for to, _ in m.sent]
+    assert str(ba["id"]) in rep.failures
+    with _dbdict() as conn:
+        traced = {str(r["booking_id"]) for r in conn.execute(
+            "SELECT booking_id FROM guide_sends WHERE origin = 'auto'").fetchall()}
+    assert str(bb["id"]) in traced                   # ok tracé
+    assert str(ba["id"]) not in traced               # échec : jamais tracé
+
+
+def test_auto_send_dry_run_sends_nothing(client):
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    b = _auto_booking(client, owner["headers"], pid, guest_email="g@ex.com")
+    m = _SelectiveMailer()
+    with _dbdict() as conn:
+        rep = guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                      today=_date.today(), dry_run=True)
+    assert rep.sent >= 1 and not m.sent          # planifié, jamais envoyé
+    with _dbdict() as conn:
+        n = conn.execute("SELECT count(*) AS n FROM guide_sends WHERE booking_id = %s",
+                         (b["id"],)).fetchone()["n"]
+    assert n == 0                                # dry-run ne trace jamais
+
+
+def test_auto_send_opt_out_skips_property(client):
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    r = client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                     json={"auto_send_guide": False})
+    assert r.status_code == 200 and r.json()["auto_send_guide"] is False
+    rcpt = f"optout-{uuid.uuid4().hex[:8]}@ex.com"
+    b = _auto_booking(client, owner["headers"], pid, guest_email=rcpt)
+    m = _SelectiveMailer()
+    with _dbdict() as conn:
+        guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                today=_date.today())
+    assert rcpt not in [to for to, _ in m.sent]  # logement opt-out : pas d'envoi
+    with _dbdict() as conn:
+        n = conn.execute("SELECT count(*) AS n FROM guide_sends WHERE booking_id = %s",
+                         (b["id"],)).fetchone()["n"]
+    assert n == 0
+
+
+def test_manual_send_guide_rejects_cancelled_booking(client):
+    """Garde de bon sens (volet 2) : un séjour annulé → 422 (lien mort)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    b = _make_booking(client, owner["headers"], pid, guest_email="g@ex.com")
+    r0 = client.patch(f"/api/properties/{pid}/bookings/{b['id']}",
+                      headers=owner["headers"], json={"status": "cancelled"})
+    assert r0.status_code == 200
+    _use_mailer(ConsoleMailer())
+    r = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                    json={"kind": "stay", "booking_id": b["id"]})
+    assert r.status_code == 422
+
+
+def test_property_out_exposes_and_updates_auto_send_guide(client):
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    assert prop["auto_send_guide"] is True           # défaut activé
+    r = client.patch(f"/api/properties/{prop['id']}", headers=owner["headers"],
+                     json={"auto_send_guide": False})
+    assert r.status_code == 200 and r.json()["auto_send_guide"] is False
+    r2 = client.get(f"/api/properties/{prop['id']}", headers=owner["headers"])
+    assert r2.json()["auto_send_guide"] is False     # persistée
+
+
+def test_calendar_missing_info_flags_auto_send_email(client):
+    """La relance §0.6 « email manquant pour l'envoi automatique » remonte dans le
+    calendrier quand l'option est active, disparaît quand on la coupe."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    b = _auto_booking(client, owner["headers"], pid, guest_name="Sans Email")
+    view = client.get(f"/api/properties/{pid}/calendar", headers=owner["headers"]).json()
+    row = next(x for x in view["bookings"] if x["id"] == b["id"])
+    codes = {mi["code"] for mi in row["missing_info"]}
+    assert "auto_send_email_missing" in codes
+    # On coupe l'envoi automatique → le motif disparaît.
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"auto_send_guide": False})
+    view2 = client.get(f"/api/properties/{pid}/calendar", headers=owner["headers"]).json()
+    row2 = next(x for x in view2["bookings"] if x["id"] == b["id"])
+    assert "auto_send_email_missing" not in {mi["code"] for mi in row2["missing_info"]}
 
 
 # ── Photo de couverture du logement (V2-30) ─────────────────────────────────

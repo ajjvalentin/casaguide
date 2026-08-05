@@ -1,0 +1,21 @@
+# Envoi automatique du guide à J-7 Holaguia — V2-23d volet 2
+# Déclenchée par casaguide-send-guides.timer (quotidien, 09:00 Europe/Madrid).
+# Installation :
+#   sudo cp /opt/casaguide/ops/casaguide-send-guides.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-send-guides.timer
+#   (vérifier : systemctl list-timers | grep send-guides ; test manuel :
+#    sudo -u casaguide /opt/casaguide/.venv/bin/python \
+#        /opt/casaguide/ops/send_guides.py --dry-run)
+[Unit]
+Description=Envoi automatique du guide à J-7 Holaguia
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=casaguide
+Group=casaguide
+# EnvironmentFile facultatif : le script charge aussi backend/.env lui-même (OPS-1).
+EnvironmentFile=-/opt/casaguide/backend/.env
+WorkingDirectory=/opt/casaguide/backend
+ExecStart=/opt/casaguide/.venv/bin/python /opt/casaguide/ops/send_guides.py

@@ -51,6 +51,16 @@ export function openPropertyInfoModal(property, { onSaved } = {}) {
   const cBackup = field("Contact de secours", "contact_backup", property.contact_backup);
   const license = field("Licence touristique", "tourism_license", property.tourism_license);
 
+  // Envoi automatique du guide à J-7 (V2-23d volet 2) : geste d'accueil, placé
+  // sous le contact voyageur. Défaut activé (property.auto_send_guide !== false).
+  const autoSend = el("input", { type: "checkbox" });
+  autoSend.checked = property.auto_send_guide !== false;
+  const autoSendRow = el("label", { class: "switch", style: { marginTop: "8px" } },
+    autoSend, el("span", { class: "track" }),
+    el("span", {}, "Envoi automatique du guide à J-7"));
+  const autoSendHint = el("div", { class: "help", style: { margin: "2px 0 0" } },
+    "7 jours avant l'arrivée, le guide part par email au locataire (si un email est renseigné pour le séjour).");
+
   // Re-géocodage : décoché par défaut si la position est manuelle (ne jamais
   // l'écraser sans accord explicite). Pertinent seulement si l'adresse change.
   const isManual = property.geocode_source === "manual";
@@ -107,6 +117,7 @@ export function openPropertyInfoModal(property, { onSaved } = {}) {
     cName.node,
     el("div", { class: "grid-2" }, cPhone.node, cWa.node),
     el("div", { class: "grid-2" }, cEmail.node, cBackup.node),
+    el("div", { class: "field-group" }, autoSendRow, autoSendHint),
     el("h3", { class: "form-subhead" }, "Autorisation"),
     license.node,
     err);
@@ -136,6 +147,7 @@ export function openPropertyInfoModal(property, { onSaved } = {}) {
       contact_email: cEmail.input.value.trim() || null,
       contact_backup: cBackup.input.value.trim() || null,
       tourism_license: license.input.value.trim() || null,
+      auto_send_guide: autoSend.checked,
     };
     if (!patch.name || !patch.address_line1 || !patch.city) {
       err.textContent = "Nom, adresse et ville sont obligatoires."; err.classList.remove("hidden"); return;

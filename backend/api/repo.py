@@ -21,7 +21,7 @@ _PROP_COLS = """
     default_lang, published_langs, contact_name, contact_phone,
     contact_whatsapp, contact_email, contact_backup, tourism_license,
     default_checkin_time, default_checkout_time, care_rules, cover_media_id,
-    created_at, updated_at
+    auto_send_guide, created_at, updated_at
 """
 
 
@@ -477,6 +477,7 @@ _UPDATABLE = (
     "country_code", "default_lang", "access_mode", "status", "contact_name",
     "contact_phone", "contact_whatsapp", "contact_email", "contact_backup",
     "tourism_license", "default_checkin_time", "default_checkout_time",
+    "auto_send_guide",
 )
 
 
@@ -1146,15 +1147,51 @@ def ensure_showcase_token(conn, owner_id: str, property_id: str) -> str | None:
 
 
 def record_guide_send(conn, *, property_id: str, booking_id: str | None,
-                      kind: str, lang: str, recipient: str) -> dict:
+                      kind: str, lang: str, recipient: str,
+                      origin: str = "manual") -> dict:
     """Journalise un envoi du guide RÉUSSI (V2-23d) et renvoie la ligne créée.
     Écrit uniquement APRÈS un envoi SMTP réussi (jamais sur échec) — mémoire du
-    dernier envoi (fenêtre) et socle de l'automatisation J-7 (volet 2)."""
+    dernier envoi (fenêtre) et **verrou d'idempotence** de l'automatisation J-7
+    (volet 2). `origin` : 'manual' (fenêtre du back-office) ou 'auto' (timer J-7)."""
     return conn.execute(
-        """INSERT INTO guide_sends (property_id, booking_id, kind, lang, recipient)
-           VALUES (%s, %s, %s, %s, %s)
-           RETURNING id, property_id, booking_id, kind, lang, recipient, sent_at""",
-        (property_id, booking_id, kind, lang, recipient)).fetchone()
+        """INSERT INTO guide_sends
+                       (property_id, booking_id, kind, lang, recipient, origin)
+           VALUES (%s, %s, %s, %s, %s, %s)
+           RETURNING id, property_id, booking_id, kind, lang, recipient, origin,
+                     sent_at""",
+        (property_id, booking_id, kind, lang, recipient, origin)).fetchone()
+
+
+def list_auto_send_candidates(conn, *, today, horizon_end) -> list[dict]:
+    """Séjours candidats à l'envoi automatique du guide à J-7 (V2-23d volet 2),
+    tous logements confondus (rattrapage ops — jamais de filtre propriétaire).
+
+    Borné à la **fenêtre d'arrivée** `[today, horizon_end]` (efficience ; le moteur
+    pur `care.select_auto_sends` re-vérifie la fenêtre et tous les autres critères).
+    Chaque ligne porte les colonnes de séjour PLUS le contexte du logement dont le
+    moteur et la construction de l'email ont besoin : `auto_send_guide`, `published`
+    (booléen), `property_name`, `default_lang`, `published_langs`, `cover_media_id`,
+    et `already_sent` (une ligne `guide_sends` kind='stay' existe déjà pour ce
+    séjour — le **registre est le verrou d'idempotence**). La surcharge de code de
+    boîte à clés n'est JAMAIS sélectionnée (absente de `_BOOKING_COLS`, invariant
+    V2-23c volet 2)."""
+    cols = ", ".join(f"b.{c.strip()}" for c in _BOOKING_COLS.split(","))
+    return conn.execute(
+        f"""SELECT {cols},
+                   p.auto_send_guide,
+                   (p.status = 'published')        AS published,
+                   p.name                          AS property_name,
+                   p.default_lang,
+                   p.published_langs,
+                   p.cover_media_id,
+                   EXISTS (SELECT 1 FROM guide_sends gs
+                           WHERE gs.booking_id = b.id AND gs.kind = 'stay')
+                                                   AS already_sent
+              FROM bookings b
+              JOIN properties p ON p.id = b.property_id
+             WHERE b.starts_on >= %s AND b.starts_on <= %s
+             ORDER BY b.starts_on, b.id""",
+        (today, horizon_end)).fetchall()
 
 
 def last_guide_send(conn, property_id: str, *, kind: str,

@@ -294,7 +294,7 @@ def plan_interventions(booking: dict, care_rules: dict, *,
 # ── Relance active : informations manquantes (§0.6 / §1.0) ───────────────────
 
 def missing_info(booking: dict, care_rules: dict, *,
-                 today: _dt.date) -> list[dict]:
+                 today: _dt.date, auto_send_guide: bool = False) -> list[dict]:
     """Signaux de relance pour le calendrier du propriétaire (§0.6).
 
     Un séjour opérationnellement pertinent (occupé, actif, non rattaché, pas
@@ -302,6 +302,11 @@ def missing_info(booking: dict, care_rules: dict, *,
     qualifier, nombre de voyageurs manquant, et — si sa durée déclenche une
     intervention en cours de séjour — coordonnées manquantes (le flux iCal ne
     transporte jamais le téléphone, or une intervention suppose un rendez-vous).
+
+    `auto_send_guide` : quand le logement a l'envoi automatique du guide activé
+    (V2-23d volet 2), un séjour éligible qui entre dans la fenêtre J-7 **sans
+    email** ne peut pas être servi automatiquement → on le signale ici (pastille
+    calendrier), plutôt qu'un email de relance séparé.
 
     Chaque signal : `{code, message}`. Renvoie `[]` s'il n'y a rien à relancer."""
     # Cycle de vie : un séjour annulé ou déjà terminé ne se relance pas.
@@ -344,7 +349,70 @@ def missing_info(booking: dict, care_rules: dict, *,
             "message": (f"Séjour de {stay_nights(booking)} jours · "
                         f"draps à J+{day} · téléphone manquant.")})
 
+    # Envoi automatique du guide à J-7 (V2-23d volet 2) : le logement a l'option
+    # activée, le séjour entre dans la fenêtre et n'a pas d'email → il ne partira
+    # pas tout seul. On invite le propriétaire à compléter (jamais un email dédié).
+    if (auto_send_guide
+            and today <= booking["starts_on"] <= today + _dt.timedelta(days=AUTO_SEND_HORIZON_DAYS)
+            and effective_email(booking) is None):
+        out.append({
+            "code": "auto_send_email_missing",
+            "message": ("Séjour dans 7 jours — email manquant pour l'envoi "
+                        "automatique du guide.")})
+
     return out
+
+
+# ── Envoi automatique du guide à J-7 : sélection PURE (V2-23d volet 2) ────────
+
+AUTO_SEND_HORIZON_DAYS = 7   # fenêtre d'anticipation de l'envoi (J-7)
+
+
+@dataclass
+class AutoSendPlan:
+    """Résultat de la sélection : les séjours à SERVIR (email prêt) et ceux à
+    RELANCER (éligibles mais sans email). Deux sorties séparées — l'envoi et la
+    relance sont deux gestes distincts (§2/§4)."""
+    to_send: list[dict] = field(default_factory=list)
+    to_remind: list[dict] = field(default_factory=list)
+
+
+def select_auto_sends(candidates: list[dict], *, today: _dt.date,
+                      horizon_days: int = AUTO_SEND_HORIZON_DAYS) -> AutoSendPlan:
+    """Sélectionne les séjours à qui envoyer automatiquement le guide (fonction
+    **pure**, testable sans base). Chaque `candidate` est une ligne de séjour
+    enrichie du contexte logement (cf. `repo.list_auto_send_candidates`) :
+    `auto_send_guide`, `published`, `already_sent`, plus les champs de séjour.
+
+    Critères (décisions André, 05/08) :
+      · logement `auto_send_guide` vrai **et** publié ;
+      · nature `reservation`/`private`, actif, non rattaché (`_is_occupied`) ;
+      · **fenêtre** `today <= starts_on <= today + horizon_days` — le `>= today`
+        borne l'arrivée (on n'envoie pas pour un séjour déjà commencé), et le
+        `<=` couvre le **rattrapage** : un timer en panne deux jours ne saute
+        personne (tout séjour encore dans la fenêtre, non servi, reste candidat) ;
+      · **pas déjà envoyé** : une ligne `guide_sends` kind='stay' (manuelle OU
+        auto) fait office de verrou — un manuel à J-60 supprime l'automatique
+        (assumé : le guide est déjà chez le locataire).
+
+    Un candidat retenu **sans email effectif** (`effective_email`) n'est pas
+    servi mais rejoint `to_remind` (le calendrier relance, §4)."""
+    horizon_end = today + _dt.timedelta(days=horizon_days)
+    plan = AutoSendPlan()
+    for b in candidates:
+        if not b.get("auto_send_guide") or not b.get("published"):
+            continue
+        if not _is_occupied(b):          # nature préparée + actif + non rattaché
+            continue
+        if not (today <= b["starts_on"] <= horizon_end):
+            continue
+        if b.get("already_sent"):        # le registre est le verrou d'idempotence
+            continue
+        if effective_email(b) is None:
+            plan.to_remind.append(b)
+        else:
+            plan.to_send.append(b)
+    return plan
 
 
 # ── Fenêtre de rotation : signal & recommandation d'effectif (§1.1) ──────────

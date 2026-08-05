@@ -71,12 +71,15 @@ def _calendar_out(cal: dict) -> CalendarOut:
 def _booking_out(b: dict, default_in, default_out, *,
                  care_rules: dict | None = None,
                  today: _dt.date | None = None,
-                 pending_requests: int = 0) -> BookingOut:
+                 pending_requests: int = 0,
+                 auto_send_guide: bool = False) -> BookingOut:
     eff_in, eff_out = calendars.effective_times(b, default_in, default_out)
     is_direct = b["calendar_id"] is None and b["external_uid"] is None
-    # Relance active (§0.6) : ce qui manque pour préparer ce séjour.
+    # Relance active (§0.6) : ce qui manque pour préparer ce séjour — dont l'email
+    # manquant pour l'envoi automatique du guide à J-7 (V2-23d volet 2).
     missing = care.missing_info(b, care_rules or {},
-                                today=today or _dt.date.today())
+                                today=today or _dt.date.today(),
+                                auto_send_guide=auto_send_guide)
     return BookingOut(
         id=b["id"], calendar_id=b["calendar_id"], starts_on=b["starts_on"],
         ends_on=b["ends_on"], checkin_time=b["checkin_time"],
@@ -126,7 +129,8 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
         calendars=[_calendar_out(c) for c in repo.list_calendars_with_url(conn, pid)],
         bookings=[_booking_out(b, default_in, default_out, care_rules=care_rules,
                                today=today,
-                               pending_requests=pending.get(str(b["id"]), 0))
+                               pending_requests=pending.get(str(b["id"]), 0),
+                               auto_send_guide=prop["auto_send_guide"])
                   for b in bookings],
         overlaps=[OverlapOut(a=a["id"], b=b["id"]) for a, b in overlaps],
         rotations=[RotationOut(**r, signal=_rotation_signal(
@@ -166,7 +170,8 @@ def create_booking(payload: BookingIn, conn: Conn, prop: OwnedProperty):
     b = repo.create_booking(conn, str(prop["id"]), data)
     return _booking_out(b, prop["default_checkin_time"],
                         prop["default_checkout_time"],
-                        care_rules=prop["care_rules"])
+                        care_rules=prop["care_rules"],
+                        auto_send_guide=prop["auto_send_guide"])
 
 
 @router.patch("/bookings/{booking_id}", response_model=BookingOut,
@@ -209,7 +214,8 @@ def update_booking(booking_id: str, payload: BookingUpdate, conn: Conn,
                             detail="Séjour introuvable")
     return _booking_out(b, prop["default_checkin_time"],
                         prop["default_checkout_time"],
-                        care_rules=prop["care_rules"])
+                        care_rules=prop["care_rules"],
+                        auto_send_guide=prop["auto_send_guide"])
 
 
 @router.get("/bookings/{booking_id}/keybox", response_model=BookingKeyboxOut)

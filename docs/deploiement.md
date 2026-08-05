@@ -220,6 +220,35 @@ sudo -u casaguide /opt/casaguide/.venv/bin/python \
 À installer **une fois** (les migrations 009/010 sont appliquées automatiquement
 par `deploy.sh`). Vérifier ensuite `journalctl -u casaguide-trial-reminders`.
 
+### 1.13 Envoi automatique du guide à J-7 (V2-23d volet 2)
+
+Timer systemd quotidien **09:00 heure de Madrid** qui envoie le guide du séjour 7
+jours avant l'arrivée (`ops/send_guides.py`, idempotent : le registre `guide_sends`
+est le verrou, jamais deux fois le même séjour). Best-effort : un échec SMTP sur un
+séjour ne bloque pas les autres et est ré-essayé le lendemain (séjour encore dans la
+fenêtre).
+
+⚠ **Fuseau EXPLICITE** : `OnCalendar` sans suffixe est en heure **locale du
+serveur**. Le timer fixe `09:00:00 Europe/Madrid` (systemd ≥ v240) → 09:00 Madrid
+quel que soit le fuseau du VPS (souvent UTC), DST comprise. **Ne jamais retirer ce
+suffixe.**
+
+```bash
+sudo cp /opt/casaguide/ops/casaguide-send-guides.service /etc/systemd/system/
+sudo cp /opt/casaguide/ops/casaguide-send-guides.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now casaguide-send-guides.timer
+sudo systemctl list-timers casaguide-send-guides.timer --no-pager  # colonne heure = Madrid
+# Test à blanc (planifie sans envoyer ni tracer) :
+sudo -u casaguide /opt/casaguide/.venv/bin/python \
+    /opt/casaguide/ops/send_guides.py --dry-run
+```
+
+À installer **une fois** (la migration 025 est appliquée automatiquement par
+`deploy.sh`). L'interrupteur `properties.auto_send_guide` est **activé par défaut**
+sur tout l'existant (DEFAULT TRUE) — **pas de rattrapage post-migration** (§2bis).
+Vérifier ensuite `journalctl -u casaguide-send-guides`.
+
 ---
 
 ## 2. Déploiement courant (à chaque mise à jour)

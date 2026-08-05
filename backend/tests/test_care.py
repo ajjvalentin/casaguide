@@ -345,3 +345,123 @@ def test_planning_show_contact_gate_hides_history():
     past = _pb(ends_on=dt.date(2025, 12, 31))
     assert care._show_contact(past, today=TODAY_P) is False
     assert care._show_contact(_pb(), today=TODAY_P) is True
+
+
+# ── Envoi automatique du guide à J-7 : sélection PURE (V2-23d volet 2) ────────
+
+def _cand(**over):
+    """Candidat à l'envoi auto : un séjour enrichi du contexte logement, tel que le
+    produit `repo.list_auto_send_candidates`. Défauts favorables (à envoyer),
+    surchargeables. `starts_on` par défaut = J-5 (dans la fenêtre)."""
+    c = {"id": "b1", "property_id": "p1", "property_name": "Villa Ballarin",
+         "default_lang": "fr", "published_langs": [], "cover_media_id": None,
+         "auto_send_guide": True, "published": True, "already_sent": False,
+         "starts_on": TODAY + dt.timedelta(days=5),
+         "ends_on": TODAY + dt.timedelta(days=12),
+         "nature": "reservation", "status": "active", "linked_booking_id": None,
+         "guest_count": 4, "children_ages": [], "guest_name": "Tracy",
+         "guest_contact": None, "guest_phone": None,
+         "guest_email": "tracy@ex.com", "guest_lang": None}
+    c.update(over)
+    return c
+
+
+def test_auto_send_selects_stay_in_window_with_email():
+    plan = care.select_auto_sends([_cand()], today=TODAY)
+    assert [b["id"] for b in plan.to_send] == ["b1"]
+    assert plan.to_remind == []
+
+
+def test_auto_send_window_boundaries_and_catchup():
+    """J-0 (arrivée aujourd'hui) et J-7 (bord) sont dans la fenêtre ; J-8 (trop
+    tôt) et une arrivée passée (hier) sont hors fenêtre. Le rattrapage vient du
+    `<=` : tout séjour ENTRANT dans la fenêtre non servi reste candidat."""
+    today0 = _cand(id="j0", starts_on=TODAY)
+    j7 = _cand(id="j7", starts_on=TODAY + dt.timedelta(days=7))
+    j8 = _cand(id="j8", starts_on=TODAY + dt.timedelta(days=8))
+    past = _cand(id="past", starts_on=TODAY - dt.timedelta(days=1))
+    plan = care.select_auto_sends([today0, j7, j8, past], today=TODAY)
+    assert {b["id"] for b in plan.to_send} == {"j0", "j7"}
+
+
+def test_auto_send_natures_reservation_and_private_only():
+    keep = [_cand(id="res", nature="reservation"),
+            _cand(id="priv", nature="private")]
+    drop = [_cand(id="unq", nature="unqualified"),
+            _cand(id="wrk", nature="works"),
+            _cand(id="una", nature="unavailable"),
+            _cand(id="canc", status="cancelled"),
+            _cand(id="link", linked_booking_id="x")]
+    plan = care.select_auto_sends(keep + drop, today=TODAY)
+    assert {b["id"] for b in plan.to_send} == {"res", "priv"}
+
+
+def test_auto_send_respects_opt_out_and_unpublished():
+    plan = care.select_auto_sends(
+        [_cand(id="off", auto_send_guide=False),
+         _cand(id="draft", published=False)], today=TODAY)
+    assert plan.to_send == [] and plan.to_remind == []
+
+
+def test_auto_send_ledger_is_idempotency_lock():
+    """Déjà envoyé (manuel OU auto) → jamais renvoyé : re-run = zéro double."""
+    plan = care.select_auto_sends([_cand(already_sent=True)], today=TODAY)
+    assert plan.to_send == [] and plan.to_remind == []
+
+
+def test_auto_send_missing_email_goes_to_reminders_not_sends():
+    """Éligible mais sans email → relance (sortie séparée), jamais un envoi."""
+    plan = care.select_auto_sends([_cand(guest_email=None, guest_contact=None)],
+                                  today=TODAY)
+    assert plan.to_send == []
+    assert [b["id"] for b in plan.to_remind] == ["b1"]
+
+
+def test_auto_send_legacy_contact_email_counts():
+    """L'email effectif accepte le legacy `guest_contact` s'il contient un '@'."""
+    plan = care.select_auto_sends(
+        [_cand(guest_email=None, guest_contact="legacy@ex.com")], today=TODAY)
+    assert [b["id"] for b in plan.to_send] == ["b1"]
+
+
+# ── Relance §0.6 : email manquant pour l'envoi automatique (V2-23d volet 2) ───
+
+def _win(**over):
+    """Séjour éligible dans la fenêtre J-7 (arrivée à J-3), sans email par défaut."""
+    base = dict(starts_on=TODAY + dt.timedelta(days=3),
+                ends_on=TODAY + dt.timedelta(days=7),
+                guest_email=None, guest_contact=None, guest_phone="+34 600")
+    base.update(over)
+    return _bk(**base)
+
+
+def test_missing_info_auto_send_email_only_when_enabled():
+    b = _win()
+    codes_off = {m["code"] for m in care.missing_info(b, {}, today=TODAY,
+                                                      auto_send_guide=False)}
+    codes_on = {m["code"] for m in care.missing_info(b, {}, today=TODAY,
+                                                     auto_send_guide=True)}
+    assert "auto_send_email_missing" not in codes_off
+    assert "auto_send_email_missing" in codes_on
+
+
+def test_missing_info_auto_send_absent_when_email_present():
+    b = _win(guest_email="tracy@ex.com")
+    codes = {m["code"] for m in care.missing_info(b, {}, today=TODAY,
+                                                  auto_send_guide=True)}
+    assert "auto_send_email_missing" not in codes
+
+
+def test_missing_info_auto_send_absent_outside_window():
+    b = _win(starts_on=TODAY + dt.timedelta(days=20),
+             ends_on=TODAY + dt.timedelta(days=27))
+    codes = {m["code"] for m in care.missing_info(b, {}, today=TODAY,
+                                                  auto_send_guide=True)}
+    assert "auto_send_email_missing" not in codes
+
+
+def test_missing_info_auto_send_absent_for_unqualified_nature():
+    b = _win(nature="unqualified")
+    codes = {m["code"] for m in care.missing_info(b, {}, today=TODAY,
+                                                  auto_send_guide=True)}
+    assert "auto_send_email_missing" not in codes

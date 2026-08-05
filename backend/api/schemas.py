@@ -223,6 +223,8 @@ class PropertyUpdate(BaseModel):
     default_checkout_time: time | None = None
     # Règles d'entretien (V2-23b, §1.1) — objet JSON libre, remplacé en bloc.
     care_rules: dict | None = None
+    # Envoi automatique du guide à J-7 (V2-23d volet 2) — interrupteur par logement.
+    auto_send_guide: bool | None = None
     # Placement manuel du point sur la carte (§5.1 : le propriétaire corrige le géocodage)
     lat: float | None = Field(default=None, ge=-90, le=90)
     lon: float | None = Field(default=None, ge=-180, le=180)
@@ -257,6 +259,7 @@ class PropertyOut(BaseModel):
     default_checkout_time: time | None = None
     care_rules: dict = {}     # règles d'entretien (V2-23b, §1.1)
     cover_media_id: UUID | None = None   # photo de couverture (V2-30)
+    auto_send_guide: bool = True   # envoi automatique du guide à J-7 (V2-23d volet 2)
     created_at: datetime
     updated_at: datetime
 
