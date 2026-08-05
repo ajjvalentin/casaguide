@@ -212,6 +212,13 @@ def update_booking(booking_id: str, payload: BookingUpdate, conn: Conn,
     if not b:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Séjour introuvable")
+    # V2-23f — le rattachement absorbe la substance du bloc : ses demandes et ses
+    # coordonnées migrent vers le maître AVANT que le bloc ne disparaisse de la vue
+    # (jamais de perte silencieuse). Point UNIQUE : les deux chemins d'UI (modale
+    # §0.5 et bandeau de chevauchement §0.4) passent par ce PATCH.
+    if fields.get("linked_booking_id") is not None:
+        repo.absorb_block_into_master(conn, str(prop["id"]), booking_id,
+                                      fields["linked_booking_id"])
     return _booking_out(b, prop["default_checkin_time"],
                         prop["default_checkout_time"],
                         care_rules=prop["care_rules"],

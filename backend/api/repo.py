@@ -1672,6 +1672,52 @@ def update_booking(conn, property_id: str, booking_id: str,
     ).fetchone()
 
 
+def absorb_block_into_master(conn, property_id: str, block_id: str,
+                             master_id: str) -> None:
+    """Rattachement d'un bloc miroir (§0.5) : le maître ABSORBE la substance du
+    bloc avant qu'il ne disparaisse de la vue (V2-23f). Sans quoi les demandes du
+    bloc (booking_requests) et ses coordonnées s'évanouiraient silencieusement —
+    perte de données réelle constatée en prod (cas Tracy Russel, 05/08).
+
+    DEUX transferts, dans la MÊME transaction que la pose de `linked_booking_id`
+    (le routeur les enchaîne) :
+
+    1. **Demandes** : TOUTES (pending ET accepted) migrent vers le maître — les
+       acceptées nourrissent `plan_interventions`, le planning doit rester vrai.
+       Un transfert, jamais une création/destruction.
+    2. **Champs de fiche** : repris SEULEMENT si le maître est vide/NULL et le bloc
+       renseigné (COALESCE + NULLIF sur les vides) — une valeur du maître n'est
+       JAMAIS écrasée (esprit invariant 13). `keybox_code_enc` se copie tel quel
+       (bytea chiffré, aucun déchiffrement — invariant 5).
+
+    **Asymétrie assumée** : le DÉTACHEMENT (`linked_booking_id`→NULL) ne rejoue
+    RIEN à l'envers — le transfert est un acte, pas un miroir. Demandes et champs
+    migrés restent sur le maître (pas de migration inverse).
+
+    Idempotent : re-rattacher le même bloc ne double rien — les demandes ont déjà
+    migré (le WHERE ne matche plus), et les champs du maître, désormais garnis,
+    sont conservés par COALESCE."""
+    conn.execute(
+        "UPDATE booking_requests SET booking_id = %s WHERE booking_id = %s",
+        (master_id, block_id))
+    conn.execute(
+        """UPDATE bookings AS m SET
+             guest_phone       = COALESCE(NULLIF(m.guest_phone, ''), b.guest_phone),
+             guest_email       = COALESCE(NULLIF(m.guest_email, ''), b.guest_email),
+             guest_lang        = COALESCE(NULLIF(m.guest_lang, ''), b.guest_lang),
+             notes             = COALESCE(NULLIF(m.notes, ''), b.notes),
+             guest_count       = COALESCE(m.guest_count, b.guest_count),
+             children_ages     = COALESCE(NULLIF(m.children_ages, '{}'::int[]),
+                                          b.children_ages),
+             keybox_code_enc   = COALESCE(m.keybox_code_enc, b.keybox_code_enc),
+             luggage_drop_time = COALESCE(m.luggage_drop_time, b.luggage_drop_time),
+             updated_at        = now()
+           FROM bookings AS b
+           WHERE m.id = %s AND m.property_id = %s
+             AND b.id = %s AND b.property_id = %s""",
+        (master_id, property_id, block_id, property_id))
+
+
 def delete_booking(conn, property_id: str, booking_id: str) -> str | None:
     """Retire un séjour. Une **saisie directe** (aucun flux) est réellement
     supprimée ; un séjour **importé** est conservé et passé 'cancelled' (il

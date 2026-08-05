@@ -277,6 +277,164 @@ def test_cannot_link_booking_to_itself(client):
     assert r.status_code == 422
 
 
+# ── V2-23f : le rattachement absorbe la substance du bloc ─────────────────────
+
+def _add_guest_request(booking_id: str, *, status: str = "pending") -> None:
+    """Insère une demande d'origine 'guest' directement en base (elle viendrait en
+    prod du POST public /g|/b/{token}/requests, hors périmètre de ce test)."""
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            """INSERT INTO booking_requests
+                   (booking_id, label, quantity, origin, status)
+               VALUES (%s, 'Ménage supplémentaire', 1, 'guest', %s)""",
+            (booking_id, status))
+        conn.commit()
+
+
+def _make_master_and_block(client, h, pid):
+    """Un séjour maître minimal (champs vides) et un bloc riche à rattacher."""
+    master = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-19",
+        "guest_name": "Location directe"}).json()
+    block = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-19",
+        "guest_name": "Tracy Russel", "guest_phone": "+34 600 111 222",
+        "guest_email": "tracy@example.com", "guest_lang": "en",
+        "guest_count": 4, "children_ages": [3, 7], "notes": "Arrivée tardive",
+        "luggage_drop_time": "11:00", "keybox_code": "4242"}).json()
+    return master, block
+
+
+def test_link_absorbs_requests_and_empty_fields(client):
+    """§0.5 / V2-23f : au rattachement, le maître absorbe les demandes du bloc
+    (pending ET accepted) et ses coordonnées quand les siennes sont vides — jamais
+    de perte silencieuse (cas Tracy Russel, 05/08)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    master, block = _make_master_and_block(client, h, pid)
+    # Deux demandes propriétaire sur le bloc (pending + accepted) et une du voyageur.
+    client.post(f"/api/properties/{pid}/bookings/{block['id']}/requests", headers=h,
+                json={"label": "Lit bébé", "quantity": 1, "status": "pending"})
+    client.post(f"/api/properties/{pid}/bookings/{block['id']}/requests", headers=h,
+                json={"label": "Draps", "quantity": 2, "status": "accepted"})
+    _add_guest_request(block["id"])                      # guest pending → badge
+
+    r = client.patch(f"/api/properties/{pid}/bookings/{block['id']}", headers=h,
+                     json={"linked_booking_id": master["id"]})
+    assert r.status_code == 200
+
+    # Les TROIS demandes vivent désormais sur le maître (transfert, pas perte).
+    reqs = client.get(f"/api/properties/{pid}/bookings/{master['id']}/requests",
+                      headers=h).json()
+    assert {rq["label"] for rq in reqs} == {"Lit bébé", "Draps",
+                                            "Ménage supplémentaire"}
+    assert len(reqs) == 3
+    # Le bloc n'en porte plus aucune.
+    block_reqs = client.get(
+        f"/api/properties/{pid}/bookings/{block['id']}/requests", headers=h).json()
+    assert block_reqs == []
+
+    # Le bandeau (calendrier) montre la demande voyageur en attente sur le maître.
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert len(view["bookings"]) == 1                    # le bloc a disparu
+    mv = view["bookings"][0]
+    assert mv["id"] == master["id"]
+    assert mv["pending_guest_requests"] == 1
+
+    # Coordonnées absorbées (le maître était vide sur tous ces champs).
+    assert mv["guest_phone"] == "+34 600 111 222"
+    assert mv["guest_email"] == "tracy@example.com"
+    assert mv["guest_lang"] == "en"
+    assert mv["guest_count"] == 4
+    assert mv["children_ages"] == [3, 7]
+    assert mv["notes"] == "Arrivée tardive"
+    assert mv["luggage_drop_time"] == "11:00:00"
+    # Le code de boîte à clés (bytea chiffré) a suivi tel quel.
+    kb = client.get(f"/api/properties/{pid}/bookings/{master['id']}/keybox",
+                    headers=h).json()
+    assert kb["keybox_code"] == "4242"
+
+
+def test_link_never_overwrites_master_fields(client):
+    """Un champ déjà renseigné sur le maître n'est JAMAIS écrasé (esprit inv. 13)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    # Maître déjà garni de ses propres coordonnées.
+    master = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-19",
+        "guest_phone": "+34 900 000 000", "guest_email": "owner@master.com",
+        "guest_count": 2, "keybox_code": "0000"}).json()
+    block = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-19",
+        "guest_phone": "+34 600 111 222", "guest_email": "tracy@example.com",
+        "guest_count": 4, "keybox_code": "4242"}).json()
+    client.patch(f"/api/properties/{pid}/bookings/{block['id']}", headers=h,
+                 json={"linked_booking_id": master["id"]})
+    mv = client.get(f"/api/properties/{pid}/calendar", headers=h).json()["bookings"][0]
+    assert mv["guest_phone"] == "+34 900 000 000"        # inchangé
+    assert mv["guest_email"] == "owner@master.com"
+    assert mv["guest_count"] == 2
+    kb = client.get(f"/api/properties/{pid}/bookings/{master['id']}/keybox",
+                    headers=h).json()
+    assert kb["keybox_code"] == "0000"                   # le code du maître reste
+
+
+def test_detach_does_not_migrate_back(client):
+    """Le détachement (linked_booking_id→NULL) ne rejoue rien à l'envers : demandes
+    et champs migrés RESTENT sur le maître (le transfert est un acte, pas un miroir)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    master, block = _make_master_and_block(client, h, pid)
+    client.post(f"/api/properties/{pid}/bookings/{block['id']}/requests", headers=h,
+                json={"label": "Lit bébé", "quantity": 1, "status": "pending"})
+    client.patch(f"/api/properties/{pid}/bookings/{block['id']}", headers=h,
+                 json={"linked_booking_id": master["id"]})
+    # Détachement.
+    r = client.patch(f"/api/properties/{pid}/bookings/{block['id']}", headers=h,
+                     json={"linked_booking_id": None})
+    assert r.status_code == 200
+    # La demande reste sur le maître ; le bloc reste vide.
+    assert len(client.get(
+        f"/api/properties/{pid}/bookings/{master['id']}/requests",
+        headers=h).json()) == 1
+    assert client.get(
+        f"/api/properties/{pid}/bookings/{block['id']}/requests",
+        headers=h).json() == []
+    # Le bloc réapparaît dans la vue (détaché), sans redonner ses coordonnées.
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert len(view["bookings"]) == 2
+
+
+def test_link_is_idempotent(client):
+    """Re-rattacher le même bloc ne double aucune demande ni ne réécrit un champ."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    master, block = _make_master_and_block(client, h, pid)
+    client.post(f"/api/properties/{pid}/bookings/{block['id']}/requests", headers=h,
+                json={"label": "Lit bébé", "quantity": 1, "status": "pending"})
+    for _ in range(3):
+        r = client.patch(f"/api/properties/{pid}/bookings/{block['id']}", headers=h,
+                         json={"linked_booking_id": master["id"]})
+        assert r.status_code == 200
+    reqs = client.get(f"/api/properties/{pid}/bookings/{master['id']}/requests",
+                      headers=h).json()
+    assert len(reqs) == 1                                # zéro double
+
+
+def test_link_to_foreign_booking_is_404(client):
+    """La cible de rattachement doit appartenir au même logement (garde existante)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    other_pid = _make_property(client, h)
+    foreign = client.post(f"/api/properties/{other_pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-19"}).json()
+    block = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-19"}).json()
+    r = client.patch(f"/api/properties/{pid}/bookings/{block['id']}", headers=h,
+                     json={"linked_booking_id": foreign["id"]})
+    assert r.status_code == 404
+
+
 # ── Ajout de flux : validation au collage ────────────────────────────────────
 
 def test_add_calendar_validates_and_imports(client):

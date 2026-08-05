@@ -320,6 +320,31 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     skip-existing par défaut (ne clobbe pas une correction relue), `--dry-run` sans
     appel API, coût dans `api_costs` (`operation='ui_translate'`, property NULL).
     Runbook : `docs/i18n.md`.
+16. **Le rattachement absorbe la substance du bloc — jamais de perte silencieuse
+    (V2-23f)** : rattacher un **bloc miroir** à un séjour **maître** (`linked_
+    booking_id`, §0.5) le masque de la vue (invariant 14) mais un bloc peut porter
+    des données réelles — des **demandes** de locataire (`booking_requests`), des
+    coordonnées saisies. Le masquer sans les déplacer serait une **perte
+    silencieuse** (bug prod 05/08, cas Tracy Russel). Au **point UNIQUE** où
+    `linked_booking_id` est posé (`repo.absorb_block_into_master`, appelé par
+    `routers/calendars.update_booking` — **les deux chemins d'UI**, modale §0.5 et
+    bandeau de chevauchement §0.4, convergent sur ce même `PATCH`), le maître
+    **absorbe** le bloc, dans la même transaction : (1) **toutes** les demandes
+    migrent (`UPDATE booking_requests SET booking_id={maître} WHERE booking_id=
+    {bloc}`), `pending` **comme** `accepted` (ces dernières nourrissent
+    `plan_interventions` — le planning doit rester vrai) ; (2) les champs de fiche
+    (`guest_phone`, `guest_email`, `guest_lang`, `guest_count`, `children_ages`,
+    `keybox_code_enc`, `luggage_drop_time`, `notes`) sont repris **seulement si le
+    maître est vide/NULL** (`COALESCE` + `NULLIF` sur les vides) — une valeur déjà
+    présente du maître n'est **JAMAIS** écrasée (esprit invariant 13) ;
+    `keybox_code_enc` se copie tel quel (bytea chiffré, aucun déchiffrement,
+    invariant 5). Le **détachement** (`linked_booking_id`→NULL) ne rejoue **rien**
+    à l'envers : le transfert est un **acte, pas un miroir** (aucune migration
+    inverse). L'opération est **idempotente** (re-rattacher = zéro double). Aucun
+    changement de schéma, aucun backfill (les rattachements passés se corrigent à
+    la main). Couvert par `test_calendar_api.py` (absorption pending+accepted,
+    champs vides repris, champs garnis intacts, détachement sans retour,
+    idempotence, bloc étranger→404).
 
 ## Commandes
 

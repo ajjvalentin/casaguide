@@ -128,7 +128,33 @@ visiblement la nature sur « Réservation » (réversible).
 plateforme pour éviter la double vente → deux lignes pour un même séjour. On
 **rattache** le bloc importé au séjour direct (`linked_booking_id`) : il disparaît
 de la liste et du planning (une seule arrivée pour l'équipe) mais n'est **jamais**
-supprimé (la synchro le recréerait).
+supprimé (la synchro le recréerait). Le rattachement se pose depuis la modale du
+séjour **ou** depuis le bandeau de chevauchement (§0.4) ; les deux chemins d'UI
+passent par le **même** `PATCH /bookings/{id}`.
+
+**Le rattachement absorbe la substance du bloc (V2-23f)** — car un bloc peut
+porter des données réelles (des demandes de locataire, des coordonnées saisies) et
+le masquer sans les déplacer serait une **perte silencieuse** (constaté en prod le
+05/08, cas Tracy Russel : des `booking_requests` en attente évanouies de la fiche,
+du bandeau « demandes en attente » et du planning staff). Au point unique où
+`linked_booking_id` est posé, le **maître absorbe** le bloc :
+
+- **Demandes** (`booking_requests`) : **toutes** migrent vers le maître — les
+  `pending` comme les `accepted` (ces dernières nourrissent le planning
+  d'interventions, il doit rester vrai). Un transfert, jamais une création ni une
+  destruction.
+- **Champs de fiche** (`guest_phone`, `guest_email`, `guest_lang`, `guest_count`,
+  `children_ages`, `keybox_code_enc`, `luggage_drop_time`, `notes`) : repris
+  **seulement si le champ du maître est vide/NULL** et celui du bloc renseigné. Une
+  valeur déjà présente sur le maître n'est **jamais** écrasée (esprit invariant 13).
+  Le code de boîte à clés se copie tel quel (bytea chiffré, aucun déchiffrement —
+  invariant 5).
+
+**Détachement** (`linked_booking_id`→NULL) : le transfert est un **acte, pas un
+miroir** — les demandes et champs migrés **restent** sur le maître (aucune
+migration inverse). Le bloc réapparaît dans la vue, vidé de ce qu'il a cédé.
+L'opération est **idempotente** : re-rattacher le même bloc ne double aucune
+demande et ne réécrit aucun champ.
 
 **Bagages** : `luggage_drop_time` (dépôt avant l'entrée : la maison doit être
 accessible et présentable pour cette heure-là) est saisissable ; `luggage_until_time`
