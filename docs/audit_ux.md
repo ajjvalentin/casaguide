@@ -1,165 +1,195 @@
 # Audit UX de l'espace propriétaire — V2-31, volet 0
 
-**Statut : brouillon v1 (05/08/2026, après-midi) — audit en cours.**
-Écrans passés au crible : Mes logements, éditeur du guide (partiel), système
-d'aide (exigences). Restent : calendrier, premier contact (inscription → écran
-vide), fiche Informations, fenêtre d'envoi.
+**Version 2 (05/08/2026 au soir) — inclut le PARCOURS COMPLET effectué par Claude
+lui-même dans le navigateur (session réelle, compte André, Villa Ardon en
+brouillon 0 % comme substitut du « propriétaire neuf »), dans la logique
+demandée par André : suivre la chaîne étape par étape, avec les yeux et la
+logique d'un humain qui découvre, en jugeant l'enchaînement intuitif avant
+tout.**
 
-Ce document est la SOURCE des volets 1–3 de V2-31 : chaque volet y puisera son
-périmètre. Il se relit avant chaque brief.
+Ce document est la SOURCE des volets 1–3 de V2-31.
 
 ---
 
 ## 0. Principes directeurs (actés André, 05/08)
 
-1. **« Si André cherche, tout le monde est perdu. »** Constat fondateur : le
-   fondateur lui-même a demandé plusieurs fois « c'est où ? » pendant la semaine
-   de validation (fenêtre d'envoi, photo de couverture, sigle maison découvert
-   « en mode surprise »). La navigation par exploration a échoué pour l'auteur
-   du produit — elle échouera pour tout propriétaire neuf.
-2. **Le fil guide, le propriétaire décide.** Guidage SOUPLE acté : le parcours
-   recommande et signale les vides, ne verrouille jamais — le guide est la
-   responsabilité et le choix du propriétaire, il en reste maître. Seul
-   l'absurde technique bloque (publier sans adresse : casse carte et
-   distances). Cohérent avec la doctrine existante « la limite est une vitrine,
-   pas un mur » (V2-22).
-3. **Enjeu de CONVERSION, pas de confort** (André : « sans cela un proprio qui
-   teste va se dire rapidement c'est trop compliqué, j'abandonne »). Ce
-   programme précède la communication (V2-25) dans l'ordre des urgences.
+1. **« Si André cherche, tout le monde est perdu. »** Le fondateur a demandé
+   plusieurs fois « c'est où ? » pendant la semaine (fenêtre d'envoi, photo de
+   couverture, sigle maison, rattachement). La navigation par exploration a
+   échoué pour l'auteur — elle échouera pour tout nouveau.
+   Cas d'école du 05/08 : le RATTACHEMENT (bandeau §0.4 « Rattacher ce bloc »)
+   existait, proposait même le bon séjour automatiquement — ni André ni Claude
+   ne savaient qu'il existait. **Le produit contient déjà de bons gestes que
+   personne ne connaît : rendre visible l'existant compte autant qu'ajouter.**
+2. **Le fil guide, le propriétaire décide** (guidage souple ; seul l'absurde
+   technique bloque — publier sans adresse).
+3. **Enjeu de CONVERSION** — précède la communication (V2-25).
+4. **Aucune surface lue par un humain ne parle en identifiants techniques**
+   (constat 05/08 : le journal du J-7 dit « séjour 3ccdc040… » ; André : « une
+   référence pour un programmeur »). Vaut pour les journaux ops aussi.
 
 ---
 
-## 1. Écran « Mes logements » (audité le 05/08 sur capture réelle)
+## 1. LE PARCOURS OBSERVÉ, étape par étape (session navigateur du 05/08)
 
-### Constats
+Grille de lecture pour chaque étape : *ce que le propriétaire voit / ce qu'il
+comprend sans aide / ce qui manque pour que l'enchaînement soit intuitif.*
 
-- **(a) La métrique « Complétude du guide » ment.** Villa Ballarin — publiée,
-  validée en réel, guides envoyés, locataires servis — affiche « 2 % ». La
-  métrique compte les bascules « Section complétée » (jamais cochées), pas le
-  contenu réel. Pour un nouveau, ce chiffre est un jugement : « tu n'as presque
-  rien fait ». Un indicateur qui contredit la réalité vécue est pire qu'aucun.
-- **(b) Les badges oranges crient sans expliquer.** « 96 à valider » se lit
-  « 96 problèmes » — il faut déjà savoir que l'IA suggère des POI pour
-  comprendre. « 92 retenus » : retenus par qui, où ?
-- **(c) Neuf actions de poids égal, aucune hiérarchie.** Guide Locataires /
-  Équipe d'entretien / Calendrier / Suggestions / Enrichir / Envoyer le guide /
-  Voir le guide / icône maison / corbeille. Rien ne dit par où commencer ni ce
-  qui est fréquent vs rare. Trois entrées parlent du même objet (le guide :
-  compléter/voir/envoyer), deux du même pipeline (Suggestions/Enrichir — la
-  différence n'est écrite nulle part). **La corbeille — l'action la plus
-  destructrice du produit — cohabite au même niveau que « Voir le guide ».**
-- **(d) Vocabulaire non introduit** : « Enrichir » (quoi ?), « Cahier de
-  préparation », « Suggestions », « à valider / retenus », le sigle maison.
-- **(e) Ce qui marche** : la double porte Guide Locataires / Équipe d'entretien
-  (deux publics, acquis V2-26) ; en-tête sobre ; « + Nouveau logement »
-  trouvable.
+### Étape 0 — Connexion
+- **Vu** : page sobre, deux onglets Connexion/Inscription, mot de passe oublié.
+- **Verdict : BON.** Rien à signaler. (L'inscription elle-même n'a pas été
+  rejouée — pas de création de compte en audit ; le flux V2-16 est réputé
+  validé.)
 
-### Directions (volets 1–2)
+### Étape 1 — Créer le logement (« + Nouveau logement »)
+- **Vu** : modale courte — nom, adresse structurée, pays pré-sélectionné
+  Espagne, et UNE phrase d'aide exemplaire : « L'adresse sert à localiser le
+  logement et à suggérer l'environnement. Vous pourrez ajuster le point exact
+  ensuite. »
+- **Verdict : TRÈS BON — c'est le MODÈLE.** Peu de champs, une promesse claire
+  de ce que le système fera de l'adresse, une porte de sortie (ajuster après).
+  Cette phrase d'aide est le TON à généraliser partout.
+- **Manque** : rien à cette étape. Le problème commence APRÈS la création.
 
-- Une **action principale par état** : Brouillon → « Compléter le guide » ;
-  Publié → « Envoyer le guide ». Le reste replié dans un menu « ⋯ » ; la
-  corbeille reléguée dedans, avec confirmation.
-- Métrique remplacée par le **fil du parcours** (§3) : « Étape 4/7 : validez
-  vos suggestions » — dit où on en est ET quoi faire ensuite.
-- Badges reformulés en langage propriétaire (« 96 suggestions à examiner »),
-  visuel neutre (une suggestion n'est pas une alerte).
-- État vide (zéro logement) = écran d'accueil du parcours, pas une page blanche.
-  (À auditer : ce qu'il affiche aujourd'hui.)
+### Étape 2 — Retour sur « Mes logements » : et maintenant ?
+- **Vu** (carte Villa Ardon, brouillon 0 %) : « Complétude du guide 0 % »,
+  badges « 96 à valider / 7 retenus » (orange = alarme), deux portes (Guide
+  Locataires / Équipe d'entretien), quatre boutons (Calendrier, Suggestions,
+  Enrichir, + maison, + corbeille).
+- **Ce qu'un nouveau comprend** : qu'il n'a « rien fait » (0 %), qu'il y a
+  « 96 problèmes » (orange), et HUIT chemins possibles sans ordre.
+- **Verdict : C'EST ICI QUE LA CHAÎNE CASSE.** L'étape 1 était guidée ; à
+  l'étape 2 le fil disparaît. Rien ne dit « prochaine étape : … ».
+- Constats détaillés conservés du §Mes logements v1 : métrique mensongère
+  (Ballarin publiée/validée = « 2 % »), badges qui crient sans expliquer,
+  neuf actions de poids égal, corbeille exposée, vocabulaire non introduit
+  (Enrichir, Suggestions, retenus, sigle maison).
 
-## 2. Éditeur du guide (audit partiel — la structure, pas encore l'écran)
+### Étape 3 — L'éditeur du guide (porte « Guide Locataires »)
+- **Vu** : atterrissage direct sur la section « Venir depuis votre
+  emplacement » (pourquoi celle-là ? aucun texte ne le dit) ; barre latérale
+  9 chapitres / 46 sections, tous à 0/n ; « Publier le guide » en pleine
+  lumière dès 0 % ; bascule « Équipe d'entretien » en tête de la barre.
+- **Points FORTS relevés** : les descriptions de section sont bonnes
+  (« Itinéraires générés automatiquement (GPS…) . Ajoutez ici vos conseils
+  personnels : péages, sorties, pièges à éviter… ») ; le badge
+  « Pré-remplissable IA » + l'encart « Cette rubrique est alimentée par des
+  suggestions automatiques (POI). Valider les suggestions → » est exactement
+  le bon patron (dire qui fournit quoi + un lien qui y va) ; la section
+  Boîte à clés est exemplaire — badge « Sensible », zone sécurisée encadrée,
+  phrase « Le code lui-même est saisi dans l'espace sécurisé et chiffré ».
+- **Ce qui manque pour l'intuition** : (a) la distinction IMPÉRATIF /
+  FACULTATIF n'existe nulle part — 46 sections d'apparence égale, le nouveau
+  ne sait pas que Check-in + Boîte à clés + Wifi sont vitaux et que
+  « Excursions » attendra ; (b) aucun ordre suggéré ; (c) les deux bascules du
+  pied de section (« Visible dans le guide » / « Section complétée ») ne sont
+  expliquées nulle part — or « Section complétée » est PRÉCISÉMENT ce qui
+  nourrit le % mensonger de l'étape 2 : personne ne coche une case dont il
+  ignore le rôle ; (d) « Publier le guide » sans état de préparation (à 0 %,
+  le bouton devrait dire ce qui manque — guidage souple : avertir, pas
+  bloquer).
 
-Constat structurel (André) : rien ne distingue l'impératif du facultatif, ni ce
-que le propriétaire doit fournir de ce que le système fournit. Le nouveau
-devant 9 chapitres / 49 sections ne sait pas par où commencer.
+### Étape 4 — Les suggestions (« Suggestions à valider »)
+- **Vu** : UNE FOIS ARRIVÉ, l'écran est BON — filtres À valider 96 / Retenus 7
+  / Rejetés 12 / Tous 115 (le vocabulaire s'explique enfin par la
+  juxtaposition), groupes par catégorie avec « Tout approuver », carte à
+  droite, distances déjà calculées, Approuver / Rejeter / Modifier par lieu,
+  « + Ajouter un lieu » pour les coups de cœur (l'étape 4 de la chaîne
+  d'André existe donc intégralement).
+- **Le problème n'est PAS cet écran, c'est d'y ARRIVER en comprenant** : le
+  badge orange de la carte n'explique rien ; seul l'encart vert d'une section
+  de l'éditeur fait le lien. Le chemin intuitif serait : l'enrichissement se
+  raconte (« nous avons trouvé 115 lieux autour de votre adresse ») → CTA
+  « Examinez-les ».
+- **Mineur** (qualité de données, à lister pour V2-24/enrichissement) : un bar
+  de Vétroz avec préfixe téléphonique +49 (Allemagne) ; « +4127 346 00 09 »
+  mal espacé — la validation humaine attrape, mais un lot de données douteuses
+  décrédibilise la suggestion.
 
-→ Réponse : la CHAÎNE (§3) matérialisée dans l'éditeur — sections des étapes
-1–2 marquées « impératif », le reste explicitement « à votre rythme ».
-(Audit visuel de l'écran lui-même : à faire — densité de la barre latérale,
-libellés des bascules, encarts IA.)
+### Étape 5 — Le reste du guide (facultatif)
+- Couvert par l'étape 3 : sans marquage impératif/facultatif, cette étape
+  n'existe pas comme étape — c'est un tas.
 
-## 3. LA CHAÎNE — le parcours guidé en 7 étapes (acté André, 05/08)
+### Étape 6 — Publier et tester
+- Non rejoué (cliquer aurait publié Ardon à 0 %). Constat de l'existant : le
+  bouton est là, sans état de préparation ni récapitulatif avant publication.
 
-Principe : une chaîne logique d'actions alternant CE QUE LE PROPRIÉTAIRE
-FOURNIT et CE QUE LE SYSTÈME FOURNIT, avec navigation libre (revenir, corriger,
-sauter). Chaque étape : état à faire/en cours/fait, cliquable, deep-link vers
-l'écran existant.
+### Étape 7 — Envoyer
+- Validée en réel toute la semaine (fenêtre d'envoi, email Holaguia, J-7).
+  Les surfaces sont bonnes ; leur DÉCOUVERTE a nécessité Claude (principe 0.1).
 
-1. **Le logement** *(vous fournissez — impératif)* : nom, ADRESSE PRÉCISE
-   (pilote géocodage, distances, POI), contact voyageur, photo de couverture.
-   « Le système ne peut pas deviner ces informations. »
-2. **Les indispensables du séjour** *(vous — impératif)* : arrivée/départ,
-   accès, boîte à clés + wifi (espace sécurisé). « Sans elles, un guide ne sert
-   à rien à votre locataire. »
-3. **Le système travaille** *(Holaguia fournit)* : enrichissement — POI autour
-   de l'adresse, urgences, règles locales. « À partir de votre adresse, nous
-   préparons les suggestions. »
-4. **Vous validez et personnalisez** *(vous)* : accepter/écarter les
-   suggestions (c'est ICI que « 96 à valider » prend sens) ; ajouter coups de
-   cœur et lieux non trouvés.
-5. **Le reste du guide** *(facultatif, à votre rythme)* : équipements,
-   règlement, sections optionnelles ; masquer le non-pertinent.
-6. **Publier et tester** : voir le guide comme un locataire, imprimer le QR.
-7. **Envoyer** : fenêtre d'envoi, calendrier, automatique J-7.
+### Conclusion du parcours
+**L'étape 1 prouve que le produit sait guider. Les étapes 2–5 prouvent qu'il
+a cessé de le faire dès que le logement existe.** La matière est là (encarts
+IA, écran Suggestions, descriptions de sections) — il manque le FIL qui
+enchaîne, et le marquage impératif/facultatif. Rien de structurel à
+reconstruire : c'est un travail de liaison et de libellés.
 
-Forme : **fil conducteur PERSISTANT** dans l'espace (pas un tunnel séparé qui
-dupliquerait l'interface). Remplace la métrique « % » de la carte logement.
-Guidage souple (principe 0.2).
+---
 
-## 4. L'AIDE — recherche par mots-clés (exigences actées André, 05/08)
+## 2. LA CHAÎNE cible — 7 étapes (actée André, 05/08, inchangée depuis v1)
 
-Idée directrice (André) : pas un manuel statique — « une recherche par
-mots-clés qui pointe sur le bon endroit, la bonne marche à suivre ou le bon
-exemple ».
+1. **Le logement** *(vous — impératif)* : nom, adresse, contact, couverture.
+2. **Les indispensables** *(vous — impératif)* : check-in/out, accès, boîte à
+   clés + wifi.
+3. **Le système travaille** *(Holaguia)* : enrichissement raconté simplement.
+4. **Vous validez et personnalisez** *(vous)* : suggestions + coups de cœur.
+5. **Le reste, à votre rythme** *(facultatif)*.
+6. **Publier et tester** (aperçu locataire, QR).
+7. **Envoyer** (fenêtre, calendrier, J-7).
 
-- **Un index unique** d'entrées (question, mots-clés + synonymes du terrain,
-  réponse en 2–3 étapes, destination deep-link, exemple si utile), versé à
-  l'inventaire i18n. Ce MÊME index nourrit trois surfaces : la recherche
-  d'aide, les infobulles par champ (volet 1), la page « Premiers pas »
-  linéaire. Trois habillages, un contenu — patron du registre des langues.
-- **VETO ANDRÉ, couvert par test** : « une aide qui ne trouve pas un mot
-  pourtant affiché à l'écran est un défaut bloquant. » Mécanique : script de
-  couverture (patron i18n_inventory --check) — tout libellé de l'inventaire
-  (menus, boutons, champs : les 320 clés) doit être mot-clé d'au moins une
-  entrée d'aide, sinon la suite est ROUGE. Un futur bouton sans entrée d'aide
-  ne peut plus passer.
-- **Zéro-résultat n'existe pas comme écran** : correspondances approchées
-  (fautes de frappe), puis repli « Premiers pas ». Toujours une porte de
-  sortie.
-- **Journal des recherches infructueuses** (requête + date, rien de personnel)
-  → André voit ce que les propriétaires cherchent AVEC LEURS MOTS et qui
-  manque. L'aide apprend de l'usage réel.
-- **Corpus initial** : les questions réellement posées par André pendant le
-  développement (« c'est où le bouton pour envoyer ? », « où est la photo de
-  couverture ? », « le service livraison n'apparaît pas », « que veux-tu dire
-  par modale »…) — chaque « c'est où ? » des sessions est une entrée d'index
-  avec sa formulation naturelle.
+Fil PERSISTANT (état par étape, deep-links, navigation libre), remplace le
+« % » ; guidage souple. Le parcours observé (§1) donne le point d'ancrage de
+chaque étape dans l'interface EXISTANTE — aucune refonte lourde requise.
 
-## 5. Refonte de la modale séjour (constat d'origine, périmètre au tracker)
+## 3. L'AIDE — recherche par mots-clés (exigences actées, inchangées v1)
 
-Volets suivant les QUESTIONS du propriétaire : LE SÉJOUR (dates, nature,
-heures, bagages) / LES VOYAGEURS (nom, contact, langue, nombre, âges) / LA
-PRÉPARATION (demandes, notes) / L'ACCÈS (code de boîte à clés, isolé). Premier
-ouvert, les autres pliés visibles. Préserver : auto-promotion de nature (§0.3),
-avertissement de chevauchement à la saisie (§0.4), suggestions par âges, garde
-de surcharge non lue. Y loger l'opt-out J-7 par séjour (différé de V2-23d v2).
+Index unique (i18n) → 3 surfaces (recherche, infobulles, « Premiers pas ») ;
+**veto André couvert par test** : tout libellé affiché doit être mot-clé d'une
+entrée, sinon suite rouge ; zéro-résultat interdit (approché + repli) ;
+journal des recherches infructueuses ; corpus initial = les « c'est où ? »
+réels des sessions.
 
-## 6. Reste à auditer (prochaines sessions de conversation)
+## 4. Modale séjour (périmètre inchangé, au tracker V2-31)
 
-- **Le calendrier** — l'écran le plus riche ; André y vit, il sait où ça pique.
-- **Le premier contact absolu** : inscription → email de bienvenue → premier
-  écran vide → création du premier logement.
-- **La fiche Informations** et **la fenêtre d'envoi** (déjà bonnes en
-  substance ; vérifier libellés et aides).
-- L'audit visuel de l'éditeur (barre latérale, encarts IA, bascules).
+## 5. Constats CALENDRIER (05/08, session réelle + navigateur)
 
-## 7. Découpage pressenti des volets de code (à confirmer à la fin de l'audit)
+- (a) **Références techniques** : journal J-7 en UUID (principe 0.4).
+- (b) **Rattachement invisible** (principe 0.1) — la marche à suivre CORRECTE,
+  constatée par André : modifier les dates du maître → le bandeau de
+  chevauchement propose « Rattacher ce bloc » avec le bon séjour → confirmer.
+  Entrée d'aide toute prête.
+- (c) **V2-23f livrée** (le rattachement absorbe demandes + champs).
+- (d) **DATES vs synchro — mission V2-23g À BRIEFER** : les dates d'un séjour
+  importé appartiennent au FLUX (commentaire du code : « la synchro ne touche
+  QUE les dates ») ; une date ajustée à la main est écrasée à la synchro
+  suivante (constaté en réel : Tracy 07.08 → revenue 08.08, synchro passée
+  4 min avant l'examen). À livrer : dates marquées « ajustées » (grammaire des
+  heures) → protégées + SIGNAL DE DIVERGENCE quand le flux annonce autre
+  chose + action « reprendre les dates du flux ». Décision d'aller (calibre,
+  séquence) : ANDRÉ, en attente.
+- (e) Les signaux du calendrier (incomplets agrégés, rotations graduées)
+  fonctionnent — c'est l'acquis anti-saturation de V2-23b ; la « jungle »
+  restante tient aux points a–d plus qu'à l'écran lui-même.
 
-- **Volet 1** : aides contextuelles par champ + reformulation des badges et
-  libellés (petit, vite livré, corrige le pire de l'écran d'accueil).
-- **Volet 2** : la carte logement (hiérarchie des actions, menu ⋯, corbeille) +
-  le fil du parcours (7 étapes, remplace le %).
-- **Volet 3** : la recherche d'aide (index, script de couverture, journal) +
-  page « Premiers pas ».
-- **Volet 4** : la modale séjour.
+## 6. Reste à auditer
 
-Chaque volet = une session Claude Code, un commit, hash en première ligne.
+Premier contact absolu (inscription réelle → email de bienvenue → espace
+vide — non rejouable en audit connecté), fiche Informations en revue de
+libellés, fenêtre d'envoi en revue de libellés, cahier /s/ côté équipe.
+
+## 7. Découpage des volets de code (affiné après le parcours)
+
+- **Volet 1 — libellés & liaisons** (petit, fort rendement) : badges de carte
+  reformulés (« 96 lieux suggérés à examiner », visuel neutre) ; « Enrichir »
+  renommé/expliqué ; corbeille → menu ⋯ + confirmation ; aides une-phrase sur
+  les bascules « Visible » / « Section complétée » et champs orphelins (ton du
+  modèle étape 1) ; journal J-7 en langage humain (0.4).
+- **Volet 2 — le fil des 7 étapes** : composant persistant carte+éditeur,
+  marquage impératif/facultatif des sections, état « prêt à publier » sur le
+  bouton Publier (avertit, ne bloque pas), remplace le %.
+- **Volet 3 — la recherche d'aide** (index, couverture testée, journal,
+  « Premiers pas »).
+- **Volet 4 — la modale séjour.**
+- Hors programme mais nés de l'audit : **V2-23g** (dates ajustées vs flux),
+  qualité de données des suggestions (téléphones aberrants → signalement).
