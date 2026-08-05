@@ -64,11 +64,18 @@ def _resolve_lang(conn, prop: dict, requested: str | None,
 
 
 def _target_image_url(conn, prop: dict, base: str, api_base: str) -> str:
-    """Vignette de la cible pour l'email (« og-image de la cible ») : première photo
-    du logement (niveau logement d'abord, cf. `guide_media`), sinon l'image de marque
+    """Vignette de la cible pour l'email (« og-image de la cible ») : la **photo de
+    couverture** désignée d'abord (V2-30, si servable), sinon la première photo du
+    logement (niveau logement d'abord, cf. `guide_media`), sinon l'image de marque
     générée. URL absolue servie via le préfixe de la cible (`/b/…` ou `/v/…`) — jamais
     un `/g/{guide_token}` (le token éternel ne fuite pas)."""
-    for m in repo.guide_media(conn, str(prop["id"])):
+    media = repo.guide_media(conn, str(prop["id"]))
+    cover_id = prop.get("cover_media_id")
+    if cover_id:
+        for m in media:
+            if str(m["id"]) == str(cover_id) and m["kind"] == "photo":
+                return f"{base}{api_base}/media/{m['id']}"
+    for m in media:
         if m["kind"] == "photo":
             return f"{base}{api_base}/media/{m['id']}"
     return f"{base}{api_base}/og-image.png"

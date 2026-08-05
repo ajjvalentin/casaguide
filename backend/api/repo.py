@@ -20,7 +20,7 @@ _PROP_COLS = """
     geocode_source, geocode_accuracy, guide_token, staff_token, access_mode, status,
     default_lang, published_langs, contact_name, contact_phone,
     contact_whatsapp, contact_email, contact_backup, tourism_license,
-    default_checkin_time, default_checkout_time, care_rules,
+    default_checkin_time, default_checkout_time, care_rules, cover_media_id,
     created_at, updated_at
 """
 
@@ -504,6 +504,19 @@ def update_property(conn, owner_id: str, property_id: str,
         f"UPDATE properties SET {', '.join(sets)} "
         f"WHERE id = %s AND owner_id = %s RETURNING {_PROP_COLS}",
         params,
+    ).fetchone()
+
+
+def set_cover_media(conn, owner_id: str, property_id: str,
+                    media_id: str | None) -> dict | None:
+    """Désigne (ou retire, `media_id=None`) la photo de couverture du logement
+    (V2-30). L'appartenance du média est vérifiée en amont (router) ; ici on borne
+    encore par `owner_id` (isolation multi-tenant). Retirer la couverture ne
+    supprime jamais le média — seule la référence redevient NULL."""
+    return conn.execute(
+        f"UPDATE properties SET cover_media_id = %s "
+        f"WHERE id = %s AND owner_id = %s RETURNING {_PROP_COLS}",
+        (media_id, property_id, owner_id),
     ).fetchone()
 
 
@@ -1025,7 +1038,7 @@ def get_published_property_by_token(conn, token: str) -> dict | None:
                   ST_Y(geom) AS lat, ST_X(geom) AS lon,
                   default_lang, published_langs, access_mode,
                   contact_name, contact_phone, contact_whatsapp, contact_email,
-                  contact_backup, tourism_license
+                  contact_backup, tourism_license, cover_media_id
            FROM properties
            WHERE guide_token = %s AND status = 'published'""",
         (token,),
@@ -1044,7 +1057,7 @@ def get_published_property_by_id(conn, property_id: str) -> dict | None:
                   ST_Y(geom) AS lat, ST_X(geom) AS lon,
                   default_lang, published_langs, access_mode, guide_token,
                   contact_name, contact_phone, contact_whatsapp, contact_email,
-                  contact_backup, tourism_license
+                  contact_backup, tourism_license, cover_media_id
            FROM properties
            WHERE id = %s AND status = 'published'""",
         (property_id,),
@@ -1063,7 +1076,7 @@ def get_property_by_showcase_token(conn, token: str) -> dict | None:
                   ST_Y(geom) AS lat, ST_X(geom) AS lon,
                   default_lang, published_langs, access_mode,
                   contact_name, contact_phone, contact_whatsapp, contact_email,
-                  contact_backup, tourism_license
+                  contact_backup, tourism_license, cover_media_id
            FROM properties
            WHERE showcase_token = %s AND status = 'published'""",
         (token,),

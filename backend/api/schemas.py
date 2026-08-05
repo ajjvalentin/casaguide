@@ -256,8 +256,14 @@ class PropertyOut(BaseModel):
     default_checkin_time: time | None = None
     default_checkout_time: time | None = None
     care_rules: dict = {}     # règles d'entretien (V2-23b, §1.1)
+    cover_media_id: UUID | None = None   # photo de couverture (V2-30)
     created_at: datetime
     updated_at: datetime
+
+
+class CoverIn(BaseModel):
+    """Photo de couverture du logement (V2-30). `media_id=None` = retirer."""
+    media_id: UUID | None = None
 
 
 # ── Données sensibles ────────────────────────────────────────────────────────

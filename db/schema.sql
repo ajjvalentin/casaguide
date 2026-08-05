@@ -364,6 +364,14 @@ CREATE TABLE media (
 );
 CREATE INDEX idx_media_property ON media(property_id);
 
+-- Photo de couverture du logement (V2-30) : image de « façade » commerciale servie
+-- hors du guide (vignette des emails, og-image des liens partagés). Déclarée ici,
+-- APRÈS `media`, car `properties` (plus haut) précède la table `media`. Un média de
+-- couverture peut être sans section (média du logement) — il ne fuit alors dans
+-- aucun rendu de section. ON DELETE SET NULL : suppression du média → repli gracieux.
+ALTER TABLE properties
+    ADD COLUMN cover_media_id UUID REFERENCES media(id) ON DELETE SET NULL;
+
 -- ============================================================================
 -- 4. POINTS D'INTÉRÊT (POI) — enrichissement et carte (§5, §6)
 -- ============================================================================

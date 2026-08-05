@@ -1,0 +1,131 @@
+<!doctype html>
+<!-- Harnais headless du bloc « Photo de couverture » (V2-30). Pilote le VRAI
+     /frontend/js/components/cover.js avec un fetch simulé (aucun réseau) : état
+     vide (repli « première photo du guide »), « Choisir parmi les photos du guide »
+     (picker → PUT /cover), téléversement d'une photo dédiée (upload SANS section →
+     PUT /cover), « Retirer » (PUT /cover media_id=null). On teste le composant SUR
+     SON ARBRE RENDU (querySelector du DOM monté), jamais via une référence interne
+     (leçon V2-18c). Verdict dans #result, lu par cover.test.mjs. Hors frontend/. -->
+<meta charset="utf-8">
+<title>cover-harness</title>
+<style>.hidden{display:none}</style>
+<div id="app"></div>
+<div id="toasts"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { buildCoverBlock } from "/frontend/js/components/cover.js";
+import { setToken } from "/frontend/js/store.js";
+
+const PROP = { id: "p1", name: "Villa Ballarin", cover_media_id: null };
+
+// Photos existantes du guide (une de section, une du logement).
+let MEDIA = [
+  { id: "m-sec", kind: "photo", section_code: "A_keybox" },
+  { id: "m-lot", kind: "photo", section_code: null },
+];
+
+// Journal des appels observables (idempotence + payloads).
+window.__puts = [];      // corps des PUT /cover
+window.__uploads = [];    // FormData des POST /media (section_code attendu absent)
+
+// Un petit PNG 1×1 transparent (bytes) pour les vignettes servies.
+const PNG1 = Uint8Array.from(atob(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="),
+  (c) => c.charCodeAt(0));
+
+window.fetch = async (path, opts = {}) => {
+  const method = (opts.method || "GET").toUpperCase();
+  const json = (body) => new Response(JSON.stringify(body),
+    { status: 200, headers: { "Content-Type": "application/json" } });
+
+  // Vignette protégée (mediaBlobUrl → fetchBlob → blob()).
+  if (/\/media\/[^/]+\/file$/.test(path) && method === "GET") {
+    return new Response(PNG1, { status: 200, headers: { "Content-Type": "image/png" } });
+  }
+  // Liste des photos du guide.
+  if (path === "/api/properties/p1/media" && method === "GET") return json(MEDIA);
+  // Téléversement d'une photo dédiée (SANS section_code).
+  if (path === "/api/properties/p1/media" && method === "POST") {
+    const fd = opts.body;
+    window.__uploads.push({ hasSection: fd.get("section_code") != null,
+                            hasFile: fd.get("file") != null });
+    const m = { id: "m-new", kind: "photo", section_code: null };
+    MEDIA = [...MEDIA, m];
+    return json(m);
+  }
+  // Désignation / retrait de la couverture.
+  if (path === "/api/properties/p1/cover" && method === "PUT") {
+    const body = JSON.parse(opts.body || "{}");
+    window.__puts.push(body);
+    return json({ ...PROP, cover_media_id: body.media_id || null });
+  }
+  throw new Error("fetch inattendu : " + method + " " + path);
+};
+setToken("t");
+
+const log = [];
+let pass = true;
+const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const q = (sel, root = document) => root.querySelector(sel);
+const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+const btn = (label) => qa("button").find((b) => b.textContent.includes(label));
+
+try {
+  let lastUpdate = null;
+  const block = buildCoverBlock(PROP, { onChange: (u) => { lastUpdate = u; } });
+  document.getElementById("app").appendChild(block);
+  await wait(30);
+
+  // ── 1. État vide : repli « première photo du guide », pas de « Retirer » ──
+  chk(!!q(".cover-empty") && /Première photo du guide/.test(q(".cover-empty").textContent),
+    "sans couverture : mention « première photo du guide » (repli affiché)");
+  chk(q(".cover-remove").classList.contains("hidden"),
+    "sans couverture : bouton « Retirer » masqué");
+  chk(!!btn("Téléverser une photo") && !!btn("Choisir parmi les photos du guide"),
+    "deux actions : téléverser + choisir parmi les photos du guide");
+
+  // ── 2. Choisir parmi les photos du guide : picker → PUT /cover ────────────
+  btn("Choisir parmi les photos du guide").click();
+  await wait(40);
+  const cells = qa(".cover-cell");
+  chk(cells.length === 2, "picker : une cellule par photo du guide (vu " + cells.length + ")");
+  cells[0].click();                       // choisit m-sec
+  await wait(40);
+  chk(window.__puts.length === 1 && window.__puts[0].media_id === "m-sec",
+    "PUT /cover avec le media_id choisi (vu " + JSON.stringify(window.__puts[0]) + ")");
+  chk(!!q(".cover-preview .cover-thumb-img"),
+    "après choix : aperçu de la couverture monté dans le DOM");
+  chk(!q(".cover-remove").classList.contains("hidden"),
+    "après choix : bouton « Retirer » visible");
+  chk(lastUpdate && lastUpdate.cover_media_id === "m-sec",
+    "onChange remonte le logement mis à jour (cover_media_id)");
+
+  // ── 3. Téléverser une photo dédiée : upload SANS section → PUT /cover ─────
+  const dt = new DataTransfer();
+  dt.items.add(new File([PNG1], "facade.png", { type: "image/png" }));
+  const input = q(".cover-block input[type=file]");
+  input.files = dt.files;
+  input.dispatchEvent(new Event("change"));
+  await wait(60);
+  chk(window.__uploads.length === 1 && window.__uploads[0].hasFile
+    && window.__uploads[0].hasSection === false,
+    "téléversement : POST /media avec fichier et SANS section_code (média du logement)");
+  const lastPut = window.__puts[window.__puts.length - 1];
+  chk(lastPut.media_id === "m-new", "la photo téléversée devient la couverture (PUT media_id=m-new)");
+
+  // ── 4. Retirer : PUT /cover media_id=null → retour à l'état vide ──────────
+  btn("Retirer").click();
+  await wait(40);
+  chk(window.__puts[window.__puts.length - 1].media_id === null,
+    "« Retirer » : PUT /cover media_id=null (ne supprime pas le média)");
+  chk(!!q(".cover-empty") && q(".cover-remove").classList.contains("hidden"),
+    "après retrait : retour au repli, « Retirer » de nouveau masqué");
+  chk(lastUpdate && lastUpdate.cover_media_id === null,
+    "onChange remonte la couverture retirée (null)");
+} catch (e) {
+  pass = false;
+  log.push("✗ exception : " + (e && e.message ? e.message : e));
+}
+document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>

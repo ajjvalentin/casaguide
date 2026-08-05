@@ -143,6 +143,8 @@ export const api = {
   createProperty: (b) => request("POST", "/api/properties", { body: b }),
   getProperty:    (id) => request("GET", `/api/properties/${id}`),
   updateProperty: (id, b) => request("PATCH", `/api/properties/${id}`, { body: b }),
+  // Photo de couverture (V2-30) : media_id d'une photo du logement, ou null pour retirer.
+  setCover: (id, mediaId) => request("PUT", `/api/properties/${id}/cover`, { body: { media_id: mediaId } }),
   deleteProperty: (id) => request("DELETE", `/api/properties/${id}`),
   stats:          (id) => request("GET", `/api/properties/${id}/stats`),
   recomputeDistances: (id) => request("POST", `/api/properties/${id}/recompute-distances`),

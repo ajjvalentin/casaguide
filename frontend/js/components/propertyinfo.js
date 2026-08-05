@@ -21,6 +21,7 @@
 import { api } from "../api.js";
 import { el, icon, toast, openModal, confirmDialog, refreshIcons } from "../ui.js";
 import { COUNTRIES } from "../constants.js";
+import { buildCoverBlock } from "./cover.js";
 
 // Champs d'adresse : leur modification rend le re-géocodage pertinent.
 const ADDRESS_KEYS = ["address_line1", "address_line2", "postal_code", "city", "country_code"];
@@ -89,12 +90,19 @@ export function openPropertyInfoModal(property, { onSaved } = {}) {
   const err = el("div", { class: "errbox hidden" });
   const save = el("button", { class: "btn btn-primary" }, "Enregistrer");
 
+  // Photo de couverture (V2-30) : agit immédiatement (PUT /cover), indépendante du
+  // bouton « Enregistrer ». On propage l'objet mis à jour à l'appelant.
+  const coverBlock = buildCoverBlock(property, {
+    onChange: (updated) => { property.cover_media_id = updated.cover_media_id; if (onSaved) onSaved(updated); },
+  });
+
   const form = el("form", { onSubmit: onSubmit },
     name.node, addr1.node, addr2.node,
     el("div", { class: "grid-2" }, postal.node, city.node),
     el("div", { class: "grid-2" }, region.node, country),
     el("div", { class: "field-group" }, regeoRow, regeoHint),
     el("div", { class: "row", style: { marginTop: "6px" } }, posBtn),
+    coverBlock,
     el("h3", { class: "form-subhead" }, "Contact voyageur"),
     cName.node,
     el("div", { class: "grid-2" }, cPhone.node, cWa.node),

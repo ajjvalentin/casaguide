@@ -440,3 +440,60 @@ La **maison** reste inchangée (lien utilitaire, pas d'email backend).
 
 *Hors périmètre V2-23d volet 1 : l'automatisation J-7 elle-même (volet 2), le suivi
 d'ouverture, les pièces jointes.*
+
+## 10. Photo de couverture du logement (V2-30)
+
+**Constat (validation V2-23d volet 1).** La vignette des emails (§9) et l'og-image
+des liens partagés prenaient la **première photo du guide** (`_first_photo_path` :
+photos de niveau logement d'abord, puis 1re section visible). Chez Villa Ballarin,
+c'était la boîte à clés vue de la rue — utile au locataire *dans sa section*,
+désastreuse comme image de vente. On désigne désormais **une photo de couverture
+par logement**, servie partout où le logement se montre **hors du guide**.
+
+### 10.1 Le modèle (migration 023)
+
+`properties.cover_media_id UUID REFERENCES media(id) ON DELETE SET NULL`. **Aucun
+backfill** : `NULL` = comportement actuel à l'identique — le repli est le contrat.
+`ON DELETE SET NULL` : supprimer le média rend la couverture `NULL` (repli gracieux),
+jamais une référence morte. Idempotente (rejeu sûr). Dans `schema.sql`, l'`ALTER`
+suit la table `media` (car `properties` la précède).
+
+Une couverture peut être une **photo existante** d'une section **ou** une **photo
+dédiée sans section** (`media.section_id` NULL — média du logement). Un média sans
+section **ne figure dans aucun rendu de section** du guide (`render_guide` ne reçoit
+que les médias de section ; les médias du logement n'alimentent que l'og) : la
+couverture est une image de **façade commerciale**, pas un contenu du guide.
+
+### 10.2 L'endpoint (`PUT /api/properties/{id}/cover`)
+
+`routers/properties.py`, garde `require_write_access` + `OwnedProperty`. Corps
+`{media_id}` (ou `null` pour **retirer**). **Validation** : `media_id` doit
+référencer une **photo de CE logement** — sinon **422** (garde multi-tenant +
+cohérence). `repo.set_cover_media` est encore borné par `owner_id`. Retirer la
+couverture **ne supprime jamais** le média.
+
+### 10.3 Consommation — la couverture d'abord, repli inchangé
+
+Ladder à trois étages **partout** : **couverture → première photo → image générée**.
+
+- **Vignette des emails** (§9) : `routers/send.py` `_target_image_url` sert la
+  couverture en premier (si servable), via le préfixe de la cible (`/b/…`·`/v/…`).
+- **og-image des trois préfixes** `/g/`·`/b/`·`/v/` (carte de prévisualisation
+  WhatsApp/iMessage) : `routers/guide.py` `_first_photo_path` préfère la couverture
+  (`_cover_photo_url`) — servable **seulement** si c'est un média du logement ou
+  d'une **section visible** ; sinon repli. La couverture est servie par les routes
+  médias publiques des trois préfixes (`get_public_media`/`get_showcase_media`
+  servent déjà les médias sans section — les gardes `_resolve_*` n'exigent pas de
+  section).
+
+### 10.4 Back-office
+
+Bloc **« Photo de couverture »** (`frontend/js/components/cover.js`) monté dans la
+fiche du logement (`propertyinfo.js`) : aperçu de l'actuelle (ou mention
+« première photo du guide »), **téléverser** (upload existant, **sans**
+`section_code`), **choisir parmi les photos du guide** (picker), **retirer**. Le
+bloc agit **immédiatement** (`api.setCover`) et remonte le logement via `onChange`.
+
+*Le guide voyageur n'est pas touché (og/emails côté serveur, bloc côté back-office)
+→ aucun bump du service worker. Hors périmètre : recadrage/redimensionnement,
+couverture par séjour, galerie.*

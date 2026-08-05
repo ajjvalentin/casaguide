@@ -331,6 +331,7 @@ psql -d casaguide -f db/migrations/019_languages.sql # registre des langues du p
 psql -d casaguide -f db/migrations/020_ui_translations.sql # libellés statiques traduits (ui_translations) (V2-21a, volet 2)
 psql -d casaguide -f db/migrations/021_stay_showcase_tokens.sql # lien de séjour (bookings.stay_token) + lien vitrine (properties.showcase_token) (V2-23c)
 psql -d casaguide -f db/migrations/022_guide_sends.sql # traçage des envois du guide par le backend (guide_sends) (V2-23d)
+psql -d casaguide -f db/migrations/023_property_cover.sql # photo de couverture du logement (properties.cover_media_id) (V2-30)
 
 # Backend
 cd backend

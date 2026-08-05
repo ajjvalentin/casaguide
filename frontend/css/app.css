@@ -379,6 +379,24 @@ kbd{font-family:inherit;background:#F1ECE2;border-radius:5px;padding:1px 6px;fon
 .media-drop [data-lucide]{width:20px;height:20px}
 .media-drop .hint{font-weight:400;font-size:11.5px;color:var(--muted)}
 
+/* ── Photo de couverture (V2-30) ──────────────────────────────────────────── */
+.cover-preview{margin-top:2px}
+.cover-preview .cover-thumb-img{width:100%;max-width:320px;aspect-ratio:16/9;object-fit:cover;
+             border-radius:12px;border:1px solid var(--line);display:block;background:#F4F0E7}
+.cover-empty{display:flex;align-items:center;gap:8px;max-width:320px;aspect-ratio:16/9;
+             border:1.5px dashed var(--line);border-radius:12px;background:#FCFAF6;
+             justify-content:center;font-size:13px;text-align:center;padding:8px}
+.cover-empty [data-lucide]{width:20px;height:20px}
+.cover-remove{color:var(--muted)}
+.cover-busy{color:var(--muted);font-size:13px;align-self:center}
+.cover-picker{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+.cover-cell{padding:0;border:2px solid var(--line);border-radius:10px;overflow:hidden;
+            background:#F4F0E7;cursor:pointer;aspect-ratio:4/3}
+.cover-cell:hover{border-color:var(--sea)}
+.cover-cell.selected{border-color:var(--sea-dark);box-shadow:0 0 0 2px var(--sea)}
+.cover-cell .cover-thumb-img{width:100%;height:100%;object-fit:cover;display:block;
+            border:none;border-radius:0;aspect-ratio:auto;max-width:none}
+
 /* ── Validation des POI (M-04) ────────────────────────────────────────────── */
 .pois-layout{display:grid;grid-template-columns:1fr 420px;gap:20px;align-items:start}
 @media(max-width:900px){.pois-layout{grid-template-columns:1fr}}

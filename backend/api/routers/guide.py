@@ -76,11 +76,34 @@ def _base_url(request: Request) -> str:
     return (settings.public_base_url or str(request.base_url)).rstrip("/")
 
 
+def _cover_photo_url(cover_media_id, sections: list[dict],
+                     property_media: list[dict]) -> str | None:
+    """URL de la photo de couverture (V2-30) **si** elle est publiquement servable
+    sur ce guide : un média du logement (sans section) ou un média d'une section
+    visible. `None` sinon (couverture pointant une section masquée/média absent) →
+    l'appelant retombe sur la première photo puis l'image générée."""
+    if not cover_media_id:
+        return None
+    wanted = str(cover_media_id)
+    for m in property_media:
+        if m.get("id") == wanted and m.get("kind") == "photo":
+            return m["url"]
+    for s in sections:
+        for m in s.get("media") or []:
+            if m.get("id") == wanted and m.get("kind") == "photo":
+                return m["url"]
+    return None
+
+
 def _first_photo_path(sections: list[dict], property_media: list[dict],
-                      token: str) -> str | None:
-    """Chemin de la première photo du logement (M-25) : photos de niveau
-    logement d'abord (« façade »), puis premières photos des sections visibles,
-    dans l'ordre du guide. `None` si le logement n'a aucune photo."""
+                      token: str, cover_media_id=None) -> str | None:
+    """Image de partage du logement (M-25, étendue V2-30) : la **photo de
+    couverture** désignée d'abord (si servable), puis les photos de niveau
+    logement (« façade »), puis les premières photos des sections visibles, dans
+    l'ordre du guide. `None` si le logement n'a aucune photo (→ image générée)."""
+    cover = _cover_photo_url(cover_media_id, sections, property_media)
+    if cover:
+        return cover
     for m in property_media:
         if m.get("kind") == "photo":
             return m["url"]
@@ -246,7 +269,8 @@ def _render_guide_html(conn, prop_row: dict, request: Request,
     # marque générée. URL absolue pour les scrapers (WhatsApp/iMessage/e-mail),
     # servie via `api_base` (jamais un `/g/{guide_token}` sur un lien de séjour).
     base = _base_url(request)
-    photo = _first_photo_path(sections, property_media, public_token)
+    photo = _first_photo_path(sections, property_media, public_token,
+                              prop_row.get("cover_media_id"))
     og_image_url = base + (photo or f"{api_base}/og-image.png")
     # Marque blanche (V2-05a) : le plan gratuit affiche un pied de page discret
     # « Créé avec Holaguia » ; les plans payants ne l'ont pas (features.watermark).
@@ -452,7 +476,8 @@ def public_showcase_page(showcase_token: str, conn: Conn, request: Request,
     _p, sections, pois, area_facts, property_media, effective, lang_names = \
         _assemble_guide(conn, prop, lang, media_base=f"/v/{showcase_token}")
     base = _base_url(request)
-    photo = _first_photo_path(sections, property_media, showcase_token)
+    photo = _first_photo_path(sections, property_media, showcase_token,
+                              prop.get("cover_media_id"))
     og_image_url = base + (photo or f"/v/{showcase_token}/og-image.png")
     ui_overlay = repo.ui_translations(conn, effective)
     # Watermark : même règle que le guide (plan gratuit → marque « Créé avec

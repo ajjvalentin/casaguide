@@ -17,8 +17,9 @@ from ..deps import (
     get_translation_runner, require_write_access,
 )
 from ..schemas import (
-    GeocodeOut, PropertyIn, PropertyOut, PropertyStatsOut, PropertyUpdate,
-    RecomputeOut, SecretsIn, SecretsOut, SectionUpsertIn, WifiNetworkOut,
+    CoverIn, GeocodeOut, PropertyIn, PropertyOut, PropertyStatsOut,
+    PropertyUpdate, RecomputeOut, SecretsIn, SecretsOut, SectionUpsertIn,
+    WifiNetworkOut,
 )
 from enrich.geocode import GeocodeError
 from .enrich import schedule_translation
@@ -92,6 +93,33 @@ def delete_property(conn: Conn, owner: CurrentOwner, prop: OwnedProperty):
 def property_stats(conn: Conn, prop: OwnedProperty):
     """Complétude des sections + décompte des POI par statut (tableau de bord)."""
     return repo.property_stats(conn, str(prop["id"]))
+
+
+# ── Photo de couverture (V2-30) ─────────────────────────────────────────────
+
+@router.put("/{property_id}/cover", response_model=PropertyOut,
+            dependencies=[Depends(require_write_access)])
+def set_cover(payload: CoverIn, conn: Conn, owner: CurrentOwner,
+              prop: OwnedProperty):
+    """Désigne (ou retire, `media_id=null`) la photo de couverture du logement.
+
+    L'image de couverture est servie hors du guide (vignette des emails, og-image
+    des liens partagés). Elle doit référencer une **photo de CE logement** (garde
+    multi-tenant + cohérence) — 422 sinon. La retirer ne supprime jamais le média :
+    la couverture redevient NULL (repli sur la première photo, puis l'image générée)."""
+    pid = str(prop["id"])
+    media_id = str(payload.media_id) if payload.media_id else None
+    if media_id is not None:
+        m = repo.get_media(conn, pid, media_id)
+        if not m:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cette photo n'appartient pas à ce logement.")
+        if m["kind"] != "photo":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="La couverture doit être une photo.")
+    return repo.set_cover_media(conn, str(owner["id"]), pid, media_id)
 
 
 # ── Repositionnement du logement : recalcul des distances (§5.1, M-05) ───────

@@ -880,6 +880,10 @@ def _png_bytes(color=(200, 60, 60), size=(12, 12)) -> bytes:
     return buf.getvalue()
 
 
+# PDF minimal valide (magic bytes `%PDF-` suffisants pour `media_files.sniff`).
+_PDF_BYTES = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+
+
 def _upload(client, headers, pid, *, data=None, filename="photo.png",
             content_type="image/png", section_code=None, caption=None):
     files = {"file": (filename, data if data is not None else _png_bytes(), content_type)}
@@ -3619,3 +3623,170 @@ def test_send_templates_kind_aware(client):
     # EN aussi (repli jamais un trou).
     en_stay = client.get("/send-templates?lang=en&kind=stay").json()
     assert "stay from" in en_stay["subject"]
+
+
+# ── Photo de couverture du logement (V2-30) ─────────────────────────────────
+
+def test_cover_set_from_existing_photo_and_validation(client):
+    """Désigner une couverture : photo de CE logement acceptée ; média étranger →
+    422 ; média non-photo (PDF) → 422 ; PropertyOut expose cover_media_id."""
+    alice = register(client)
+    prop = make_property(client, alice["headers"])
+    pid = prop["id"]
+    # Une photo rattachée à une section (choisie parmi les photos du guide).
+    photo = _upload(client, alice["headers"], pid, section_code="A_keybox").json()
+
+    r = client.put(f"/api/properties/{pid}/cover", headers=alice["headers"],
+                   json={"media_id": photo["id"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["cover_media_id"] == photo["id"]
+    # GET du logement expose bien la couverture.
+    assert client.get(f"/api/properties/{pid}", headers=alice["headers"]) \
+        .json()["cover_media_id"] == photo["id"]
+
+    # Média d'un AUTRE logement → 422 (garde multi-tenant + cohérence).
+    other = make_property(client, alice["headers"], name="Autre")
+    foreign = _upload(client, alice["headers"], other["id"]).json()
+    rf = client.put(f"/api/properties/{pid}/cover", headers=alice["headers"],
+                    json={"media_id": foreign["id"]})
+    assert rf.status_code == 422
+
+    # Média non-photo (PDF) → 422 (une couverture est une image).
+    pdf = _upload(client, alice["headers"], pid, data=_PDF_BYTES,
+                  filename="doc.pdf", content_type="application/pdf").json()
+    rp = client.put(f"/api/properties/{pid}/cover", headers=alice["headers"],
+                    json={"media_id": pdf["id"]})
+    assert rp.status_code == 422
+
+    # Retirer : NULL, sans supprimer le média.
+    r0 = client.put(f"/api/properties/{pid}/cover", headers=alice["headers"],
+                    json={"media_id": None})
+    assert r0.status_code == 200 and r0.json()["cover_media_id"] is None
+    assert client.get(f"/api/properties/{pid}/media/{photo['id']}/file",
+                      headers=alice["headers"]).status_code == 200
+
+
+def test_cover_drives_og_on_three_prefixes(client):
+    """La couverture passe en premier dans l'og-image des trois préfixes (/g/, /b/,
+    /v/) — la carte de prévisualisation de tout lien partagé."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    # Une photo de section (visible) + une photo de couverture DÉDIÉE (sans section).
+    section_photo = _upload(client, owner["headers"], pid,
+                            section_code="A_keybox").json()
+    cover = _upload(client, owner["headers"], pid).json()   # section_id NULL
+    client.put(f"/api/properties/{pid}/cover", headers=owner["headers"],
+               json={"media_id": cover["id"]})
+
+    # /g/ : og:image = la couverture (pas la photo de section, pas l'image générée).
+    page = client.get(f"/g/{token}")
+    assert f'og:image" content="' in page.text
+    assert f"/g/{token}/media/{cover['id']}" in page.text
+    assert f"/g/{token}/og-image.png" not in page.text
+
+    # /v/ (vitrine) : même couverture, servie via le préfixe /v/.
+    show = _showcase_token(owner["email"], pid)
+    vpage = client.get(f"/v/{show}")
+    assert f"/v/{show}/media/{cover['id']}" in vpage.text
+
+    # /b/ (séjour) : idem via /b/.
+    b = _make_booking(client, owner["headers"], pid, guest_email="g@ex.com")
+    tok = _stay_token(pid, b["id"])
+    bpage = client.get(f"/b/{tok}")
+    assert f"/b/{tok}/media/{cover['id']}" in bpage.text
+    assert token not in bpage.text                       # jamais le guide_token
+
+    # La couverture est bien servable par les routes médias publiques des 3 préfixes.
+    assert client.get(f"/g/{token}/media/{cover['id']}").status_code == 200
+    assert client.get(f"/v/{show}/media/{cover['id']}").status_code == 200
+    assert client.get(f"/b/{tok}/media/{cover['id']}").status_code == 200
+
+
+def test_cover_media_without_section_never_leaks_into_section_render(client):
+    """Un média sans section (couverture dédiée) ne fuit dans AUCUN rendu de
+    section du guide : il n'apparaît que dans l'og-image, jamais comme galerie."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    section_photo = _upload(client, owner["headers"], pid,
+                            section_code="A_keybox").json()
+    cover = _upload(client, owner["headers"], pid).json()   # sans section
+    client.put(f"/api/properties/{pid}/cover", headers=owner["headers"],
+               json={"media_id": cover["id"]})
+
+    page = client.get(f"/g/{token}").text
+    # La photo de SECTION est bien rendue en galerie.
+    assert f'<img src="/g/{token}/media/{section_photo["id"]}"' in page
+    # La couverture (sans section) n'est JAMAIS rendue comme contenu de section.
+    assert f'<img src="/g/{token}/media/{cover["id"]}"' not in page
+    assert f'data-full="/g/{token}/media/{cover["id"]}"' not in page
+    # Elle n'apparaît que dans l'og-image (URL absolue de la meta).
+    assert f"/g/{token}/media/{cover['id']}" in page
+
+
+def test_cover_deleted_sets_null_and_falls_back(client):
+    """Suppression du média de couverture → cover_media_id repasse à NULL (ON DELETE
+    SET NULL) et l'og retombe sur la première photo."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    first = _upload(client, owner["headers"], pid, section_code="A_keybox").json()
+    cover = _upload(client, owner["headers"], pid).json()
+    client.put(f"/api/properties/{pid}/cover", headers=owner["headers"],
+               json={"media_id": cover["id"]})
+
+    # Supprimer le média de couverture.
+    assert client.delete(f"/api/properties/{pid}/media/{cover['id']}",
+                         headers=owner["headers"]).status_code == 204
+    assert client.get(f"/api/properties/{pid}", headers=owner["headers"]) \
+        .json()["cover_media_id"] is None
+    # Repli : la première photo (ici celle de la section visible) pilote l'og.
+    page = client.get(f"/g/{token}").text
+    assert f"/g/{token}/media/{first['id']}" in page
+    assert f"/g/{token}/og-image.png" not in page
+
+
+def test_cover_drives_email_thumbnail(client):
+    """La vignette des emails d'envoi (séjour ET vitrine) prend la couverture en
+    premier ; à défaut la première photo, puis l'image générée."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    _upload(client, owner["headers"], pid, section_code="A_keybox")   # 1re photo
+    cover = _upload(client, owner["headers"], pid).json()
+    client.put(f"/api/properties/{pid}/cover", headers=owner["headers"],
+               json={"media_id": cover["id"]})
+    m = ConsoleMailer()
+    _use_mailer(m)
+
+    # Séjour.
+    b = _make_booking(client, owner["headers"], pid, guest_email="g@ex.com")
+    tok = _stay_token(pid, b["id"])
+    r = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                    json={"kind": "stay", "booking_id": b["id"]})
+    assert r.status_code == 200, r.text
+    _to, email = m.sent[-1]
+    assert f"/b/{tok}/media/{cover['id']}" in email.html
+
+    # Vitrine.
+    r2 = client.post(f"/api/properties/{pid}/send-guide", headers=owner["headers"],
+                     json={"kind": "showcase", "recipient": "buyer@ex.com"})
+    assert r2.status_code == 200, r2.text
+    show = _showcase_token(owner["email"], pid)
+    _to2, email2 = m.sent[-1]
+    assert f"/v/{show}/media/{cover['id']}" in email2.html
+
+
+def test_no_cover_keeps_first_photo_behavior(client):
+    """Non-régression : sans couverture, l'og prend la première photo (comportement
+    d'aujourd'hui à l'identique)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    assert client.get(f"/api/properties/{pid}", headers=owner["headers"]) \
+        .json()["cover_media_id"] is None
+    photo = _upload(client, owner["headers"], pid, section_code="A_keybox").json()
+    page = client.get(f"/g/{token}").text
+    assert f"/g/{token}/media/{photo['id']}" in page   # 1re photo pilote l'og
+    assert f"/g/{token}/og-image.png" not in page
