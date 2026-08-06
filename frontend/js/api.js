@@ -194,6 +194,9 @@ export const api = {
   createBooking:  (id, b) => request("POST", `/api/properties/${id}/bookings`, { body: b }),
   updateBooking:  (id, bid, b) => request("PATCH", `/api/properties/${id}/bookings/${bid}`, { body: b }),
   deleteBooking:  (id, bid) => request("DELETE", `/api/properties/${id}/bookings/${bid}`),
+  // V2-23g — « Reprendre les dates du flux » : réaligne un séjour importé sur les
+  // dates du flux et rend la main à la synchro (dates_overridden → FALSE).
+  resetBookingDates: (id, bid) => request("POST", `/api/properties/${id}/bookings/${bid}/reset-dates`),
   bookingKeybox:  (id, bid) => request("GET", `/api/properties/${id}/bookings/${bid}/keybox`),
   listCalendars:  (id) => request("GET", `/api/properties/${id}/calendars`),
   addCalendar:    (id, b) => request("POST", `/api/properties/${id}/calendars`, { body: b }),

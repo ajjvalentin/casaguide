@@ -514,6 +514,189 @@ def test_sync_now_rate_limited(client):
     assert r.status_code == 429
 
 
+# ── Dates ajustées à la main protégées de la synchro (V2-23g) ────────────────
+
+def _bump_sync_back(pid: str) -> None:
+    """Défait le cooldown de sync-now (le pousse 1 h dans le passé) pour pouvoir
+    re-synchroniser dans le même test — les plateformes ne rafraîchissent pas plus
+    vite en vrai, mais le test doit exercer plusieurs passages."""
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            "UPDATE property_calendars SET last_sync_at = last_sync_at "
+            "- interval '1 hour' WHERE property_id = %s", (pid,))
+        conn.commit()
+
+
+def _import_one(client, headers, pid, *, start, end, uid="u1@a"):
+    """Ajoute un flux d'un seul événement et renvoie le séjour importé."""
+    FEED.text = _ical(_vevent(uid, start, end, "Reserved"))
+    add = client.post(f"/api/properties/{pid}/calendars", headers=headers,
+                      json={"platform": "vrbo", "ical_url": "https://vrbo.com/x.ics"})
+    assert add.status_code == 201, add.text
+    return client.get(f"/api/properties/{pid}/calendar",
+                      headers=headers).json()["bookings"][0]
+
+
+def _resync(client, headers, pid):
+    _bump_sync_back(pid)
+    r = client.post(f"/api/properties/{pid}/calendar/sync", headers=headers)
+    assert r.status_code == 200, r.text
+
+
+def _only_booking(client, headers, pid):
+    return client.get(f"/api/properties/{pid}/calendar",
+                      headers=headers).json()["bookings"][0]
+
+
+def test_manual_dates_on_import_set_marker_and_survive_sync(client):
+    """Cas Tracy : arrivée avancée à la main sur un séjour importé → marqueur posé,
+    et la synchro suivante ne la ramène PLUS à la date du flux."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    b = _import_one(client, h, pid, start="20260808", end="20260822")
+    assert b["dates_overridden"] is False
+    # Avance l'arrivée au 07.08 (le geste d'André).
+    r = client.patch(f"/api/properties/{pid}/bookings/{b['id']}", headers=h,
+                     json={"starts_on": "2026-08-07", "ends_on": "2026-08-22"})
+    assert r.status_code == 200
+    assert r.json()["dates_overridden"] is True
+    assert r.json()["starts_on"] == "2026-08-07"
+    # Le flux annonce toujours le 08.08 : on re-synchronise → la date tient.
+    _resync(client, h, pid)
+    bb = _only_booking(client, h, pid)
+    assert bb["starts_on"] == "2026-08-07"      # protégée, jamais ramenée au flux
+    assert bb["dates_overridden"] is True
+
+
+def test_divergence_is_detected_and_exposed(client):
+    """Le flux mémorisé (feed_*) diffère des dates saisies → exposé pour le signal.
+    Protéger sans signaler masquerait une vraie modification côté plateforme."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    b = _import_one(client, h, pid, start="20260808", end="20260822")
+    client.patch(f"/api/properties/{pid}/bookings/{b['id']}", headers=h,
+                 json={"starts_on": "2026-08-07", "ends_on": "2026-08-22"})
+    _resync(client, h, pid)
+    bb = _only_booking(client, h, pid)
+    # Les dates du flux sont mémorisées et divergent des dates saisies.
+    assert bb["feed_starts_on"] == "2026-08-08"
+    assert bb["feed_ends_on"] == "2026-08-22"
+    assert bb["feed_starts_on"] != bb["starts_on"]
+
+
+def test_reset_to_feed_dates_restores_and_hands_back_to_sync(client):
+    """« Reprendre les dates du flux » : dates du flux + marqueur FALSE, puis la
+    synchro reprend la main (une nouvelle date du flux s'applique de nouveau)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    b = _import_one(client, h, pid, start="20260808", end="20260822")
+    client.patch(f"/api/properties/{pid}/bookings/{b['id']}", headers=h,
+                 json={"starts_on": "2026-08-07", "ends_on": "2026-08-22"})
+    # Reprendre les dates du flux.
+    r = client.post(f"/api/properties/{pid}/bookings/{b['id']}/reset-dates",
+                    headers=h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["starts_on"] == "2026-08-08"        # revenu aux dates du flux
+    assert body["dates_overridden"] is False
+    # La synchro a de nouveau la main : le flux change → les dates suivent.
+    FEED.text = _ical(_vevent("u1@a", "20260809", "20260823", "Reserved"))
+    _resync(client, h, pid)
+    bb = _only_booking(client, h, pid)
+    assert bb["starts_on"] == "2026-08-09" and bb["ends_on"] == "2026-08-23"
+
+
+def test_reset_dates_rejects_direct_booking(client):
+    """Une saisie directe n'a pas de flux à reprendre → 404 (jamais de marqueur)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    d = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-20"}).json()
+    r = client.post(f"/api/properties/{pid}/bookings/{d['id']}/reset-dates",
+                    headers=h)
+    assert r.status_code == 404
+
+
+def test_direct_booking_dates_never_set_marker(client):
+    """Déplacer les dates d'une SAISIE DIRECTE ne pose jamais le marqueur (rien ne
+    l'écrase — le marqueur ne concerne que les imports)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    d = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-12", "ends_on": "2026-08-20"}).json()
+    r = client.patch(f"/api/properties/{pid}/bookings/{d['id']}", headers=h,
+                     json={"starts_on": "2026-08-11", "ends_on": "2026-08-20"})
+    assert r.status_code == 200 and r.json()["dates_overridden"] is False
+
+
+def test_editing_import_without_changing_dates_keeps_marker_false(client):
+    """Le front renvoie toujours starts_on/ends_on dans le PATCH. Éditer un import
+    sans TOUCHER aux dates (nom, heures « ajustées ») ne fige pas les dates."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    b = _import_one(client, h, pid, start="20260808", end="20260822")
+    r = client.patch(f"/api/properties/{pid}/bookings/{b['id']}", headers=h,
+                     json={"starts_on": "2026-08-08", "ends_on": "2026-08-22",
+                           "guest_name": "Tracy", "checkin_time": "17:00"})
+    assert r.status_code == 200
+    bb = r.json()
+    assert bb["dates_overridden"] is False          # dates inchangées → pas de marqueur
+    assert bb["eff_checkin_time"] == "17:00:00"      # l'heure « ajustée » marche toujours
+
+
+def test_marker_survives_cancel_and_reappearance(client):
+    """Un séjour aux dates ajustées qui disparaît du flux (cancelled) puis réapparaît
+    (réactivé) garde ses dates protégées — le marqueur survit au cycle de vie."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    b = _import_one(client, h, pid, start="20260808", end="20260822")
+    client.patch(f"/api/properties/{pid}/bookings/{b['id']}", headers=h,
+                 json={"starts_on": "2026-08-07", "ends_on": "2026-08-22"})
+    # L'événement disparaît du flux → cancelled (conservé).
+    FEED.text = _ical()
+    _resync(client, h, pid)
+    assert _only_booking(client, h, pid)["status"] == "cancelled"
+    # Il réapparaît (mêmes UID, dates du flux) → réactivé, dates toujours protégées.
+    FEED.text = _ical(_vevent("u1@a", "20260808", "20260822", "Reserved"))
+    _resync(client, h, pid)
+    bb = _only_booking(client, h, pid)
+    assert bb["status"] == "active"
+    assert bb["starts_on"] == "2026-08-07"          # jamais ramené au flux
+    assert bb["dates_overridden"] is True
+
+
+def test_adjusted_dates_feed_overlaps_and_linking(client):
+    """Le cas Tracy EST la combinaison chevauchement + rattachement avec des dates
+    ajustées : l'overlap se calcule sur les dates SAISIES, et le rattachement d'un
+    bloc importé aux dates ajustées fonctionne (marqueur et dates préservés)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    # Import A aux dates 10–24, avancé à la main sur 08–24.
+    a = _import_one(client, h, pid, start="20260810", end="20260824")
+    client.patch(f"/api/properties/{pid}/bookings/{a['id']}", headers=h,
+                 json={"starts_on": "2026-08-08", "ends_on": "2026-08-24",
+                       "nature": "reservation"})
+    # Saisie directe B qui chevauche les dates AJUSTÉES de A (occupé ↔ occupé).
+    bdir = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-08-09", "ends_on": "2026-08-12",
+        "nature": "reservation"}).json()
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert len(view["overlaps"]) == 1               # calculé sur les dates saisies
+    # Rattacher l'import A (bloc miroir) au séjour direct B : A disparaît de la vue,
+    # ses dates restent protégées (le rattachement absorbe, la synchro ne rejoue rien).
+    r = client.patch(f"/api/properties/{pid}/bookings/{a['id']}", headers=h,
+                     json={"linked_booking_id": bdir["id"]})
+    assert r.status_code == 200
+    _resync(client, h, pid)
+    view2 = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    ids = [x["id"] for x in view2["bookings"]]
+    assert a["id"] not in ids                        # bloc rattaché, masqué
+    # A reste en base, dates ajustées intactes (lecture via la fiche du séjour).
+    row = client.get(f"/api/properties/{pid}/bookings/{a['id']}/interventions",
+                     headers=h)
+    assert row.status_code == 200                    # le séjour existe toujours
+
+
 # ── Isolation multi-tenant ───────────────────────────────────────────────────
 
 def test_calendar_is_tenant_isolated(client):

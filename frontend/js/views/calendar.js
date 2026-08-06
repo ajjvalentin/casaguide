@@ -80,6 +80,15 @@ function slugCode(label) {
     .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
   return (base || "demande").slice(0, 60);
 }
+// V2-23g — dates ajustées à la main : le propriétaire a repris les dates d'un
+// séjour importé (dates_overridden) ET le flux annonce désormais AUTRE chose. On ne
+// signale que la vraie divergence (protéger sans signaler masquerait une vraie
+// modification côté plateforme). Comparaison de chaînes ISO (aucune surprise de
+// fuseau — jamais de Date()).
+function datesDiverge(b) {
+  return !!(b.dates_overridden && b.feed_starts_on && b.feed_ends_on
+    && (b.feed_starts_on !== b.starts_on || b.feed_ends_on !== b.ends_on));
+}
 function fmtTime(t) { return t ? t.slice(0, 5) : ""; }        // "15:00:00" → "15:00"
 function fmtGap(min) {
   if (min == null) return "";
@@ -275,6 +284,15 @@ export async function renderCalendar(view, pid) {
         icon("triangle-alert", 13), "Chevauchement") : null,
       rot ? el("span", { class: "cal-flag cal-flag-rot", title: "Rotation même jour" },
         icon("arrow-right-left", 13), rot.role === "out" ? "Départ le jour d'une arrivée" : "Arrivée le jour d'un départ") : null,
+      // V2-23g — dates ajustées à la main ET flux divergent : signal SOBRE (jamais
+      // le triangle, réservé au danger), ton neutre-attention — le flux annonce
+      // désormais autre chose, à examiner dans la fiche.
+      datesDiverge(b)
+        ? el("span", { class: "cal-flag cal-flag-datesadj",
+          title: `Dates ajustées à la main. Le flux ${SOURCE_LABEL[b.source] || b.source} `
+            + `indique désormais ${fmtRange(b.feed_starts_on, b.feed_ends_on)}.` },
+          icon("calendar-clock", 13), "Dates ≠ flux")
+        : null,
       // §3.1 — demande(s) du voyageur en attente : badge appelant à arbitrer.
       b.pending_guest_requests
         ? el("span", { class: "cal-flag cal-flag-request",
@@ -797,6 +815,7 @@ export async function renderCalendar(view, pid) {
 
     const rows = [
       el("div", { class: "grid-2" }, field("Arrivée", start), field("Départ", end)),
+      datesFeedNote(),
       warnBox,
       field("Nature du séjour", natureSel), natureHelp,
       el("div", { class: "grid-2" },
@@ -849,6 +868,49 @@ export async function renderCalendar(view, pid) {
     });
     save.addEventListener("click", () => onSave());
     recomputeWarnings();
+
+    // ── Dates ajustées à la main vs flux (V2-23g) ────────────────────────────
+    // Badge SOBRE « Dates ajustées » sur la fiche dès que le propriétaire a repris
+    // les dates d'un séjour importé (même sans divergence) ; quand le flux annonce
+    // désormais autre chose, on l'EXPOSE (protéger sans signaler masquerait une
+    // vraie modification côté plateforme) + action « Reprendre les dates du flux »
+    // qui rend la main à la synchro. Langage humain, jamais d'UUID (principe 0.4).
+    function datesFeedNote() {
+      if (!b || !b.dates_overridden) return null;
+      const diverge = datesDiverge(b);
+      const box = el("div",
+        { class: "cal-datesadj" + (diverge ? " cal-datesadj-diverge" : "") });
+      box.append(el("div", { class: "cal-datesadj-head" },
+        el("span", { class: "cal-datesadj-badge" },
+          icon("calendar-clock", 13), "Dates ajustées"),
+        el("span", { class: "muted", style: { fontSize: "12.5px" } },
+          "La synchronisation ne les remplacera plus.")));
+      if (diverge) {
+        box.append(el("div", { class: "cal-datesadj-msg" },
+          `Le flux ${SOURCE_LABEL[b.source] || b.source} indique désormais `,
+          el("b", {}, fmtRange(b.feed_starts_on, b.feed_ends_on)),
+          ` (vous avez saisi ${fmtRange(b.starts_on, b.ends_on)}).`));
+      }
+      if (b.feed_starts_on) {
+        const resetBtn = el("button",
+          { class: "btn btn-sm btn-ghost", type: "button" },
+          icon("rotate-ccw", 14), "Reprendre les dates du flux");
+        resetBtn.onclick = async () => {
+          resetBtn.disabled = true;
+          try {
+            await api.resetBookingDates(pid, b.id);
+            modal.close();
+            toast("Dates du flux reprises.", "ok");
+            await reload();
+          } catch (e) {
+            resetBtn.disabled = false;
+            if (!handleQuotaError(e)) toast(e.message || "Reprise impossible.", "err");
+          }
+        };
+        box.append(resetBtn);
+      }
+      return box;
+    }
 
     // ── Avertissement de chevauchement à la saisie (§0.4/§0.5) ───────────────
     function recomputeWarnings() {

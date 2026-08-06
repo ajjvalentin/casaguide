@@ -404,6 +404,11 @@ def select_auto_sends(candidates: list[dict], *, today: _dt.date,
             continue
         if not _is_occupied(b):          # nature préparée + actif + non rattaché
             continue
+        # V2-23g — `starts_on` est la date qui FAIT FOI : si le propriétaire a ajusté
+        # l'arrivée à la main (`dates_overridden`), starts_on porte la date ajustée
+        # (la synchro ne l'écrase plus), et c'est bien ELLE qui doit décider de la
+        # fenêtre J-7. Comportement voulu : le guide part sur les vraies dates du
+        # séjour, pas sur celles, périmées, du flux.
         if not (today <= b["starts_on"] <= horizon_end):
             continue
         if b.get("already_sent"):        # le registre est le verrou d'idempotence

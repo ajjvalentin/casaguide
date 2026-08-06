@@ -532,6 +532,7 @@ du guide ») — pastille calendrier sobre, jamais un email de relance séparé.
 *Hors périmètre volet 2 : opt-out par séjour (V2-31), suivi d'ouverture, pièces
 jointes, envoi automatique de la vitrine (n'a pas de sens).*
 
+
 ## 10. Photo de couverture du logement (V2-30)
 
 **Constat (validation V2-23d volet 1).** La vignette des emails (§9) et l'og-image
@@ -588,3 +589,60 @@ bloc agit **immédiatement** (`api.setCover`) et remonte le logement via `onChan
 *Le guide voyageur n'est pas touché (og/emails côté serveur, bloc côté back-office)
 → aucun bump du service worker. Hors périmètre : recadrage/redimensionnement,
 couverture par séjour, galerie.*
+
+
+## 11. Dates ajustées à la main protégées de la synchro (V2-23g)
+
+**Le contrat des dates.** Par défaut, *le flux possède les dates* d'un séjour
+importé : l'upsert de synchronisation ne rafraîchit QUE `starts_on`/`ends_on`
+(invariant 13). Utile — une plateforme peut prolonger un séjour et on veut le
+suivre — mais **dangereux quand le propriétaire a corrigé une date à la main** :
+elle revenait à celle du flux à la synchro suivante, silencieusement, toutes les
+4 h (constaté deux fois en 24 h : Tracy Russel, arrivée avancée au 07.08 →
+ramenée au 08.08). Les **heures** avaient déjà leur grammaire « (ajustée) » ; les
+**dates** l'ont désormais.
+
+Un séjour importé porte donc **un marqueur** `bookings.dates_overridden` :
+
+- **La pose est automatique** — dès que le propriétaire **déplace réellement** une
+  date d'un séjour **importé** via le PATCH, le marqueur passe TRUE (l'intention
+  EST la modification, aucun geste en plus). *Réellement* : le front renvoie
+  toujours `starts_on`/`ends_on` dans le PATCH ; le marqueur n'est posé que si une
+  date **change** par rapport à l'existant — éditer le nom ou une heure « ajustée »
+  ne fige pas les dates. Une **saisie directe** (sans flux) n'est jamais concernée :
+  rien ne l'écrase.
+- **La synchro respecte le marqueur** — tant que `dates_overridden` est TRUE, le
+  flux ne rafraîchit plus les dates. Mais il **mémorise** à chaque passage les
+  dernières dates annoncées (`feed_starts_on`/`feed_ends_on`) — la seule trace de
+  ce que la plateforme dit désormais. Les dates **saisies** restent la source de
+  vérité de tout l'aval : chevauchements, rotations, planning `/s/`, et **l'envoi
+  automatique J-7** (`care.select_auto_sends` lit `starts_on` → le guide part sur
+  les vraies dates, pas sur celles, périmées, du flux).
+- **Le signal de divergence** — protéger sans signaler serait dangereux (une vraie
+  modification côté plateforme doit rester visible). Quand `dates_overridden` ET
+  les dates du flux **diffèrent** des dates saisies : la fiche du séjour affiche
+  « Le flux Vrbo/Abritel indique désormais 08–22.08 (vous avez saisi 07–22.08) » et
+  le calendrier porte un signal **sobre** (« Dates ≠ flux », ton neutre-attention,
+  **jamais** le triangle réservé au danger). Un badge sobre « Dates ajustées »
+  reste sur la fiche même sans divergence.
+- **« Reprendre les dates du flux »** (`POST …/bookings/{id}/reset-dates`) — réaligne
+  les dates saisies sur les dernières dates du flux et **rend la main à la synchro**
+  (`dates_overridden` → FALSE). Chemin **dédié**, distinct du PATCH (qui reposerait
+  le marqueur puisque écrire des dates VAUT prise de possession). Réservé aux séjours
+  importés (une saisie directe n'a pas de flux → 404).
+
+**Modèle (migration 026)** : trois colonnes ajoutées à `bookings` —
+`dates_overridden BOOLEAN NOT NULL DEFAULT FALSE` (aucun backfill : FALSE =
+comportement d'avant), `feed_starts_on`/`feed_ends_on DATE` (NULL tant qu'aucune
+synchro n'a eu lieu depuis la migration). On ne peut pas recalculer les dates du
+flux au rendu (`GET /calendar` n'a aucun accès réseau au flux — l'événement iCal
+n'existe qu'à l'instant de la synchro), d'où leur stockage. Le marqueur et les
+dates du flux **survivent au cycle de vie** : un séjour ajusté qui disparaît du
+flux (`cancelled`) puis réapparaît (réactivé) garde ses dates protégées.
+
+**Interactions vérifiées** : le bandeau de chevauchement (§0.4) et le rattachement
+d'un bloc miroir (§0.5) fonctionnent sur les dates **ajustées** (le cas Tracy EST
+la combinaison des deux) ; l'absorption (V2-23f) et la protection des dates
+coexistent. *Hors périmètre : protection d'autres champs du flux, et le
+rapprochement d'UID changeants côté Vrbo (par les dates) — mission distincte si le
+besoin revient.*

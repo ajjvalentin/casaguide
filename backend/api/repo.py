@@ -1600,17 +1600,21 @@ _BOOKING_COLS = ("id, property_id, calendar_id, starts_on, ends_on, "
                  "guest_name, guest_contact, guest_phone, guest_email, guest_lang, "
                  "notes, nature, status, "
                  "guest_count, children_ages, "
-                 "linked_booking_id, created_at, updated_at")
+                 "linked_booking_id, dates_overridden, feed_starts_on, feed_ends_on, "
+                 "created_at, updated_at")
 
 # Champs d'un séjour modifiables à la main (jamais écrasés par une synchro). `nature`
 # et `linked_booking_id` en font partie : la synchro ne touche QUE les dates (et
 # réactive un 'cancelled' réapparu), jamais la sémantique saisie (invariant 13).
+# `dates_overridden` (V2-23g) rejoint la liste dans le MÊME esprit : le propriétaire
+# qui déplace les dates d'un import en prend possession → le flux ne les rafraîchit
+# plus. Le router le pose automatiquement (l'intention EST la modification).
 _BOOKING_UPDATABLE = ("starts_on", "ends_on", "checkin_time", "checkout_time",
                       "luggage_drop_time", "luggage_until_time",
                       "guest_name", "guest_contact", "guest_phone", "guest_email",
                       "guest_lang", "notes", "nature", "status",
                       "source", "linked_booking_id", "guest_count", "children_ages",
-                      "keybox_code_enc")
+                      "keybox_code_enc", "dates_overridden")
 
 
 def list_bookings(conn, property_id: str) -> list[dict]:
@@ -1754,28 +1758,67 @@ def upsert_imported_booking(conn, *, property_id: str, calendar_id: str,
     donc qu'à la **création** ; une qualification manuelle ('unqualified' →
     'private'…) survit à toutes les synchros suivantes.
 
+    **Dates ajustées à la main (V2-23g)** : si `dates_overridden` est posé, le flux
+    ne rafraîchit **plus** starts_on/ends_on (le propriétaire en a pris possession —
+    le flux les écrasait silencieusement, cas Tracy). starts_on/ends_on restent
+    alors la source de vérité de TOUT l'aval (rotations, planning, envoi J-7 qui lit
+    starts_on). Mais on continue de **mémoriser** `feed_starts_on`/`feed_ends_on` à
+    chaque passage : c'est la seule trace de ce que le flux annonce désormais, d'où
+    se déduit le **signal de divergence** (« le flux indique autre chose »). Sans
+    marqueur, les dates du flux s'appliquent comme avant et feed_* = starts/ends.
+
     Le `status` (cycle de vie) : un import est créé 'active' ; un séjour disparu
     passé 'cancelled' (`cancel_missing_bookings`) et qui **réapparaît** dans le
-    flux est **réactivé** ('active'). Un séjour 'active' n'est jamais retouché.
+    flux est **réactivé** ('active'). Un séjour 'active' n'est jamais retouché. La
+    protection des dates survit à ce cycle (marqueur et feed_* intacts).
 
     Renvoie True si un séjour a été **créé**, False s'il a été mis à jour."""
     row = conn.execute(
         f"""INSERT INTO bookings (property_id, calendar_id, source, external_uid,
-                                  starts_on, ends_on, nature, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'active')
+                                  starts_on, ends_on, feed_starts_on, feed_ends_on,
+                                  nature, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
             ON CONFLICT (calendar_id, external_uid)
               WHERE calendar_id IS NOT NULL AND external_uid IS NOT NULL
             DO UPDATE SET
-                starts_on = EXCLUDED.starts_on,
-                ends_on   = EXCLUDED.ends_on,
+                starts_on = CASE WHEN bookings.dates_overridden
+                                 THEN bookings.starts_on ELSE EXCLUDED.starts_on END,
+                ends_on   = CASE WHEN bookings.dates_overridden
+                                 THEN bookings.ends_on ELSE EXCLUDED.ends_on END,
+                feed_starts_on = EXCLUDED.feed_starts_on,
+                feed_ends_on   = EXCLUDED.feed_ends_on,
                 status    = CASE WHEN bookings.status = 'cancelled'
                                  THEN 'active' ELSE bookings.status END,
                 updated_at = now()
             RETURNING (xmax = 0) AS inserted""",
         (property_id, calendar_id, source, external_uid, starts_on, ends_on,
-         nature),
+         starts_on, ends_on, nature),
     ).fetchone()
     return bool(row["inserted"])
+
+
+def reset_booking_to_feed_dates(conn, property_id: str,
+                                booking_id: str) -> dict | None:
+    """« Reprendre les dates du flux » (V2-23g) : réaligne les dates saisies sur les
+    **dernières dates du flux** mémorisées et **rend la main à la synchro**
+    (`dates_overridden` → FALSE). Le chemin INVERSE de la pose du marqueur — isolé
+    à dessein du PATCH ordinaire, qui reposerait aussitôt le marqueur puisque
+    l'écriture de dates VAUT prise de possession.
+
+    Réservé aux séjours **importés** (`external_uid IS NOT NULL`) : une saisie
+    directe n'a pas de flux à reprendre → None (404 côté router). Si aucune date de
+    flux n'est mémorisée (jamais synchronisé depuis la migration 026), les dates
+    restent inchangées (COALESCE), seul le marqueur retombe."""
+    return conn.execute(
+        f"""UPDATE bookings SET
+              starts_on = COALESCE(feed_starts_on, starts_on),
+              ends_on   = COALESCE(feed_ends_on, ends_on),
+              dates_overridden = FALSE,
+              updated_at = now()
+            WHERE id = %s AND property_id = %s AND external_uid IS NOT NULL
+            RETURNING {_BOOKING_COLS}""",
+        (booking_id, property_id),
+    ).fetchone()
 
 
 def cancel_missing_bookings(conn, calendar_id: str,

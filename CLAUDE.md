@@ -345,6 +345,33 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     la main). Couvert par `test_calendar_api.py` (absorption pending+accepted,
     champs vides repris, champs garnis intacts, détachement sans retour,
     idempotence, bloc étranger→404).
+17. **Le flux possède les dates SAUF marqueur explicite (V2-23g, migration 026)** :
+    par défaut la synchro iCal ne rafraîchit que `starts_on`/`ends_on` (invariant
+    13) — mais dès que le propriétaire **déplace réellement** une date d'un séjour
+    **importé** (`external_uid` non NULL) via le PATCH, `bookings.dates_overridden`
+    passe **automatiquement** TRUE (l'intention EST la modification ; posé
+    UNIQUEMENT si une date **change**, car le front renvoie toujours les deux dates
+    — sans quoi éditer un nom figerait les dates). Marqueur TRUE → l'upsert de
+    synchro **ne rafraîchit plus** les dates (comme le cas Tracy : arrivée avancée
+    au 07.08 revenait au 08.08 toutes les 4 h). `dates_overridden` rejoint la liste
+    des champs protégés dans l'esprit de l'invariant 13. Les dates **saisies**
+    restent la source de vérité de TOUT l'aval — chevauchements, rotations, planning
+    `/s/`, **envoi J-7** (`care.select_auto_sends` lit `starts_on`). La synchro
+    **mémorise** à chaque passage les dernières dates du flux
+    (`feed_starts_on`/`feed_ends_on`, écrites toujours) — impossibles à recalculer
+    au rendu (`GET /calendar` n'a aucun accès réseau au flux) — d'où le **signal de
+    divergence** (fiche + calendrier, ton **sobre**, jamais le triangle) quand elles
+    diffèrent des dates saisies : protéger sans signaler masquerait une vraie
+    modification côté plateforme. **« Reprendre les dates du flux »** (`POST
+    …/bookings/{id}/reset-dates`, `repo.reset_booking_to_feed_dates`) réaligne sur le
+    flux et **rend la main** (`dates_overridden`→FALSE) — chemin **dédié**, jamais le
+    PATCH (qui reposerait le marqueur). Une saisie directe n'a pas de flux → jamais
+    de marqueur, jamais rien à reprendre (404). Le marqueur et les dates du flux
+    **survivent** au cycle de vie (annulation/réapparition). DEFAULT FALSE = aucun
+    backfill. Couvert par `test_calendar_api.py` (marqueur posé & survit à la
+    synchro, divergence exposée, reprise du flux, saisie directe sans marqueur,
+    édition sans changement de dates, cancel/réapparition, chevauchement+rattachement
+    sur dates ajustées) + harnais front `calendar-harness.html`.
 
 ## Commandes
 
@@ -375,6 +402,7 @@ psql -d casaguide -f db/migrations/022_guide_sends.sql # traçage des envois du 
 psql -d casaguide -f db/migrations/023_property_cover.sql # photo de couverture du logement (properties.cover_media_id) (V2-30)
 psql -d casaguide -f db/migrations/024_booking_keybox_override.sql # surcharge du code de boîte à clés par séjour (bookings.keybox_code_enc, chiffré) (V2-23c volet 2)
 psql -d casaguide -f db/migrations/025_auto_send_guide.sql # envoi auto du guide à J-7 : properties.auto_send_guide + guide_sends.origin (V2-23d volet 2)
+psql -d casaguide -f db/migrations/026_booking_dates_override.sql # dates ajustées à la main protégées de la synchro : bookings.dates_overridden + feed_starts_on/feed_ends_on (V2-23g)
 
 # Backend
 cd backend

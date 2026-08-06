@@ -93,6 +93,8 @@ def _booking_out(b: dict, default_in, default_out, *,
         guest_lang=b["guest_lang"],
         notes=b["notes"], nature=b["nature"], status=b["status"],
         linked_booking_id=b["linked_booking_id"],
+        dates_overridden=b["dates_overridden"],
+        feed_starts_on=b["feed_starts_on"], feed_ends_on=b["feed_ends_on"],
         guest_count=b["guest_count"],
         children_count=care.children_count(b),
         children_ages=list(b["children_ages"] or []),
@@ -208,6 +210,18 @@ def update_booking(booking_id: str, payload: BookingUpdate, conn: Conn,
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Le départ doit être postérieur à l'arrivée.")
+        # V2-23g — dates ajustées à la main : le propriétaire qui **déplace
+        # réellement** les dates d'un séjour IMPORTÉ en prend possession → la
+        # synchro cessera de les rafraîchir (marqueur automatique, l'intention EST
+        # la modification, aucun geste en plus). On ne pose le marqueur QUE si une
+        # date change effectivement : le front renvoie toujours starts_on/ends_on
+        # dans le PATCH (même quand seul le nom change) — sans cette comparaison,
+        # toute édition figerait les dates. Une saisie directe (pas de flux) n'est
+        # jamais concernée : rien ne l'écrase. « Reprendre les dates du flux » passe
+        # par un chemin dédié (reset-dates), jamais par ici.
+        if cur["external_uid"] is not None and (
+                start != cur["starts_on"] or end != cur["ends_on"]):
+            fields["dates_overridden"] = True
     b = repo.update_booking(conn, str(prop["id"]), booking_id, fields)
     if not b:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
@@ -219,6 +233,24 @@ def update_booking(booking_id: str, payload: BookingUpdate, conn: Conn,
     if fields.get("linked_booking_id") is not None:
         repo.absorb_block_into_master(conn, str(prop["id"]), booking_id,
                                       fields["linked_booking_id"])
+    return _booking_out(b, prop["default_checkin_time"],
+                        prop["default_checkout_time"],
+                        care_rules=prop["care_rules"],
+                        auto_send_guide=prop["auto_send_guide"])
+
+
+@router.post("/bookings/{booking_id}/reset-dates", response_model=BookingOut,
+             dependencies=[Depends(require_write_access)])
+def reset_booking_dates(booking_id: str, conn: Conn, prop: OwnedProperty):
+    """« Reprendre les dates du flux » (V2-23g) : réaligne un séjour importé sur les
+    dernières dates annoncées par le flux et **redonne la main à la synchro**
+    (`dates_overridden` → FALSE). Réservé aux séjours **importés** ; une saisie
+    directe n'a pas de flux → 404. Chemin dédié, distinct du PATCH (qui reposerait
+    le marqueur), pour que la reprise soit un geste net et réversible."""
+    b = repo.reset_booking_to_feed_dates(conn, str(prop["id"]), booking_id)
+    if not b:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Séjour importé introuvable")
     return _booking_out(b, prop["default_checkin_time"],
                         prop["default_checkout_time"],
                         care_rules=prop["care_rules"],

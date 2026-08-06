@@ -618,6 +618,9 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .cal-flag-rot{background:var(--sand-hi);color:var(--sand-hi-ink)}
 /* §3.1 — demande du voyageur en attente (mer, appelle à arbitrer, sans danger). */
 .cal-flag-request{background:#E7F0FB;color:#12457A}
+/* V2-23g — dates ajustées à la main vs flux : ton neutre-attention (sable), jamais
+   le rouge du danger. Signale, n'alarme pas. */
+.cal-flag-datesadj{background:var(--sand-hi);color:var(--sand-hi-ink)}
 .cal-request-banner{display:flex;gap:11px;align-items:center;width:100%;text-align:left;
   border:1px solid #CFE0F3;background:#EEF5FD;color:#12457A;border-radius:12px;
   padding:12px 14px;margin-bottom:14px;cursor:pointer;font:inherit}
@@ -656,6 +659,18 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .cal-incomplete{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;
   border-radius:6px;padding:1px 7px;background:var(--line-soft);color:var(--muted)}
 .cal-incomplete svg{flex:none}
+
+/* V2-23g — encart « Dates ajustées » de la fiche séjour : badge sobre + (si le
+   flux diverge) message + action « Reprendre les dates du flux ». Ton neutre-
+   attention (sable), l'accent ambre n'apparaît qu'en cas de divergence réelle. */
+.cal-datesadj{display:flex;flex-direction:column;gap:8px;border:1px solid var(--sand-hi-line);
+  background:var(--sand-hi);color:var(--sand-hi-ink);border-radius:12px;padding:11px 13px}
+.cal-datesadj-diverge{border-color:#E4B98A;background:#FBF1E4}
+.cal-datesadj-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.cal-datesadj-badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700}
+.cal-datesadj-badge svg{flex:none}
+.cal-datesadj-msg{font-size:13px;line-height:1.45}
+.cal-datesadj .btn{align-self:flex-start}
 
 /* §2.1 — Agrégation « N séjours incomplets » + saisie rapide (repliable) */
 .incomplete-box{border:1px solid var(--line);border-radius:12px;background:var(--shell);

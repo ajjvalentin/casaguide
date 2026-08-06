@@ -215,6 +215,16 @@ CREATE TABLE bookings (
     children_ages INT[],
     -- Rattachement d'un bloc miroir à son séjour (jamais supprimé, juste masqué).
     linked_booking_id UUID REFERENCES bookings(id) ON DELETE SET NULL,
+    -- Dates ajustées à la main (V2-23g, migration 026) : dès que le propriétaire
+    -- déplace les dates d'un séjour IMPORTÉ, dates_overridden passe TRUE et la
+    -- synchro cesse de les rafraîchir (les dates ajustées font foi partout —
+    -- rotations, planning, envoi J-7). feed_starts_on/feed_ends_on gardent la
+    -- trace des DERNIÈRES dates du flux (mémorisées à chaque synchro) pour signaler
+    -- une divergence (« le flux indique désormais autre chose »). NULL = jamais
+    -- synchronisé depuis l'ajout des colonnes.
+    dates_overridden BOOLEAN NOT NULL DEFAULT FALSE,
+    feed_starts_on DATE,
+    feed_ends_on   DATE,
     nature        TEXT NOT NULL DEFAULT 'unqualified'
                   CHECK (nature IN ('reservation', 'private', 'works', 'unavailable', 'unqualified')),
     status        TEXT NOT NULL DEFAULT 'active'

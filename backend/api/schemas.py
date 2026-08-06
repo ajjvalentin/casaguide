@@ -562,6 +562,14 @@ class BookingOut(BaseModel):
     nature: str                                # sémantique (pilote la préparation)
     status: str                                # cycle de vie ('active' | 'cancelled')
     linked_booking_id: UUID | None = None      # bloc miroir rattaché à un autre séjour
+    # Dates ajustées à la main (V2-23g) : dates_overridden = le propriétaire a pris
+    # possession des dates de cet import (la synchro ne les rafraîchit plus).
+    # feed_starts_on/feed_ends_on = dernières dates du flux mémorisées → le front
+    # signale une divergence si elles diffèrent des dates saisies. Front & back
+    # lisent la même chose ; le calcul de divergence reste côté client.
+    dates_overridden: bool = False
+    feed_starts_on: date | None = None
+    feed_ends_on: date | None = None
     guest_count: int | None = None             # voyageurs (§1.0)
     children_count: int = 0                     # dérivé de children_ages
     children_ages: list[int] = []

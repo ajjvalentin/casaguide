@@ -38,7 +38,8 @@ const mk = (over) => ({
   guest_contact: null, guest_phone: null, guest_email: null, guest_lang: null,
   notes: null, nature: "reservation", status: "active",
   linked_booking_id: null, guest_count: null, children_count: 0,
-  children_ages: [], missing_info: [], pending_guest_requests: 0, ...over });
+  children_ages: [], missing_info: [], pending_guest_requests: 0,
+  dates_overridden: false, feed_starts_on: null, feed_ends_on: null, ...over });
 
 // Catalogue de demandes du logement (V2-23b, §1.2).
 const CATALOG = [
@@ -58,8 +59,11 @@ const calData = {
     mk({ id: "b1", starts_on: iso(30), ends_on: iso(40), source: "direct",
          is_direct: true, guest_name: "Dupont", guest_count: 4, children_count: 1,
          children_ages: [3], pending_guest_requests: 1 }),   // §3.1 : demande voyageur en attente
+    // b2 : import dont l'arrivée a été AJUSTÉE à la main (V2-23g) — le flux annonce
+    // désormais iso(41) : divergence → signal sobre + action « reprendre le flux ».
     mk({ id: "b2", calendar_id: "c1", starts_on: iso(40), ends_on: iso(47),
-         source: "airbnb", external_uid: "u2", is_direct: false }),
+         source: "airbnb", external_uid: "u2", is_direct: false,
+         dates_overridden: true, feed_starts_on: iso(41), feed_ends_on: iso(47) }),
     mk({ id: "b3", starts_on: iso(45), ends_on: iso(50), source: "vrbo",
          is_direct: true, guest_name: "Martin",
          missing_info: [{ code: "guest_count_missing", message: "Nombre de voyageurs non renseigné." }] }),
@@ -81,6 +85,7 @@ const calData = {
 const posted = [];
 const patched = [];
 const reqPatched = [];
+const resetCalls = [];
 // Demande du voyageur EN ATTENTE rattachée à b1 (§3.1).
 const GUEST_REQ = { id: "gr1", booking_id: "b1", request_type_id: null,
   label: "Ménage / draps supplémentaires", quantity: 1,
@@ -122,6 +127,17 @@ window.fetch = async (path, opts = {}) => {
       eff_checkout_time: b.checkout_time || "10:00:00", ...b });
     calData.bookings.push(row);
     return json(row);
+  }
+  // V2-23g — « Reprendre les dates du flux » : réaligne sur le flux + marqueur FALSE.
+  const resetM = path.match(/^\/api\/properties\/p1\/bookings\/([^/]+)\/reset-dates$/);
+  if (resetM && method === "POST") {
+    resetCalls.push(resetM[1]);
+    const row = calData.bookings.find((x) => x.id === resetM[1]);
+    if (row) {
+      row.starts_on = row.feed_starts_on; row.ends_on = row.feed_ends_on;
+      row.dates_overridden = false;
+    }
+    return json(row || mk({ id: resetM[1] }));
   }
   // §2.1.4 — saisie rapide en ligne du nombre de voyageurs (PATCH /bookings/:id).
   const patchM = path.match(/^\/api\/properties\/p1\/bookings\/([^/]+)$/);
@@ -269,6 +285,31 @@ try {
       "PATCH /requests : statut « accepted » émis à l'acceptation");
   }
   q(".modal-back").remove();
+
+  // ── V2-23g — dates ajustées à la main vs flux ────────────────────────────
+  // Signal SOBRE sur la ligne de b2 (jamais le triangle), et fiche ouverte :
+  // badge « Dates ajustées » + message de divergence + « Reprendre les dates ».
+  const b2row = q('.booking-row[data-bid="b2"]');
+  chk(!!b2row && !!q(".cal-flag-datesadj", b2row) && /Dates ≠ flux/.test(b2row.textContent),
+    "b2 : signal sobre « Dates ≠ flux » sur la ligne");
+  b2row.click();
+  await wait(40);
+  const adjBox = q(".modal-back .cal-datesadj");
+  chk(!!adjBox && /Dates ajustées/.test(adjBox.textContent),
+    "fiche b2 : badge « Dates ajustées »");
+  chk(!!adjBox && adjBox.classList.contains("cal-datesadj-diverge")
+    && /indique désormais/.test(adjBox.textContent),
+    "fiche b2 : message de divergence (« le flux indique désormais… »)");
+  const resetBtn = qa(".modal-back .cal-datesadj .btn")
+    .find((b) => /Reprendre les dates du flux/.test(b.textContent));
+  chk(!!resetBtn, "fiche b2 : bouton « Reprendre les dates du flux »");
+  if (resetBtn) {
+    resetBtn.click();
+    await wait(150);
+    chk(resetCalls.includes("b2"), "POST /reset-dates émis pour b2");
+  }
+  qa(".modal-back").forEach((n) => n.remove());
+  await wait(20);
 
   // ── Création d'un séjour direct (POST → rechargement → nouvelle ligne) ────
   q(".btn-primary.btn-sm").click();            // « Nouveau séjour »
