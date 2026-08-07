@@ -1,0 +1,261 @@
+<!doctype html>
+<!-- Harnais headless de la COUVERTURE D'AIDE (V2-31 volet 3a) — le cœur du veto.
+     Rend les VRAIES vues du back-office (frontend/js/views/*) avec un fetch simulé
+     (aucun réseau) et un stub Leaflet (aucune tuile CDN), collecte les libellés
+     RÉELLEMENT AFFICHÉS (boutons, entrées de menu, titres d'écran/panneau) et
+     vérifie que chacun est trouvé par la recherche d'aide (isCovered → au moins une
+     entrée d'index au-dessus du seuil). Un libellé non couvert fait ROUGIR la suite.
+     Patron calendar-harness ; verdict dans #result, lu par help-coverage.test.mjs.
+     Vit hors de frontend/ (jamais servi publiquement). -->
+<meta charset="utf-8">
+<title>help-coverage-harness</title>
+<div id="stage"></div>
+<div id="toasts"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { isCovered, normalize } from "/frontend/js/help/search.js";
+import { setToken, setOwner } from "/frontend/js/store.js";
+import { renderProperties } from "/frontend/js/views/properties.js";
+import { renderCalendar } from "/frontend/js/views/calendar.js";
+import { renderSubscription } from "/frontend/js/views/subscription.js";
+import { renderEditor } from "/frontend/js/views/editor.js";
+import { renderPois } from "/frontend/js/views/pois.js";
+
+// ── Stub Leaflet : chaînable universel (aucune tuile, aucun réseau) ──────────
+const leafletStub = () => {
+  const proxy = new Proxy(function () { return proxy; }, {
+    get: (_t, p) => (p === "then" ? undefined : () => proxy),
+    apply: () => proxy,
+  });
+  return proxy;
+};
+window.L = leafletStub();
+window.lucide = { createIcons() {} };   // icônes neutralisées
+
+// ── Données simulées ─────────────────────────────────────────────────────────
+const DAY = 86400000, NOW = new Date();
+const iso = (off) => new Date(NOW.getTime() + off * DAY).toISOString().slice(0, 10);
+const PROP_NAME = "Villa Ballarin";
+
+const PROP = {
+  id: "p1", name: PROP_NAME, status: "published", guide_token: "deadbeefcafe0001",
+  staff_token: "staff0001", lat: 38.2, lon: -0.5, geocode_accuracy: "rooftop",
+  address_line1: "Calle 1", postal_code: "03189", city: "Orihuela", country_code: "ES",
+  default_lang: "fr", published_langs: ["en", "es"],
+  default_checkin_time: "15:00:00", default_checkout_time: "10:00:00",
+  auto_send_guide: true, cover_media_id: null,
+};
+const STATS = { completion_pct: 40, pois_suggested: 12, pois_approved: 30,
+  pois_edited: 2, pois_total: 44 };
+
+// Sections d'éditeur (guest) — minimales mais réalistes (field_schema léger).
+const SECTIONS = {
+  sections: [
+    { code: "A_checkin", chapter: "A", sort_order: 0, icon: "log-in",
+      name_i18n: { fr: "Arrivée" }, description_i18n: { fr: "Comment arriver." },
+      field_schema: {}, is_visible: true, completed: false, is_sensitive: false,
+      ai_enrichable: false, audience: "guest" },
+    { code: "A_keybox", chapter: "A", sort_order: 1, icon: "key-round",
+      name_i18n: { fr: "Boîte à clés" }, description_i18n: { fr: "Le code d'accès." },
+      field_schema: { secrets: ["keybox_code"] }, is_visible: true, completed: false,
+      is_sensitive: true, ai_enrichable: false, audience: "guest" },
+  ],
+};
+
+// Calendrier — reprend le mock de calendar-harness (labels réels : flux, rotation,
+// demande voyageur, séjour à compléter, séjours annulés, dates ≠ flux, succession).
+const mk = (over) => ({
+  calendar_id: null, checkin_time: null, checkout_time: null,
+  luggage_drop_time: null, luggage_until_time: null,
+  eff_checkin_time: "15:00:00", eff_checkout_time: "10:00:00",
+  source: "direct", external_uid: null, is_direct: true, guest_name: null,
+  guest_contact: null, guest_phone: null, guest_email: null, guest_lang: null,
+  notes: null, nature: "reservation", status: "active", linked_booking_id: null,
+  guest_count: null, children_count: 0, children_ages: [], missing_info: [],
+  pending_guest_requests: 0, dates_overridden: false, feed_starts_on: null,
+  feed_ends_on: null, ...over });
+const CAL = {
+  property_id: "p1", default_checkin_time: "15:00:00", default_checkout_time: "10:00:00",
+  calendars: [{ id: "c1", platform: "airbnb", masked_url: "airbnb.com/…/a1b2.ics",
+    last_sync_at: NOW.toISOString(), last_sync_status: "ok", sync_error: null,
+    created_at: NOW.toISOString() }],
+  bookings: [
+    mk({ id: "b1", starts_on: iso(30), ends_on: iso(40), guest_name: "Dupont",
+      guest_count: 4, children_count: 1, children_ages: [3], pending_guest_requests: 1 }),
+    mk({ id: "b2", calendar_id: "c1", starts_on: iso(40), ends_on: iso(47),
+      source: "airbnb", external_uid: "u2", is_direct: false, dates_overridden: true,
+      feed_starts_on: iso(41), feed_ends_on: iso(47) }),
+    mk({ id: "b4", calendar_id: "c1", starts_on: iso(60), ends_on: iso(64),
+      source: "airbnb", external_uid: "u4", is_direct: false, nature: "unqualified",
+      missing_info: [{ code: "unqualified", message: "Séjour à qualifier." }] }),
+    mk({ id: "b5", calendar_id: "c1", starts_on: iso(-60), ends_on: iso(-56),
+      source: "airbnb", external_uid: "u5", is_direct: false, status: "cancelled", nature: "" }),
+  ],
+  overlaps: [], rotations: [{ on: iso(40), departing: "b1", arriving: "b2",
+    gap_minutes: 300, signal: { level: "amber", recommended_cleaners: 2,
+      person_hours: 6, window_hours: 5, message: "Prévoir 2 personnes." } }],
+};
+const CATALOG = [{ id: "rt1", code: "lit_bebe", label: "Lit bébé", sort_order: 0, is_active: true }];
+
+// Abonnement — reprend le mock de subscription-harness (Pro actif + add-on).
+const PLANS = [
+  { id: "free", name: "Gratuit", price_month_cts: 0, max_properties: 1,
+    features: { langs: "all", pdf_export: false } },
+  { id: "pro", name: "Pro", price_month_cts: 2400, max_properties: 6,
+    addon_property_price_cts: 300,
+    features: { langs: "all", pdf_export: true, staff_guide: true } },
+];
+const SUB = { plan: PLANS[1], addon_qty: 1, has_stripe_customer: true,
+  usage: { properties: { used: 7, limit: 7 }, enrichments: { used: 0, limit: 3 },
+    langs: { used: 3, limit: null } } };
+
+// POI (suggestions) — assez pour la liste + filtres.
+const POIS = [
+  { id: "q1", name: "Mercadona", category_code: "supermarket", category_name: { fr: "Supermarché" },
+    category_icon: "shopping-cart", chapter: "G", status: "suggested", lat: 38.21, lon: -0.51,
+    map_color: "#0277BD", walk_min: 8, drive_min: 3, travel_mode: null, address: "Av. 1" },
+  { id: "q2", name: "Farmacia", category_code: "pharmacy", category_name: { fr: "Pharmacie" },
+    category_icon: "cross", chapter: "D", status: "approved", lat: 38.22, lon: -0.52,
+    map_color: "#C62828", walk_min: 5, drive_min: 2, travel_mode: null, address: "Av. 2" },
+];
+
+window.fetch = async (path, opts = {}) => {
+  const method = (opts.method || "GET").toUpperCase();
+  const json = (b) => new Response(JSON.stringify(b), { headers: { "Content-Type": "application/json" } });
+  if (path === "/api/properties" && method === "GET") return json([PROP]);
+  if (path === "/api/properties/p1" && method === "GET") return json(PROP);
+  if (path === "/api/properties/p1/stats") return json(STATS);
+  if (path === "/api/properties/p1/sections") return json(SECTIONS);
+  if (path === "/api/properties/p1/secrets" && method === "GET") return json({});
+  if (path === "/api/properties/p1/translation-status") return json({ total: 12, up_to_date: true, outdated: 0 });
+  if (path.startsWith("/api/properties/p1/media")) return json([]);
+  if (path.startsWith("/api/properties/p1/pois") && method === "GET") return json(POIS);
+  if (path === "/api/properties/p1/calendar") return json(CAL);
+  if (path === "/api/properties/p1/request-types") return json(CATALOG);
+  if (/\/bookings\/[^/]+\/requests$/.test(path) && method === "GET") return json([]);
+  if (path === "/languages") return json([
+    { code: "fr", name_native: "Français", published: true },
+    { code: "en", name_native: "English", published: true },
+    { code: "es", name_native: "Español", published: true }]);
+  if (path === "/api/plans") return json(PLANS);
+  if (path === "/api/subscription") return json(SUB);
+  return json({});   // tolérant : tout autre appel (non déclenché au rendu initial)
+};
+setToken("t");
+setOwner({ email: "a@b.c", staff_access: true, on_trial: false, trial_expired: false,
+  email_verified: true });
+
+// ── Collecte des libellés RÉELLEMENT AFFICHÉS ────────────────────────────────
+// Cible : boutons, entrées de menu, portes, titres d'écran/panneau. On EXCLUT par
+// portée ce qui n'est pas du « chrome » d'application (justifié, jamais un
+// contournement) : voir help-coverage.test.mjs / docs/aide.md.
+const NOISE = ".chip-n,.cnt,.door-badge,.door-sub,[data-lucide],.badge,kbd,.tr-label,.hint";
+
+// Titres data-driven (contenu du guide, pas chrome) : sections de l'éditeur,
+// catégories de POI, nom du logement dans la carte/le fil.
+const SKIP_TITLE = ".prop-card,.section-panel,.cat-head,.pois-list-col,.crumbs,.chapters";
+// Conteneurs jamais collectés (transitoires / navigation d'arbre / panneau d'aide).
+const SKIP_ANY = "#toasts,.errbox,.loading,.empty,.help-overlay,.crumbs,.chapters";
+
+function textOf(node) {
+  const c = node.cloneNode(true);
+  c.querySelectorAll(NOISE).forEach((x) => x.remove());
+  return c.textContent.replace(/\s+/g, " ").trim();
+}
+
+function collect(root) {
+  const out = new Set();
+  // Boutons / menus / portes.
+  for (const n of root.querySelectorAll("button, a.btn, .door-t, .menu-item")) {
+    if (n.closest(SKIP_ANY)) continue;
+    const txt = textOf(n);
+    if (txt) out.add(txt);
+  }
+  // Titres d'écran/panneau (hors contenu data-driven).
+  for (const n of root.querySelectorAll("h1.page-title, h2, h3")) {
+    if (n.closest(SKIP_ANY) || n.closest(SKIP_TITLE)) continue;
+    const txt = textOf(n);
+    if (txt) out.add(txt);
+  }
+  return out;
+}
+
+// EXCLUSIONS explicites, chacune JUSTIFIÉE (l'exception, jamais le contournement) :
+const EXCLUDE = new Map([
+  // Verbes d'action universels, non rattachables à une rubrique d'aide précise.
+  ["annuler", "verbe générique"], ["fermer", "verbe générique"],
+  ["enregistrer", "verbe générique"], ["ok", "verbe générique"],
+  ["confirmer", "verbe générique"], ["copier", "verbe générique"],
+  ["retirer", "verbe générique"], ["ouvrir", "verbe générique"],
+  ["plus tard", "verbe générique"], ["retour", "verbe générique"],
+  ["tous", "filtre générique « tout »"], ["oui annuler", "verbe générique"],
+  ["annuler le changement programme", "verbe générique"],
+  // Valeurs DYNAMIQUES : nom du logement (répété en titre/fil).
+  [normalize(PROP_NAME), "nom de logement (dynamique)"],
+]);
+
+// ── Exécution ────────────────────────────────────────────────────────────────
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const log = [];
+let pass = true;
+
+async function renderInto(fn, ...args) {
+  const stage = document.getElementById("stage");
+  const box = document.createElement("main");
+  stage.innerHTML = ""; stage.append(box);
+  try { await fn(box, ...args); } catch (e) {
+    log.push("✗ rendu échoué : " + fn.name + " — " + (e && e.message ? e.message : e));
+    pass = false; return new Set();
+  }
+  await wait(60);
+  return collect(box);
+}
+
+try {
+  const views = [
+    ["Mes logements", () => renderInto(renderProperties)],
+    ["Calendrier", () => renderInto(renderCalendar, "p1")],
+    ["Mon abonnement", () => renderInto(renderSubscription)],
+    ["Éditeur", () => renderInto(renderEditor, "p1")],
+    ["Suggestions", () => renderInto(renderPois, "p1")],
+  ];
+
+  const all = new Map();   // libellé normalisé → { raw, view }
+  for (const [name, run] of views) {
+    const labels = await run();
+    log.push(`· ${name} : ${labels.size} libellé(s) collecté(s)`);
+    for (const raw of labels) {
+      const n = normalize(raw);
+      if (!n || n.length < 2) continue;
+      if (EXCLUDE.has(n)) continue;
+      if (!all.has(n)) all.set(n, { raw, view: name });
+    }
+  }
+
+  log.push(`= ${all.size} libellé(s) uniques à couvrir (hors exclusions)`);
+  const uncovered = [];
+  for (const [, { raw, view }] of all) {
+    if (!isCovered(raw)) uncovered.push(`${raw}  (${view})`);
+  }
+  if (uncovered.length) {
+    pass = false;
+    log.push("✗ LIBELLÉS NON COUVERTS PAR L'INDEX D'AIDE :");
+    for (const u of uncovered) log.push("    ✗ " + u);
+  } else {
+    log.push("✓ tous les libellés collectés sont couverts par l'index");
+  }
+
+  // ── Le test du test : un libellé bidon DOIT échouer la couverture ──────────
+  const bogus = "Zorglub Wxyz Qwerty Fnord";
+  if (isCovered(bogus)) {
+    pass = false;
+    log.push("✗ test-du-test : un libellé bidon est considéré COUVERT (mécanisme trop laxiste)");
+  } else {
+    log.push("✓ test-du-test : le libellé bidon « " + bogus + " » n'est PAS couvert (le contrôle rougit bien)");
+  }
+} catch (e) {
+  pass = false;
+  log.push("✗ exception : " + (e && e.message ? e.message : e));
+}
+document.getElementById("result").textContent = pass ? ("PASS\n" + log.join("\n")) : ("FAIL\n" + log.join("\n"));
+</script>

@@ -409,6 +409,27 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     inherit remplit le vide/garnis intacts/demandes migrées/**guide_sends non
     hérité**/nouveau token≠ancien/source étrangère→404/idempotence, signal disparaît)
     + harnais front `calendar-harness.html`.
+19. **Aucun libellé visible sans entrée d'aide — couverture PAR TEST, suite rouge
+    sinon (V2-31 volet 3a)** : le back-office porte une recherche d'aide (bouton
+    « Aide » + ⌘K, `frontend/js/help/`) dont l'index (`help/index.js`) est **la
+    source de vérité, de la donnée pas du code**. Le veto d'André est **mécanique**,
+    pas une discipline : `frontend-tests/help-coverage-harness.html` **rend les
+    vraies vues** du back-office (fetch simulé + stub Leaflet, aucun réseau),
+    **collecte les libellés réellement affichés** (boutons, entrées de menu, portes,
+    titres d'écran/panneau) et vérifie que **chacun est couvert** par l'index
+    (`isCovered`) — un libellé sans entrée fait **ROUGIR** `help-coverage.test.mjs`
+    (+ « le test du test » : un libellé bidon doit rester non couvert). **Ajouter un
+    bouton/menu/titre au back-office sans enrichir l'index casse la suite.** Les
+    **exclusions** (verbes universels « Annuler/Fermer/Enregistrer », valeurs
+    dynamiques comme le nom du logement, contenu data-driven du guide : titres de
+    section de l'éditeur, catégories de POI) sont **explicites et justifiées** dans le
+    harnais — l'exception, **jamais** le contournement (ne JAMAIS ajouter un libellé
+    aux exclusions pour « faire passer »). **Zéro-résultat interdit** à l'écran
+    (approches + repli « Voir toutes les rubriques »). Chaque recherche est
+    **journalisée** (`help_searches`, migration 027, best-effort : un échec de journal
+    ne casse jamais la recherche ; `results_count = 0` = santé de l'index).
+    Back-office FR délibéré → **hors inventaire i18n voyageur**. Runbook :
+    `docs/aide.md`. Back-office seul (aucun bump SW).
 
 ## Commandes
 
@@ -440,6 +461,7 @@ psql -d casaguide -f db/migrations/023_property_cover.sql # photo de couverture 
 psql -d casaguide -f db/migrations/024_booking_keybox_override.sql # surcharge du code de boîte à clés par séjour (bookings.keybox_code_enc, chiffré) (V2-23c volet 2)
 psql -d casaguide -f db/migrations/025_auto_send_guide.sql # envoi auto du guide à J-7 : properties.auto_send_guide + guide_sends.origin (V2-23d volet 2)
 psql -d casaguide -f db/migrations/026_booking_dates_override.sql # dates ajustées à la main protégées de la synchro : bookings.dates_overridden + feed_starts_on/feed_ends_on (V2-23g)
+psql -d casaguide -f db/migrations/027_help_searches.sql # journal des recherches d'aide (santé de l'index) (V2-31 volet 3a)
 
 # Backend
 cd backend

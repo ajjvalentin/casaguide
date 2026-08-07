@@ -47,6 +47,14 @@ class MessageOut(BaseModel):
     message: str
 
 
+class HelpSearchIn(BaseModel):
+    """Journal d'une recherche d'aide (V2-31 volet 3a). La recherche est faite
+    côté front (index statique) ; le back ne fait que tracer la requête et le
+    nombre de résultats rendus (santé de l'index — taux de zéro-résultat)."""
+    query: str = Field(min_length=1, max_length=300)
+    results_count: int = Field(ge=0)
+
+
 class OwnerOut(BaseModel):
     id: UUID
     email: EmailStr

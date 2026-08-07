@@ -20,6 +20,7 @@ import { renderEditor } from "./views/editor.js";
 import { renderPois } from "./views/pois.js";
 import { renderCalendar } from "./views/calendar.js";
 import { renderSubscription } from "./views/subscription.js";
+import { helpButton, initHelpShortcut } from "./help/panel.js";
 
 const appEl = document.getElementById("app");
 
@@ -35,11 +36,15 @@ function ensureShell() {
   if (viewEl) { updateUserMenu(); updateVerifyBanner(); updateReadonlyBanner(); return viewEl; }
 
   const userMenu = el("div", { class: "usermenu", id: "usermenu" });
+  // Bouton « Aide » persistant (V2-31 volet 3a) : présent sur toutes les vues, +
+  // raccourci ⌘K / Ctrl+K. « Si André cherche, tout le monde est perdu » (audit §0).
   const topbar = el("header", { class: "topbar" },
     el("a", { class: "brand", href: "#/properties" },
       el("span", { class: "mark" }, icon("map-pinned", 18)), "Holaguia"),
     el("span", { class: "spacer" }),
+    helpButton(),
     userMenu);
+  initHelpShortcut();
   const banner = el("div", { id: "verify-banner" });
   const roBanner = el("div", { id: "readonly-banner" });
   viewEl = el("main", { id: "app-view" });

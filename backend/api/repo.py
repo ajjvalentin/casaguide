@@ -1162,6 +1162,18 @@ def record_guide_send(conn, *, property_id: str, booking_id: str | None,
         (property_id, booking_id, kind, lang, recipient, origin)).fetchone()
 
 
+def record_help_search(conn, *, owner_id: str, query: str,
+                       results_count: int) -> None:
+    """Journalise une recherche d'aide (V2-31 volet 3a). Best-effort côté API :
+    l'appelant avale toute exception (un échec de journal ne casse jamais la
+    recherche, purement front). Le taux de zéro-résultat (`results_count = 0`) est
+    la métrique de santé de l'index."""
+    conn.execute(
+        """INSERT INTO help_searches (owner_id, query, results_count)
+           VALUES (%s, %s, %s)""",
+        (owner_id, query, results_count))
+
+
 def list_auto_send_candidates(conn, *, today, horizon_end) -> list[dict]:
     """Séjours candidats à l'envoi automatique du guide à J-7 (V2-23d volet 2),
     tous logements confondus (rattrapage ops — jamais de filtre propriétaire).

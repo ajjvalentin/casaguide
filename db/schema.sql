@@ -523,6 +523,19 @@ CREATE TABLE issue_reports (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Journal des recherches d'aide (V2-31 volet 3a, migration 027). Chaque recherche
+-- de l'index d'aide du back-office est tracée ; le taux de zéro-résultat
+-- (results_count = 0) est la métrique de santé de l'index. Écriture best-effort
+-- côté API (un échec de journal ne casse jamais la recherche, purement front).
+CREATE TABLE help_searches (
+    id            BIGSERIAL PRIMARY KEY,
+    owner_id      UUID NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
+    query         TEXT NOT NULL,
+    results_count INT  NOT NULL,
+    searched_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_help_searches_results ON help_searches(results_count, searched_at DESC);
+
 -- ============================================================================
 -- 7. UTILITAIRES
 -- ============================================================================

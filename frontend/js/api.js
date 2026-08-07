@@ -238,4 +238,10 @@ export const api = {
   deleteMedia: (id, mid) => request("DELETE", `/api/properties/${id}/media/${mid}`),
   reorderMedia: (id, ids) => request("POST", `/api/properties/${id}/media/reorder`, { body: { ids } }),
   mediaBlobUrl: (id, mid) => fetchBlobUrl(`/api/properties/${id}/media/${mid}/file`),
+
+  // Journal des recherches d'aide (V2-31 volet 3a) — best-effort côté appelant
+  // (un échec ne casse jamais la recherche, purement front). results_count = 0
+  // marque une recherche sans correspondance franche (santé de l'index).
+  logHelpSearch: (query, results_count) =>
+    request("POST", "/api/help/searches", { body: { query, results_count } }),
 };

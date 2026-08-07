@@ -1,0 +1,90 @@
+<!doctype html>
+<!-- Harnais headless du PANNEAU d'aide (V2-31 volet 3a). Pilote le vrai
+     frontend/js/help/panel.js : raccourci ⌘K (ouvre/ferme), rendu des résultats,
+     bouton « M'y emmener » (navigation vers une route valide), zéro-résultat →
+     approches + « Voir toutes les rubriques » (jamais un écran vide), et
+     journalisation best-effort avec le BON compte de résultats. On teste sur
+     l'ARBRE RENDU (querySelector), fetch simulé, verdict dans #result (lu par
+     help-panel.test.mjs). Hors frontend/ (jamais servi). -->
+<meta charset="utf-8">
+<title>help-panel-harness</title>
+<div id="app"></div>
+<div id="toasts"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { openHelpPanel, closeHelpPanel, initHelpShortcut, helpButton }
+  from "/frontend/js/help/panel.js";
+import { setToken } from "/frontend/js/store.js";
+
+window.lucide = { createIcons() {} };
+const logged = [];
+window.fetch = async (path, opts = {}) => {
+  if (path === "/api/help/searches") { logged.push(JSON.parse(opts.body)); return new Response(null, { status: 204 }); }
+  return new Response("{}", { headers: { "Content-Type": "application/json" } });
+};
+setToken("t");
+location.hash = "#/properties/PID123/editor";   // logement courant (pour résoudre :id)
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const q = (s, r = document) => r.querySelector(s);
+const qa = (s, r = document) => [...r.querySelectorAll(s)];
+const cmdK = () => document.dispatchEvent(new KeyboardEvent("keydown",
+  { key: "k", metaKey: true, bubbles: true, cancelable: true }));
+const type = (input, v) => { input.value = v; input.dispatchEvent(new Event("input", { bubbles: true })); };
+
+const log = [];
+let pass = true;
+const chk = (c, m) => { if (!c) pass = false; log.push((c ? "✓ " : "✗ ") + m); };
+
+try {
+  // Le bouton « Aide » se monte proprement.
+  document.getElementById("app").append(helpButton());
+  chk(!!q(".help-open-btn") && /Aide/.test(q(".help-open-btn").textContent), "bouton « Aide » monté");
+
+  // ── ⌘K ouvre puis ferme (toggle) ─────────────────────────────────────────
+  initHelpShortcut();
+  cmdK(); await wait(30);
+  chk(!!q(".help-overlay"), "⌘K ouvre le panneau d'aide");
+  chk(!!q(".help-input"), "champ de recherche présent (focus)");
+  cmdK(); await wait(20);
+  chk(!q(".help-overlay"), "⌘K referme le panneau (toggle)");
+
+  // ── Mode exploration : à l'ouverture (champ vide) → l'index entier ────────
+  openHelpPanel(); await wait(30);
+  chk(qa(".help-all-item").length >= 20, "champ vide → liste complète des rubriques (jamais un vide)");
+
+  // ── Recherche franche : cartes + « M'y emmener » ─────────────────────────
+  const input = q(".help-input");
+  type(input, "envoyer le guide"); await wait(30);
+  const card = q(".help-card");
+  chk(!!card && /envoyer le guide/i.test(card.textContent), "recherche « envoyer le guide » → carte résultat");
+  chk(qa(".help-steps li", card).length >= 2, "la carte montre la marche à suivre (≥ 2 étapes)");
+  const go = q(".help-go", card);
+  chk(!!go, "bouton « M'y emmener » présent");
+  await wait(800);   // laisse la journalisation (débounce 700 ms) se déclencher
+
+  // ── Zéro-résultat : approches + repli, jamais un écran vide ───────────────
+  type(input, "zorglubwxyz"); await wait(30);
+  chk(!!q(".help-approx"), "charabia → bandeau « aucune correspondance exacte »");
+  chk(qa(".help-card").length > 0, "charabia → rubriques proches affichées (jamais vide)");
+  chk(!!q(".help-see-all"), "repli « Voir toutes les rubriques d'aide » présent");
+
+  // ── Journalisation : bon compte (franc > 0, charabia = 0) ─────────────────
+  await wait(900);   // débounce de journalisation (700 ms)
+  const good = logged.find((l) => l.query === "envoyer le guide");
+  const bad = logged.find((l) => l.query === "zorglubwxyz");
+  chk(!!good && good.results_count > 0, "journal : recherche franche loggée avec results_count > 0");
+  chk(!!bad && bad.results_count === 0, "journal : charabia loggé avec results_count = 0 (santé de l'index)");
+
+  // ── « M'y emmener » : navigation vers une route valide + fermeture ────────
+  type(input, "calendrier des séjours"); await wait(30);
+  const goCal = q(".help-card .help-go");
+  goCal.click(); await wait(30);
+  chk(!q(".help-overlay"), "« M'y emmener » referme le panneau");
+  chk(location.hash === "#/properties/PID123/calendrier",
+    "« M'y emmener » résout :id vers le logement courant (" + location.hash + ")");
+} catch (e) {
+  pass = false; log.push("✗ exception : " + (e && e.message ? e.message : e));
+}
+document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>
