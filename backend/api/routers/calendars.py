@@ -20,12 +20,17 @@ from .. import calendars, care, crypto, repo
 from ..deps import (CalendarFetcher, Conn, OwnedProperty, get_calendar_fetcher,
                     require_write_access)
 from ..schemas import (
-    BookingIn, BookingKeyboxOut, BookingOut, BookingRequestIn, BookingRequestOut,
-    BookingRequestUpdate, BookingUpdate, CalendarCreateOut, CalendarIn,
-    CalendarOut, CalendarViewOut, DeleteBookingOut, InterventionOut, OverlapOut,
-    RequestTypeIn, RequestTypeOut, RequestTypeUpdate, RotationOut, SyncNowOut,
-    SyncResultOut,
+    BookingIn, BookingInheritIn, BookingKeyboxOut, BookingOut, BookingRequestIn,
+    BookingRequestOut, BookingRequestUpdate, BookingUpdate, CalendarCreateOut,
+    CalendarIn, CalendarOut, CalendarViewOut, DeleteBookingOut, InterventionOut,
+    OverlapOut, RequestTypeIn, RequestTypeOut, RequestTypeUpdate, RotationOut,
+    SyncNowOut, SyncResultOut,
 )
+
+# Libellé humain de la plateforme pour le message de succession (V2-23h) — jamais
+# un code brut dans le texte proposé au propriétaire.
+_PLATFORM_LABELS = {"airbnb": "Airbnb", "vrbo": "Vrbo / Abritel",
+                    "booking": "Booking"}
 
 router = APIRouter(prefix="/api/properties/{property_id}", tags=["calendrier"])
 
@@ -68,11 +73,39 @@ def _calendar_out(cal: dict) -> CalendarOut:
         sync_error=cal["sync_error"], created_at=cal["created_at"])
 
 
+def _short_range(start: _dt.date, end: _dt.date) -> str:
+    """Plage compacte et humaine (« 07–22.08 » ; mois/années différents étalés) —
+    pour le libellé de succession, jamais un uid (V2-23h, principe 0.4)."""
+    if start.year == end.year and start.month == end.month:
+        return f"{start.day:02d}–{end.day:02d}.{start.month:02d}"
+    if start.year == end.year:
+        return f"{start.day:02d}.{start.month:02d} → {end.day:02d}.{end.month:02d}"
+    return (f"{start.day:02d}.{start.month:02d}.{start.year} → "
+            f"{end.day:02d}.{end.month:02d}.{end.year}")
+
+
+def _succession_payload(source: dict) -> dict:
+    """Bandeau/signal de succession (V2-23h) construit côté serveur — UNE source de
+    vérité, langage humain, jamais d'uid. Le front n'affiche que `message` + un
+    bouton « Reprendre la fiche » ciblant `source_id`."""
+    rng = _short_range(source["starts_on"], source["ends_on"])
+    name = (source.get("guest_name") or "").strip()
+    label = f"{name} · {rng}" if name else f"séjour du {rng}"
+    platform = _PLATFORM_LABELS.get(source.get("source"), "la plateforme")
+    return {
+        "source_id": str(source["id"]),
+        "source_label": label,
+        "message": (f"Ce séjour remplace peut-être « {label} », annulé par le "
+                    f"flux {platform}. Reprendre sa fiche ?"),
+    }
+
+
 def _booking_out(b: dict, default_in, default_out, *,
                  care_rules: dict | None = None,
                  today: _dt.date | None = None,
                  pending_requests: int = 0,
-                 auto_send_guide: bool = False) -> BookingOut:
+                 auto_send_guide: bool = False,
+                 succession: dict | None = None) -> BookingOut:
     eff_in, eff_out = calendars.effective_times(b, default_in, default_out)
     is_direct = b["calendar_id"] is None and b["external_uid"] is None
     # Relance active (§0.6) : ce qui manque pour préparer ce séjour — dont l'email
@@ -99,7 +132,7 @@ def _booking_out(b: dict, default_in, default_out, *,
         children_count=care.children_count(b),
         children_ages=list(b["children_ages"] or []),
         pending_guest_requests=pending_requests,
-        missing_info=missing)
+        missing_info=missing, succession=succession)
 
 
 # ── Vue « Séjours » (une seule charge pour tout rendre) ──────────────────────
@@ -120,11 +153,25 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
     overlaps = calendars.compute_overlaps(bookings)
     rotations = calendars.compute_rotations(bookings, default_in, default_out)
     by_id = {str(b["id"]): b for b in bookings}
-    # Demandes du voyageur EN ATTENTE par séjour (§3.1) → badge dans le calendrier.
+    # Demandes du voyageur EN ATTENTE par séjour (§3.1) → badge dans le calendrier ;
+    # et l'ensemble des séjours PORTEURS d'au moins une demande (V2-23h : une demande
+    # suffit à faire la « substance » d'un prédécesseur annulé).
     pending: dict[str, int] = {}
+    requested_ids: set[str] = set()
     for r in repo.list_requests_for_property(conn, pid):
+        bid = str(r["booking_id"])
+        requested_ids.add(bid)
         if r["origin"] == "guest" and r["status"] == "pending":
-            pending[str(r["booking_id"])] = pending.get(str(r["booking_id"]), 0) + 1
+            pending[bid] = pending.get(bid, 0) + 1
+    # Succession d'identifiants (V2-23h) : un nouvel import vierge remplace peut-être
+    # un prédécesseur annulé par une modification de réservation plateforme. Détecté
+    # AU RENDU (aucun état de plus) ; proposé, jamais automatique.
+    succession: dict[str, dict] = {}
+    for b in bookings:
+        cand = care.find_succession_candidate(b, bookings,
+                                               requested_ids=requested_ids)
+        if cand is not None:
+            succession[str(b["id"])] = _succession_payload(cand)
     return CalendarViewOut(
         property_id=pid,
         default_checkin_time=default_in, default_checkout_time=default_out,
@@ -132,7 +179,8 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
         bookings=[_booking_out(b, default_in, default_out, care_rules=care_rules,
                                today=today,
                                pending_requests=pending.get(str(b["id"]), 0),
-                               auto_send_guide=prop["auto_send_guide"])
+                               auto_send_guide=prop["auto_send_guide"],
+                               succession=succession.get(str(b["id"])))
                   for b in bookings],
         overlaps=[OverlapOut(a=a["id"], b=b["id"]) for a, b in overlaps],
         rotations=[RotationOut(**r, signal=_rotation_signal(
@@ -251,6 +299,43 @@ def reset_booking_dates(booking_id: str, conn: Conn, prop: OwnedProperty):
     if not b:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Séjour importé introuvable")
+    return _booking_out(b, prop["default_checkin_time"],
+                        prop["default_checkout_time"],
+                        care_rules=prop["care_rules"],
+                        auto_send_guide=prop["auto_send_guide"])
+
+
+@router.post("/bookings/{booking_id}/inherit", response_model=BookingOut,
+             dependencies=[Depends(require_write_access)])
+def inherit_booking(booking_id: str, payload: BookingInheritIn, conn: Conn,
+                    prop: OwnedProperty):
+    """Reprise de fiche à la succession d'identifiants (V2-23h) : le NOUVEAU séjour
+    hérite de la fiche de son prédécesseur ANNULÉ (réémis sous un nouvel uid par la
+    plateforme). Proposition validée par le propriétaire (jamais automatique).
+
+    `source_id` validé : même logement, 'cancelled', importé. Diffère du
+    rattachement d'un bloc miroir (V2-23f) sur deux points GRAVÉS (cf.
+    `repo.inherit_booking_fiche`) : pas de `linked_booking_id` (succession, pas
+    miroir) et le registre `guide_sends` n'est JAMAIS hérité (le nouveau lien /b/
+    doit être VIVANT)."""
+    pid = str(prop["id"])
+    if not repo.get_booking(conn, pid, booking_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Séjour introuvable")
+    source_id = str(payload.source_id)
+    if source_id == booking_id:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="Un séjour ne peut hériter de lui-même.")
+    source = repo.get_booking(conn, pid, source_id)
+    if not source:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Séjour source introuvable.")
+    if source["status"] != "cancelled" or source["external_uid"] is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La source d'une reprise doit être un séjour importé et annulé.")
+    repo.inherit_booking_fiche(conn, pid, source_id, booking_id)
+    b = repo.get_booking(conn, pid, booking_id)
     return _booking_out(b, prop["default_checkin_time"],
                         prop["default_checkout_time"],
                         care_rules=prop["care_rules"],

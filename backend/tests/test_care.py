@@ -465,3 +465,117 @@ def test_missing_info_auto_send_absent_for_unqualified_nature():
     codes = {m["code"] for m in care.missing_info(b, {}, today=TODAY,
                                                   auto_send_guide=True)}
     assert "auto_send_email_missing" not in codes
+
+
+# ── Cavalier V2-23h : libellé d'échéance DYNAMIQUE (jamais figé « 7 jours ») ──
+
+def _auto_msg(b):
+    ms = [m for m in care.missing_info(b, {}, today=TODAY, auto_send_guide=True)
+          if m["code"] == "auto_send_email_missing"]
+    return ms[0]["message"] if ms else None
+
+
+def test_auto_send_label_is_dynamic():
+    """« demain » (J-1), « dans N jours », « aujourd'hui » (J) — jamais « dans 7
+    jours » figé (faux dès J-1, constat André 06/08)."""
+    demain = _win(starts_on=TODAY + dt.timedelta(days=1),
+                  ends_on=TODAY + dt.timedelta(days=5))
+    assert "Séjour demain —" in _auto_msg(demain)
+    troisj = _win(starts_on=TODAY + dt.timedelta(days=3),
+                  ends_on=TODAY + dt.timedelta(days=7))
+    assert "Séjour dans 3 jours —" in _auto_msg(troisj)
+    auj = _win(starts_on=TODAY, ends_on=TODAY + dt.timedelta(days=4))
+    assert "Séjour aujourd'hui —" in _auto_msg(auj)
+
+
+# ── Succession d'identifiants : détection PURE (V2-23h) ──────────────────────
+
+NO_REQ: set = set()
+
+
+def _imp(**over):
+    """Séjour importé (external_uid), actif, à fiche PAUVRE par défaut (le cas du
+    nouvel uid vierge). Surcharger pour un prédécesseur annulé porteur de fiche."""
+    b = {"id": "new1", "external_uid": "uid-new", "status": "active",
+         "starts_on": dt.date(2026, 8, 7), "ends_on": dt.date(2026, 8, 22),
+         "nature": "reservation", "linked_booking_id": None,
+         "guest_name": None, "guest_email": None, "guest_phone": None,
+         "guest_contact": None, "guest_lang": None, "notes": None,
+         "guest_count": None, "children_ages": [],
+         "created_at": dt.datetime(2026, 8, 6, 12, 20)}
+    b.update(over)
+    return b
+
+
+def test_succession_detects_cancelled_substantial_overlap():
+    new = _imp()
+    old = _imp(id="old", external_uid="uid-old", status="cancelled",
+               guest_name="TRACY RUSSEL", guest_email="tracy@ex.com")
+    cand = care.find_succession_candidate(new, [new, old], requested_ids=NO_REQ)
+    assert cand is not None and cand["id"] == "old"
+
+
+def test_succession_silent_when_fiche_already_taken_over():
+    """Nom, email OU téléphone déjà là → le propriétaire a repris la main → silence."""
+    old = _imp(id="old", external_uid="uid-old", status="cancelled",
+               guest_name="Tracy", guest_email="tracy@ex.com")
+    for over in ({"guest_name": "Déjà"}, {"guest_email": "moi@ex.com"},
+                 {"guest_phone": "+34 600 11 22 33"},
+                 {"guest_contact": "+34 600 11 22 33"}):     # legacy = téléphone
+        new = _imp(**over)
+        assert care.find_succession_candidate(
+            new, [new, old], requested_ids=NO_REQ) is None
+
+
+def test_succession_picks_best_by_overlap_then_recency():
+    new = _imp()                                             # 07 → 22.08
+    part = _imp(id="part", external_uid="uid-p", status="cancelled",
+                guest_name="Partiel", starts_on=dt.date(2026, 8, 20),
+                ends_on=dt.date(2026, 8, 30),
+                created_at=dt.datetime(2026, 8, 8, 9, 0))    # récent mais 2 j
+    full_old = _imp(id="full_old", external_uid="uid-fo", status="cancelled",
+                    guest_name="Ancien", created_at=dt.datetime(2026, 8, 5, 9, 0))
+    full_new = _imp(id="full_new", external_uid="uid-fn", status="cancelled",
+                    guest_name="Récent", created_at=dt.datetime(2026, 8, 6, 9, 0))
+    cand = care.find_succession_candidate(
+        new, [new, part, full_old, full_new], requested_ids=NO_REQ)
+    assert cand["id"] == "full_new"           # recouvrement max, puis plus récent
+
+
+def test_succession_silent_when_cancelled_has_no_substance():
+    new = _imp()
+    empty = _imp(id="empty", external_uid="uid-e", status="cancelled")
+    assert care.find_succession_candidate(
+        new, [new, empty], requested_ids=NO_REQ) is None
+
+
+def test_succession_substance_can_be_requests_only():
+    new = _imp()
+    reqonly = _imp(id="reqonly", external_uid="uid-r", status="cancelled")
+    cand = care.find_succession_candidate(
+        new, [new, reqonly], requested_ids={"reqonly"})
+    assert cand is not None and cand["id"] == "reqonly"
+
+
+def test_succession_ignores_same_uid_active_and_adjacent():
+    new = _imp()
+    same_uid = _imp(id="same", external_uid="uid-new", status="cancelled",
+                    guest_name="Même uid")        # même uid = mise à jour, pas succession
+    active = _imp(id="act", external_uid="uid-a", status="active",
+                  guest_name="Actif")             # pas annulé
+    adjacent = _imp(id="adj", external_uid="uid-adj", status="cancelled",
+                    guest_name="Voisin", starts_on=dt.date(2026, 8, 22),
+                    ends_on=dt.date(2026, 8, 30))  # départ = arrivée : rotation, ov=0
+    assert care.find_succession_candidate(
+        new, [new, same_uid, active, adjacent], requested_ids=NO_REQ) is None
+
+
+def test_succession_requires_imported_active_target():
+    old = _imp(id="old", external_uid="uid-old", status="cancelled",
+               guest_name="Tracy")
+    direct = _imp(external_uid=None)                          # saisie directe
+    cancelled_target = _imp(status="cancelled")
+    assert care.find_succession_candidate(
+        direct, [direct, old], requested_ids=NO_REQ) is None
+    assert care.find_succession_candidate(
+        cancelled_target, [cancelled_target, old], requested_ids=NO_REQ) is None

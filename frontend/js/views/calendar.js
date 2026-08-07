@@ -300,6 +300,14 @@ export async function renderCalendar(view, pid) {
           icon("concierge-bell", 13),
           b.pending_guest_requests > 1
             ? `${b.pending_guest_requests} demandes` : "Demande voyageur")
+        : null,
+      // V2-23h — succession d'identifiants : ce séjour remplace peut-être un
+      // prédécesseur annulé par la plateforme. Ton ATTENTION (une situation à
+      // résoudre), jamais le triangle rouge (réservé au danger). Message humain.
+      b.succession
+        ? el("span", { class: "cal-flag cal-flag-succession",
+          title: b.succession.message },
+          icon("history", 13), "Fiche à reprendre ?")
         : null);
 
     const times = el("div", { class: "muted booking-times" },
@@ -814,6 +822,7 @@ export async function renderCalendar(view, pid) {
     }
 
     const rows = [
+      successionNote(),
       el("div", { class: "grid-2" }, field("Arrivée", start), field("Départ", end)),
       datesFeedNote(),
       warnBox,
@@ -875,6 +884,37 @@ export async function renderCalendar(view, pid) {
     // désormais autre chose, on l'EXPOSE (protéger sans signaler masquerait une
     // vraie modification côté plateforme) + action « Reprendre les dates du flux »
     // qui rend la main à la synchro. Langage humain, jamais d'UUID (principe 0.4).
+    // ── Succession d'identifiants (V2-23h) ───────────────────────────────────
+    // Ce séjour (nouvel import vierge) remplace peut-être un prédécesseur ANNULÉ par
+    // une modification de réservation côté plateforme. On PROPOSE la reprise de sa
+    // fiche (jamais l'automatisme) : le message est construit côté serveur (langage
+    // humain, jamais d'uid) ; le bouton cible source_id. La reprise n'hérite JAMAIS
+    // du registre d'envois → le nouveau lien /b/ sera VIVANT.
+    function successionNote() {
+      if (!b || !b.succession) return null;
+      const box = el("div", { class: "cal-succession" });
+      box.append(el("div", { class: "cal-succession-head" },
+        icon("history", 15),
+        el("b", {}, "Reprise de fiche possible")));
+      box.append(el("div", { class: "cal-succession-msg" }, b.succession.message));
+      const btn = el("button", { class: "btn btn-sm btn-primary", type: "button" },
+        icon("history", 14), "Reprendre la fiche");
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          await api.inheritBooking(pid, b.id, b.succession.source_id);
+          modal.close();
+          toast("Fiche reprise du séjour précédent.", "ok");
+          await reload();
+        } catch (e) {
+          btn.disabled = false;
+          if (!handleQuotaError(e)) toast(e.message || "Reprise impossible.", "err");
+        }
+      };
+      box.append(btn);
+      return box;
+    }
+
     function datesFeedNote() {
       if (!b || !b.dates_overridden) return null;
       const diverge = datesDiverge(b);

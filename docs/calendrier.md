@@ -643,6 +643,74 @@ flux (`cancelled`) puis réapparaît (réactivé) garde ses dates protégées.
 **Interactions vérifiées** : le bandeau de chevauchement (§0.4) et le rattachement
 d'un bloc miroir (§0.5) fonctionnent sur les dates **ajustées** (le cas Tracy EST
 la combinaison des deux) ; l'absorption (V2-23f) et la protection des dates
-coexistent. *Hors périmètre : protection d'autres champs du flux, et le
-rapprochement d'UID changeants côté Vrbo (par les dates) — mission distincte si le
-besoin revient.*
+coexistent. *Hors périmètre : protection d'autres champs du flux ; le rapprochement
+d'UID changeants côté Vrbo est traité au §12.*
+
+
+## 12. Succession d'identifiants : hériter la fiche d'un prédécesseur (V2-23h)
+
+**Le comportement Vrbo/Abritel à connaître.** Quand un locataire (ou la
+plateforme) **modifie** une réservation — dates, occupants, parfois rien de
+visible —, Vrbo/Abritel **réémet l'événement iCal sous un NOUVEL `UID`** au lieu de
+mettre à jour l'ancien. Airbnb ne fait généralement pas cela ; Vrbo si. Pour notre
+import, l'ancien `UID` **disparaît du flux** → il passe `cancelled` (invariant 13,
+jamais supprimé) en **gardant toute sa fiche** (nom, email, langue, code de boîte à
+clés, demandes), et un séjour **vierge** naît du nouvel `UID`, aux mêmes dates.
+
+Résultat brut, sans traitement : le propriétaire voit une réservation « annulée »
+et une « nouvelle » vide, re-saisit tout sans comprendre — **et le lien `/b/` déjà
+envoyé au locataire est mort** (la résolution `/b/` refuse les séjours annulés,
+V2-23c). C'est l'incident réel du **06/08** (Villa Ballarin) : `f221c1cf` (Tracy
+Russel, `cancelled`, fiche complète) et `571cf102` (créée 06/08 12:20, vierge,
+mêmes dates 07–22.08) ; le lien envoyé à 9 h 00 était mort chez la cliente. **Ce
+scénario rejouera à chaque modification de réservation plateforme, chez chaque
+client.**
+
+**Détection — au RENDU, jamais dans la synchro.** On ne stocke aucun état de plus
+et on ne rapproche rien dans l'import (pas d'heuristique fragile côté synchro) :
+`GET /calendar` calcule la situation à chaque affichage via une fonction **pure**
+`care.find_succession_candidate`. Pour chaque séjour **importé, actif, à fiche
+pauvre** (ni nom, ni email, ni téléphone — sinon le propriétaire a déjà repris la
+main), on cherche dans le même logement un séjour **`cancelled`, importé d'un autre
+`UID`, aux dates identiques ou chevauchantes, porteur de substance** (au moins un
+champ de fiche non vide, ou des demandes). Plusieurs candidats → **le meilleur**
+(recouvrement maximal, puis le plus récemment créé). Deux séjours seulement
+**adjacents** (départ = arrivée : rotation) ne se chevauchent pas → pas de
+succession.
+
+**La proposition, jamais l'automatisme** (doctrine 0.4 : le propriétaire décide).
+Le séjour vierge porte un **bandeau** sur sa fiche ET un **signal calendrier** au
+ton *attention* (ambre — une situation à résoudre, **jamais** le triangle rouge du
+danger) : « Ce séjour remplace peut-être « TRACY RUSSEL · 07–22.08 », annulé par le
+flux Vrbo / Abritel. Reprendre sa fiche ? » — **langage humain, jamais d'UID**
+(principe 0.4). Le message est construit **côté serveur** (une seule source de
+vérité) et exposé dans `BookingOut.succession = {source_id, source_label, message}`.
+
+**L'action « Reprendre la fiche »** — `POST …/bookings/{nouveau}/inherit`
+(authentifié, `source_id` validé : même logement, `cancelled`, importé →
+404/422 sinon). Elle réutilise la mécanique d'absorption **V2-23f**
+(`repo.inherit_booking_fiche`) : mêmes champs (**`guest_name` en plus**), **copie
+seulement vers les champs vides** du nouveau (`COALESCE`+`NULLIF`, jamais
+d'écrasement — esprit invariant 13), migration des demandes `pending` **et**
+`accepted`, `keybox_code_enc` copié tel quel (bytea chiffré, aucun déchiffrement —
+invariant 5). **Idempotent** (re-jouer ne remplit que du vide, les demandes migrées
+ne matchent plus).
+
+Deux différences **gravées** avec le rattachement d'un bloc miroir (V2-23f) :
+
+- **(a) Pas de `linked_booking_id`** — l'ancien reste `cancelled` et invisible ; ce
+  n'est PAS un bloc miroir (le double d'un séjour présent) mais une **succession**
+  (l'`UID` a changé, l'ancien est mort). Aucune migration inverse au « détachement »
+  (il n'y a pas de rattachement).
+- **(b) Le registre `guide_sends` n'est JAMAIS hérité** — c'est le **cœur** de la
+  mission et c'est voulu (**invariant 18**) : le nouveau séjour est **vierge
+  d'envoi**, donc la fenêtre d'envoi (§8.2) et le J-7 automatique (§9.4) renverront
+  un lien **VIVANT** au NOUVEAU token. Hériter le registre aurait pérennisé le bug
+  du 06/08 (lien mort jamais renvoyé). Le `stay_token` de l'ancien n'est pas repris
+  non plus.
+
+Le **signal disparaît** dès que le nouveau séjour cesse d'être « à fiche pauvre » —
+après la reprise (il porte alors le nom hérité) **ou** une saisie manuelle du
+propriétaire (email/téléphone/nom). Aucun schéma à migrer : tout se lit dans
+l'existant. Back-office seul (aucun bump de service worker). *Hors périmètre :
+héritage automatique sans confirmation, rapprochement en amont dans la synchro.*

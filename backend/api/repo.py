@@ -1722,6 +1722,50 @@ def absorb_block_into_master(conn, property_id: str, block_id: str,
         (master_id, property_id, block_id, property_id))
 
 
+def inherit_booking_fiche(conn, property_id: str, source_id: str,
+                          target_id: str) -> None:
+    """Succession d'identifiants (V2-23h) : le NOUVEAU séjour (`target`) hérite de la
+    fiche de son prédécesseur ANNULÉ (`source`), réémis sous un nouvel uid par la
+    plateforme. Réutilise la mécanique d'absorption V2-23f (mêmes champs, guest_name
+    EN PLUS ; copie seulement vers le vide du target ; demandes migrées ;
+    keybox_code_enc tel quel — bytea chiffré, aucun déchiffrement, invariant 5).
+
+    DEUX différences GRAVÉES avec le rattachement d'un bloc miroir (V2-23f) :
+
+    (a) **Pas de `linked_booking_id`** — la source reste 'cancelled' et invisible ;
+        ce n'est PAS un bloc miroir (le double d'un séjour présent) mais une
+        SUCCESSION (l'uid a changé, l'ancien est mort).
+    (b) **Le registre `guide_sends` n'est JAMAIS hérité** — c'est le cœur et c'est
+        voulu (invariant maison) : le target est vierge d'envoi, donc la fenêtre
+        d'envoi et le J-7 renverront un lien VIVANT au NOUVEAU token. L'incident du
+        06/08 : le lien /b/ de 9 h 00 était mort chez la cliente parce que
+        l'ancien séjour était annulé.
+
+    Idempotent (patron V2-23f) : la copie ne remplit que du vide (COALESCE + NULLIF),
+    et les demandes migrées ne matchent plus la 2ᵉ fois."""
+    conn.execute(
+        "UPDATE booking_requests SET booking_id = %s "
+        "WHERE booking_id = %s AND status IN ('pending', 'accepted')",
+        (target_id, source_id))
+    conn.execute(
+        """UPDATE bookings AS m SET
+             guest_name        = COALESCE(NULLIF(m.guest_name, ''), s.guest_name),
+             guest_phone       = COALESCE(NULLIF(m.guest_phone, ''), s.guest_phone),
+             guest_email       = COALESCE(NULLIF(m.guest_email, ''), s.guest_email),
+             guest_lang        = COALESCE(NULLIF(m.guest_lang, ''), s.guest_lang),
+             notes             = COALESCE(NULLIF(m.notes, ''), s.notes),
+             guest_count       = COALESCE(m.guest_count, s.guest_count),
+             children_ages     = COALESCE(NULLIF(m.children_ages, '{}'::int[]),
+                                          s.children_ages),
+             keybox_code_enc   = COALESCE(m.keybox_code_enc, s.keybox_code_enc),
+             luggage_drop_time = COALESCE(m.luggage_drop_time, s.luggage_drop_time),
+             updated_at        = now()
+           FROM bookings AS s
+           WHERE m.id = %s AND m.property_id = %s
+             AND s.id = %s AND s.property_id = %s""",
+        (target_id, property_id, source_id, property_id))
+
+
 def delete_booking(conn, property_id: str, booking_id: str) -> str | None:
     """Retire un séjour. Une **saisie directe** (aucun flux) est réellement
     supprimée ; un séjour **importé** est conservé et passé 'cancelled' (il

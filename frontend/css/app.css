@@ -672,6 +672,17 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .cal-datesadj-msg{font-size:13px;line-height:1.45}
 .cal-datesadj .btn{align-self:flex-start}
 
+/* V2-23h — succession d'identifiants : ton ATTENTION (ambre — une situation à
+   résoudre), jamais le rouge du danger. Pastille calendrier + encart de la fiche
+   avec le message humain (construit côté serveur) et l'action « Reprendre la fiche ». */
+.cal-flag-succession{background:#FBF1E4;color:#8A5A1E}
+.cal-succession{display:flex;flex-direction:column;gap:8px;border:1px solid #E4B98A;
+  background:#FBF1E4;color:#6E4718;border-radius:12px;padding:11px 13px;margin-bottom:14px}
+.cal-succession-head{display:flex;align-items:center;gap:8px;font-size:13px}
+.cal-succession-head svg{flex:none}
+.cal-succession-msg{font-size:13px;line-height:1.45}
+.cal-succession .btn{align-self:flex-start}
+
 /* §2.1 — Agrégation « N séjours incomplets » + saisie rapide (repliable) */
 .incomplete-box{border:1px solid var(--line);border-radius:12px;background:var(--shell);
   margin-bottom:12px;overflow:hidden}

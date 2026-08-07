@@ -352,15 +352,116 @@ def missing_info(booking: dict, care_rules: dict, *,
     # Envoi automatique du guide à J-7 (V2-23d volet 2) : le logement a l'option
     # activée, le séjour entre dans la fenêtre et n'a pas d'email → il ne partira
     # pas tout seul. On invite le propriétaire à compléter (jamais un email dédié).
+    # Le libellé calcule l'échéance RÉELLE (jamais le figé « dans 7 jours » : à J-1
+    # c'était faux — constat André 06/08).
     if (auto_send_guide
             and today <= booking["starts_on"] <= today + _dt.timedelta(days=AUTO_SEND_HORIZON_DAYS)
             and effective_email(booking) is None):
+        days = (booking["starts_on"] - today).days
         out.append({
             "code": "auto_send_email_missing",
-            "message": ("Séjour dans 7 jours — email manquant pour l'envoi "
-                        "automatique du guide.")})
+            "message": (f"Séjour {_horizon_phrase(days)} — email manquant pour "
+                        "l'envoi automatique du guide.")})
 
     return out
+
+
+def _horizon_phrase(days: int) -> str:
+    """Échéance humaine d'une arrivée : « aujourd'hui » (J), « demain » (J-1),
+    « dans N jours » au-delà. Jamais un « dans 7 jours » figé (faux dès J-1)."""
+    if days <= 0:
+        return "aujourd'hui"
+    if days == 1:
+        return "demain"
+    return f"dans {days} jours"
+
+
+# ── Succession d'identifiants : hériter la fiche d'un prédécesseur annulé ─────
+# (V2-23h)
+#
+# Une modification de réservation côté plateforme (Vrbo/Abritel constaté, 06/08)
+# réémet l'événement iCal sous un NOUVEL uid. Pour notre import, cela donne DEUX
+# séjours : l'ancien uid passe 'cancelled' (invariant maison — jamais supprimé) en
+# gardant TOUTE sa fiche (nom, email, langue, code de boîte à clés, demandes) ; un
+# séjour VIERGE naît du nouvel uid, aux mêmes dates. Le propriétaire re-saisit tout
+# sans comprendre, et le lien /b/ déjà envoyé au locataire est mort (la résolution
+# refuse les annulés). Preuve en base : Ballarin porte f221c1cf (Tracy Russel,
+# cancelled, fiche complète) et 571cf102 (créée 06/08, vierge, mêmes dates).
+#
+# On DÉTECTE la situation AU RENDU (aucun état de plus, aucun rapprochement dans la
+# synchro) et on PROPOSE la reprise — jamais l'automatisme (le propriétaire décide,
+# doctrine 0.4). Cette fonction ne fait que repérer le meilleur prédécesseur ; la
+# reprise elle-même est un acte explicite (endpoint dédié `.../inherit`).
+
+# Champs de fiche qui font la « substance » d'un séjour : au moins l'un renseigné
+# → le prédécesseur porte quelque chose qui vaut d'être repris.
+_SUBSTANCE_TEXT_FIELDS = ("guest_name", "guest_email", "guest_phone",
+                          "guest_contact", "guest_lang", "notes")
+
+
+def _has_substance(b: dict, has_requests: bool) -> bool:
+    """Le séjour porte-t-il quelque chose à hériter ? Au moins un champ de fiche
+    non vide, un nombre de voyageurs, des âges d'enfants, ou des demandes."""
+    if has_requests:
+        return True
+    if any((b.get(f) or "").strip() for f in _SUBSTANCE_TEXT_FIELDS):
+        return True
+    return bool(b.get("guest_count")) or bool(b.get("children_ages"))
+
+
+def _fiche_is_poor(b: dict) -> bool:
+    """Fiche pauvre = le propriétaire n'a PAS repris la main : ni nom, ni email, ni
+    téléphone. Au-delà, on ne propose aucune reprise (il sait ce qu'il fait)."""
+    return (not (b.get("guest_name") or "").strip()
+            and effective_email(b) is None
+            and effective_phone(b) is None)
+
+
+def _overlap_days(a_start, a_end, b_start, b_end) -> int:
+    """Recouvrement en jours de deux intervalles semi-ouverts [start, end) — 0 si
+    disjoints ou seulement adjacents (départ = arrivée : rotation, pas succession)."""
+    lo = max(a_start, b_start)
+    hi = min(a_end, b_end)
+    return max(0, (hi - lo).days)
+
+
+def find_succession_candidate(booking: dict, others: list[dict], *,
+                              requested_ids: set) -> dict | None:
+    """Le prédécesseur ANNULÉ dont `booking` (nouvel import vierge) devrait hériter
+    la fiche, ou None. PURE (aucune base) — `others` est la liste des séjours du
+    même logement, `requested_ids` l'ensemble des id de séjours porteurs d'au moins
+    une demande (la substance peut ne tenir qu'aux demandes).
+
+    `booking` éligible : importé (external_uid), actif, à fiche pauvre — sinon le
+    propriétaire a déjà repris la main. Candidat : importé d'un AUTRE uid,
+    'cancelled', dates identiques ou chevauchantes, porteur de substance. Plusieurs
+    candidats → le meilleur : recouvrement maximal, puis le plus récemment créé."""
+    if booking.get("external_uid") is None or booking.get("status") != "active":
+        return None
+    if not _fiche_is_poor(booking):
+        return None
+    uid = booking.get("external_uid")
+    tid = str(booking.get("id"))
+    matches: list[tuple[int, dict]] = []
+    for c in others:
+        if str(c.get("id")) == tid or c.get("status") != "cancelled":
+            continue
+        if c.get("external_uid") is None or c.get("external_uid") == uid:
+            continue
+        ov = _overlap_days(booking["starts_on"], booking["ends_on"],
+                           c["starts_on"], c["ends_on"])
+        if ov <= 0 or not _has_substance(c, str(c.get("id")) in requested_ids):
+            continue
+        matches.append((ov, c))
+    if not matches:
+        return None
+    best_ov = max(ov for ov, _ in matches)
+    top = [c for ov, c in matches if ov == best_ov]
+    # Départage sûr (tuple court-circuité) : présence de created_at d'abord, puis
+    # sa valeur — jamais de comparaison entre None et une date.
+    top.sort(key=lambda c: (c.get("created_at") is not None,
+                            c.get("created_at") or _dt.datetime.min))
+    return top[-1]
 
 
 # ── Envoi automatique du guide à J-7 : sélection PURE (V2-23d volet 2) ────────

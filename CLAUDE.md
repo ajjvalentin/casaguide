@@ -372,6 +372,35 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     synchro, divergence exposée, reprise du flux, saisie directe sans marqueur,
     édition sans changement de dates, cancel/réapparition, chevauchement+rattachement
     sur dates ajustées) + harnais front `calendar-harness.html`.
+18. **Une succession n'hérite JAMAIS du registre d'envois (V2-23h)** : une
+    modification de réservation côté plateforme (Vrbo/Abritel constaté 06/08) réémet
+    l'événement iCal sous un **nouvel `external_uid`** → l'ancien passe `cancelled`
+    avec toute sa fiche (invariant 13), un séjour **vierge** naît du nouvel uid, et
+    le lien `/b/` déjà envoyé est **mort** (résolution refuse les annulés). On
+    **détecte au rendu** (aucun état de plus, aucun rapprochement dans la synchro —
+    `care.find_succession_candidate`, pure : import actif à **fiche pauvre** — ni
+    nom, ni email, ni téléphone — + prédécesseur `cancelled` importé d'**autre uid**,
+    dates chevauchantes, porteur de substance ; meilleur = recouvrement max puis plus
+    récent) et on **propose** (jamais l'automatisme, doctrine 0.4) : bandeau fiche +
+    signal calendrier au ton **attention** (ambre, **jamais** le triangle),
+    `BookingOut.succession = {source_id, source_label, message}` **construit côté
+    serveur** (langage humain, **jamais d'uid**). L'action `POST
+    …/bookings/{id}/inherit` (`repo.inherit_booking_fiche`) réutilise l'absorption
+    **V2-23f** (mêmes champs + `guest_name` ; copie **vers le vide seulement**,
+    `COALESCE`+`NULLIF` ; demandes `pending`+`accepted` migrées ; `keybox_code_enc`
+    tel quel ; idempotent) avec DEUX différences **gravées** : **(a)** pas de
+    `linked_booking_id` (succession, pas bloc miroir — l'ancien reste annulé) ;
+    **(b)** le registre **`guide_sends` n'est JAMAIS hérité** — c'est le cœur : le
+    nouveau séjour est **vierge d'envoi**, donc la fenêtre d'envoi et le J-7
+    renverront un lien **VIVANT** au **nouveau** token (le `stay_token` de l'ancien
+    n'est pas repris non plus). Le signal **disparaît** après reprise **ou** saisie
+    manuelle (le séjour cesse d'être à fiche pauvre). Aucun schéma à migrer.
+    Back-office seul (aucun bump SW). Couvert par `test_care.py` (détection : fiche
+    pauvre+cancelled substantiel→candidat, fiche garnie→silence, multiples→le
+    meilleur, sans substance→silence) + `test_calendar_api.py` (signal exposé,
+    inherit remplit le vide/garnis intacts/demandes migrées/**guide_sends non
+    hérité**/nouveau token≠ancien/source étrangère→404/idempotence, signal disparaît)
+    + harnais front `calendar-harness.html`.
 
 ## Commandes
 

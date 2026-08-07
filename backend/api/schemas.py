@@ -532,6 +532,13 @@ class BookingUpdate(BaseModel):
     keybox_code: str | None = Field(default=None, max_length=100)
 
 
+class BookingInheritIn(BaseModel):
+    """Reprise de fiche d'un prédécesseur annulé (V2-23h) : `source_id` = le séjour
+    'cancelled' importé dont hériter la fiche (nom, coordonnées, langue, code de
+    boîte à clés, demandes). Le registre d'envois n'est jamais hérité."""
+    source_id: UUID
+
+
 class BookingKeyboxOut(BaseModel):
     """Surcharge déchiffrée du code de boîte à clés d'un séjour (V2-23c volet 2),
     servie UNIQUEMENT au propriétaire authentifié pour pré-remplir la modale — même
@@ -579,6 +586,11 @@ class BookingOut(BaseModel):
     # Relance active (§0.6) : {code, message} pour ce séjour (voyageurs/coordonnées
     # manquants, nature à qualifier). Vide si rien à signaler.
     missing_info: list[dict] = []
+    # Succession d'identifiants (V2-23h) : ce séjour (nouvel import vierge) remplace
+    # peut-être un prédécesseur ANNULÉ par une modification de réservation plateforme
+    # (nouvel uid). {source_id, source_label, message} — langage humain, jamais
+    # d'uid. None quand il n'y a rien à proposer. Le propriétaire décide (`.../inherit`).
+    succession: dict | None = None
 
 
 class OverlapOut(BaseModel):

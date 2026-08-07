@@ -197,6 +197,9 @@ export const api = {
   // V2-23g — « Reprendre les dates du flux » : réaligne un séjour importé sur les
   // dates du flux et rend la main à la synchro (dates_overridden → FALSE).
   resetBookingDates: (id, bid) => request("POST", `/api/properties/${id}/bookings/${bid}/reset-dates`),
+  // V2-23h — reprise de fiche à la succession d'identifiants : le nouveau séjour
+  // hérite de la fiche de son prédécesseur annulé (réémis sous un nouvel uid).
+  inheritBooking: (id, bid, sourceId) => request("POST", `/api/properties/${id}/bookings/${bid}/inherit`, { body: { source_id: sourceId } }),
   bookingKeybox:  (id, bid) => request("GET", `/api/properties/${id}/bookings/${bid}/keybox`),
   listCalendars:  (id) => request("GET", `/api/properties/${id}/calendars`),
   addCalendar:    (id, b) => request("POST", `/api/properties/${id}/calendars`, { body: b }),

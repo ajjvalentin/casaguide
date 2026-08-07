@@ -74,6 +74,14 @@ const calData = {
     mk({ id: "b5", calendar_id: "c1", starts_on: iso(-60), ends_on: iso(-56),
          source: "airbnb", external_uid: "u5", is_direct: false,
          status: "cancelled", nature: "" }),   // §0.h : nature inconnue → « À qualifier », jamais « undefined »
+    // b6 (V2-23h) : nouvel import vierge qui remplace peut-être un prédécesseur
+    // annulé (succession d'identifiants) → bandeau/signal de reprise de fiche.
+    mk({ id: "b6", calendar_id: "c1", starts_on: iso(80), ends_on: iso(95),
+         source: "vrbo", external_uid: "u6", is_direct: false,
+         succession: { source_id: "b5old",
+           source_label: "TRACY RUSSEL · 07–22.08",
+           message: "Ce séjour remplace peut-être « TRACY RUSSEL · 07–22.08 », "
+             + "annulé par le flux Vrbo / Abritel. Reprendre sa fiche ?" } }),
   ],
   overlaps: [{ a: "b2", b: "b3" }],
   // §2.2 — signal de rotation gradué (recommandation d'effectif).
@@ -86,6 +94,7 @@ const posted = [];
 const patched = [];
 const reqPatched = [];
 const resetCalls = [];
+const inheritCalls = [];
 // Demande du voyageur EN ATTENTE rattachée à b1 (§3.1).
 const GUEST_REQ = { id: "gr1", booking_id: "b1", request_type_id: null,
   label: "Ménage / draps supplémentaires", quantity: 1,
@@ -148,6 +157,14 @@ window.fetch = async (path, opts = {}) => {
     if (row) { Object.assign(row, b); if (b.guest_count != null) row.missing_info = []; }
     return json(row || mk({ id: patchM[1], ...b }));
   }
+  // V2-23h — « Reprendre la fiche » : le nouveau séjour hérite de son prédécesseur.
+  const inheritM = path.match(/^\/api\/properties\/p1\/bookings\/([^/]+)\/inherit$/);
+  if (inheritM && method === "POST") {
+    inheritCalls.push({ id: inheritM[1], ...JSON.parse(opts.body) });
+    const row = calData.bookings.find((x) => x.id === inheritM[1]);
+    if (row) { row.guest_name = "TRACY RUSSEL"; row.succession = null; }
+    return json(row || mk({ id: inheritM[1] }));
+  }
   throw new Error("fetch inattendu : " + method + " " + path);
 };
 setToken("t");
@@ -167,7 +184,7 @@ try {
 
   // ── Liste chronologique & badges (à venir uniquement, §0.7) ──────────────
   const rows = qa(".booking-row").filter((r) => !r.closest(".cancelled-block"));
-  chk(rows.length === 4, "4 séjours à venir listés (b1..b4), pas les annulés (n=" + rows.length + ")");
+  chk(rows.length === 5, "5 séjours à venir listés (b1..b4, b6), pas les annulés (n=" + rows.length + ")");
   chk(/→/.test(rows[0].textContent) && /Dupont/.test(rows[0].textContent),
     "1re ligne : plage + nom du locataire « Dupont »");
   chk(!!q(".plat-direct") && !!q(".plat-airbnb") && !!q(".plat-vrbo"),
@@ -307,6 +324,30 @@ try {
     resetBtn.click();
     await wait(150);
     chk(resetCalls.includes("b2"), "POST /reset-dates émis pour b2");
+  }
+  qa(".modal-back").forEach((n) => n.remove());
+  await wait(20);
+
+  // ── V2-23h — succession d'identifiants : signal + reprise de fiche ────────
+  const b6row = q('.booking-row[data-bid="b6"]');
+  chk(!!b6row && !!q(".cal-flag-succession", b6row)
+    && /Fiche à reprendre/.test(b6row.textContent),
+    "b6 : signal « Fiche à reprendre ? » (ton attention)");
+  chk(b6row && !/triangle/.test(q(".cal-flag-succession", b6row).innerHTML),
+    "b6 : le signal de succession n'est pas un triangle rouge");
+  b6row.click();
+  await wait(40);
+  const succBox = q(".modal-back .cal-succession");
+  chk(!!succBox && /remplace peut-être/.test(succBox.textContent),
+    "fiche b6 : bandeau de succession (message humain, jamais d'uid)");
+  const inheritBtn = qa(".modal-back .cal-succession .btn")
+    .find((b) => /Reprendre la fiche/.test(b.textContent));
+  chk(!!inheritBtn, "fiche b6 : bouton « Reprendre la fiche »");
+  if (inheritBtn) {
+    inheritBtn.click();
+    await wait(150);
+    chk(inheritCalls.some((c) => c.id === "b6" && c.source_id === "b5old"),
+      "POST /inherit émis pour b6 avec le source_id du prédécesseur");
   }
   qa(".modal-back").forEach((n) => n.remove());
   await wait(20);

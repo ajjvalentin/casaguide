@@ -697,6 +697,178 @@ def test_adjusted_dates_feed_overlaps_and_linking(client):
     assert row.status_code == 200                    # le séjour existe toujours
 
 
+# ── V2-23h : succession d'identifiants — hériter la fiche d'un prédécesseur ───
+
+def _succession_scene(client, h, pid, *, complete=True):
+    """Reconstitue l'incident du 06/08 : un import est complété, puis la plateforme
+    réémet l'événement sous un NOUVEL uid (mêmes dates) → l'ancien passe cancelled
+    (fiche intacte), un séjour VIERGE naît. Renvoie (old, new) depuis la vue."""
+    FEED.text = _ical(_vevent("uid1@vrbo", "20260807", "20260822", "Reserved"))
+    add = client.post(f"/api/properties/{pid}/calendars", headers=h,
+                      json={"platform": "vrbo", "ical_url": "https://vrbo.com/x.ics"})
+    assert add.status_code == 201, add.text
+    old = client.get(f"/api/properties/{pid}/calendar",
+                     headers=h).json()["bookings"][0]
+    if complete:
+        client.patch(f"/api/properties/{pid}/bookings/{old['id']}", headers=h, json={
+            "guest_name": "TRACY RUSSEL", "guest_email": "tracy@example.com",
+            "guest_lang": "en", "guest_count": 4, "children_ages": [3, 7],
+            "notes": "Arrivée tardive", "luggage_drop_time": "11:00",
+            "keybox_code": "4242"})
+    # La plateforme réémet sous uid2 (mêmes dates) ; uid1 disparaît du flux.
+    FEED.text = _ical(_vevent("uid2@vrbo", "20260807", "20260822", "Reserved"))
+    _resync(client, h, pid)
+    view = client.get(f"/api/properties/{pid}/calendar",
+                      headers=h).json()["bookings"]
+    old_b = next(b for b in view if b["id"] == old["id"])
+    new_b = next(b for b in view if b["id"] != old["id"])
+    return old_b, new_b
+
+
+def test_succession_signal_surfaces_on_new_booking(client):
+    """Le nouvel import vierge porte le bandeau/signal de succession (langage humain,
+    jamais d'uid) vers son prédécesseur annulé ; l'ancien n'en porte pas."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    old_b, new_b = _succession_scene(client, h, pid)
+    assert old_b["status"] == "cancelled" and new_b["status"] == "active"
+    succ = new_b["succession"]
+    assert succ is not None
+    assert succ["source_id"] == old_b["id"]
+    assert "TRACY RUSSEL" in succ["source_label"]
+    assert "Vrbo" in succ["message"] and old_b["id"] not in succ["message"]
+    assert old_b["succession"] is None                   # l'annulé ne propose rien
+
+
+def test_inherit_fills_empty_migrates_requests_never_ledger(client):
+    """« Reprendre la fiche » : champs vides remplis, keybox tel quel, demandes
+    (pending+accepted) migrées ; le registre guide_sends N'EST JAMAIS hérité (cœur
+    de la mission → le nouveau lien /b/ sera VIVANT) et le stay_token non plus."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    old_b, new_b = _succession_scene(client, h, pid)
+    # Demandes sur l'ancien : pending + accepted migrent, declined reste.
+    for label, st in (("Lit bébé", "pending"), ("Draps", "accepted"),
+                      ("Refusée", "declined")):
+        client.post(f"/api/properties/{pid}/bookings/{old_b['id']}/requests",
+                    headers=h, json={"label": label, "status": st})
+    # L'ancien porte un stay_token et un envoi enregistré (le lien de 9 h 00, mort).
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("UPDATE bookings SET stay_token = 'old-token-abc' WHERE id = %s",
+                     (old_b["id"],))
+        conn.execute(
+            """INSERT INTO guide_sends (property_id, booking_id, kind, lang,
+                                        recipient, origin)
+               VALUES (%s, %s, 'stay', 'en', 'tracy@example.com', 'manual')""",
+            (pid, old_b["id"]))
+        conn.commit()
+
+    r = client.post(f"/api/properties/{pid}/bookings/{new_b['id']}/inherit",
+                    headers=h, json={"source_id": old_b["id"]})
+    assert r.status_code == 200, r.text
+    nb = r.json()
+    assert nb["guest_name"] == "TRACY RUSSEL"
+    assert nb["guest_email"] == "tracy@example.com"
+    assert nb["guest_lang"] == "en"
+    assert nb["guest_count"] == 4
+    assert nb["children_ages"] == [3, 7]
+    assert nb["notes"] == "Arrivée tardive"
+    assert nb["luggage_drop_time"] == "11:00:00"
+    assert nb["succession"] is None                      # plus rien à proposer
+
+    kb = client.get(f"/api/properties/{pid}/bookings/{new_b['id']}/keybox",
+                    headers=h).json()
+    assert kb["keybox_code"] == "4242"                   # bytea chiffré, tel quel
+
+    new_reqs = client.get(f"/api/properties/{pid}/bookings/{new_b['id']}/requests",
+                          headers=h).json()
+    assert {q["label"] for q in new_reqs} == {"Lit bébé", "Draps"}
+    old_reqs = client.get(f"/api/properties/{pid}/bookings/{old_b['id']}/requests",
+                          headers=h).json()
+    assert {q["label"] for q in old_reqs} == {"Refusée"}   # declined reste
+
+    with psycopg.connect(settings.db_dsn) as conn:
+        n_new = conn.execute(
+            "SELECT count(*) FROM guide_sends WHERE booking_id = %s",
+            (new_b["id"],)).fetchone()[0]
+        n_old = conn.execute(
+            "SELECT count(*) FROM guide_sends WHERE booking_id = %s",
+            (old_b["id"],)).fetchone()[0]
+        new_tok = conn.execute("SELECT stay_token FROM bookings WHERE id = %s",
+                               (new_b["id"],)).fetchone()[0]
+    assert n_new == 0 and n_old == 1                     # registre jamais hérité
+    assert new_tok != "old-token-abc"                    # nouveau token ≠ ancien
+
+
+def test_inherit_never_overwrites_and_is_idempotent(client):
+    """La copie ne remplit que le vide (jamais d'écrasement, esprit inv. 13) et
+    re-jouer ne double rien (les demandes migrées ne matchent plus)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    old_b, new_b = _succession_scene(client, h, pid)
+    client.post(f"/api/properties/{pid}/bookings/{old_b['id']}/requests",
+                headers=h, json={"label": "Lit bébé", "status": "pending"})
+    # Le nouveau séjour a DÉJÀ ses propres notes et son nombre de voyageurs.
+    client.patch(f"/api/properties/{pid}/bookings/{new_b['id']}", headers=h,
+                 json={"notes": "mes notes", "guest_count": 2})
+    for _ in range(2):
+        r = client.post(f"/api/properties/{pid}/bookings/{new_b['id']}/inherit",
+                        headers=h, json={"source_id": old_b["id"]})
+        assert r.status_code == 200, r.text
+    nb = r.json()
+    assert nb["notes"] == "mes notes"                    # jamais écrasé
+    assert nb["guest_count"] == 2
+    assert nb["guest_name"] == "TRACY RUSSEL"            # champ vide, rempli
+    reqs = client.get(f"/api/properties/{pid}/bookings/{new_b['id']}/requests",
+                      headers=h).json()
+    assert len(reqs) == 1                                # zéro double (idempotent)
+
+
+def test_inherit_source_must_be_cancelled_import(client):
+    """La source d'une reprise doit être un séjour importé ET annulé → 422 sinon."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    old_b, new_b = _succession_scene(client, h, pid)
+    # Source active (le nouveau lui-même) → refus.
+    r = client.post(f"/api/properties/{pid}/bookings/{new_b['id']}/inherit",
+                    headers=h, json={"source_id": new_b["id"]})
+    assert r.status_code == 422
+    # Source = une saisie directe (jamais importée), même annulée après coup.
+    direct = client.post(f"/api/properties/{pid}/bookings", headers=h, json={
+        "starts_on": "2026-09-01", "ends_on": "2026-09-05"}).json()
+    r = client.post(f"/api/properties/{pid}/bookings/{new_b['id']}/inherit",
+                    headers=h, json={"source_id": direct["id"]})
+    assert r.status_code == 422
+
+
+def test_inherit_foreign_source_is_404(client):
+    """La source doit appartenir au même logement (garde multi-tenant)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    other = _make_property(client, h)
+    _, new_b = _succession_scene(client, h, pid)
+    foreign = client.post(f"/api/properties/{other}/bookings", headers=h, json={
+        "starts_on": "2026-08-07", "ends_on": "2026-08-22"}).json()
+    r = client.post(f"/api/properties/{pid}/bookings/{new_b['id']}/inherit",
+                    headers=h, json={"source_id": foreign["id"]})
+    assert r.status_code == 404
+
+
+def test_succession_signal_clears_after_manual_entry(client):
+    """Le signal disparaît dès que le propriétaire reprend la main à la main
+    (email saisi) — sans passer par la reprise."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    old_b, new_b = _succession_scene(client, h, pid)
+    assert new_b["succession"] is not None
+    client.patch(f"/api/properties/{pid}/bookings/{new_b['id']}", headers=h,
+                 json={"guest_email": "moi@exemple.com"})
+    view = client.get(f"/api/properties/{pid}/calendar",
+                      headers=h).json()["bookings"]
+    nb = next(b for b in view if b["id"] == new_b["id"])
+    assert nb["succession"] is None
+
+
 # ── Isolation multi-tenant ───────────────────────────────────────────────────
 
 def test_calendar_is_tenant_isolated(client):
