@@ -20,6 +20,7 @@ import { openPropertyInfoModal, openPositionModal } from "../components/property
 import { guideShareUrl } from "../share.js";
 import { openShareMenu } from "../components/sharemenu.js";
 import { openStaffShareMenu, staffUrl } from "../components/staffshare.js";
+import { renderJourney, sectionHasSubstance, ESSENTIAL_CODES } from "../journey.js";
 import { runEnrichment } from "./properties.js";
 
 const ACCURACY_LABEL = { rooftop: "précise", street: "au niveau de la rue", city: "au centre de la commune" };
@@ -72,9 +73,15 @@ export async function renderEditor(view, pid, context) {
   let current = ctxSections[0]?.code ?? sections[0]?.code;
   const expanded = new Set();
 
+  // Une section est « garnie » sur sa SUBSTANCE, jamais sur une bascule
+  // déclarative (V2-31 volet 2 : « Section complétée » retirée — c'est elle qui
+  // nourrissait le % mensonger de l'audit).
+  const filled = (s) => sectionHasSubstance(s.content, s.body_md);
+
   // ── Ossature de la page ───────────────────────────────────────────────────
-  const globalMeter = el("div", { class: "meter", style: { maxWidth: "260px" } }, el("i"));
-  const globalPct = el("b", {});
+  // Le « X % complété » de l'en-tête devient le FIL des 7 étapes (guest) ou un
+  // décompte neutre de rubriques renseignées (cahier d'équipe).
+  const progressSlot = el("div", { class: "editor-progress" });
   const statusBadge = el("span", { class: "badge badge-" + property.status });
   const headerRight = el("div", { class: "row" });
   let translationBtn = null;   // bouton « Traductions » (M-09), (re)créé au rendu
@@ -92,17 +99,16 @@ export async function renderEditor(view, pid, context) {
       crumbName),
     el("div", { class: "row", style: { justifyContent: "space-between", alignItems: "flex-start", marginBottom: "6px" } },
       el("div", {}, titleEl,
-        el("div", { class: "row", style: { gap: "10px" } }, statusBadge, globalPct,
-          el("span", { class: "muted", style: { fontSize: "13px" } }, "complété"))),
+        el("div", { class: "row", style: { gap: "12px", alignItems: "center", flexWrap: "wrap" } },
+          statusBadge, progressSlot)),
       headerRight),
-    globalMeter,
     banner,
     el("div", { class: "editor", style: { marginTop: "18px" } }, sidebar, panel));
   mount(view, page);
 
   renderHeaderActions();
   renderBanner();
-  refreshMeter();
+  refreshProgress();
   if (current) { expanded.add(byCode.get(current).chapter); selectSection(current); }
   renderSidebar();
   // Contexte staff (V2-26) : amener le cahier sous les yeux (sur mobile la barre
@@ -123,21 +129,27 @@ export async function renderEditor(view, pid, context) {
 
   // Une entrée de section dans la barre latérale (mutualisée guest/staff).
   function sectionLink(s) {
+    const done = filled(s);
+    // Marquage impératif/facultatif (V2-31) : badge sobre « Essentiel » sur les
+    // sections vitales (check-in/out, boîte à clés, accès, wifi) ; l'ABSENCE de
+    // badge dit « à votre rythme » — pas besoin d'un second marqueur.
     const link = el("button", {
       class: "sec-link" + (s.code === current ? " on" : ""),
       onClick: () => selectSection(s.code),
     },
       el("span", { class: s.is_visible ? "" : "dim" }, t(s.name_i18n, s.code)),
+      ESSENTIAL_CODES.has(s.code) ? el("span", { class: "badge badge-essential" }, "Essentiel") : null,
       s.is_sensitive ? icon("lock", 12) : null,
-      icon("circle-check", 15, s.completed));
+      icon("circle-check", 15, done));
     const tick = link.querySelector("[data-lucide]:last-child");
-    if (tick) { tick.classList.add("tick"); if (!s.completed) tick.classList.add("off"); }
+    if (tick) { tick.classList.add("tick"); if (!done) tick.classList.add("off"); }
     return link;
   }
 
-  // Un chapitre repliable (tête + liste de sections).
+  // Un chapitre repliable (tête + liste de sections). Le décompte reflète la
+  // SUBSTANCE (rubriques garnies), plus la bascule déclarative supprimée.
   function chapterNode(key, meta, chSecs) {
-    const done = chSecs.filter((s) => s.completed).length;
+    const done = chSecs.filter(filled).length;
     const isOpen = expanded.has(key);
     const head = el("button", { class: "chap-head", onClick: () => { isOpen ? expanded.delete(key) : expanded.add(key); renderSidebar(); } },
       el("span", { class: "chap-dot", style: { background: meta.color } }, icon(meta.icon, 15)),
@@ -216,15 +228,31 @@ export async function renderEditor(view, pid, context) {
             icon("calendar-days", 15), "Calendrier"))));
   }
 
-  function refreshMeter() {
-    // Chaque contexte affiche SA propre progression (V2-26b) : le guide voyageur
-    // compte les sections guest, le cahier d'équipe compte les sections staff —
-    // les deux décomptes ne se diluent jamais.
-    const total = ctxSections.length;
-    const done = ctxSections.filter((s) => s.completed).length;
-    const pct = total ? Math.round((done / total) * 100) : 0;
-    globalMeter.querySelector("i").style.width = pct + "%";
-    globalPct.textContent = pct + " %";
+  function refreshProgress() {
+    // Guide voyageur : le FIL des 7 étapes (V2-31), source unique côté serveur
+    // (property.journey). Cahier d'équipe : un décompte NEUTRE de rubriques
+    // garnies (le cahier n'est pas dans le parcours en 7 étapes) — jamais un « % ».
+    clear(progressSlot);
+    if (isStaffCtx) {
+      const total = ctxSections.length;
+      const done = ctxSections.filter(filled).length;
+      progressSlot.append(el("span", { class: "muted", style: { fontSize: "13px" } },
+        `${done}/${total} rubrique(s) renseignée(s)`));
+      return;
+    }
+    const node = renderJourney(property.journey);
+    if (node) progressSlot.append(node);
+    refreshIcons();
+  }
+
+  // Recharge le fil après une écriture (une rubrique remplie, un secret posé…) :
+  // seul le serveur fait foi (substance, POI, secrets, statut). Best-effort.
+  async function refreshJourney() {
+    try {
+      const fresh = await api.getProperty(pid);
+      property.journey = fresh.journey;
+      refreshProgress();
+    } catch (_) { /* le fil garde son dernier état connu */ }
   }
 
   // ── Panneau d'une section ─────────────────────────────────────────────────
@@ -237,8 +265,6 @@ export async function renderEditor(view, pid, context) {
 
     const visibleSwitch = el("input", { type: "checkbox" });
     visibleSwitch.checked = sec.is_visible;
-    const completedSwitch = el("input", { type: "checkbox" });
-    completedSwitch.checked = sec.completed;
     const saveBtn = el("button", { class: "btn btn-primary" }, icon("save", 17), "Enregistrer");
 
     const secretUnavailable = form.hasSecrets && !secretsAvailable
@@ -258,35 +284,34 @@ export async function renderEditor(view, pid, context) {
       form.node,
       buildMediaPanel({ propertyId: pid, sectionCode: sec.code }).node,
       el("div", { class: "sp-toolbar" },
-        // Les deux bascules sont expliquées d'une phrase (V2-31, ton du modèle
-        // étape 1) : « Section complétée » nourrit l'indicateur d'avancement —
-        // personne ne coche une case dont il ignore le rôle.
+        // La bascule « Section complétée » a été RETIRÉE (V2-31 volet 2) : elle ne
+        // pilotait plus rien — l'avancement se mesure désormais sur la SUBSTANCE
+        // (le fil des étapes), jamais sur une déclaration. Seule « Visible dans le
+        // guide » subsiste (elle décide de l'affichage voyageur, pas de complétude).
         el("div", { class: "sp-toggle" },
           el("label", { class: "switch" }, visibleSwitch, el("span", { class: "track" }), el("span", {}, "Visible dans le guide")),
           el("div", { class: "help switch-help" },
             "Décochez pour masquer cette rubrique aux voyageurs ; elle reste modifiable ici.")),
-        el("div", { class: "sp-toggle" },
-          el("label", { class: "switch" }, completedSwitch, el("span", { class: "track" }), el("span", {}, "Section complétée")),
-          el("div", { class: "help switch-help" },
-            "Cochez quand la rubrique est prête — c'est ce qui alimente votre indicateur d'avancement.")),
         el("span", { class: "spacer" }),
         el("span", { class: "savehint" }, el("kbd", {}, navigator.platform.includes("Mac") ? "⌘S" : "Ctrl+S")),
         saveBtn));
 
-    saveBtn.addEventListener("click", () => saveCurrent({ visibleSwitch, completedSwitch, form, saveBtn }));
-    panel._ctx = { visibleSwitch, completedSwitch, form, saveBtn };
+    saveBtn.addEventListener("click", () => saveCurrent({ visibleSwitch, form, saveBtn }));
+    panel._ctx = { visibleSwitch, form, saveBtn };
     renderSidebar();
   }
 
   async function saveCurrent(ctx = panel._ctx) {
     if (!ctx) return;
-    const { visibleSwitch, completedSwitch, form, saveBtn } = ctx;
+    const { visibleSwitch, form, saveBtn } = ctx;
     const sec = byCode.get(current);
     const { content, body_md, hasSecrets, secretsPatch } = form.collect();
     saveBtn.disabled = true; saveBtn.textContent = "Enregistrement…";
     try {
       await api.putSection(pid, current, {
-        content, body_md, is_visible: visibleSwitch.checked, completed: completedSwitch.checked,
+        // `completed` (colonne conservée, non destructif) : on renvoie sa valeur
+        // existante inchangée — la bascule a disparu, la donnée n'est plus pilotée.
+        content, body_md, is_visible: visibleSwitch.checked, completed: sec.completed,
       });
       if (hasSecrets && secretsAvailable) {
         Object.assign(secrets, secretsPatch);
@@ -301,9 +326,11 @@ export async function renderEditor(view, pid, context) {
       }
       // Mise à jour de l'état local
       sec.content = content; sec.body_md = body_md;
-      sec.is_visible = visibleSwitch.checked; sec.completed = completedSwitch.checked;
+      sec.is_visible = visibleSwitch.checked;
       if (!(hasSecrets && !secretsAvailable)) toast("Section enregistrée.", "ok");
-      refreshMeter(); renderSidebar();
+      renderSidebar();
+      // Le fil peut avancer (wifi/accès posés, contenu ajouté) → recompute serveur.
+      refreshJourney();
     } catch (err) {
       // Refus lié au plan (essai expiré, quota, cahier équipe réservé au Pro —
       // staff_locked) → encart d'upsell propre plutôt qu'un toast brut (V2-18b).
@@ -436,8 +463,18 @@ export async function renderEditor(view, pid, context) {
   }
 
   async function publish() {
-    if (!(await confirmDialog("Rendre ce guide accessible via son lien public ? Les voyageurs pourront le consulter.",
-      { title: "Publier le guide", okLabel: "Publier" }))) return;
+    // État de préparation SOUPLE (audit 0.2 : le fil guide, le propriétaire
+    // décide). Seule l'absence d'adresse bloque réellement (sans elle, ni carte
+    // ni distances) — comme aujourd'hui. Tout le reste AVERTIT, jamais un mur.
+    if (property.lat == null) {
+      toast("Ajoutez d'abord l'adresse du logement : sans elle, le guide n'a ni carte ni distances.", "err");
+      openInfo();
+      return;
+    }
+    // Manques des étapes 1 & 2, en langage humain (fournis par le serveur).
+    const steps = (property.journey && property.journey.steps) || [];
+    const missing = steps.filter((s) => s.n === 1 || s.n === 2).flatMap((s) => s.missing || []);
+    if (!(await confirmPublish(missing))) return;
     await setStatus("published");
     const link = guideShareUrl(property);
     openModal({
@@ -452,11 +489,35 @@ export async function renderEditor(view, pid, context) {
     });
   }
 
+  // Confirmation de publication qui LISTE les manques (jamais un mur, audit 0.2) :
+  // « Le wifi n'est pas renseigné — votre voyageur le cherchera » + « Publier quand
+  // même » toujours disponible. Sans manque : confirmation simple.
+  function confirmPublish(missing) {
+    return new Promise((resolve) => {
+      const body = missing.length
+        ? el("div", {},
+            el("p", { class: "muted", style: { marginTop: 0 } },
+              "Votre guide peut être publié, mais quelques indispensables manquent encore :"),
+            el("ul", { class: "publish-missing" }, ...missing.map((m) => el("li", {}, m))),
+            el("p", { class: "muted", style: { marginBottom: 0 } },
+              "Vous pourrez les compléter à tout moment."))
+        : el("p", { class: "muted", style: { margin: 0 } },
+            "Rendre ce guide accessible via son lien public ? Les voyageurs pourront le consulter.");
+      const ok = el("button", { class: "btn btn-primary" }, missing.length ? "Publier quand même" : "Publier");
+      const cancel = el("button", { class: "btn btn-ghost" }, "Annuler");
+      const m = openModal({ title: "Publier le guide", body, footer: [cancel, ok],
+        onClose: () => resolve(false) });
+      ok.addEventListener("click", () => { resolve(true); m.close(); });
+      cancel.addEventListener("click", () => { resolve(false); m.close(); });
+    });
+  }
+
   async function setStatus(status) {
     try {
       const updated = await api.updateProperty(pid, { status });
       property = { ...property, ...updated };
       renderHeaderActions();
+      refreshProgress();   // le fil reflète la (dé)publication (étape 6)
       toast(status === "published" ? "Guide publié." : "Guide repassé en brouillon.", "ok");
     } catch (err) { toast(err.message || "Action impossible.", "err"); }
   }
@@ -470,6 +531,10 @@ export async function renderEditor(view, pid, context) {
     crumbName.textContent = property.name;
     renderBanner();
     renderHeaderActions();
+    // Adresse/contact/couverture modifiés → le fil (étape 1) peut avancer. Si la
+    // réponse ne porte pas le fil (modale position), on le recharge du serveur.
+    if (updated && updated.journey) { property.journey = updated.journey; refreshProgress(); }
+    else refreshJourney();
   }
 
   function openInfo() {

@@ -19,6 +19,13 @@ const PROP = {
   address_line1: "Calle 1", postal_code: "03189", city: "Orihuela",
   guide_token: "gtok", staff_token: TOKEN, default_lang: "fr",
   lat: 38.0, lon: -0.7, geocode_accuracy: "rooftop",
+  // Le fil des 7 étapes (V2-31 v2) : rendu dans l'en-tête du contexte VOYAGEUR.
+  journey: {
+    current_step: 2, done_count: 1, total: 7, sent: false,
+    next_action: { route: "#/properties/p1/editor", label: "Ajouter les indispensables" },
+    steps: [{ n: 2, key: "indispensables", title: "Les indispensables", state: "current",
+      route: "#/properties/p1/editor", label: "Ajouter les indispensables", missing: [] }],
+  },
 };
 // Deux sections voyageur (chapitres A, B) + deux sections staff (chapitre S).
 const SECTIONS = { sections: [
@@ -89,12 +96,13 @@ try {
   chk(!!qa("button, a").find((b) => /Copier le lien/.test(b.textContent)), "voyageur : action « Copier le lien » (guide) présente");
   chk(!!qa("button, a").find((b) => /Traductions/.test(b.textContent)), "voyageur : bouton « Traductions » présent");
 
-  // ── Les deux bascules du pied de section sont expliquées d'une phrase (V2-31) ─
+  // ── « Visible dans le guide » reste, « Section complétée » a été retirée (V2-31 v2) ─
   const helps = qa(".sp-toggle .switch-help").map((h) => h.textContent);
   chk(helps.some((h) => /masquer cette rubrique aux voyageurs/.test(h)),
     "aide « Visible dans le guide » rendue sous la bascule");
-  chk(helps.some((h) => /alimente votre indicateur d'avancement/.test(h)),
-    "aide « Section complétée » rendue sous la bascule");
+  const toggleLabels = qa(".sp-toggle .switch span").map((s) => s.textContent).join(" | ");
+  chk(!/Section complétée/.test(toggleLabels),
+    "la bascule « Section complétée » a bien DISPARU du pied de section (substance > déclaration)");
 
   // La bascule ouvre bien l'éditeur staff (via le hash)
   location.hash = "";
@@ -127,13 +135,15 @@ try {
   toGuide.click();
   chk(location.hash === "#/properties/p1/editor", "staff : bascule → éditeur voyageur (h=" + location.hash + ")");
 
-  // ── Jauges séparées : voyageur = 100 % (2/2), staff = 0 % (0/2) ──────────
-  // Un décompte MÉLANGÉ donnerait 50 % (2/4) dans les deux contextes → la
-  // dissociation 100/0 prouve que chaque contexte compte SES sections.
+  // ── Progression par contexte (V2-31 v2) : voyageur = le FIL des étapes,
+  //    équipe = décompte NEUTRE de rubriques (jamais un « % ») ────────────────
+  // Le « % complété » a disparu (audit : substance, pas déclaration).
   await open({ staff_access: true, on_trial: false }, undefined);
-  chk(/100\s*%/.test(q(".page .row").textContent), "voyageur : jauge = 100 % (2/2 sections voyageur)");
+  chk(!!q(".editor-progress .journey-fil"), "voyageur : le FIL des 7 étapes est rendu dans l'en-tête");
+  chk(!/%/.test(q(".editor-progress").textContent), "voyageur : plus aucun « % » (métrique mensongère retirée)");
   await open({ staff_access: true, on_trial: false }, "staff");
-  chk(/\b0\s*%/.test(q(".page .row").textContent), "staff : jauge = 0 % (0/2 sections staff)");
+  chk(/0\/2 rubrique/.test(q(".editor-progress").textContent), "staff : décompte neutre « 0/2 rubrique(s) renseignée(s) » (les 2 sections staff sont vides)");
+  chk(!/%/.test(q(".editor-progress").textContent), "staff : plus aucun « % »");
 
   // ── Gating de la bascule : Solo sans staff_access ────────────────────────
   await open({ staff_access: false, on_trial: false }, undefined);

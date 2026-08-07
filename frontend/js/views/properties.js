@@ -1,7 +1,8 @@
-/* « Mes logements » (M-03 amont) : liste, complétude, création, enrichissement.
-   Chaque carte affiche le statut, la complétude du guide et le décompte des POI
-   en attente. Le bouton « Nouveau logement » enchaîne création → proposition
-   d'enrichissement avec suivi en direct du job. */
+/* « Mes logements » (M-03 amont) : liste, le fil des 7 étapes, création,
+   enrichissement. Chaque carte affiche le statut, le FIL (« Étape k/7 · … »,
+   V2-31 volet 2 — plus jamais le « % complété » mensonger de l'audit) et le
+   décompte des POI. Le bouton « Nouveau logement » enchaîne création →
+   proposition d'enrichissement avec suivi en direct du job. */
 
 import { api, ApiError } from "../api.js";
 import {
@@ -15,6 +16,7 @@ import { COUNTRIES } from "../constants.js";
 import { openPropertyInfoModal } from "../components/propertyinfo.js";
 import { openSendMenu } from "../components/sendmenu.js";
 import { openStaffShareMenu } from "../components/staffshare.js";
+import { renderJourney } from "../journey.js";
 import { WELCOME_SHORT } from "./premierspas.js";
 
 const STATUS_LABEL = { draft: "Brouillon", published: "Publié", archived: "Archivé" };
@@ -60,7 +62,8 @@ export async function renderProperties(view) {
   for (const p of properties) grid.append(propertyCard(p));
   refreshIcons();
 
-  // Complétude + POI en attente (chargés en parallèle, non bloquants)
+  // Pastilles de POI (chargées en parallèle, non bloquantes). Le fil des étapes,
+  // lui, est déjà rendu en synchrone depuis p.journey (aucun appel de plus).
   properties.forEach(async (p) => {
     try {
       const s = await api.stats(p.id);
@@ -76,6 +79,9 @@ export async function renderProperties(view) {
           el("h3", {}, p.name),
           el("span", { class: "badge badge-" + p.status }, STATUS_LABEL[p.status] || p.status)),
         el("div", { class: "addr" }, [p.address_line1, p.postal_code, p.city].filter(Boolean).join(", "))),
+      // Le fil des 7 étapes (V2-31, volet 2) : « où j'en suis + prochaine action »
+      // calculé côté serveur (substance, jamais déclaration) — remplace le « % ».
+      renderJourney(p.journey) || el("div", { class: "journey-slot" }),
       el("div", { class: "stats-slot muted", style: { fontSize: "13px" } }, "…"),
       // Double porte (V2-26) : le guide voyageur et le cahier d'équipe sont deux
       // produits pour deux publics → deux entrées dominantes.
@@ -192,12 +198,11 @@ export async function renderProperties(view) {
   }
 
   function fillStats(card, p, s) {
+    // La complétude en pourcentage a disparu (V2-31 volet 2 : remplacée par le
+    // fil, rendu en synchrone depuis p.journey). On ne garde ici que les pastilles
+    // de POI, chargées à part car issues de l'endpoint /stats.
     const slot = card.querySelector(".stats-slot");
     mount(slot,
-      el("div", { class: "row", style: { justifyContent: "space-between", marginBottom: "5px", fontSize: "12.5px" } },
-        el("span", { class: "muted" }, "Complétude du guide"),
-        el("b", {}, s.completion_pct + " %")),
-      el("div", { class: "meter mini" }, el("i", { style: { width: s.completion_pct + "%" } })),
       el("div", { class: "poi-counts" },
         // Pastilles cliquables (V2-11) → écran « Lieux suggérés » avec le bon
         // filtre. Libellés reformulés et NEUTRES (V2-31) : une suggestion n'est

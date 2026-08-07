@@ -430,6 +430,27 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     ne casse jamais la recherche ; `results_count = 0` = santé de l'index).
     Back-office FR délibéré → **hors inventaire i18n voyageur**. Runbook :
     `docs/aide.md`. Back-office seul (aucun bump SW).
+20. **Le fil mesure la SUBSTANCE, jamais la déclaration (V2-31 volet 2)** : chaque
+    logement expose un « fil des 7 étapes » (`docs/audit_ux.md` §2) — `PropertyOut.
+    journey`, calculé par la **fonction PURE** `api/journey.py` (patron `care`, aucune
+    base/réseau, aucune colonne/migration : tout se déduit de l'existant). L'ancien
+    « Complétude X % » **disparaît** (carte + éditeur), remplacé par « Étape k/7 ·
+    *action* » cliquable. Le calcul se fait **exclusivement sur la substance réelle**
+    (contenu de section non vide, secret posé par `IS NOT NULL` — **jamais déchiffré**,
+    POI validés, `guide_sends`), **jamais** sur la bascule déclarative « Section
+    complétée » — c'est elle qui produisait le pourcentage MENSONGER (Villa Ballarin,
+    publiée et servie, affichait 4 %). Critères : É1 adresse+contact/couverture ; É2
+    arrivée+accès/keybox+wifi ; É3 des POI existent ; É4 ≥1 retenu ET 0 en attente ;
+    É5 **jamais binaire** (compte informatif, hors « k/7 » — on ne culpabilise pas le
+    facultatif) ; É6 publié ; É7 ≥1 envoi ; au bout « Guide envoyé ✓ ». La bascule
+    « Section complétée » est **retirée** de l'éditeur (colonne `completed`
+    **conservée** en base, non destructif, aucune migration) ; « Visible dans le
+    guide » **intouchée**. Seule l'**adresse absente** bloque la publication (guidage
+    souple, audit 0.2 : avertir, jamais un mur). Duplication front/back **assumée**
+    (`frontend/js/journey.js` `sectionHasSubstance`/`ESSENTIAL_CODES` miroir du back,
+    comme `js/lib/care.js`). Runbook : `docs/parcours.md`. Back-office seul (aucun
+    bump SW). Couvert par `test_journey.py` (fonction pure + cas Villa Ballarin réel)
+    et `test_api.py::test_property_exposes_journey_measuring_substance`.
 
 ## Commandes
 

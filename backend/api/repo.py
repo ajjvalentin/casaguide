@@ -876,6 +876,54 @@ def property_stats(conn, property_id: str) -> dict:
     }
 
 
+def journey_facts(conn, property_ids: list[str]) -> dict[str, dict]:
+    """Rassemble les FAITS de substance nécessaires au fil des étapes (V2-31,
+    volet 2) pour un lot de logements — une requête agrégée par famille de faits,
+    jamais N+1. Rien n'est déchiffré : les secrets sont testés par IS NOT NULL
+    (invariant 5). Le jugement (garni ? étape faite ?) revient au module pur
+    `api.journey`. Renvoie un dict par property_id (str)."""
+    if not property_ids:
+        return {}
+    facts = {pid: {"sections": [], "keybox_present": False, "wifi_present": False,
+                   "poi_counts": {}, "sends": 0} for pid in property_ids}
+    # Sections voyageur (contenu brut — la substance est jugée par le module pur).
+    for r in conn.execute(
+        """SELECT ps.property_id, ps.template_code AS code, ps.content, ps.body_md
+           FROM property_sections ps
+           JOIN section_templates t ON t.code = ps.template_code
+           WHERE ps.property_id = ANY(%s::uuid[]) AND t.audience = 'guest'""",
+        (property_ids,),
+    ).fetchall():
+        facts[str(r["property_id"])]["sections"].append(
+            {"code": r["code"], "content": r["content"], "body_md": r["body_md"]})
+    # Présence des secrets (jamais déchiffrés — wifi multi-réseaux OU legacy).
+    for r in conn.execute(
+        """SELECT property_id,
+                  (keybox_code_enc IS NOT NULL) AS kb,
+                  (wifi_networks_enc IS NOT NULL OR wifi_ssid IS NOT NULL) AS wf
+           FROM property_secrets WHERE property_id = ANY(%s::uuid[])""",
+        (property_ids,),
+    ).fetchall():
+        f = facts[str(r["property_id"])]
+        f["keybox_present"] = bool(r["kb"])
+        f["wifi_present"] = bool(r["wf"])
+    # POI par statut (l'enrichissement a-t-il produit des lieux ? reste-t-il à valider ?).
+    for r in conn.execute(
+        """SELECT property_id, status, count(*) AS n FROM pois
+           WHERE property_id = ANY(%s::uuid[]) GROUP BY property_id, status""",
+        (property_ids,),
+    ).fetchall():
+        facts[str(r["property_id"])]["poi_counts"][r["status"]] = r["n"]
+    # Envois du guide (tout kind/origin — l'étape 7 est franchie dès le premier).
+    for r in conn.execute(
+        """SELECT property_id, count(*) AS n FROM guide_sends
+           WHERE property_id = ANY(%s::uuid[]) GROUP BY property_id""",
+        (property_ids,),
+    ).fetchall():
+        facts[str(r["property_id"])]["sends"] = r["n"]
+    return facts
+
+
 def list_poi_positions(conn, property_id: str) -> list[dict]:
     """Coordonnées des POI (hors géométrie nulle) pour recalcul des distances (§5.1)."""
     return conn.execute(

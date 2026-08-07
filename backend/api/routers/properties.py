@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from fastapi import (APIRouter, BackgroundTasks, Depends, HTTPException, Request,
                      Response, status)
 
-from .. import crypto, plans, poster, repo, wifi
+from .. import crypto, journey, plans, poster, repo, wifi
 from ..config import settings
 from ..quota import quota_exceeded, staff_locked
 from ..deps import (
@@ -35,11 +35,26 @@ def _slug(name: str) -> str:
     return slug or "guide"
 
 
+def _attach_journey(conn, props: list[dict]) -> list[dict]:
+    """Attache le fil des 7 étapes (V2-31, volet 2) à chaque logement — calculé
+    côté serveur, source unique de vérité. La substance fait foi, jamais la
+    déclaration (`api.journey`)."""
+    facts = repo.journey_facts(conn, [str(p["id"]) for p in props])
+    for p in props:
+        f = facts.get(str(p["id"]), {})
+        p["journey"] = journey.compute(
+            p, sections=f.get("sections", []),
+            keybox_present=f.get("keybox_present", False),
+            wifi_present=f.get("wifi_present", False),
+            poi_counts=f.get("poi_counts", {}), sends=f.get("sends", 0))
+    return props
+
+
 # ── CRUD logements ───────────────────────────────────────────────────────────
 
 @router.get("", response_model=list[PropertyOut])
 def list_properties(conn: Conn, owner: CurrentOwner):
-    return repo.list_properties(conn, str(owner["id"]))
+    return _attach_journey(conn, repo.list_properties(conn, str(owner["id"])))
 
 
 @router.post("", response_model=PropertyOut, status_code=status.HTTP_201_CREATED,
@@ -53,12 +68,13 @@ def create_property(payload: PropertyIn, conn: Conn, owner: CurrentOwner):
             f"« {q.plan['name']} ». Passez à une offre supérieure pour en ajouter.")
     data = payload.model_dump()
     data["country_code"] = data["country_code"].upper()
-    return repo.create_property(conn, str(owner["id"]), data)
+    created = repo.create_property(conn, str(owner["id"]), data)
+    return _attach_journey(conn, [created])[0]
 
 
 @router.get("/{property_id}", response_model=PropertyOut)
-def get_property(prop: OwnedProperty):
-    return prop
+def get_property(conn: Conn, prop: OwnedProperty):
+    return _attach_journey(conn, [prop])[0]
 
 
 @router.patch("/{property_id}", response_model=PropertyOut,
@@ -79,7 +95,7 @@ def update_property(
     if fields.get("status") == "published":
         plan = plans.get_plan(conn, str(owner["id"]))
         schedule_translation(background, conn, updated, runner, plan)
-    return updated
+    return _attach_journey(conn, [updated])[0]
 
 
 @router.delete("/{property_id}", status_code=status.HTTP_204_NO_CONTENT,
@@ -119,7 +135,7 @@ def set_cover(payload: CoverIn, conn: Conn, owner: CurrentOwner,
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="La couverture doit être une photo.")
-    return repo.set_cover_media(conn, str(owner["id"]), pid, media_id)
+    return _attach_journey(conn, [repo.set_cover_media(conn, str(owner["id"]), pid, media_id)])[0]
 
 
 # ── Repositionnement du logement : recalcul des distances (§5.1, M-05) ───────

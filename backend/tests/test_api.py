@@ -812,6 +812,54 @@ def test_property_stats(client):
                       headers=intruder["headers"]).status_code == 404
 
 
+def test_property_exposes_journey_measuring_substance(client):
+    """Le fil des 7 étapes (V2-31, volet 2) est exposé sur la liste ET le détail,
+    et mesure la SUBSTANCE : un logement publié avec des lieux validés est au bout
+    du chemin, jamais « étape 1 » (le mensonge que l'audit dénonce)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"], contact_email="h@ex.com")
+    pid = prop["id"]
+
+    # Vierge (ni position, ni secrets, ni POI) : étape 1 courante, rien de fait.
+    j = prop["journey"]
+    assert j is not None
+    assert j["current_step"] == 1 and j["sent"] is False
+    assert j["total"] == 7 and j["done_count"] == 0
+    # L'étape 5 est TOUJOURS facultative (jamais un état binaire).
+    assert next(s for s in j["steps"] if s["n"] == 5)["state"] == "optional"
+    # Un manque de l'étape 2 est dit en langage humain (pour la confirmation de publication).
+    step2 = next(s for s in j["steps"] if s["n"] == 2)
+    assert any("wifi" in m.lower() for m in step2["missing"])
+
+    # Renseigner les indispensables + enrichir (géocode → position, POI suggérés).
+    client.put(f"/api/properties/{pid}/sections/A_checkin", headers=owner["headers"],
+               json={"content": {"instructions": "Digicode 1234"}})
+    client.put(f"/api/properties/{pid}/secrets", headers=owner["headers"],
+               json={"wifi_networks": [{"label": "Maison", "ssid": "Casa", "pass": "secret12"}],
+                     "keybox_code": "4590"})
+    _enrich_and_wait(client, owner["headers"], pid)
+
+    # Étape 4 courante (des suggestions attendent l'arbitrage) ; 1-3 faites.
+    d = client.get(f"/api/properties/{pid}", headers=owner["headers"]).json()["journey"]
+    assert d["current_step"] == 4
+    st = {s["n"]: s["state"] for s in d["steps"]}
+    assert st[1] == "done" and st[2] == "done" and st[3] == "done"
+    assert next(s for s in d["steps"] if s["n"] == 4)["detail"] == "4 à examiner"
+
+    # Tout arbitrer (approuver les 4 suggestions) → étape 4 faite.
+    for p in client.get(f"/api/properties/{pid}/pois?status=suggested",
+                        headers=owner["headers"]).json():
+        client.post(f"/api/properties/{pid}/pois/{p['id']}/approve", headers=owner["headers"])
+    # Publier → étape 6 faite, étape 7 (envoyer) courante.
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+    lst = client.get("/api/properties", headers=owner["headers"]).json()
+    jf = next(p for p in lst if p["id"] == pid)["journey"]
+    assert jf["current_step"] == 7           # jamais « étape 1 » pour un guide publié+validé
+    assert jf["done_count"] == 6 and jf["sent"] is False
+    assert {s["n"]: s["state"] for s in jf["steps"]}[6] == "done"
+
+
 def test_list_pois_carries_category_metadata(client):
     """L'écran de validation reçoit libellé, icône et couleur de chaque POI."""
     owner = register(client)

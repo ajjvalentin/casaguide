@@ -115,19 +115,36 @@ function helpRubric(entry, resolve) {
   return el("div", { class: "pp-rubric", dataset: { id: entry.id } }, q, body);
 }
 
-function stepCard(step, resolve, hasProp) {
+// État du jalon pour le logement courant (V2-31 volet 2) : la page devient un
+// tableau de bord. `state` vient du fil serveur (done|current|todo|optional).
+function stepStatusChip(state) {
+  if (!state) return null;
+  const map = {
+    done: ["pp-status-done", "check", "Fait"],
+    current: ["pp-status-current", "arrow-right-circle", "À faire maintenant"],
+    optional: ["pp-status-optional", "circle-dashed", "À votre rythme"],
+    todo: ["pp-status-todo", "circle", "À venir"],
+  };
+  const [cls, ic, label] = map[state] || map.todo;
+  return el("span", { class: "pp-status " + cls }, icon(ic, 14), el("span", {}, label));
+}
+
+function stepCard(step, resolve, hasProp, state) {
   const rubrics = HELP_INDEX.filter((e) => e.step === step.n);
   const label = step.cta.label(hasProp);
   const cta = el("button", { class: "btn btn-primary pp-cta" },
     el("span", {}, label), icon("arrow-right", 16));
   cta.addEventListener("click", () => navigate(resolve(step.cta.route)));
 
-  return el("div", { class: "pp-step", dataset: { step: String(step.n) } },
-    el("div", { class: "pp-num" }, String(step.n)),
+  const numClass = "pp-num" + (state ? " pp-num-" + state : "");
+  return el("div", { class: "pp-step" + (state === "current" ? " pp-step-current" : ""),
+    dataset: { step: String(step.n) } },
+    el("div", { class: numClass }, state === "done" ? icon("check", 16) : String(step.n)),
     el("div", { class: "pp-body" },
       el("div", { class: "pp-head" },
         el("h2", { class: "pp-title" }, step.title),
-        el("span", { class: "pp-tag pp-tag-" + step.kind }, step.tag)),
+        el("span", { class: "pp-tag pp-tag-" + step.kind }, step.tag),
+        stepStatusChip(state)),
       el("p", { class: "pp-text" }, step.body),
       el("div", { class: "pp-actions" }, cta),
       rubrics.length
@@ -151,10 +168,16 @@ export async function renderPremiersPas(view) {
 
   // Logement « courant » = le premier du compte, s'il y en a un (pour résoudre les
   // deep-links `:id`). Best-effort : la page reste lisible sans aucun logement.
-  let currentId = null;
+  let currentId = null, stateByN = {};
   try {
     const props = await api.listProperties();
-    if (Array.isArray(props) && props.length) currentId = props[0].id;
+    if (Array.isArray(props) && props.length) {
+      currentId = props[0].id;
+      // Le fil du logement courant fait de la page un TABLEAU DE BORD (chaque
+      // étape porte sa coche d'état). Source unique : le serveur (props[0].journey).
+      const j = props[0].journey;
+      if (j && Array.isArray(j.steps)) for (const s of j.steps) stateByN[s.n] = s.state;
+    }
   } catch (_) { /* compte vierge / hors-ligne : repli « Mes logements » */ }
 
   const resolve = makeResolver(currentId);
@@ -165,7 +188,7 @@ export async function renderPremiersPas(view) {
       el("div", { class: "eyebrow" }, "Espace propriétaire"),
       el("h1", { class: "page-title", style: { margin: "2px 0 0" } }, "Premiers pas")),
     el("p", { class: "pp-intro" }, WELCOME_INTRO),
-    el("div", { class: "pp-steps" }, ...PREMIERS_PAS_STEPS.map((s) => stepCard(s, resolve, hasProp))),
+    el("div", { class: "pp-steps" }, ...PREMIERS_PAS_STEPS.map((s) => stepCard(s, resolve, hasProp, stateByN[s.n]))),
     alsoBlock(resolve));
 
   mount(view, page);

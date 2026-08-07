@@ -44,6 +44,22 @@ const PROP = {
   default_lang: "fr", published_langs: ["en", "es"],
   default_checkin_time: "15:00:00", default_checkout_time: "10:00:00",
   auto_send_guide: true, cover_media_id: null,
+  // Le fil des 7 étapes (V2-31 volet 2) — servi sur la liste ET le détail. Ici
+  // l'étape 4 (validation) est courante : le libellé d'action « Valider vos lieux
+  // suggérés » est collecté et DOIT être couvert par l'index (rubrique « fil-etapes »).
+  journey: {
+    current_step: 4, done_count: 3, total: 7, sent: false,
+    next_action: { route: "#/properties/p1/pois", label: "Valider vos lieux suggérés" },
+    steps: [
+      { n: 1, key: "logement", title: "Votre logement", state: "done", route: "#/properties/p1/editor", label: "Renseigner votre logement", missing: [] },
+      { n: 2, key: "indispensables", title: "Les indispensables", state: "done", route: "#/properties/p1/editor", label: "Ajouter les indispensables", missing: [] },
+      { n: 3, key: "recherche", title: "Holaguia cherche les lieux", state: "done", route: "#/properties", label: "Rechercher les lieux", missing: [] },
+      { n: 4, key: "validation", title: "Vous validez", state: "current", detail: "12 à examiner", route: "#/properties/p1/pois", label: "Valider vos lieux suggérés", missing: [] },
+      { n: 5, key: "reste", title: "Le reste, à votre rythme", state: "optional", route: "#/properties/p1/editor", label: "Compléter le reste du guide", missing: [] },
+      { n: 6, key: "publier", title: "Publier et tester", state: "todo", route: "#/properties/p1/editor", label: "Publier votre guide", missing: [] },
+      { n: 7, key: "envoyer", title: "Envoyer", state: "todo", route: "#/properties", label: "Envoyer le guide", missing: [] },
+    ],
+  },
 };
 const STATS = { completion_pct: 40, pois_suggested: 12, pois_approved: 30,
   pois_edited: 2, pois_total: 44 };
@@ -149,7 +165,9 @@ setOwner({ email: "a@b.c", staff_access: true, on_trial: false, trial_expired: f
 // Cible : boutons, entrées de menu, portes, titres d'écran/panneau. On EXCLUT par
 // portée ce qui n'est pas du « chrome » d'application (justifié, jamais un
 // contournement) : voir help-coverage.test.mjs / docs/aide.md.
-const NOISE = ".chip-n,.cnt,.door-badge,.door-sub,[data-lucide],.badge,kbd,.tr-label,.hint";
+// `.journey-step` = le compteur « Étape k/7 » (dynamique) ; le libellé COUVERT est
+// l'action qui suit (« Valider vos lieux suggérés »), lui bien collecté.
+const NOISE = ".chip-n,.cnt,.door-badge,.door-sub,[data-lucide],.badge,kbd,.tr-label,.hint,.journey-step";
 
 // Titres data-driven (contenu du guide, pas chrome) : sections de l'éditeur,
 // catégories de POI, nom du logement dans la carte/le fil.

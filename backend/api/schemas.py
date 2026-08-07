@@ -238,6 +238,34 @@ class PropertyUpdate(BaseModel):
     lon: float | None = Field(default=None, ge=-180, le=180)
 
 
+class JourneyStepOut(BaseModel):
+    """Un jalon du fil des 7 étapes (V2-31, volet 2). `state` : done | current |
+    todo | optional (l'étape 5, facultative, est toujours 'optional')."""
+    n: int
+    key: str
+    title: str
+    state: str
+    detail: str | None = None
+    route: str | None = None
+    label: str | None = None
+    missing: list[str] = []   # manques en langage humain (étapes 1 & 2)
+
+
+class JourneyActionOut(BaseModel):
+    route: str
+    label: str
+
+
+class JourneyOut(BaseModel):
+    """Le fil des 7 étapes : mesure la SUBSTANCE, jamais la déclaration (V2-31)."""
+    steps: list[JourneyStepOut]
+    current_step: int | None = None
+    next_action: JourneyActionOut | None = None
+    done_count: int
+    total: int
+    sent: bool
+
+
 class PropertyOut(BaseModel):
     id: UUID
     name: str
@@ -268,6 +296,7 @@ class PropertyOut(BaseModel):
     care_rules: dict = {}     # règles d'entretien (V2-23b, §1.1)
     cover_media_id: UUID | None = None   # photo de couverture (V2-30)
     auto_send_guide: bool = True   # envoi automatique du guide à J-7 (V2-23d volet 2)
+    journey: JourneyOut | None = None   # le fil des 7 étapes (V2-31, volet 2)
     created_at: datetime
     updated_at: datetime
 
