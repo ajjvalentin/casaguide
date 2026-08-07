@@ -15,6 +15,7 @@ import { COUNTRIES } from "../constants.js";
 import { openPropertyInfoModal } from "../components/propertyinfo.js";
 import { openSendMenu } from "../components/sendmenu.js";
 import { openStaffShareMenu } from "../components/staffshare.js";
+import { WELCOME_SHORT } from "./premierspas.js";
 
 const STATUS_LABEL = { draft: "Brouillon", published: "Publié", archived: "Archivé" };
 
@@ -41,11 +42,17 @@ export async function renderProperties(view) {
   mount(view, page);
 
   if (!properties.length) {
+    // État vide = un ACCUEIL, plus une page blanche (audit §1 étape 2, branchement
+    // §3 volet 3b) : le nouveau propriétaire est reçu et orienté vers les deux
+    // portes — créer son premier logement, ou lire la marche à suivre.
     mount(grid, emptyBlock({
-      icon: "home", title: "Aucun logement pour le moment",
-      text: "Créez votre premier logement : saisissez son adresse et laissez l'IA pré-remplir l'environnement (commerces, santé, restaurants…).",
-      action: el("button", { class: "btn btn-primary", onClick: () => openCreateModal() },
-        icon("plus", 18), "Créer un logement"),
+      icon: "home", title: "Bienvenue sur Holaguia",
+      text: WELCOME_SHORT,
+      action: el("div", { class: "row", style: { gap: "10px", justifyContent: "center", flexWrap: "wrap" } },
+        el("button", { class: "btn btn-primary", onClick: () => openCreateModal() },
+          icon("plus", 18), "Créer mon premier logement"),
+        el("a", { class: "btn btn-ghost", href: "#/premiers-pas" },
+          icon("footprints", 16), "Lire les Premiers pas")),
     }));
     return;
   }

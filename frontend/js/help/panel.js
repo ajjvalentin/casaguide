@@ -74,8 +74,15 @@ export function openHelpPanel() {
       el("button", { class: "help-close", "aria-label": "Fermer l'aide", onClick: closeHelpPanel },
         icon("x", 20))),
     results,
-    el("div", { class: "help-hint" }, "Astuce : ", el("kbd", {}, navigator.platform.includes("Mac") ? "⌘K" : "Ctrl+K"),
-      " ouvre l'aide depuis n'importe quel écran."));
+    el("div", { class: "help-hint" },
+      (() => {
+        const pp = el("button", { class: "help-premiers" }, icon("footprints", 14), "Premiers pas");
+        pp.addEventListener("click", () => { closeHelpPanel(); navigate("#/premiers-pas"); });
+        return pp;
+      })(),
+      el("span", { class: "help-hint-tip" }, "Astuce : ",
+        el("kbd", {}, navigator.platform.includes("Mac") ? "⌘K" : "Ctrl+K"),
+        " ouvre l'aide depuis n'importe quel écran.")));
   const overlay = el("div", { class: "help-overlay" }, panel);
   overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) closeHelpPanel(); });
   document.body.append(overlay);
@@ -102,9 +109,11 @@ export function openHelpPanel() {
         el("span", {}, "Aucune correspondance exacte. Voici les rubriques les plus proches :")));
     }
     for (const r of found) results.append(entryCard(r.entry));
+    // Repli (§3 volet 3b) : « Voir toutes les rubriques » ouvre désormais la page
+    // « Premiers pas » (le mode d'emploi rangé par étapes), et non plus la liste brute.
     const more = el("button", { class: "help-see-all" },
       icon("list", 15), "Voir toutes les rubriques d'aide");
-    more.addEventListener("click", () => { input.value = ""; render(); input.focus(); });
+    more.addEventListener("click", () => { closeHelpPanel(); navigate("#/premiers-pas"); });
     results.append(more);
     refreshIcons();
   }

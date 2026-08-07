@@ -77,6 +77,25 @@ test("index bien formé : id, question, 2–4 étapes, cible", () => {
   }
 });
 
+test("champ step (volet 3b) : chaque entrée porte 1–7 ou null, sans orpheline", () => {
+  for (const e of HELP_INDEX) {
+    assert.ok(Object.prototype.hasOwnProperty.call(e, "step"),
+      `${e.id} : champ step manquant (1–7 ou null)`);
+    assert.ok(e.step === null || (Number.isInteger(e.step) && e.step >= 1 && e.step <= 7),
+      `${e.id} : step invalide (${e.step})`);
+  }
+  // Les steps 1–7 + « Et aussi » (null) partitionnent l'index : toute entrée a un
+  // foyer, aucune n'est perdue (la page Premiers pas les affiche toutes).
+  const homed = HELP_INDEX.filter((e) => e.step != null).length;
+  const also = HELP_INDEX.filter((e) => e.step == null).length;
+  assert.equal(homed + also, HELP_INDEX.length, "toute entrée a un foyer (step ou « Et aussi »)");
+  assert.ok(homed > 0 && also > 0, "des rubriques dans les étapes ET dans « Et aussi »");
+  // La chaîne cible fait 7 étapes ; au moins la moitié doivent être peuplées
+  // (l'étape 3 « Holaguia s'en charge » peut rester sans rubrique — le système agit).
+  const usedSteps = new Set(HELP_INDEX.map((e) => e.step).filter((s) => s != null));
+  assert.ok(usedSteps.size >= 5, "au moins 5 étapes sur 7 portent des rubriques");
+});
+
 test("isCovered : un libellé du produit est couvert, un charabia ne l'est pas", () => {
   for (const l of ["Envoyer le guide", "Lieux suggérés", "Publier le guide",
     "Traductions", "Calendrier des séjours", "Mon abonnement"]) {

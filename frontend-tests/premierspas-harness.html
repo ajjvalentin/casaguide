@@ -1,0 +1,161 @@
+<!doctype html>
+<!-- Harnais headless de « PREMIERS PAS » (V2-31 volet 3b). Pilote la vraie vue
+     frontend/js/views/premierspas.js : les 7 étapes dans l'ordre avec leurs
+     étiquettes, chaque CTA qui résout (logement courant / repli), les rubriques
+     d'aide groupées par étape qui COUVRENT tout l'index (aucune orpheline hors
+     « Et aussi »), l'expansion d'une rubrique (étapes + « M'y emmener »), le repli
+     du panneau ⌘K qui ouvre la page, et l'état vide de « Mes logements » (accueil
+     avec zéro logement). Fetch simulé + stub Leaflet, verdict dans #result (lu par
+     premierspas.test.mjs). Hors frontend/ (jamais servi). -->
+<meta charset="utf-8">
+<title>premierspas-harness</title>
+<div id="stage"></div>
+<div id="toasts"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { renderPremiersPas, PREMIERS_PAS_STEPS } from "/frontend/js/views/premierspas.js";
+import { renderProperties } from "/frontend/js/views/properties.js";
+import { openHelpPanel } from "/frontend/js/help/panel.js";
+import { HELP_INDEX } from "/frontend/js/help/index.js";
+import { setToken, setOwner } from "/frontend/js/store.js";
+
+const leafletStub = () => {
+  const proxy = new Proxy(function () { return proxy; }, {
+    get: (_t, p) => (p === "then" ? undefined : () => proxy), apply: () => proxy });
+  return proxy;
+};
+window.L = leafletStub();
+window.lucide = { createIcons() {} };
+
+const PROP = { id: "p1", name: "Villa Ballarin", status: "published", guide_token: "deadbeef",
+  address_line1: "Calle 1", city: "Orihuela", country_code: "ES" };
+let PROPS = [PROP];   // mutable : varie entre les passes (logement présent / vierge)
+
+window.fetch = async (path, opts = {}) => {
+  const method = (opts.method || "GET").toUpperCase();
+  const json = (b) => new Response(JSON.stringify(b), { headers: { "Content-Type": "application/json" } });
+  if (path === "/api/properties" && method === "GET") return json(PROPS);
+  return json({});
+};
+setToken("t");
+setOwner({ email: "a@b.c", staff_access: true, on_trial: false, trial_expired: false, email_verified: true });
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const q = (s, r = document) => r.querySelector(s);
+const qa = (s, r = document) => [...r.querySelectorAll(s)];
+const norm = (s) => (s || "").replace(/\s+/g, " ").trim();
+
+const log = [];
+let pass = true;
+const chk = (c, m) => { if (!c) pass = false; log.push((c ? "✓ " : "✗ ") + m); };
+
+async function renderInto(fn, ...args) {
+  const stage = document.getElementById("stage");
+  const box = document.createElement("main");
+  stage.innerHTML = ""; stage.append(box);
+  await fn(box, ...args);
+  await wait(50);
+  return box;
+}
+
+try {
+  // ── PASSE A : logement présent (p1) ───────────────────────────────────────
+  location.hash = "#/premiers-pas";
+  let box = await renderInto(renderPremiersPas);
+
+  const steps = qa(".pp-step", box);
+  chk(steps.length === 7, "7 étapes rendues (" + steps.length + ")");
+  chk(steps.every((s, i) => s.dataset.step === String(i + 1)), "les étapes sont dans l'ordre 1→7");
+  chk(!!q("h1.page-title", box) && /Premiers pas/.test(q("h1.page-title", box).textContent),
+    "titre « Premiers pas » présent");
+  chk(/Bienvenue/.test(norm(q(".pp-intro", box)?.textContent)), "texte d'accueil en tête");
+
+  // Étiquettes verbatim (le ton est pesé — on vérifie qu'elles sortent telles quelles).
+  for (const st of PREMIERS_PAS_STEPS) {
+    const card = q(`.pp-step[data-step="${st.n}"]`, box);
+    chk(!!card && norm(q(".pp-title", card).textContent) === st.title, `étape ${st.n} : titre « ${st.title} »`);
+    chk(!!card && norm(q(".pp-tag", card).textContent) === st.tag, `étape ${st.n} : étiquette « ${st.tag} »`);
+  }
+
+  // Étape 1 avec logement → CTA « Ouvrir la fiche Informations » (label dynamique).
+  chk(norm(q('.pp-step[data-step="1"] .pp-cta', box).textContent) === "Ouvrir la fiche Informations",
+    "étape 1 (logement présent) : CTA « Ouvrir la fiche Informations »");
+
+  // COUVERTURE au rendu : toutes les rubriques de l'index apparaissent une fois,
+  // rangées par step (steps + « Et aussi »), aucune orpheline.
+  const rendered = qa(".pp-rubric", box).map((r) => r.dataset.id);
+  const renderedSet = new Set(rendered);
+  chk(rendered.length === renderedSet.size, "aucune rubrique dupliquée");
+  chk(renderedSet.size === HELP_INDEX.length,
+    `toutes les rubriques rendues (${renderedSet.size}/${HELP_INDEX.length})`);
+  const missing = HELP_INDEX.filter((e) => !renderedSet.has(e.id)).map((e) => e.id);
+  chk(missing.length === 0, "aucune rubrique orpheline : " + (missing.join(", ") || "—"));
+
+  // Chaque rubrique est sous le BON foyer (step n, ou « Et aussi » pour null).
+  let placedOk = true;
+  for (const e of HELP_INDEX) {
+    const host = e.step == null
+      ? q(`.pp-also .pp-rubric[data-id="${e.id}"]`, box)
+      : q(`.pp-step[data-step="${e.step}"] .pp-rubric[data-id="${e.id}"]`, box);
+    if (!host) { placedOk = false; break; }
+  }
+  chk(placedOk, "chaque rubrique est rangée sous son étape (ou « Et aussi »)");
+  chk(!!q(".pp-also", box) && qa(".pp-also .pp-rubric", box).length > 0,
+    "bloc « Et aussi » présent et peuplé (rubriques hors chemin heureux)");
+
+  // Expansion d'une rubrique : question cliquable → étapes + « M'y emmener ».
+  const firstRubric = q(".pp-rubric", box);
+  const rq = q(".pp-rubric-q", firstRubric);
+  chk(q(".pp-rubric-body", firstRubric).classList.contains("hidden"), "rubrique repliée par défaut");
+  rq.click(); await wait(20);
+  chk(!q(".pp-rubric-body", firstRubric).classList.contains("hidden"), "clic déplie la rubrique");
+  chk(qa(".help-steps li", firstRubric).length >= 2, "la rubrique dépliée montre la marche à suivre");
+  chk(!!q(".help-go", firstRubric), "la rubrique dépliée porte « M'y emmener »");
+
+  // Chaque CTA résout vers une route servie (logement courant p1 ou repli).
+  const expected = { 1: "#/properties/p1/editor", 2: "#/properties/p1/editor",
+    3: "#/properties", 4: "#/properties/p1/pois", 5: "#/properties/p1/editor",
+    6: "#/properties/p1/editor", 7: "#/properties" };
+  let ctaOk = true;
+  for (const st of PREMIERS_PAS_STEPS) {
+    q(`.pp-step[data-step="${st.n}"] .pp-cta`, box).click(); await wait(10);
+    if (location.hash !== expected[st.n]) { ctaOk = false; log.push(`  · étape ${st.n} → ${location.hash} (attendu ${expected[st.n]})`); }
+  }
+  chk(ctaOk, "chaque CTA résout :id contre le logement courant (p1) / repli");
+
+  // ── PASSE B : compte VIERGE (zéro logement) ───────────────────────────────
+  PROPS = [];
+  location.hash = "#/premiers-pas";
+  box = await renderInto(renderPremiersPas);
+  chk(qa(".pp-step", box).length === 7, "Premiers pas reste lisible sans logement (7 étapes)");
+  chk(norm(q('.pp-step[data-step="1"] .pp-cta', box).textContent) === "Créer mon logement",
+    "étape 1 (compte vierge) : CTA « Créer mon logement »");
+  q('.pp-step[data-step="4"] .pp-cta', box).click(); await wait(10);
+  chk(location.hash === "#/properties", "sans logement, un CTA :id retombe sur « Mes logements »");
+
+  // État vide de « Mes logements » = un ACCUEIL, plus une page blanche.
+  location.hash = "#/properties";
+  box = await renderInto(renderProperties);
+  const empty = q(".empty", box);
+  chk(!!empty && /Bienvenue sur Holaguia/.test(empty.textContent), "état vide : « Bienvenue sur Holaguia »");
+  chk(!!empty && /Créer mon premier logement/.test(empty.textContent), "état vide : bouton « Créer mon premier logement »");
+  const ppLink = empty && qa("a", empty).find((a) => /Lire les Premiers pas/.test(a.textContent));
+  chk(!!ppLink && ppLink.getAttribute("href") === "#/premiers-pas", "état vide : lien « Lire les Premiers pas » → #/premiers-pas");
+
+  // ── Repli du panneau ⌘K → ouvre « Premiers pas » ──────────────────────────
+  location.hash = "#/properties";
+  openHelpPanel(); await wait(30);
+  chk(!!q(".help-premiers"), "pied du panneau : lien « Premiers pas »");
+  const input = q(".help-input");
+  input.value = "envoyer le guide"; input.dispatchEvent(new Event("input", { bubbles: true }));
+  await wait(30);
+  const seeAll = q(".help-see-all");
+  chk(!!seeAll, "repli « Voir toutes les rubriques d'aide » présent");
+  seeAll.click(); await wait(30);
+  chk(!q(".help-overlay"), "le repli referme le panneau");
+  chk(location.hash === "#/premiers-pas", "le repli ouvre #/premiers-pas (" + location.hash + ")");
+} catch (e) {
+  pass = false; log.push("✗ exception : " + (e && e.message ? e.message : e) + "\n" + (e && e.stack ? e.stack : ""));
+}
+document.getElementById("result").textContent = pass ? ("PASS\n" + log.join("\n")) : ("FAIL\n" + log.join("\n"));
+</script>

@@ -20,6 +20,7 @@ import { renderEditor } from "./views/editor.js";
 import { renderPois } from "./views/pois.js";
 import { renderCalendar } from "./views/calendar.js";
 import { renderSubscription } from "./views/subscription.js";
+import { renderPremiersPas } from "./views/premierspas.js";
 import { helpButton, initHelpShortcut } from "./help/panel.js";
 
 const appEl = document.getElementById("app");
@@ -133,6 +134,9 @@ function renderRoute() {
   const seg = location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
 
   if (seg[0] === "abonnement") return void renderSubscription(view);
+  // #/premiers-pas — le mode d'emploi interactif (V2-31 volet 3b), accessible même
+  // sans logement (un compte vierge doit pouvoir le lire).
+  if (seg[0] === "premiers-pas") return void renderPremiersPas(view);
   if (!seg.length || seg[0] !== "properties") { navigate("#/properties"); return; }
   if (seg.length === 1) return void renderProperties(view);
 

@@ -19,8 +19,9 @@ une entrée d'aide, sinon la suite de tests rougit.**
 |---|---|
 | `frontend/js/help/index.js` | **LA source de vérité** : le tableau `HELP_INDEX` (de la donnée, pas du code). |
 | `frontend/js/help/search.js` | Moteur PUR : normalisation, correspondance tolérante (trigrammes), `searchHelp`, `isCovered`, résolution des routes. |
-| `frontend/js/help/panel.js` | Le panneau (bouton « Aide », ⌘K, rendu, « M'y emmener », journalisation). |
-| `frontend/css/app.css` | Styles `.help-*`. |
+| `frontend/js/help/panel.js` | Le panneau (bouton « Aide », ⌘K, rendu, « M'y emmener », journalisation, repli → « Premiers pas »). |
+| `frontend/js/views/premierspas.js` | **La page « Premiers pas »** (volet 3b) : 7 étapes verbatim, CTAs, rubriques groupées par `step`. |
+| `frontend/css/app.css` | Styles `.help-*` et `.pp-*`. |
 | `backend/api/routers/help.py` | `POST /api/help/searches` — journal best-effort. |
 | `db/migrations/027_help_searches.sql` | Table `help_searches` (métrique de santé de l'index). |
 
@@ -31,6 +32,7 @@ Chaque entrée est un objet :
 ```js
 {
   id: "envoyer-guide",                 // slug stable (traduisible plus tard)
+  step: 7,                             // rang dans la chaîne cible (1–7) ou null — cf. « Premiers pas »
   question: "Comment envoyer le guide à mon voyageur ?",
   keywords: ["envoyer le guide", "email", "whatsapp", "qr", ...],  // + synonymes du terrain
   steps: ["…", "…"],                   // 2 à 4 phrases, ton du modèle étape 1 de l'audit
@@ -48,6 +50,49 @@ Chaque entrée est un objet :
   courant, résolu contre le hash actif ; sans logement courant, une route qui a
   besoin d'un `:id` retombe sur « Mes logements ». Toute route doit résoudre
   (vérifié par `help-search.test.mjs`).
+- **`step`** (volet 3b) : le rang **1 à 7** de la chaîne cible (docs/audit_ux.md
+  §2) auquel la rubrique se rattache, ou **`null`** si elle relève d'un usage HORS
+  du chemin heureux (calendrier, abonnement, équipe d'entretien, suppression). La
+  page « Premiers pas » range chaque rubrique sous son étape ; les `null` tombent
+  dans le bloc final **« Et aussi »**. **Toute entrée porte un `step`** (1–7 ou
+  `null`) — l'absence de champ est refusée par `help-search.test.mjs`.
+
+## La page « Premiers pas » (`#/premiers-pas`, volet 3b)
+
+La marche à suivre **linéaire** que le repli de la recherche promettait :
+`frontend/js/views/premierspas.js` rend la chaîne cible en **7 étapes** (texte
+**verbatim** de l'audit §2, ton pesé — jamais réécrit), chacune avec :
+
+- son **numéro**, son **titre** et une **étiquette** (« Vous fournissez » /
+  « Holaguia s'en charge » / « À votre rythme » / « Vous décidez » / …) qui dit
+  **qui fait quoi** ;
+- un **bouton d'action** (deep-link) qui **résout contre le logement courant**
+  (le premier du compte) avec **repli « Mes logements »** — même patron que
+  `target.route` du volet 3a (`resolveRoute`) ; l'étape 1 adapte son libellé
+  (« Créer mon logement » sans logement, « Ouvrir la fiche Informations » sinon) ;
+- dessous, **repliées et dépliables**, les **rubriques d'aide de l'étape** (celles
+  dont `step` vaut ce rang) : question cliquable → étapes + « M'y emmener » (même
+  rendu que le panneau ⌘K, classes `.help-*` partagées).
+
+La page est **accessible sans logement** (un compte vierge doit pouvoir la lire).
+Les rubriques `step: null` sont réunies en fin de page sous **« Et aussi »**.
+
+**Branchements** : le repli **« Voir toutes les rubriques d'aide »** du panneau ⌘K
+ouvre désormais cette page (au lieu de la liste brute) ; le **pied du panneau**
+porte un lien **« Premiers pas »** à côté de l'astuce ⌘K ; et l'**état vide de
+« Mes logements »** (zéro logement) devient un **accueil** — « Bienvenue sur
+Holaguia » + le texte d'accueil en deux phrases + « Créer mon premier logement »
+(primaire) + « Lire les Premiers pas » (secondaire).
+
+### Choisir l'étape d'une nouvelle entrée
+
+Rattachez la rubrique à l'étape de la chaîne qu'elle **sert** (1 le logement, 2 les
+indispensables, 3 la recherche des lieux, 4 la validation, 5 le reste du guide, 6
+publier/tester, 7 envoyer). En cas de doute, la meilleure boussole est la **cible**
+`target.route` : une rubrique qui mène à `.../pois` sert l'étape 4, à l'éditeur les
+étapes 1/2/5/6, au calendrier/abonnement → `step: null` (« Et aussi »). L'étape 3
+(« Holaguia s'en charge ») peut rester **sans rubrique** : le système agit seul.
+Aucune entrée ne reste sans `step` — sinon la suite rougit.
 
 ## La recherche (`search.js`)
 
@@ -122,6 +167,8 @@ WHERE results_count = 0 GROUP BY query ORDER BY 2 DESC;
 
 ## Hors périmètre (volets suivants)
 
-Le **méta-guide** et la page **« Premiers pas »** (3b), la **traduction** de l'aide,
-les **infobulles par champ** (volet 1 en a posé quelques-unes), le **fil des 7
-étapes** (volet 2).
+Le **méta-guide** (guide de démonstration « Villa Holaguia » — session de contenu,
+pas de code), la **traduction** de l'aide, les **infobulles par champ** (volet 1 en
+a posé quelques-unes), et le **fil persistant des 7 étapes** sur les cartes (volet
+2 — la page « Premiers pas » en est la version lisible ; le volet 2 en fera la
+version vivante).

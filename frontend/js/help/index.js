@@ -21,11 +21,19 @@
  * `target.route` : gabarit de route existante (`:id` = logement courant, résolu par
  * le panneau contre le hash actif ; à défaut → « Mes logements »). Toute route doit
  * résoudre (vérifié par le test).
+ *
+ * `step` (V2-31, volet 3b) : le rang (1 à 7) de la CHAÎNE cible du guide
+ * (docs/audit_ux.md §2) auquel la rubrique se rattache, ou `null` si elle relève
+ * d'un usage HORS du chemin heureux (calendrier, abonnement, équipe, suppression).
+ * La page « Premiers pas » (#/premiers-pas) range chaque rubrique sous son étape ;
+ * les `null` tombent dans le bloc final « Et aussi ». Toute entrée porte un `step`
+ * (1–7 ou null) — l'absence de champ est refusée par le test (aucune orpheline).
  */
 
 export const HELP_INDEX = [
   {
     id: "envoyer-guide",
+    step: 7,
     question: "Comment envoyer le guide à mon voyageur ?",
     keywords: ["envoyer le guide", "envoyer", "partager le guide", "email", "e-mail",
       "whatsapp", "sms", "qr", "qr code", "lien du guide", "holaguia", "envoi",
@@ -39,6 +47,7 @@ export const HELP_INDEX = [
   },
   {
     id: "photo-couverture",
+    step: 1,
     question: "Ajouter une photo de couverture au logement",
     keywords: ["photo de couverture", "couverture", "cover", "photo principale",
       "image du logement", "photo du logement", "vignette", "photo d'accueil"],
@@ -51,6 +60,7 @@ export const HELP_INDEX = [
   },
   {
     id: "section-vide-guide",
+    step: 5,
     question: "Pourquoi une rubrique vide n'apparaît-elle pas dans le guide ?",
     keywords: ["rubrique vide", "section vide", "n'apparaît pas", "invisible",
       "livraison de repas", "food delivery", "manquante", "pas affichée",
@@ -64,6 +74,7 @@ export const HELP_INDEX = [
   },
   {
     id: "rattacher-bloc",
+    step: null,
     question: "Rattacher un séjour en double (bloc en trop)",
     keywords: ["rattacher", "rattacher ce bloc", "bloc en double", "doublon",
       "double réservation", "bloc miroir", "chevauchement", "deux séjours identiques",
@@ -77,6 +88,7 @@ export const HELP_INDEX = [
   },
   {
     id: "dates-ajustees",
+    step: null,
     question: "Les dates que je corrige reviennent après la synchronisation",
     keywords: ["dates ajustées", "dates ≠ flux", "reprendre les dates du flux",
       "dates modifiées", "dates écrasées", "synchro écrase", "date revient",
@@ -90,6 +102,7 @@ export const HELP_INDEX = [
   },
   {
     id: "succession-fiche",
+    step: null,
     question: "Ma fiche a disparu après une modification sur Vrbo / Airbnb",
     keywords: ["fiche à reprendre", "fiche disparue", "succession", "reprendre la fiche",
       "modification vrbo", "abritel", "réservation modifiée", "séjour vierge",
@@ -103,6 +116,7 @@ export const HELP_INDEX = [
   },
   {
     id: "code-boite-cles",
+    step: 2,
     question: "Mettre un code de boîte à clés (et le changer pour un séjour)",
     keywords: ["code de boîte à clés", "boîte à clés", "keybox", "code boîte",
       "code d'accès", "code du logement", "code séjour", "clé", "coffre à clés",
@@ -116,6 +130,7 @@ export const HELP_INDEX = [
   },
   {
     id: "langue-guide",
+    step: 7,
     question: "Dans quelle langue le guide est-il envoyé au locataire ?",
     keywords: ["langue du locataire", "langue du guide", "langue d'envoi",
       "langue", "traduire l'envoi", "guest lang", "quelle langue", "langue email"],
@@ -128,6 +143,7 @@ export const HELP_INDEX = [
   },
   {
     id: "importer-calendrier",
+    step: null,
     question: "Importer mon calendrier Airbnb / Abritel (iCal)",
     keywords: ["importer un calendrier", "flux de calendrier", "ical",
       "airbnb", "abritel", "vrbo", "booking", "url ical", "ajouter un flux",
@@ -141,6 +157,7 @@ export const HELP_INDEX = [
   },
   {
     id: "synchroniser",
+    step: null,
     question: "Synchroniser les réservations (fréquence, bouton)",
     keywords: ["synchroniser", "synchroniser maintenant", "synchronisation",
       "sync", "fréquence", "mise à jour des réservations", "rafraîchir le calendrier",
@@ -154,6 +171,7 @@ export const HELP_INDEX = [
   },
   {
     id: "publier-guide",
+    step: 6,
     question: "Publier ou dépublier mon guide",
     keywords: ["publier", "publier le guide", "dépublier", "mettre en ligne",
       "rendre public", "brouillon", "retirer le guide", "mise en ligne", "état du guide"],
@@ -166,6 +184,7 @@ export const HELP_INDEX = [
   },
   {
     id: "valider-suggestions",
+    step: 4,
     question: "Valider les lieux suggérés (rechercher les lieux)",
     keywords: ["lieux suggérés", "suggestions à valider", "valider", "à valider",
       "retenus", "rejetés", "approuver", "rejeter", "modifier", "rechercher les lieux",
@@ -181,6 +200,7 @@ export const HELP_INDEX = [
   },
   {
     id: "coup-de-coeur",
+    step: 4,
     question: "Ajouter un coup de cœur (un lieu personnel)",
     keywords: ["coup de cœur", "ajouter un lieu", "lieu favori", "recommandation",
       "mon restaurant préféré", "saisie manuelle", "ajouter au guide", "lieu personnel",
@@ -194,6 +214,7 @@ export const HELP_INDEX = [
   },
   {
     id: "equipe-entretien",
+    step: null,
     question: "L'espace « Équipe d'entretien » et son cahier (QR)",
     keywords: ["équipe d'entretien", "cahier de préparation", "ménage", "femme de ménage",
       "staff", "personnel", "cahier d'entretien", "lien du cahier", "qr équipe",
@@ -208,6 +229,7 @@ export const HELP_INDEX = [
   },
   {
     id: "medias-section",
+    step: 5,
     question: "Ajouter des photos ou des documents à une rubrique",
     keywords: ["ajouter des photos", "photos", "documents", "pdf", "photo",
       "image", "illustrer", "photos et documents", "glisser-déposer", "téléverser",
@@ -221,6 +243,7 @@ export const HELP_INDEX = [
   },
   {
     id: "wifi",
+    step: 2,
     question: "Wifi : mot de passe et QR dans le guide",
     keywords: ["wifi", "wi-fi", "mot de passe wifi", "clé wifi", "code wifi",
       "réseau", "ssid", "qr wifi", "espace sécurisé", "connexion internet",
@@ -234,6 +257,7 @@ export const HELP_INDEX = [
   },
   {
     id: "envoi-auto-j7",
+    step: 7,
     question: "L'envoi automatique du guide à J-7 (et son interrupteur)",
     keywords: ["envoi automatique", "envoi auto", "j-7", "automatique", "7 jours avant",
       "interrupteur", "désactiver l'envoi automatique", "campagne", "avant l'arrivée",
@@ -247,6 +271,7 @@ export const HELP_INDEX = [
   },
   {
     id: "abonnement",
+    step: null,
     question: "Essai, abonnement et ajout d'un logement",
     keywords: ["abonnement", "mon abonnement", "offre", "essai", "changer d'offre",
       "offre actuelle", "passer en pro", "passer", "gratuit", "pro", "solo",
@@ -261,6 +286,7 @@ export const HELP_INDEX = [
   },
   {
     id: "demandes-voyageur",
+    step: null,
     question: "Accepter ou refuser une demande du voyageur",
     keywords: ["demande du voyageur", "demande de service", "demande voyageur",
       "accepter", "refuser", "service à la demande", "requête du locataire",
@@ -274,6 +300,7 @@ export const HELP_INDEX = [
   },
   {
     id: "voyageurs-enfants",
+    step: null,
     question: "Voyageurs et âges des enfants (draps, welcome pack)",
     keywords: ["voyageurs", "nombre de voyageurs", "âges des enfants", "enfants",
       "lit bébé", "chaise haute", "draps", "welcome pack", "capacité",
@@ -287,6 +314,7 @@ export const HELP_INDEX = [
   },
   {
     id: "visible-completee",
+    step: 5,
     question: "Les bascules « Visible dans le guide » et « Section complétée »",
     keywords: ["visible dans le guide", "section complétée", "bascule", "interrupteur",
       "masquer une rubrique", "complétude", "avancement", "indicateur", "cocher",
@@ -300,6 +328,7 @@ export const HELP_INDEX = [
   },
   {
     id: "traductions",
+    step: 6,
     question: "Traduire le guide (mettre à jour les traductions)",
     keywords: ["traductions", "traduire", "langues du guide", "traductions à jour",
       "à traduire", "périmé", "multilingue", "traduction", "anglais", "espagnol",
@@ -313,6 +342,7 @@ export const HELP_INDEX = [
   },
   {
     id: "ajuster-position",
+    step: 1,
     question: "Ajuster la position du logement sur la carte",
     keywords: ["ajuster la position", "position", "placer sur la carte", "carte",
       "géocodage", "localiser le logement", "point exact", "adresse mal placée",
@@ -326,6 +356,7 @@ export const HELP_INDEX = [
   },
   {
     id: "informations-logement",
+    step: 1,
     question: "Modifier les informations du logement (nom, adresse, contact)",
     keywords: ["informations", "fiche du logement", "nom du logement", "adresse",
       "contact", "modifier le logement", "changer l'adresse", "coordonnées",
@@ -339,6 +370,7 @@ export const HELP_INDEX = [
   },
   {
     id: "voir-guide",
+    step: 6,
     question: "Prévisualiser le guide comme un voyageur",
     keywords: ["voir le guide", "aperçu", "prévisualiser", "ouvrir le guide",
       "tester le guide", "à quoi ressemble le guide", "consulter le guide", "prévisu"],
@@ -351,6 +383,7 @@ export const HELP_INDEX = [
   },
   {
     id: "qr-imprimer",
+    step: 6,
     question: "Imprimer l'affiche QR du guide",
     keywords: ["qr à imprimer", "affiche", "poster", "imprimer", "qr code à imprimer",
       "afficher dans le logement", "pdf du qr", "code à afficher", "qr code"],
@@ -363,6 +396,7 @@ export const HELP_INDEX = [
   },
   {
     id: "copier-lien",
+    step: 6,
     question: "Copier le lien du guide",
     keywords: ["copier le lien", "lien du guide", "partager le lien", "url du guide",
       "adresse du guide", "copier", "récupérer le lien", "lien public"],
@@ -375,6 +409,7 @@ export const HELP_INDEX = [
   },
   {
     id: "supprimer-logement",
+    step: null,
     question: "Supprimer un logement",
     keywords: ["supprimer le logement", "supprimer", "effacer un logement",
       "corbeille", "retirer un logement", "supprimer définitivement"],
@@ -387,6 +422,7 @@ export const HELP_INDEX = [
   },
   {
     id: "nouveau-logement",
+    step: 1,
     question: "Créer un nouveau logement",
     keywords: ["nouveau logement", "créer un logement", "ajouter un logement",
       "premier logement", "commencer", "nouvelle propriété", "démarrer", "mes logements"],
@@ -399,6 +435,7 @@ export const HELP_INDEX = [
   },
   {
     id: "calendrier-sejours",
+    step: null,
     question: "Gérer le calendrier des séjours",
     keywords: ["calendrier", "calendrier des séjours", "séjours", "réservations",
       "nouveau séjour", "créer le séjour", "ajouter un séjour", "planning",
