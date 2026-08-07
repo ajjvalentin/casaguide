@@ -14,6 +14,14 @@ lien/QR code.
 §4, §5, §8… dans les commentaires du code renvoient à ce document. Le lire
 avant toute évolution fonctionnelle.
 
+**Partage des gestes (doctrine, 06/08/2026).** `git push`, `ssh` vers le VPS et
+`deploy.sh` sont les gestes d'ANDRÉ, exclusivement — jamais exécutés par Claude
+Code, et jamais PROPOSÉS comme prochaine action (une suggestion « déploie sur
+le VPS » affichée au prompt le 06/08 a déclenché une alerte de sécurité — la
+frontière vaut aussi pour les suggestions). La mission de Claude Code se
+termine au commit local, hash en première ligne du rapport ; la suite
+appartient à André.
+
 **Marque vs. nom technique (M-29).** Le produit s'appelle **Holaguia** (H
 majuscule, sans accent — jamais « HolaGuia » ni « Holaguía »). C'est le seul
 nom qu'un humain doit voir : back-office, guides `/g` et `/s`, PWA, emails,
