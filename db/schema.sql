@@ -284,10 +284,13 @@ CREATE TABLE guide_sends (
     kind        TEXT NOT NULL CHECK (kind IN ('stay', 'showcase')),
     lang        TEXT NOT NULL,
     recipient   TEXT NOT NULL,
-    -- Origine de l'envoi (V2-23d volet 2) : 'manual' (fenêtre du back-office) ou
-    -- 'auto' (planificateur J-7). Le registre reste le verrou d'idempotence : une
-    -- ligne kind='stay' (quelle que soit l'origine) empêche tout renvoi automatique.
-    origin      TEXT NOT NULL DEFAULT 'manual' CHECK (origin IN ('manual', 'auto')),
+    -- Origine de l'envoi : 'manual' (fenêtre du back-office), 'auto' (planificateur
+    -- J-7, V2-23d volet 2) ou 'whatsapp_assisted' (« Marquer envoyé » du J-7 assisté
+    -- WhatsApp, V2-32 volet 1 — geste déclaratif : wa.me ne confirme rien). Le
+    -- registre reste le verrou d'idempotence : une ligne kind='stay' (quelle que soit
+    -- l'origine) empêche tout autre envoi (email automatique du lendemain compris).
+    origin      TEXT NOT NULL DEFAULT 'manual'
+                CHECK (origin IN ('manual', 'auto', 'whatsapp_assisted')),
     sent_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_guide_sends_property ON guide_sends(property_id, sent_at DESC);

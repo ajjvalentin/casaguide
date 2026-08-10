@@ -1254,6 +1254,18 @@ def list_auto_send_candidates(conn, *, today, horizon_end) -> list[dict]:
         (today, horizon_end)).fetchall()
 
 
+def stay_sent_booking_ids(conn, property_id: str) -> set[str]:
+    """Ensemble des id de séjours d'un logement pour lesquels une ligne `guide_sends`
+    kind='stay' existe (tout origin : manuel, auto, WhatsApp assisté). Le registre
+    est le verrou d'idempotence (V2-32) : sert à la vue du calendrier pour retirer
+    ces séjours de la file WhatsApp ET éteindre le motif de relance email manquant."""
+    rows = conn.execute(
+        """SELECT DISTINCT booking_id FROM guide_sends
+           WHERE property_id = %s AND kind = 'stay' AND booking_id IS NOT NULL""",
+        (property_id,)).fetchall()
+    return {str(r["booking_id"]) for r in rows}
+
+
 def last_guide_send(conn, property_id: str, *, kind: str,
                     booking_id: str | None) -> dict | None:
     """Dernier envoi du guide pour une cible : un séjour donné (kind='stay' +

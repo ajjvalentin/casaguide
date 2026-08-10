@@ -54,6 +54,42 @@ function ddmm(iso) { const [, m, d] = (iso || "").split("-"); return `${d}/${m}`
 
 function isEmail(v) { return /.+@.+\..+/.test((v || "").trim()); }
 
+// Message localisé prêt à envoyer, à partir des gabarits kind-aware (V2-23d) : le
+// greeting réutilise ui.send_hello / _generic, {property}/{start}/{end} substitués.
+// PUR — partagé par la fenêtre d'envoi ET la file WhatsApp du calendrier (V2-32) :
+// une seule construction du wa.me/mailto, jamais dupliquée. `target` ∈ stay|showcase|house.
+function composeParts({ property, booking, target, url, tpl }) {
+  const who = target === "stay" && booking ? firstName(booking.guest_name) : "";
+  const sub = (s) => (s || "").replace(/\{property\}/g, property.name)
+    .replace("{start}", target === "stay" && booking ? ddmm(booking.starts_on) : "")
+    .replace("{end}", target === "stay" && booking ? ddmm(booking.ends_on) : "");
+  const greeting = tpl
+    ? (who ? tpl.hello.replace("{name}", who) : tpl.hello_generic)
+    : (who ? `Bonjour ${who},` : "Bonjour,");
+  const intro = sub(tpl ? tpl.intro : "Voici le lien de votre guide :");
+  const signoff = tpl ? tpl.signoff : "";
+  const subject = sub(tpl ? tpl.subject : "Votre guide — {property}");
+  const emailBody = `${greeting}\n\n${intro}\n${url}${signoff ? "\n\n" + signoff : ""}`;
+  const shortMsg = `${greeting} ${intro} ${url}`;
+  return { subject, emailBody, shortMsg };
+}
+
+/* Lien WhatsApp pré-rempli d'un séjour (réutilisé par la file J-7 du calendrier,
+   V2-32 volet 1) : MÊMES gabarits kind-aware, MÊME `ensure_stay_token` (api.stayLink,
+   idempotent côté serveur), MÊME langue effective que la fenêtre d'envoi — jamais
+   dupliqués. `lang` est la langue effective du séjour (guest_lang si offerte, sinon
+   langue du logement) : c'est la langue naturelle du lien nu `/b/`, donc pas de
+   `?lang=`. Renvoie `{ href, digits }`, ou `null` si le séjour n'a pas de téléphone. */
+export async function stayWhatsAppLink(property, booking, lang) {
+  const digits = waDigits(booking.guest_phone);
+  if (!digits) return null;
+  const r = await api.stayLink(property.id, booking.id);   // ensure_stay_token
+  const url = r.url;                                         // lien nu = langue naturelle
+  const tpl = await api.sendTemplates(lang, "stay").catch(() => null);
+  const { shortMsg } = composeParts({ property, booking, target: "stay", url, tpl });
+  return { href: `https://wa.me/${digits}?text=${encodeURIComponent(shortMsg)}`, digits };
+}
+
 // « 02/08 à 21h05 » — repère du dernier envoi.
 function fmtSentAt(iso) {
   const d = new Date(iso);
@@ -362,23 +398,9 @@ export async function openSendMenu(property) {
   }
 
   // Message localisé (le greeting réutilise ui.send_hello / _generic ; jamais de
-  // libellé en dur). {name} = prénom du locataire (séjour), sinon salutation neutre.
+  // libellé en dur). Délègue au composeur PUR partagé avec la file WhatsApp (V2-32).
   function compose(url, tpl) {
-    const who = target === "stay" ? firstName(booking.guest_name) : "";
-    // Substitution des variables des gabarits kind-aware (V2-23d) : {property}
-    // partout, {start}/{end} pour le sujet de séjour.
-    const sub = (s) => (s || "").replace(/\{property\}/g, property.name)
-      .replace("{start}", target === "stay" && booking ? ddmm(booking.starts_on) : "")
-      .replace("{end}", target === "stay" && booking ? ddmm(booking.ends_on) : "");
-    const greeting = tpl
-      ? (who ? tpl.hello.replace("{name}", who) : tpl.hello_generic)
-      : (who ? `Bonjour ${who},` : "Bonjour,");
-    const intro = sub(tpl ? tpl.intro : "Voici le lien de votre guide :");
-    const signoff = tpl ? tpl.signoff : "";
-    const subject = sub(tpl ? tpl.subject : "Votre guide — {property}");
-    const emailBody = `${greeting}\n\n${intro}\n${url}${signoff ? "\n\n" + signoff : ""}`;
-    const shortMsg = `${greeting} ${intro} ${url}`;
-    return { subject, emailBody, shortMsg };
+    return composeParts({ property, booking, target, url, tpl });
   }
 
   function emailRow(url, tpl) {

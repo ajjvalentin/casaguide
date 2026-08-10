@@ -18,6 +18,9 @@ import { handleQuotaError } from "../quota.js";
 import { analyzeCandidate } from "../lib/overlaps.js";
 import { suggestEquipment } from "../lib/care.js";
 import { publishedLanguageCodes } from "../languages.js";
+// V2-32 volet 1 — la file WhatsApp réutilise le wa.me pré-rempli de la fenêtre
+// d'envoi (mêmes gabarits, même ensure_stay_token, même langue effective).
+import { stayWhatsAppLink } from "../components/sendmenu.js";
 
 const PLATFORMS = [
   ["airbnb", "Airbnb"], ["vrbo", "Vrbo / Abritel"], ["booking", "Booking"],
@@ -49,6 +52,9 @@ const LANG_LABELS = {
   nl: "Néerlandais", it: "Italien", pt: "Portugais",
 };
 const langLabel = (c) => LANG_LABELS[c] || c;
+// Drapeau décoratif d'un code langue (repli : rien). Aligné sur sendmenu.js.
+const FLAGS = { fr: "🇫🇷", en: "🇬🇧", es: "🇪🇸", de: "🇩🇪", nl: "🇳🇱",
+  it: "🇮🇹", pt: "🇵🇹", sq: "🇦🇱" };
 const MONTHS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.",
   "août", "sept.", "oct.", "nov.", "déc."];
 
@@ -72,6 +78,13 @@ function fmtRange(startIso, endIso) {
   const a = parseISO(startIso), b = parseISO(endIso);
   const end = a.y === b.y ? `${fmtDay(endIso)}.${b.y}` : fmtDayLong(endIso);
   return `${fmtDay(startIso)} → ${end}`;
+}
+// Plage compacte pour la file WhatsApp : « 23.08–01.09 » (aligné sur sendmenu.js).
+function fmtRangeShort(startIso, endIso) {
+  const a = parseISO(startIso), b = parseISO(endIso);
+  return a.m === b.m
+    ? `${pad(a.d)}–${pad(b.d)}.${pad(a.m)}`
+    : `${pad(a.d)}.${pad(a.m)}–${pad(b.d)}.${pad(b.m)}`;
 }
 function pad(n) { return String(n).padStart(2, "0"); }
 // Code technique à partir d'un libellé (catalogue de demandes) : ASCII, minuscules.
@@ -208,6 +221,12 @@ export async function renderCalendar(view, pid) {
     // saisie rapide (le nombre de voyageurs manque sur presque tous les imports).
     const incomplete = upcoming.filter((b) => (b.missing_info || []).length);
     if (incomplete.length) body.append(incompleteBanner(incomplete));
+
+    // V2-32 volet 1 — file des guides à envoyer par WhatsApp (J-7 assisté). Ton
+    // NEUTRE (une opportunité, pas une alerte) : le moteur J-7 détecte qui doit
+    // recevoir le guide et présente l'envoi WhatsApp prêt, un appui par locataire.
+    const waQueue = data.whatsapp_queue || [];
+    if (waQueue.length) body.append(whatsappBanner(waQueue));
 
     // Rotations mises en évidence, avec signal de rotation gradué (§2.2). Le
     // triangle n'apparaît QUE pour une rotation infaisable (danger réel) ; sinon
@@ -411,6 +430,74 @@ export async function renderCalendar(view, pid) {
     actions.append(el("button", { class: "btn btn-sm btn-ghost", type: "button",
       onClick: () => openBookingModal(b) }, "Ouvrir la fiche"));
     return el("div", { class: "qf-row" }, info, actions);
+  }
+
+  // ── File des guides à envoyer par WhatsApp (J-7 assisté, V2-32 volet 1) ────
+  // Signal gradué NEUTRE : une opportunité, pas une alerte. Une ligne par séjour,
+  // avec le wa.me pré-rempli (réutilisé de la fenêtre d'envoi) et « Marquer envoyé ✓ ».
+  // wa.me n'offre AUCUNE confirmation → deux gestes distincts : ouvrir WhatsApp
+  // (le lien) PUIS marquer ici (le POST). Une ligne d'aide le dit.
+  function whatsappBanner(queue) {
+    const panel = el("div", { class: "wa-panel", hidden: true });
+    // Le manque devient une invitation (§3, cohérence audit) : on rappelle POURQUOI
+    // marquer — sans quoi Holaguia enverrait le doublon email du lendemain.
+    panel.append(el("div", { class: "wa-help" },
+      "Après l'envoi dans WhatsApp, marquez-le ici pour que Holaguia n'envoie pas "
+      + "de doublon (email automatique)."));
+    for (const e of queue) panel.append(waRow(e));
+    const chev = el("span", { class: "wa-chev" }, icon("chevron-down", 16));
+    const head = el("button", {
+      class: "wa-head", type: "button", "aria-expanded": "false",
+      onClick: () => {
+        const open = panel.hidden;
+        panel.hidden = !open;
+        head.setAttribute("aria-expanded", open ? "true" : "false");
+        chev.classList.toggle("wa-open", open);
+      },
+    },
+      icon("message-circle", 17),
+      el("b", {}, `${queue.length} guide${queue.length > 1 ? "s" : ""} à envoyer par WhatsApp`),
+      chev);
+    return el("div", { class: "wa-box" }, head, panel);
+  }
+
+  function waRow(e) {
+    const flag = FLAGS[(e.lang || "").toLowerCase()] || "";
+    const who = el("div", { class: "wa-who" },
+      el("b", {}, e.guest_name || "Séjour sans nom"),
+      el("span", { class: "muted" }, ` · ${fmtRangeShort(e.starts_on, e.ends_on)}`),
+      flag ? el("span", { class: "wa-flag" }, ` · ${flag}`) : null);
+
+    // « Envoyer par WhatsApp » : ancre dont le href (wa.me pré-rempli) est résolu en
+    // tâche de fond (ensure_stay_token + gabarits) — MÊME construction que la fenêtre
+    // d'envoi (jamais dupliquée). Le clic n'appelle PAS mark-sent (ouvrir ≠ envoyer).
+    const waLink = el("a", { class: "btn btn-sm btn-primary wa-send",
+      target: "_blank", rel: "noopener" },
+      icon("message-circle", 15), "Envoyer par WhatsApp");
+    const bk = (data.bookings || []).find((x) => x.id === e.booking_id) || {
+      id: e.booking_id, guest_name: e.guest_name, guest_phone: e.phone,
+      starts_on: e.starts_on, ends_on: e.ends_on };
+    stayWhatsAppLink(property, bk, e.lang)
+      .then((link) => { if (link) waLink.href = link.href; })
+      .catch(() => { /* href laissé absent : jamais d'erreur bloquante */ });
+
+    // « Marquer envoyé ✓ » : le POST déclaratif. La ligne disparaît (le registre
+    // retire le séjour de la file au rechargement).
+    const markBtn = el("button", { class: "btn btn-sm wa-mark", type: "button" },
+      icon("check", 15), "Marquer envoyé ✓");
+    markBtn.onclick = async () => {
+      markBtn.disabled = true;
+      try {
+        await api.markSent(pid, e.booking_id);
+        toast("Guide marqué comme envoyé.", "ok");
+        await reload();
+      } catch (err) {
+        markBtn.disabled = false;
+        if (!handleQuotaError(err)) toast(err.message || "Marquage impossible.", "err");
+      }
+    };
+    return el("div", { class: "wa-row", dataset: { bid: e.booking_id } }, who,
+      el("div", { class: "wa-actions" }, waLink, markBtn));
   }
 
   // ── Flux de calendrier (iCal) ─────────────────────────────────────────────

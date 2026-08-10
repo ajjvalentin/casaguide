@@ -27,6 +27,7 @@ os.environ.setdefault("MEDIA_ROOT",
                       os.path.join(tempfile.gettempdir(), "casaguide-test-media"))
 
 import psycopg  # noqa: E402
+from psycopg.rows import dict_row  # noqa: E402
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -34,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from api.deps import (get_calendar_fetcher, get_mailer,  # noqa: E402
                       get_translation_runner)
+from api import guidesend  # noqa: E402
 from api.mailer import ConsoleMailer  # noqa: E402
 from api.main import app  # noqa: E402
 from enrich.settings import settings  # noqa: E402
@@ -1116,3 +1118,202 @@ def test_owner_accepts_guest_request(client):
     view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
     row = next(b for b in view["bookings"] if b["id"] == bid)
     assert row["pending_guest_requests"] == 0
+
+
+# ── J-7 assisté WhatsApp : file d'envoi + « Marquer envoyé » (V2-32 volet 1) ──
+
+def _publish(client, h, pid):
+    """Publie le guide (le J-7 exige un logement publié)."""
+    client.patch(f"/api/properties/{pid}", headers=h, json={"status": "published"})
+
+
+def _stay_in_window(client, h, pid, **over):
+    """Séjour occupé dont l'arrivée tombe dans la fenêtre J-7 (aujourd'hui + 3)."""
+    today = dt.date.today()
+    body = {"starts_on": (today + dt.timedelta(days=3)).isoformat(),
+            "ends_on": (today + dt.timedelta(days=10)).isoformat(),
+            "guest_name": "Tracy Taylor", "nature": "reservation",
+            "guest_count": 2, "guest_phone": "+34 600 11 22 33"}
+    body.update(over)
+    r = client.post(f"/api/properties/{pid}/bookings", headers=h, json=body)
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _db():
+    """Connexion base au même format de lignes (dict_row) que l'API de production."""
+    return psycopg.connect(settings.db_dsn, row_factory=dict_row)
+
+
+def _count_stay_sends(bid):
+    with _db() as conn:
+        return conn.execute(
+            "SELECT count(*) AS n FROM guide_sends "
+            "WHERE booking_id = %s AND kind = 'stay'", (bid,)).fetchone()["n"]
+
+
+class _CapMailer:
+    """Mailer capturant les destinataires servis (aucun envoi réel)."""
+    def __init__(self): self.sent = []
+    def send(self, to, email): self.sent.append((to, email))
+
+
+def _run_auto_send(today):
+    """Exécute le planificateur J-7 email (ops) contre la vraie base, mailer capturé.
+    Renvoie la liste des destinataires servis."""
+    with _db() as conn:
+        m = _CapMailer()
+        guidesend.run_auto_send(conn, m, base_url="https://holaguia.com", today=today)
+        return [to for to, _ in m.sent]
+
+
+def test_whatsapp_queue_lists_stay_with_phone(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    bid = _stay_in_window(client, h, pid)
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    q = view["whatsapp_queue"]
+    assert len(q) == 1
+    e = q[0]
+    assert e["booking_id"] == bid
+    assert e["guest_name"] == "Tracy Taylor"
+    assert e["phone"] == "+34 600 11 22 33"
+    assert e["lang"] == "fr"          # guest_lang absent → langue du logement
+
+
+def test_whatsapp_queue_excludes_stay_without_phone(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    _stay_in_window(client, h, pid, guest_phone=None, guest_email="x@ex.com")
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert view["whatsapp_queue"] == []
+
+
+def test_whatsapp_queue_unpublished_is_empty(client):
+    h = _register(client)
+    pid = _make_property(client, h)             # brouillon (jamais publié)
+    _stay_in_window(client, h, pid)
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert view["whatsapp_queue"] == []
+
+
+def test_whatsapp_queue_uses_offered_guest_lang(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    # Langue publiée du logement → offerte : la file la retient pour ce séjour.
+    with _db() as conn:
+        conn.execute("UPDATE properties SET published_langs = ARRAY['en'] WHERE id = %s",
+                     (pid,))
+        conn.commit()
+    _stay_in_window(client, h, pid, guest_lang="en")
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert view["whatsapp_queue"][0]["lang"] == "en"
+    # Une langue NON offerte retombe sur la langue du logement.
+    _stay_in_window(client, h, pid, guest_lang="de",
+                    starts_on=(dt.date.today() + dt.timedelta(days=4)).isoformat())
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    de_entry = next(e for e in view["whatsapp_queue"] if e["lang"] != "en")
+    assert de_entry["lang"] == "fr"
+
+
+def test_mark_sent_records_whatsapp_row(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    bid = _stay_in_window(client, h, pid)
+    r = client.post(f"/api/properties/{pid}/bookings/{bid}/mark-sent", headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["already"] is False
+    assert body["recipient"] == "+34 600 11 22 33"
+    assert body["lang"] == "fr"
+    with _db() as conn:
+        row = conn.execute(
+            "SELECT origin, kind, recipient FROM guide_sends WHERE booking_id = %s",
+            (bid,)).fetchone()
+    assert row["origin"] == "whatsapp_assisted" and row["kind"] == "stay"
+    assert row["recipient"] == "+34 600 11 22 33"
+
+
+def test_mark_sent_removes_from_queue(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    bid = _stay_in_window(client, h, pid)
+    before = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert len(before["whatsapp_queue"]) == 1
+    client.post(f"/api/properties/{pid}/bookings/{bid}/mark-sent", headers=h)
+    after = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    assert after["whatsapp_queue"] == []
+
+
+def test_mark_sent_idempotent_no_double(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    bid = _stay_in_window(client, h, pid)
+    first = client.post(f"/api/properties/{pid}/bookings/{bid}/mark-sent", headers=h)
+    second = client.post(f"/api/properties/{pid}/bookings/{bid}/mark-sent", headers=h)
+    assert first.json()["already"] is False
+    assert second.status_code == 200 and second.json()["already"] is True
+    assert _count_stay_sends(bid) == 1        # aucun doublon
+
+
+def test_mark_sent_without_phone_is_rejected(client):
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    bid = _stay_in_window(client, h, pid, guest_phone=None, guest_email="x@ex.com")
+    r = client.post(f"/api/properties/{pid}/bookings/{bid}/mark-sent", headers=h)
+    assert r.status_code == 422
+
+
+def test_mark_sent_foreign_booking_404(client):
+    h1 = _register(client)
+    pid1 = _make_property(client, h1)
+    _publish(client, h1, pid1)
+    bid = _stay_in_window(client, h1, pid1)
+    h2 = _register(client)
+    pid2 = _make_property(client, h2)
+    r = client.post(f"/api/properties/{pid2}/bookings/{bid}/mark-sent", headers=h2)
+    assert r.status_code == 404
+
+
+def test_mark_sent_suppresses_next_auto_email(client):
+    """Test croisé (§5) : après un « Marquer envoyé » WhatsApp, l'email automatique
+    du lendemain ne part PAS pour ce séjour (le registre arbitre). Un séjour témoin,
+    non marqué, part bien — preuve que le planificateur n'est pas inerte."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    marked = _stay_in_window(client, h, pid, guest_name="Marque",
+                             guest_email="marque@ex.com")
+    control = _stay_in_window(
+        client, h, pid, guest_name="Temoin", guest_email="temoin@ex.com",
+        guest_phone=None,
+        starts_on=(dt.date.today() + dt.timedelta(days=4)).isoformat())
+    client.post(f"/api/properties/{pid}/bookings/{marked}/mark-sent", headers=h)
+    recipients = _run_auto_send(dt.date.today())
+    assert "marque@ex.com" not in recipients   # supprimé par le mark-sent WhatsApp
+    assert "temoin@ex.com" in recipients        # le planificateur fonctionne
+
+
+def test_email_missing_reminder_extinguished_after_send(client):
+    """§4 — la pastille « email manquant » (auto_send_email_missing) s'éteint dès
+    qu'une ligne guide_sends stay existe (ici via mark-sent WhatsApp)."""
+    h = _register(client)
+    pid = _make_property(client, h)
+    _publish(client, h, pid)
+    bid = _stay_in_window(client, h, pid, guest_email=None)   # téléphone seul
+    view = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    row = next(b for b in view["bookings"] if b["id"] == bid)
+    codes = {m["code"] for m in row["missing_info"]}
+    assert "auto_send_email_missing" in codes
+    client.post(f"/api/properties/{pid}/bookings/{bid}/mark-sent", headers=h)
+    view2 = client.get(f"/api/properties/{pid}/calendar", headers=h).json()
+    row2 = next(b for b in view2["bookings"] if b["id"] == bid)
+    codes2 = {m["code"] for m in row2["missing_info"]}
+    assert "auto_send_email_missing" not in codes2

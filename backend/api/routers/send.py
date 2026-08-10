@@ -28,7 +28,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from .. import care, emails, guidesend, repo
 from ..config import settings
 from ..deps import Conn, CurrentOwner, Mailer, OwnedProperty
-from ..schemas import LastSendOut, SendGuideIn, SendGuideOut
+from ..schemas import LastSendOut, MarkSentOut, SendGuideIn, SendGuideOut
 
 log = logging.getLogger("casaguide.send")
 
@@ -132,6 +132,43 @@ def send_guide(payload: SendGuideIn, conn: Conn, owner: CurrentOwner,
     conn.commit()   # écriture + envoi : commit explicite (piège V2-16b)
     return SendGuideOut(recipient=recipient, kind=payload.kind, lang=lang,
                         sent_at=row["sent_at"])
+
+
+@router.post("/bookings/{booking_id}/mark-sent", response_model=MarkSentOut)
+def mark_sent(booking_id: str, conn: Conn, prop: OwnedProperty):
+    """« Marquer envoyé ✓ » du J-7 assisté WhatsApp (V2-32 volet 1).
+
+    wa.me n'offre AUCUNE confirmation technique : le geste est **déclaratif**. Le
+    propriétaire, après avoir ouvert WhatsApp et envoyé le guide, marque le séjour
+    ici → une ligne `guide_sends` origin='whatsapp_assisted' (kind='stay',
+    `lang`=langue effective, `recipient`=téléphone). Le registre devient alors le
+    verrou : l'email automatique du lendemain est supprimé (invariant 18, note V2-32).
+
+    **Idempotent** : une ligne kind='stay' existe déjà (manuel/auto/whatsapp) → 200
+    sans doublon (`already=True`). Garde multi-tenant : 404 si le séjour n'appartient
+    pas au logement du propriétaire."""
+    pid = str(prop["id"])
+    booking = repo.get_booking(conn, pid, booking_id)
+    if not booking:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Séjour introuvable")
+    # Registre déjà posé pour ce séjour → rien à faire (idempotent, jamais de double).
+    existing = repo.last_guide_send(conn, pid, kind="stay", booking_id=booking_id)
+    if existing:
+        return MarkSentOut(already=True, recipient=existing["recipient"],
+                           lang=existing["lang"], sent_at=existing["sent_at"])
+    phone = care.effective_phone(booking)
+    if not phone:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Ce séjour n'a pas de téléphone : rien à marquer comme envoyé.")
+    lang = guidesend.stay_natural_lang(conn, prop, booking)
+    row = repo.record_guide_send(conn, property_id=pid, booking_id=booking_id,
+                                 kind="stay", lang=lang, recipient=phone,
+                                 origin="whatsapp_assisted")
+    conn.commit()   # écriture du registre : commit explicite (piège V2-16b)
+    return MarkSentOut(already=False, recipient=phone, lang=lang,
+                       sent_at=row["sent_at"])
 
 
 @router.get("/last-send", response_model=LastSendOut)

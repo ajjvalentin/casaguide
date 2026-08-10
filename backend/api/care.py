@@ -294,7 +294,8 @@ def plan_interventions(booking: dict, care_rules: dict, *,
 # ── Relance active : informations manquantes (§0.6 / §1.0) ───────────────────
 
 def missing_info(booking: dict, care_rules: dict, *,
-                 today: _dt.date, auto_send_guide: bool = False) -> list[dict]:
+                 today: _dt.date, auto_send_guide: bool = False,
+                 guide_already_sent: bool = False) -> list[dict]:
     """Signaux de relance pour le calendrier du propriétaire (§0.6).
 
     Un séjour opérationnellement pertinent (occupé, actif, non rattaché, pas
@@ -307,6 +308,11 @@ def missing_info(booking: dict, care_rules: dict, *,
     (V2-23d volet 2), un séjour éligible qui entre dans la fenêtre J-7 **sans
     email** ne peut pas être servi automatiquement → on le signale ici (pastille
     calendrier), plutôt qu'un email de relance séparé.
+
+    `guide_already_sent` (V2-32 volet 1) : dès qu'une ligne `guide_sends` kind='stay'
+    existe pour ce séjour (tout origin — manuel, auto, OU WhatsApp assisté), le guide
+    est arrivé chez le locataire → on éteint le motif `auto_send_email_missing` (on ne
+    harcèle pas pour le canal une fois le guide envoyé, cohérence des relances §4).
 
     Chaque signal : `{code, message}`. Renvoie `[]` s'il n'y a rien à relancer."""
     # Cycle de vie : un séjour annulé ou déjà terminé ne se relance pas.
@@ -355,6 +361,7 @@ def missing_info(booking: dict, care_rules: dict, *,
     # Le libellé calcule l'échéance RÉELLE (jamais le figé « dans 7 jours » : à J-1
     # c'était faux — constat André 06/08).
     if (auto_send_guide
+            and not guide_already_sent
             and today <= booking["starts_on"] <= today + _dt.timedelta(days=AUTO_SEND_HORIZON_DAYS)
             and effective_email(booking) is None):
         days = (booking["starts_on"] - today).days
@@ -471,11 +478,13 @@ AUTO_SEND_HORIZON_DAYS = 7   # fenêtre d'anticipation de l'envoi (J-7)
 
 @dataclass
 class AutoSendPlan:
-    """Résultat de la sélection : les séjours à SERVIR (email prêt) et ceux à
-    RELANCER (éligibles mais sans email). Deux sorties séparées — l'envoi et la
-    relance sont deux gestes distincts (§2/§4)."""
+    """Résultat de la sélection : les séjours à SERVIR par email (email prêt), ceux
+    à RELANCER (éligibles mais sans email), et la FILE WhatsApp assistée (V2-32 :
+    téléphone présent, un appui du propriétaire par locataire). Sorties séparées —
+    l'envoi email, la relance et l'envoi WhatsApp sont des gestes distincts."""
     to_send: list[dict] = field(default_factory=list)
     to_remind: list[dict] = field(default_factory=list)
+    to_whatsapp: list[dict] = field(default_factory=list)
 
 
 def select_auto_sends(candidates: list[dict], *, today: _dt.date,
@@ -497,7 +506,18 @@ def select_auto_sends(candidates: list[dict], *, today: _dt.date,
         (assumé : le guide est déjà chez le locataire).
 
     Un candidat retenu **sans email effectif** (`effective_email`) n'est pas
-    servi mais rejoint `to_remind` (le calendrier relance, §4)."""
+    servi mais rejoint `to_remind` (le calendrier relance, §4).
+
+    **File WhatsApp assistée (V2-32 volet 1)** : un candidat retenu **avec un
+    téléphone effectif** (`effective_phone`) rejoint `to_whatsapp` — que l'email
+    soit présent ou non (le numéro du propriétaire a la valeur, aucune API pour les
+    comptes personnels, donc tout s'automatise sauf le dernier appui). Propriété
+    ÉMERGENTE : un séjour avec email ET téléphone apparaît **dans les deux listes**
+    (`to_send` + `to_whatsapp`) tant que rien n'est parti — jusqu'à ce que l'email
+    automatique parte à 9 h, OU que le propriétaire l'envoie par WhatsApp avant.
+    Le premier canal servi pose une ligne `guide_sends` kind='stay' qui, dès le
+    passage suivant, met `already_sent` à vrai et **retire le séjour des deux
+    listes** : le registre arbitre, aucun doublon possible par construction."""
     horizon_end = today + _dt.timedelta(days=horizon_days)
     plan = AutoSendPlan()
     for b in candidates:
@@ -514,6 +534,10 @@ def select_auto_sends(candidates: list[dict], *, today: _dt.date,
             continue
         if b.get("already_sent"):        # le registre est le verrou d'idempotence
             continue
+        # WhatsApp assisté (V2-32) : téléphone présent → file d'attente, quel que soit
+        # l'email (indépendant du partage email ci-dessous).
+        if effective_phone(b) is not None:
+            plan.to_whatsapp.append(b)
         if effective_email(b) is None:
             plan.to_remind.append(b)
         else:

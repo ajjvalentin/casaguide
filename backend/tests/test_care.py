@@ -424,6 +424,84 @@ def test_auto_send_legacy_contact_email_counts():
     assert [b["id"] for b in plan.to_send] == ["b1"]
 
 
+# ── File WhatsApp assistée (V2-32 volet 1) ───────────────────────────────────
+
+def test_whatsapp_queue_requires_phone():
+    """Téléphone présent → file WhatsApp ; sans téléphone → jamais dans la file (le
+    séjour par défaut n'a QUE l'email)."""
+    with_phone = _cand(id="wp", guest_phone="+34 600 11 22 33")
+    no_phone = _cand(id="np", guest_phone=None, guest_contact=None)
+    plan = care.select_auto_sends([with_phone, no_phone], today=TODAY)
+    assert [b["id"] for b in plan.to_whatsapp] == ["wp"]
+
+
+def test_whatsapp_queue_email_and_phone_in_both_lists():
+    """Propriété émergente : un séjour avec email ET téléphone est dans `to_send`
+    (email prêt) ET `to_whatsapp` tant que rien n'est parti — le registre arbitrera."""
+    plan = care.select_auto_sends(
+        [_cand(guest_email="tracy@ex.com", guest_phone="+34 600")], today=TODAY)
+    assert [b["id"] for b in plan.to_send] == ["b1"]
+    assert [b["id"] for b in plan.to_whatsapp] == ["b1"]
+
+
+def test_whatsapp_queue_phone_only_in_remind_and_queue():
+    """Téléphone SANS email → relance email manquante (to_remind) ET file WhatsApp :
+    le propriétaire peut ajouter un email ou envoyer par WhatsApp. Les deux voies
+    restent ouvertes tant que le guide n'est pas parti."""
+    plan = care.select_auto_sends(
+        [_cand(guest_email=None, guest_contact=None, guest_phone="+34 600")],
+        today=TODAY)
+    assert plan.to_send == []
+    assert [b["id"] for b in plan.to_remind] == ["b1"]
+    assert [b["id"] for b in plan.to_whatsapp] == ["b1"]
+
+
+def test_whatsapp_queue_removed_by_ledger_any_origin():
+    """Le registre est le verrou (tout origin, whatsapp_assisted compris) : déjà
+    envoyé → retiré de la file WhatsApp comme des envois email."""
+    plan = care.select_auto_sends(
+        [_cand(guest_phone="+34 600", already_sent=True)], today=TODAY)
+    assert plan.to_whatsapp == [] and plan.to_send == []
+
+
+def test_whatsapp_queue_respects_window_natures_and_optout():
+    """Mêmes règles que le J-7 email : hors fenêtre, natures non occupées, opt-out
+    et non-publié n'entrent JAMAIS dans la file, même avec un téléphone."""
+    keep = _cand(id="ok", guest_phone="+34 600")
+    drop = [
+        _cand(id="j8", guest_phone="+34 600",
+              starts_on=TODAY + dt.timedelta(days=8)),
+        _cand(id="works", guest_phone="+34 600", nature="works"),
+        _cand(id="canc", guest_phone="+34 600", status="cancelled"),
+        _cand(id="off", guest_phone="+34 600", auto_send_guide=False),
+        _cand(id="draft", guest_phone="+34 600", published=False),
+    ]
+    plan = care.select_auto_sends([keep] + drop, today=TODAY)
+    assert [b["id"] for b in plan.to_whatsapp] == ["ok"]
+
+
+def test_whatsapp_queue_legacy_contact_phone_counts():
+    """Le téléphone effectif accepte le legacy `guest_contact` s'il ressemble à un
+    numéro (≥ 6 chiffres, pas d'« @ ») — même heuristique que le backfill 018."""
+    plan = care.select_auto_sends(
+        [_cand(guest_phone=None, guest_email=None, guest_contact="+34 600 11 22")],
+        today=TODAY)
+    assert [b["id"] for b in plan.to_whatsapp] == ["b1"]
+
+
+def test_missing_info_email_reminder_suppressed_once_guide_sent():
+    """§4 — dès qu'une ligne guide_sends stay existe (tout origin), le motif
+    « email manquant » s'éteint : le guide est arrivé, on ne harcèle pas pour le
+    canal (le registre le porte via `guide_already_sent`)."""
+    b = _win()   # dans la fenêtre, sans email, auto_send activé
+    on = {m["code"] for m in care.missing_info(
+        b, {}, today=TODAY, auto_send_guide=True, guide_already_sent=False)}
+    off = {m["code"] for m in care.missing_info(
+        b, {}, today=TODAY, auto_send_guide=True, guide_already_sent=True)}
+    assert "auto_send_email_missing" in on
+    assert "auto_send_email_missing" not in off
+
+
 # ── Relance §0.6 : email manquant pour l'envoi automatique (V2-23d volet 2) ───
 
 def _win(**over):

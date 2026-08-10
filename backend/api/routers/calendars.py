@@ -16,7 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import calendars, care, crypto, repo
+from .. import calendars, care, crypto, guidesend, repo
 from ..deps import (CalendarFetcher, Conn, OwnedProperty, get_calendar_fetcher,
                     require_write_access)
 from ..schemas import (
@@ -24,7 +24,7 @@ from ..schemas import (
     BookingRequestOut, BookingRequestUpdate, BookingUpdate, CalendarCreateOut,
     CalendarIn, CalendarOut, CalendarViewOut, DeleteBookingOut, InterventionOut,
     OverlapOut, RequestTypeIn, RequestTypeOut, RequestTypeUpdate, RotationOut,
-    SyncNowOut, SyncResultOut,
+    SyncNowOut, SyncResultOut, WhatsAppQueueEntry,
 )
 
 # Libellé humain de la plateforme pour le message de succession (V2-23h) — jamais
@@ -105,14 +105,18 @@ def _booking_out(b: dict, default_in, default_out, *,
                  today: _dt.date | None = None,
                  pending_requests: int = 0,
                  auto_send_guide: bool = False,
+                 guide_already_sent: bool = False,
                  succession: dict | None = None) -> BookingOut:
     eff_in, eff_out = calendars.effective_times(b, default_in, default_out)
     is_direct = b["calendar_id"] is None and b["external_uid"] is None
     # Relance active (§0.6) : ce qui manque pour préparer ce séjour — dont l'email
-    # manquant pour l'envoi automatique du guide à J-7 (V2-23d volet 2).
+    # manquant pour l'envoi automatique du guide à J-7 (V2-23d volet 2). Le motif
+    # « email manquant » s'éteint dès que le guide est parti par n'importe quel canal
+    # (guide_already_sent, V2-32 volet 1 §4).
     missing = care.missing_info(b, care_rules or {},
                                 today=today or _dt.date.today(),
-                                auto_send_guide=auto_send_guide)
+                                auto_send_guide=auto_send_guide,
+                                guide_already_sent=guide_already_sent)
     return BookingOut(
         id=b["id"], calendar_id=b["calendar_id"], starts_on=b["starts_on"],
         ends_on=b["ends_on"], checkin_time=b["checkin_time"],
@@ -172,6 +176,11 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
                                                requested_ids=requested_ids)
         if cand is not None:
             succession[str(b["id"])] = _succession_payload(cand)
+    # V2-32 volet 1 — file des guides à envoyer par WhatsApp (J-7 assisté) et registre
+    # d'idempotence. `sent_ids` = séjours dont le guide est déjà parti (tout canal) :
+    # il retire ces séjours de la file ET éteint la relance « email manquant » (§4).
+    sent_ids = repo.stay_sent_booking_ids(conn, pid)
+    whatsapp_queue = _whatsapp_queue(conn, prop, bookings, sent_ids, today)
     return CalendarViewOut(
         property_id=pid,
         default_checkin_time=default_in, default_checkout_time=default_out,
@@ -180,11 +189,43 @@ def calendar_view(conn: Conn, prop: OwnedProperty):
                                today=today,
                                pending_requests=pending.get(str(b["id"]), 0),
                                auto_send_guide=prop["auto_send_guide"],
+                               guide_already_sent=str(b["id"]) in sent_ids,
                                succession=succession.get(str(b["id"])))
                   for b in bookings],
         overlaps=[OverlapOut(a=a["id"], b=b["id"]) for a, b in overlaps],
         rotations=[RotationOut(**r, signal=_rotation_signal(
-            r, by_id, care_rules, default_in, default_out)) for r in rotations])
+            r, by_id, care_rules, default_in, default_out)) for r in rotations],
+        whatsapp_queue=whatsapp_queue)
+
+
+def _whatsapp_queue(conn, prop: dict, bookings: list[dict], sent_ids: set[str],
+                    today: _dt.date) -> list[WhatsAppQueueEntry]:
+    """File des guides prêts à envoyer par WhatsApp pour CE logement (V2-32 volet 1).
+    On réutilise le moteur PUR `care.select_auto_sends` (une seule source de vérité
+    des critères J-7) en enrichissant chaque séjour du contexte logement attendu, puis
+    on projette sa sortie `to_whatsapp`. La langue effective (guest_lang si offerte,
+    sinon langue du logement) est calculée une fois via les langues offertes du guide
+    (invariant 15)."""
+    offered = set(guidesend.offered_langs(conn, prop))
+    default_lang = (prop.get("default_lang") or "fr")
+    published = prop["status"] == "published"
+    candidates = []
+    for b in bookings:
+        c = dict(b)
+        c["auto_send_guide"] = prop["auto_send_guide"]
+        c["published"] = published
+        c["already_sent"] = str(b["id"]) in sent_ids
+        candidates.append(c)
+    plan = care.select_auto_sends(candidates, today=today)
+    out = []
+    for b in plan.to_whatsapp:
+        gl = (b.get("guest_lang") or "").lower()
+        lang = gl if gl in offered else default_lang
+        out.append(WhatsAppQueueEntry(
+            booking_id=b["id"], guest_name=b.get("guest_name"),
+            starts_on=b["starts_on"], ends_on=b["ends_on"], lang=lang,
+            phone=care.effective_phone(b)))
+    return out
 
 
 def _rotation_signal(rot: dict, by_id: dict, care_rules: dict | None,

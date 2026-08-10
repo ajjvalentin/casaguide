@@ -648,6 +648,20 @@ class RotationOut(BaseModel):
     signal: dict | None = None
 
 
+class WhatsAppQueueEntry(BaseModel):
+    """Un guide prêt à envoyer par WhatsApp (J-7 assisté, V2-32 volet 1) : séjour
+    dans la fenêtre J-7, téléphone présent, guide non encore envoyé (registre). Le
+    front reconstruit le wa.me pré-rempli (mêmes gabarits/langue que la fenêtre
+    d'envoi) et propose « Marquer envoyé ✓ ». `lang` = langue effective (guest_lang
+    si offerte, sinon langue du logement)."""
+    booking_id: UUID
+    guest_name: str | None = None
+    starts_on: date
+    ends_on: date
+    lang: str
+    phone: str
+
+
 class CalendarViewOut(BaseModel):
     """Charge complète de la vue « Séjours » : un seul appel pour tout rendre."""
     property_id: UUID
@@ -657,6 +671,9 @@ class CalendarViewOut(BaseModel):
     bookings: list[BookingOut] = []
     overlaps: list[OverlapOut] = []
     rotations: list[RotationOut] = []
+    # File des guides à envoyer par WhatsApp (J-7 assisté, V2-32 volet 1) — ton
+    # neutre (une opportunité, pas une alerte). Vide si rien à envoyer.
+    whatsapp_queue: list[WhatsAppQueueEntry] = []
 
 
 class DeleteBookingOut(BaseModel):
@@ -781,6 +798,16 @@ class LastSendOut(BaseModel):
     recipient: str | None = None
     lang: str | None = None
     sent_at: datetime | None = None
+
+
+class MarkSentOut(BaseModel):
+    """Confirmation de « Marquer envoyé ✓ » du J-7 assisté WhatsApp (V2-32 volet 1).
+    `already` True si une ligne kind='stay' existait déjà (idempotent : aucun
+    doublon posé) — le front retire la ligne de la file dans les deux cas."""
+    already: bool
+    recipient: str
+    lang: str
+    sent_at: datetime
 
 
 class SendTemplatesOut(BaseModel):

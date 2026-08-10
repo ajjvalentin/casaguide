@@ -88,6 +88,25 @@ const calData = {
   rotations: [{ on: iso(40), departing: "b1", arriving: "b2", gap_minutes: 300,
     signal: { level: "amber", recommended_cleaners: 2, person_hours: 6,
       window_hours: 5, message: "Prévoir 2 personnes sur cette rotation." } }],
+  // V2-32 volet 1 — file des guides à envoyer par WhatsApp (J-7 assisté). Deux
+  // séjours prêts, en langues différentes (drapeau + message dans la bonne langue).
+  whatsapp_queue: [
+    { booking_id: "wq1", guest_name: "Tracy Taylor", starts_on: iso(3),
+      ends_on: iso(10), lang: "en", phone: "+34 600 11 22 33" },
+    { booking_id: "wq2", guest_name: "Marie Martin", starts_on: iso(5),
+      ends_on: iso(12), lang: "fr", phone: "+33 6 12 34 56 78" },
+  ],
+};
+
+// Gabarits d'envoi localisés (comme /send-templates kind=stay) : le message wa.me
+// doit sortir dans la LANGUE effective du séjour (V2-32 §5).
+const TPL = {
+  fr: { hello: "Bonjour {name},", hello_generic: "Bonjour,",
+    intro: "Voici votre guide :", signoff: "À bientôt",
+    subject: "Votre guide — {property}" },
+  en: { hello: "Hello {name},", hello_generic: "Hello,",
+    intro: "Here is your guide:", signoff: "See you soon",
+    subject: "Your guide — {property}" },
 };
 
 const posted = [];
@@ -95,6 +114,7 @@ const patched = [];
 const reqPatched = [];
 const resetCalls = [];
 const inheritCalls = [];
+const markSentCalls = [];
 // Demande du voyageur EN ATTENTE rattachée à b1 (§3.1).
 const GUEST_REQ = { id: "gr1", booking_id: "b1", request_type_id: null,
   label: "Ménage / draps supplémentaires", quantity: 1,
@@ -164,6 +184,25 @@ window.fetch = async (path, opts = {}) => {
     const row = calData.bookings.find((x) => x.id === inheritM[1]);
     if (row) { row.guest_name = "TRACY RUSSEL"; row.succession = null; }
     return json(row || mk({ id: inheritM[1] }));
+  }
+  // V2-32 — lien de séjour (ensure_stay_token) : le back renvoie un /b/ nu.
+  const stayM = path.match(/^\/api\/properties\/p1\/bookings\/([^/]+)\/stay-link$/);
+  if (stayM && method === "POST") {
+    return json({ url: "https://holaguia.com/b/tok" + stayM[1] });
+  }
+  // V2-32 — gabarits d'envoi localisés (kind=stay) : message dans la bonne langue.
+  if (path.startsWith("/send-templates") && method === "GET") {
+    const lang = new URLSearchParams(path.split("?")[1] || "").get("lang") || "fr";
+    return json(TPL[lang] || TPL.fr);
+  }
+  // V2-32 — « Marquer envoyé ✓ » : pose le registre, retire le séjour de la file.
+  const markM = path.match(/^\/api\/properties\/p1\/bookings\/([^/]+)\/mark-sent$/);
+  if (markM && method === "POST") {
+    markSentCalls.push(markM[1]);
+    const e = calData.whatsapp_queue.find((x) => x.booking_id === markM[1]);
+    calData.whatsapp_queue = calData.whatsapp_queue.filter((x) => x.booking_id !== markM[1]);
+    return json({ already: false, recipient: e ? e.phone : "?",
+      lang: e ? e.lang : "fr", sent_at: NOW.toISOString() });
   }
   throw new Error("fetch inattendu : " + method + " " + path);
 };
@@ -256,6 +295,46 @@ try {
     "aucun « undefined » imprimé (repli de libellé de nature)");
   chk(!!cancelledBlock && /À qualifier/.test(cancelledBlock.textContent),
     "nature inconnue (b5) affichée « À qualifier »");
+
+  // ── V2-32 volet 1 — file des guides à envoyer par WhatsApp (J-7 assisté) ──
+  const waBox = q(".wa-box");
+  chk(!!waBox && /2 guides à envoyer par WhatsApp/.test(waBox.textContent),
+    "file WhatsApp : en-tête « 2 guides à envoyer par WhatsApp »");
+  // Ton NEUTRE : une opportunité, jamais un triangle d'alerte.
+  chk(waBox && !/triangle/.test(waBox.innerHTML),
+    "file WhatsApp : signal neutre (pas de triangle d'alerte)");
+  q(".wa-head").click();                         // déplier la file
+  await wait(30);
+  chk(/marquez-le ici/.test(q(".wa-help") ? q(".wa-help").textContent : ""),
+    "file WhatsApp : ligne d'aide « ...marquez-le ici... » (deux gestes distincts)");
+  const waRows = qa(".wa-row");
+  chk(waRows.length === 2, "file WhatsApp : une ligne par séjour (n=" + waRows.length + ")");
+  const wq1 = q('.wa-row[data-bid="wq1"]');
+  chk(!!wq1 && /Tracy Taylor/.test(wq1.textContent) && /🇬🇧/.test(wq1.textContent),
+    "file WhatsApp : « Tracy Taylor » avec le drapeau de sa langue (🇬🇧)");
+  // Le href wa.me est résolu en tâche de fond (ensure_stay_token + gabarits).
+  await wait(180);
+  const wq1Link = q('.wa-row[data-bid="wq1"] .wa-send');
+  const wq1Href = wq1Link ? decodeURIComponent(wq1Link.getAttribute("href") || "") : "";
+  chk(/^https:\/\/wa\.me\/34600112233\?text=/.test(wq1Link ? wq1Link.getAttribute("href") : ""),
+    "file WhatsApp : wa.me avec le numéro en chiffres nus (34600112233)");
+  chk(/Hello Tracy,/.test(wq1Href) && /Here is your guide:/.test(wq1Href),
+    "file WhatsApp : message pré-rempli DANS LA BONNE LANGUE (anglais)");
+  chk(/\/b\/tokwq1/.test(wq1Href),
+    "file WhatsApp : lien du séjour (/b/, ensure_stay_token) — jamais le guide_token");
+  // « Marquer envoyé ✓ » sur wq2 → POST mark-sent → la ligne disparaît.
+  const wq2Mark = qa('.wa-row[data-bid="wq2"] .wa-mark')[0];
+  chk(!!wq2Mark && /Marquer envoyé/.test(wq2Mark.textContent),
+    "file WhatsApp : bouton « Marquer envoyé ✓ »");
+  if (wq2Mark) {
+    wq2Mark.click();
+    await wait(180);
+    chk(markSentCalls.includes("wq2"), "POST /mark-sent émis pour wq2");
+    chk(!q('.wa-row[data-bid="wq2"]'),
+      "file WhatsApp : la ligne marquée disparaît (le registre l'a retirée)");
+    chk(q(".wa-box") && /1 guide à envoyer par WhatsApp/.test(q(".wa-box").textContent),
+      "file WhatsApp : compte à jour après marquage (« 1 guide »)");
+  }
 
   // ── §0.3 auto-promotion + §0.4 avertissement rouge à la saisie ───────────
   q(".booking-row[data-nature='unqualified'] .btn").click();  // « Compléter »

@@ -532,6 +532,57 @@ du guide ») — pastille calendrier sobre, jamais un email de relance séparé.
 *Hors périmètre volet 2 : opt-out par séjour (V2-31), suivi d'ouverture, pièces
 jointes, envoi automatique de la vitrine (n'a pas de sens).*
 
+### 9.5 Le J-7 assisté WhatsApp — la file des guides à envoyer (V2-32 volet 1, migration 028)
+
+Le **numéro de téléphone du propriétaire a la valeur** : il n'existe aucune API pour
+les comptes WhatsApp personnels, donc tout s'automatise **sauf le dernier appui**. Le
+moteur J-7 (§9.4) détecte déjà qui doit recevoir le guide ; ce canal-ci lui fait
+**présenter les envois WhatsApp prêts**, un appui par locataire.
+
+**La file** (`AutoSendPlan.to_whatsapp`, même moteur PUR `care.select_auto_sends`) —
+mêmes règles que le J-7 email (natures `reservation`/`private`, actif, non rattaché,
+logement publié + `auto_send_guide`, **fenêtre** `today ≤ starts_on ≤ today+7`, **pas
+déjà envoyé**), au seul changement près : **téléphone effectif présent**
+(`care.effective_phone`), que l'email soit là **ou non** (indifférent). Elle est
+exposée par `GET /calendar` → `CalendarViewOut.whatsapp_queue[]`
+(`{booking_id, guest_name, starts_on, ends_on, lang, phone}`, `lang` = langue
+effective : `guest_lang` si offerte, sinon langue du logement).
+
+**L'arbitrage émergent du registre — le premier canal servi gagne, aucun doublon
+possible par construction.** Un séjour avec **email ET téléphone** apparaît **dans les
+deux listes** (`to_send` email prêt + `to_whatsapp`) tant que rien n'est parti :
+
+- si l'email automatique part à 9 h → ligne `guide_sends` kind='stay' origin='auto' ;
+- si le propriétaire envoie par WhatsApp avant → ligne origin='whatsapp_assisted'.
+
+Dans les **deux** cas, dès le passage suivant `already_sent` passe à vrai et le séjour
+**quitte les deux listes**. Le registre (verrou d'idempotence, invariant 18) tranche :
+il n'y a **aucun état de plus à maintenir**, aucun second verrou, aucune course.
+
+**« Marquer envoyé ✓ »** — `POST /api/properties/{id}/bookings/{bid}/mark-sent`
+(authentifié, garde multi-tenant). wa.me n'offre **aucune confirmation technique**
+(ouvrir WhatsApp ≠ envoyer) : le geste est **déclaratif**. Il pose une ligne
+`guide_sends` kind='stay', **origin='whatsapp_assisted'**, `lang`=langue effective,
+`recipient`=le téléphone. **Idempotent** : une ligne stay existe déjà (tout origin) →
+`200 {already:true}` sans doublon. Sans téléphone → 422 ; séjour étranger → 404.
+
+**La surface calendrier** — un signal gradué **NEUTRE** (une opportunité, pas une
+alerte, jamais le triangle) : « N guides à envoyer par WhatsApp », déplié en une ligne
+par séjour (« Tracy Taylor · 23.08–01.09 · 🇬🇧 ») avec **« Envoyer par WhatsApp »** (le
+wa.me pré-rempli **réutilisé** de la fenêtre d'envoi §8.2 — mêmes gabarits kind-aware,
+même `ensure_stay_token`, même langue effective, `frontend/js/components/sendmenu.js`
+`stayWhatsAppLink`) **et** « Marquer envoyé ✓ ». **Deux gestes distincts** : ouvrir le
+lien ne marque **pas** envoyé — une ligne d'aide le dit (« Après l'envoi dans WhatsApp,
+marquez-le ici pour que Holaguia n'envoie pas de doublon »).
+
+**Cohérence des relances (§4)** : la pastille « email manquant » (`auto_send_email_
+missing`) s'**éteint** dès qu'une ligne `guide_sends` stay existe pour le séjour (tout
+origin, via `missing_info(..., guide_already_sent=…)`) — le guide est arrivé, on ne
+harcèle plus pour le canal. Back-office seul (aucun bump de service worker).
+
+*Hors périmètre : l'API WhatsApp Business (volet 2), tout envoi automatique par
+WhatsApp, notification push/digest au propriétaire (la pastille calendrier suffit).*
+
 
 ## 10. Photo de couverture du logement (V2-30)
 

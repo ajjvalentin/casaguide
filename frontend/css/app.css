@@ -737,6 +737,25 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .qf-actions{display:flex;gap:6px;align-items:center}
 .qf-count{width:96px}
 
+/* V2-32 volet 1 — File des guides à envoyer par WhatsApp (J-7 assisté). Ton
+   NEUTRE/positif (une opportunité, pas une alerte) : accent mer, jamais le rouge. */
+.wa-box{border:1px solid #BFE0DE;border-radius:12px;background:#F0F8F7;
+  margin-bottom:12px;overflow:hidden}
+.wa-head{width:100%;display:flex;align-items:center;gap:9px;background:none;border:none;
+  padding:11px 13px;cursor:pointer;font:inherit;color:var(--ink);text-align:left}
+.wa-head svg{flex:none;color:var(--sea)}
+.wa-head .wa-chev{margin-left:auto;transition:transform .18s;color:var(--muted)}
+.wa-head .wa-chev.wa-open{transform:rotate(180deg)}
+.wa-panel{display:flex;flex-direction:column;border-top:1px solid #CFE7E5}
+.wa-help{font-size:12.5px;color:#3F5B78;padding:9px 13px;background:#E8F3F1;
+  border-bottom:1px solid #CFE7E5}
+.wa-row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;
+  padding:10px 13px;border-bottom:1px solid #DCEEEC}
+.wa-row:last-child{border-bottom:none}
+.wa-who{font-size:13.5px;min-width:0}
+.wa-flag{margin-left:4px}
+.wa-actions{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+
 /* §2.2 — Signal de rotation gradué sur le calendrier du propriétaire */
 .cal-rotation-amber{background:#FBF0DC;border-color:#EBD4A6;color:#8A5A12}
 .cal-rotation-amber .muted{color:#9A7020}

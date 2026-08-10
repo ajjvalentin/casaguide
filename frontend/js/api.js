@@ -215,6 +215,9 @@ export const api = {
             { auth: false }),
   // « Envoyer par Holaguia » : l'email HTML part du backend (V2-23d, volet 1).
   sendGuide: (id, b) => request("POST", `/api/properties/${id}/send-guide`, { body: b }),
+  // J-7 assisté WhatsApp (V2-32 volet 1) : « Marquer envoyé ✓ » — pose la ligne
+  // guide_sends origin='whatsapp_assisted' (déclaratif : wa.me ne confirme rien).
+  markSent: (id, bid) => request("POST", `/api/properties/${id}/bookings/${bid}/mark-sent`),
   lastSend:  (id, q) => request("GET",
     `/api/properties/${id}/last-send?kind=${encodeURIComponent(q.kind)}`
     + (q.booking_id ? `&booking_id=${encodeURIComponent(q.booking_id)}` : "")),

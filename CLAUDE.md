@@ -409,6 +409,27 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     inherit remplit le vide/garnis intacts/demandes migrées/**guide_sends non
     hérité**/nouveau token≠ancien/source étrangère→404/idempotence, signal disparaît)
     + harnais front `calendar-harness.html`.
+
+    **Note V2-32 volet 1 — le registre arbitre les canaux d'envoi, le premier servi
+    gagne (migration 028).** Le J-7 assisté WhatsApp (`docs/calendrier.md §9.5`) ajoute
+    un troisième `guide_sends.origin` : **`whatsapp_assisted`** (« Marquer envoyé ✓ »,
+    geste **déclaratif** — wa.me ne confirme rien ; `POST …/bookings/{id}/mark-sent`,
+    authentifié, multi-tenant, idempotent). Le moteur `care.select_auto_sends` gagne
+    `AutoSendPlan.to_whatsapp` (mêmes règles J-7 que `to_send` — natures, fenêtre,
+    publié+`auto_send_guide`, non déjà envoyé — au seul changement près : **téléphone
+    effectif présent**, email indifférent). **Propriété émergente** : un séjour avec
+    email ET téléphone est **dans les deux listes** (`to_send`+`to_whatsapp`) tant que
+    rien n'est parti ; le premier canal servi (email auto de 9 h **ou** envoi WhatsApp)
+    pose une ligne `guide_sends` kind='stay' qui met `already_sent` à vrai et le retire
+    des **deux** au passage suivant — **aucun doublon possible par construction, aucun
+    second verrou**. Le registre est déjà le verrou (invariant 18) : c'est la **même**
+    idée, étendue au choix du canal. Corollaire §4 : le motif `auto_send_email_missing`
+    de `missing_info` s'éteint dès qu'une ligne stay existe (tout origin,
+    `guide_already_sent`). Back-office seul (aucun bump SW). Couvert par `test_care.py`
+    (to_whatsapp : téléphone/fenêtre/natures/opt-out, deux-listes, retrait par registre)
+    + `test_calendar_api.py` (mark-sent : enregistre/idempotence sans doublon/404/422/
+    retrait de la file ; **test croisé** : l'email auto est supprimé après un mark-sent
+    WhatsApp) + harnais front `calendar-harness.html`.
 19. **Aucun libellé visible sans entrée d'aide — couverture PAR TEST, suite rouge
     sinon (V2-31 volet 3a)** : le back-office porte une recherche d'aide (bouton
     « Aide » + ⌘K, `frontend/js/help/`) dont l'index (`help/index.js`) est **la
@@ -483,6 +504,7 @@ psql -d casaguide -f db/migrations/024_booking_keybox_override.sql # surcharge d
 psql -d casaguide -f db/migrations/025_auto_send_guide.sql # envoi auto du guide à J-7 : properties.auto_send_guide + guide_sends.origin (V2-23d volet 2)
 psql -d casaguide -f db/migrations/026_booking_dates_override.sql # dates ajustées à la main protégées de la synchro : bookings.dates_overridden + feed_starts_on/feed_ends_on (V2-23g)
 psql -d casaguide -f db/migrations/027_help_searches.sql # journal des recherches d'aide (santé de l'index) (V2-31 volet 3a)
+psql -d casaguide -f db/migrations/028_guide_send_whatsapp_assisted.sql # origine d'envoi 'whatsapp_assisted' (J-7 assisté WhatsApp, V2-32 volet 1)
 
 # Backend
 cd backend
