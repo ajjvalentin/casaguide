@@ -23,12 +23,18 @@
  */
 
 import { HELP_INDEX } from "./index.js";
+import { buildIndex, normalize, search } from "../lib/matchcore.js";
+
+// La normalisation est mutualisée dans le cœur (matchcore) ; on la re-exporte pour
+// les consommateurs existants (le harnais de couverture).
+export { normalize };
 
 export const GOOD_SCORE = 0.45;
 export const COVERAGE_SCORE = 0.5;
 
 // Mots-outils français : ignorés dans les tokens (ils diluent la pertinence sans
-// rien discriminer). Liste courte et volontairement stable.
+// rien discriminer). Liste courte et volontairement stable. Le cœur est
+// paramétré par CE jeu → comportement de l'aide strictement inchangé.
 const STOPWORDS = new Set([
   "le", "la", "les", "un", "une", "des", "du", "de", "d", "l", "au", "aux", "en",
   "et", "ou", "a", "à", "dans", "par", "pour", "sur", "sous", "ce", "cet", "cette",
@@ -36,97 +42,20 @@ const STOPWORDS = new Set([
   "est", "il", "elle", "on", "se", "ne", "pas", "plus", "avec", "sans", "the",
 ]);
 
-/** Normalise : minuscules, accents retirés, ponctuation → espaces, compactage. */
-export function normalize(s) {
-  return String(s == null ? "" : s)
-    .toLowerCase()
-    .normalize("NFD").replace(/[̀-ͯ]/g, "")   // diacritiques
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-}
-
-/** Tokens signifiants (mots-outils et unités < 2 caractères écartés). */
-function tokens(norm) {
-  return norm.split(" ").filter((w) => w.length >= 2 && !STOPWORDS.has(w));
-}
-
-/** Ensemble des trigrammes de caractères d'un mot (bordé d'espaces). */
-function trigrams(word) {
-  const w = "  " + word + "  ";
-  const set = new Set();
-  for (let i = 0; i < w.length - 2; i++) set.add(w.slice(i, i + 3));
-  return set;
-}
-
-/** Coefficient de Dice entre deux ensembles de trigrammes (0..1). */
-function dice(a, b) {
-  if (!a.size || !b.size) return 0;
-  let inter = 0;
-  for (const g of a) if (b.has(g)) inter++;
-  return (2 * inter) / (a.size + b.size);
-}
-
-// Index pré-calculé : pour chaque entrée, son texte normalisé (question + mots-clés)
-// et ses tokens (avec trigrammes) — calculé une fois au chargement du module.
-const PREPARED = HELP_INDEX.map((entry) => {
-  const hayParts = [entry.question, ...(entry.keywords || [])].map(normalize);
-  const hay = hayParts.join(" ");
-  const tokenList = [...new Set(hayParts.flatMap(tokens))];
-  return {
-    entry,
-    hay,
-    tokens: tokenList.map((t) => ({ t, tri: trigrams(t) })),
-  };
+// Index pré-calculé (une fois) via le cœur partagé : le hay = question + mots-clés.
+const PREPARED = buildIndex(HELP_INDEX, {
+  textOf: (e) => [e.question, ...(e.keywords || [])],
+  stopwords: STOPWORDS,
 });
 
-/** Score de proximité d'un token de requête à une entrée préparée (0..1). */
-function tokenScore(qt, qtri, prepared) {
-  let best = 0;
-  for (const { t, tri } of prepared.tokens) {
-    if (t === qt) return 1;
-    if (t.length >= 4 && qt.length >= 4 && (t.includes(qt) || qt.includes(t))) {
-      best = Math.max(best, 0.7);
-      continue;
-    }
-    const d = dice(qtri, tri);
-    if (d >= 0.5) best = Math.max(best, d);
-  }
-  return best;
-}
-
-/** Score global d'une requête pour une entrée préparée (0..1). */
-function scoreEntry(qNorm, qTokens, prepared) {
-  let tokenAvg = 0;
-  if (qTokens.length) {
-    let sum = 0;
-    for (const { t, tri } of qTokens) sum += tokenScore(t, tri, prepared);
-    tokenAvg = sum / qTokens.length;
-  }
-  // Correspondance franche : la requête entière apparaît dans l'entrée.
-  const substr = qNorm.length >= 3 && prepared.hay.includes(qNorm) ? 0.95 : 0;
-  return Math.max(tokenAvg, substr);
-}
-
 /**
- * Recherche dans l'index. Renvoie TOUJOURS des résultats triés (jamais un tableau
- * vide si des approches existent) — l'écran zéro-résultat est interdit (§4).
+ * Recherche dans l'index de l'aide. Renvoie TOUJOURS des résultats triés (jamais un
+ * tableau vide si des approches existent) — l'écran zéro-résultat est interdit (§4).
  * @returns {{ results: Array<{entry, score}>, confident: boolean, top: number }}
  *   `confident` = le meilleur résultat dépasse GOOD_SCORE (sinon « approché »).
  */
 export function searchHelp(query, { limit = 8 } = {}) {
-  const qNorm = normalize(query);
-  const qTokens = tokens(qNorm).map((t) => ({ t, tri: trigrams(t) }));
-  const scored = PREPARED
-    .map((p) => ({ entry: p.entry, score: scoreEntry(qNorm, qTokens, p) }))
-    .sort((a, b) => b.score - a.score);
-
-  const top = scored.length ? scored[0].score : 0;
-  // Résultats « francs » au-dessus du seuil ; à défaut, les meilleures approches
-  // (jamais rien à l'écran). On borne à `limit`.
-  const strong = scored.filter((r) => r.score >= GOOD_SCORE).slice(0, limit);
-  const results = strong.length ? strong : scored.slice(0, Math.min(limit, 5));
-  return { results, confident: top >= GOOD_SCORE, top };
+  return search(PREPARED, query, { stopwords: STOPWORDS, limit, goodScore: GOOD_SCORE });
 }
 
 /** Un libellé est-il COUVERT par l'index ? (cœur du veto — cf. help-coverage). */

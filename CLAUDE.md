@@ -810,6 +810,32 @@ exposé, peer auth).
   sinon les visiteurs (et le back-office, qui importe `guide/qr.js`) reçoivent
   l'ancienne version — symptôme vécu le 14/07 : page blanche du back-office
   (import ES cassé sur un module périmé).
+- **Recherche dans le guide voyageur (V2-33 volet 2)** : un champ de recherche
+  hors-ligne (`/g`, `/b`, `/v`) trouve sections, POI et infos par mots-clés,
+  tolérant aux fautes, dans la langue du guide. Le **cœur de correspondance**
+  (`normalize`/`tokenize`/`buildIndex`/`search`, trigrammes de Dice) est **extrait
+  et partagé** : `frontend/js/lib/matchcore.js` — PUR et **paramétrable** (l'appelant
+  fournit ses `stopwords` et seuils). `frontend/js/help/search.js` (aide ⌘K) en est
+  désormais un simple consommateur → **comportement de l'aide strictement inchangé**
+  (mêmes stopwords FR, mêmes seuils ; ne pas y toucher sans relancer la couverture).
+  `frontend/guide/search.js` (`initSearch`) **construit l'index depuis le DOM rendu**
+  au chargement (titres/corps de sections, noms/desc/commentaires de POI, badge du
+  jour de marché) — **aucun réseau**. **Secrets JAMAIS indexés** : le wifi et le code
+  de boîte à clés déchiffrés sont injectés **après coup** par `initSecrets` dans des
+  `.secret-slot` → `initSearch` s'exécute **AVANT** `initSecrets` **et** retire
+  `.secret-slot`/`.secret-card` à la moisson (double garde) ; seuls les libellés
+  **publics** (titres « Wifi », « Boîte à clés ») sont trouvables et mènent à la
+  section. **Jamais d'écran vide** (veto André, hérité du 3a) : sous le seuil franc,
+  on propose les meilleures approches. **Normalisation** : `ß→ss` **avant** le filtre
+  `[^a-z0-9]` (sinon l'eszett allemand disparaît) — le NFD couvre fr/es/it/nl/sq.
+  **Sans JS** : le champ est injecté par JS → **absent** sans JS, page intacte (M-08).
+  **PIÈGE PWA (principal)** : `matchcore.js` vit **hors `/guide/`** → il n'est **pas**
+  couvert par la branche `/guide/` du SW → il **doit** être dans `SHELL_ASSETS` **et**
+  servi par la branche `SHELL_EXTRA` de `sw.js` (sinon la recherche **meurt
+  hors-ligne**) ; `/guide/search.js` est aussi précaché ; toute modif → **bumper
+  `VERSION`** (ici v31 → v32). Les 3 libellés (`ui.search_*`, fr/en/es dans `_UI`,
+  overlay nl/de/it/sq à venir) passent par l'inventaire i18n (régénérer + `--check`)
+  et sont rendus en `data-search-*` sur le `<body>`.
 - **SW & `/secrets` `no-store` (choix assumé)** : `sw.js` met en cache les réponses
   `/g|/b/…/secrets` (via `cache.put` en `networkFirst`) **malgré** leur en-tête HTTP
   `no-store` — c'est **voulu** : le mot de passe wifi doit rester lisible hors-ligne

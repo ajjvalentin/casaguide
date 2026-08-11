@@ -144,6 +144,9 @@ _UI: dict[str, dict[str, str]] = {
         "cuisine_filter": "Filtrer par cuisine",
         "services_grid": "Services autour de vous",
         "back_services": "↑ Retour aux services", "back_top": "↑ Haut de page",
+        "search_placeholder": "Rechercher dans le guide",
+        "search_none": "Aucun résultat exact — suggestions :",
+        "search_clear": "Effacer",
         "tabs": "Espaces du guide", "tab_home": "Le logement",
         "tab_emergency": "Urgences", "tab_around": "Autour de vous",
         "show_more": "Voir les {n} autres", "show_less": "Réduire",
@@ -186,6 +189,9 @@ _UI: dict[str, dict[str, str]] = {
         "cuisine_filter": "Filter by cuisine",
         "services_grid": "Services around you",
         "back_services": "↑ Back to services", "back_top": "↑ Back to top",
+        "search_placeholder": "Search the guide",
+        "search_none": "No exact match — suggestions:",
+        "search_clear": "Clear",
         "tabs": "Guide sections", "tab_home": "The home",
         "tab_emergency": "Emergencies", "tab_around": "Around you",
         "show_more": "Show {n} more", "show_less": "Show less",
@@ -228,6 +234,9 @@ _UI: dict[str, dict[str, str]] = {
         "cuisine_filter": "Filtrar por cocina",
         "services_grid": "Servicios a tu alrededor",
         "back_services": "↑ Volver a los servicios", "back_top": "↑ Volver arriba",
+        "search_placeholder": "Buscar en la guía",
+        "search_none": "Sin coincidencias exactas — sugerencias:",
+        "search_clear": "Borrar",
         "tabs": "Espacios de la guía", "tab_home": "El alojamiento",
         "tab_emergency": "Emergencias", "tab_around": "A tu alrededor",
         "show_more": "Ver {n} más", "show_less": "Reducir",
@@ -1396,7 +1405,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}>
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}">
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">

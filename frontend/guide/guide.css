@@ -59,6 +59,40 @@ html.js .guide-tabs{display:flex}
   font-weight:600;cursor:pointer;white-space:nowrap;text-align:center;
   overflow:hidden;text-overflow:ellipsis;transition:.12s}
 .tab.on{background:var(--sea);border-color:var(--sea);color:#fff}
+
+/* Recherche dans le guide (V2-33 volet 2) — injectée par JS, au-dessus des onglets.
+   Sans JS elle n'existe pas (dégradation propre). */
+.guide-search{position:relative;z-index:750;margin:4px 0 2px}
+.gs-field{position:relative;display:flex;align-items:center}
+.gs-input{width:100%;box-sizing:border-box;border:1px solid var(--line);
+  background:var(--shell);border-radius:12px;padding:11px 38px 11px 14px;
+  font:inherit;font-size:15px;color:var(--ink)}
+.gs-input:focus{outline:none;border-color:var(--sea)}
+.gs-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  border:none;background:none;color:var(--muted);font-size:22px;line-height:1;
+  cursor:pointer;padding:2px 8px}
+.gs-results{position:absolute;left:0;right:0;top:calc(100% + 6px);
+  background:var(--shell);border:1px solid var(--line);border-radius:12px;
+  box-shadow:0 10px 30px rgba(30,42,50,.14);max-height:60vh;overflow-y:auto;
+  padding:5px}
+.gs-note{font-size:12.5px;color:var(--muted);padding:7px 10px 3px}
+.gs-hit{width:100%;display:flex;align-items:center;gap:9px;text-align:left;
+  background:none;border:none;border-radius:9px;padding:10px 10px;font:inherit;
+  font-size:14.5px;color:var(--ink);cursor:pointer}
+.gs-hit:hover,.gs-hit:focus{background:var(--line-soft);outline:none}
+.gs-ic{flex:none;font-size:14px}
+.gs-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gs-ctx{flex:none;font-size:11.5px;color:var(--muted);background:var(--line-soft);
+  border-radius:999px;padding:1px 9px;max-width:40%;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+
+/* Surbrillance de la cible d'un résultat (~2,4 s) — section ou fiche de lieu. */
+.search-hit{animation:searchHit 2.4s ease-out}
+@keyframes searchHit{
+  0%{box-shadow:0 0 0 3px rgba(14,90,115,.55);background:rgba(14,90,115,.08)}
+  100%{box-shadow:0 0 0 3px rgba(14,90,115,0);background:transparent}
+}
+
 html.js .tab-panel{display:none}
 html.js .tab-panel.tab-active{display:block}
 /* Dans un panneau, les chips ne sont plus collantes en haut (la barre d'onglets

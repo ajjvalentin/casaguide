@@ -2050,6 +2050,27 @@
     "fr": "Itinéraire",
     "key": "ui.route"
   },
+  "ui.search_clear": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Clear",
+    "es": "Borrar",
+    "fr": "Effacer",
+    "key": "ui.search_clear"
+  },
+  "ui.search_none": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "No exact match — suggestions:",
+    "es": "Sin coincidencias exactas — sugerencias:",
+    "fr": "Aucun résultat exact — suggestions :",
+    "key": "ui.search_none"
+  },
+  "ui.search_placeholder": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Search the guide",
+    "es": "Buscar en la guía",
+    "fr": "Rechercher dans le guide",
+    "key": "ui.search_placeholder"
+  },
   "ui.send_hello": {
     "context": "Guide voyageur — libellé d'interface",
     "en": "Hello {name},",

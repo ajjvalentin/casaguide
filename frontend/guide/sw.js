@@ -27,7 +27,7 @@
 // `__ASSET_VERSION__` est remplacé à la volée par le SHA git du déploiement
 // (route /guide/sw.js, M-11) : chaque déploiement change le nom des caches → le
 // SW se réactive et purge les anciens, sans bump manuel en production.
-const VERSION = "casaguide-guide-v31-__ASSET_VERSION__";
+const VERSION = "casaguide-guide-v32-__ASSET_VERSION__";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 const TILES = `${VERSION}-tiles`;
@@ -42,10 +42,21 @@ const PREFETCH_DELAY_MS = 60;  // pause entre tuiles : séquentiel, jamais en ra
 const SHELL_ASSETS = [
   "/guide/app.js",
   "/guide/qr.js",
+  "/guide/search.js",           // recherche dans le guide (V2-33 volet 2)
   "/guide/guide.css",
   "/guide/icon-192.png",
   "/guide/icon-512.png",
+  // Cœur de correspondance PARTAGÉ avec l'aide back-office (V2-33 volet 2). Il vit
+  // hors de /guide/ → il n'est PAS couvert par la branche « /guide/ » du fetch : on
+  // le pré-cache ici ET on le sert explicitement (SHELL_EXTRA ci-dessous), sinon la
+  // recherche du guide MEURT hors-ligne (piège principal de la mission).
+  "/js/lib/matchcore.js",
 ];
+
+// Assets du shell vivant HORS de /guide/ (import ES relatif, sans ?v=) : servis
+// cache-first depuis le SHELL, comme le reste de l'app shell. Le bump de VERSION
+// (SHA git au déploiement) les rafraîchit ; aucune revalidation réseau requise.
+const SHELL_EXTRA = new Set(["/js/lib/matchcore.js"]);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -140,6 +151,10 @@ self.addEventListener("fetch", (event) => {
 
   // App shell local : cache-first.
   if (url.pathname.startsWith("/guide/")) { event.respondWith(cacheFirst(req, SHELL)); return; }
+
+  // Assets du shell hors de /guide/ (ex. le cœur de recherche partagé) : cache-first
+  // depuis le SHELL → la recherche du guide fonctionne hors-ligne (V2-33 volet 2).
+  if (SHELL_EXTRA.has(url.pathname)) { event.respondWith(cacheFirst(req, SHELL)); return; }
 
   // Espace du guide voyageur.
   if (url.pathname.startsWith("/g/")) {

@@ -1,0 +1,171 @@
+<!doctype html>
+<!-- Harnais headless de la recherche DANS le guide voyageur (V2-33 volet 2).
+     Pilote le VRAI /frontend/guide/search.js (initSearch) sur un DOM qui MIME la
+     sortie SSR du guide (sec-card + poi-card + badge de jour + secret-slot). Guide
+     rendu en ALLEMAND → éprouve une 2ᵉ langue du guide ET la normalisation du ß.
+     On teste SUR L'ARBRE RENDU (querySelector des résultats injectés, jamais une
+     référence interne — leçon V2-18c). Verdict dans #result, lu par
+     guide-search.test.mjs. Hors frontend/ (jamais servi). -->
+<meta charset="utf-8">
+<title>guide-search-harness</title>
+<link rel="stylesheet" href="/frontend/guide/guide.css">
+<pre id="result">PENDING</pre>
+<div class="wrap" id="root"></div>
+<script type="module">
+import { initSearch } from "/frontend/guide/search.js";
+
+document.documentElement.className += " js";
+document.documentElement.lang = "de";
+// Libellés de recherche (posés par le SSR sur le body ; ici on les simule).
+Object.assign(document.body.dataset, {
+  lang: "de",
+  searchPh: "Im Reiseführer suchen",
+  searchNone: "Keine genaue Übereinstimmung — Vorschläge:",
+  searchClear: "Löschen",
+});
+
+// DOM représentatif du guide rendu (allemand). Le mot de passe wifi est injecté
+// dans un .secret-slot/.secret-card COMME LE FAIT initSecrets → il ne doit PAS
+// entrer dans l'index (seul le libellé public « WLAN » est trouvable).
+document.getElementById("root").innerHTML = `
+  <nav class="guide-tabs" role="tablist">
+    <button class="tab on" data-tab="home">Zuhause</button>
+    <button class="tab" data-tab="emergency">Notfall</button>
+    <button class="tab" data-tab="around">Umgebung</button>
+  </nav>
+  <main id="content">
+    <section class="tab-panel tab-active" data-tab="home">
+      <article class="sec-card" id="B_wifi">
+        <h3>WLAN &amp; Verbindung</h3>
+        <div class="prose">Das WLAN steht Ihnen zur Verfügung.</div>
+        <div class="secret-slot" data-secret="wifi">
+          <div class="secret-card"><div class="sc-title">📶 WLAN</div>
+            <div class="sc-row"><span class="k">Passwort</span><span class="v">GEHEIM12345</span></div>
+          </div>
+        </div>
+      </article>
+      <article class="sec-card" id="A_keybox">
+        <h3>Schlüsselkasten &amp; Zugang</h3>
+        <div class="prose">Der Schlüsselkasten befindet sich neben der Tür.</div>
+        <div class="secret-slot" data-secret="keybox">
+          <div class="secret-card"><div class="sc-title">🔑 Schlüsselkasten</div>
+            <div class="sc-row"><span class="k">Code</span><span class="v">4242</span></div>
+          </div>
+        </div>
+      </article>
+    </section>
+    <section class="tab-panel" data-tab="emergency"></section>
+    <section class="tab-panel" data-tab="around">
+      <div class="cat" data-cat="restaurant" id="autour/restaurant">
+        <h4 class="cat-title">Restaurants · 2</h4>
+        <div class="poi-group">
+          <div class="poi-card"><div class="poi-body"><h4>Restaurant Zur Alten Mühle</h4>
+            <div class="prose">Regionale Küche.</div></div></div>
+          <div class="poi-card"><div class="poi-body"><h4>Bäckerei Schmidt</h4></div></div>
+        </div>
+      </div>
+      <div class="cat" data-cat="market" id="autour/market">
+        <h4 class="cat-title">Lokale Märkte · 1</h4>
+        <div class="poi-group">
+          <div class="poi-card"><div class="poi-body"><h4>Straßenmarkt am Hafen</h4>
+            <div class="market-day"><span class="market-badge">Samstag</span></div></div></div>
+        </div>
+      </div>
+    </section>
+  </main>`;
+
+// Stub minimal de l'activation d'onglet (fournie par app.js initTabs en vrai).
+window._activateTab = (k) => {
+  document.querySelectorAll(".tab-panel[data-tab]").forEach((p) =>
+    p.classList.toggle("tab-active", p.dataset.tab === k));
+};
+
+initSearch();
+
+const log = [];
+let pass = true;
+const chk = (c, m) => { if (!c) pass = false; log.push((c ? "✓ " : "✗ ") + m); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const q = (s, r = document) => r.querySelector(s);
+const qa = (s, r = document) => [...r.querySelectorAll(s)];
+const input = () => q(".guide-search .gs-input");
+const hits = () => qa(".gs-results .gs-hit");
+const labels = () => hits().map((h) => q(".gs-label", h).textContent);
+
+async function type(v) {
+  const el = input();
+  el.value = v;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  await wait(200);   // > debounce
+}
+
+try {
+  // Le champ est injecté par JS, AVANT la barre d'onglets, avec le bon placeholder.
+  chk(!!input(), "champ de recherche injecté par JS");
+  chk(input() && input().getAttribute("placeholder") === "Im Reiseführer suchen",
+    "placeholder localisé (allemand) lu du body");
+  const searchBox = q(".guide-search");
+  chk(searchBox && searchBox.nextElementSibling
+    && searchBox.nextElementSibling.classList.contains("guide-tabs"),
+    "le champ précède la barre d'onglets");
+
+  // 1) Faute de frappe → trouve un POI (trigrammes). « muhle » → « Mühle ».
+  await type("muhle");
+  chk(labels().some((l) => /Zur Alten Mühle/.test(l)),
+    "faute de frappe « muhle » trouve « Restaurant Zur Alten Mühle »");
+
+  // 2) Requête dans la langue du guide (allemand) → trouve une section, de façon
+  //    FRANCHE (pas de bandeau « suggestions » → correspondance confiante).
+  await type("wlan");
+  chk(labels().some((l) => /WLAN/.test(l)),
+    "« wlan » trouve la section WLAN (2ᵉ langue du guide, libellé PUBLIC)");
+  chk(!q(".gs-results .gs-note"),
+    "« wlan » : correspondance FRANCHE (aucun bandeau de suggestions)");
+
+  // 3) Normalisation du ß : « strassenmarkt » trouve « Straßenmarkt » (ß→ss).
+  await type("strassenmarkt");
+  chk(labels().some((l) => /Straßenmarkt/.test(l)),
+    "ß→ss : « strassenmarkt » trouve « Straßenmarkt am Hafen »");
+
+  // Le badge du jour de marché est indexé : « Samstag » trouve le marché.
+  await type("samstag");
+  chk(labels().some((l) => /Straßenmarkt/.test(l)),
+    "badge du jour « Samstag » indexé → trouve le marché");
+
+  // 4) Le SECRET n'est pas dans l'index. Preuve par la CONFIANCE (le repli « jamais
+  //    vide » liste sinon toutes les entrées) : le libellé public « wlan » donne une
+  //    correspondance FRANCHE (score ≥ seuil, pas de bandeau), tandis que le mot de
+  //    passe ne donne QU'une approche (bandeau de suggestions) — s'il était indexé,
+  //    la sous-chaîne exacte le rendrait franc. Idem pour le code de boîte à clés.
+  await type("GEHEIM12345");
+  chk(!!q(".gs-results .gs-note"),
+    "secret introuvable : le mot de passe ne donne AUCUNE correspondance franche");
+  await type("4242");
+  chk(!!q(".gs-results .gs-note"),
+    "secret introuvable : le code de boîte à clés ne donne aucune correspondance franche");
+
+  // 5) Résultat approché JAMAIS vide : une requête absurde propose des approches.
+  await type("xqzptvw");
+  chk(hits().length > 0, "requête absurde : des approches proposées (jamais vide)");
+  chk(!!q(".gs-results .gs-note"), "l'état approché affiche l'en-tête de suggestions");
+
+  // 6) Clic d'un résultat → « comme un clic » : bon onglet + surbrillance.
+  await type("straßenmarkt");
+  const hit = hits().find((h) => /Straßenmarkt/.test(q(".gs-label", h).textContent));
+  chk(!!hit, "résultat du marché présent avant clic");
+  if (hit) {
+    hit.click();
+    await wait(120);
+    const around = q('.tab-panel[data-tab="around"]');
+    chk(around && around.classList.contains("tab-active"),
+      "clic : l'onglet « Umgebung » (autour) est activé");
+    chk(!!q(".poi-card.search-hit"),
+      "clic : la fiche du lieu est mise en évidence (search-hit)");
+    chk(q(".gs-results").hidden, "clic : le panneau de résultats se referme");
+  }
+} catch (e) {
+  pass = false;
+  log.push("✗ exception : " + (e && e.message ? e.message : e));
+}
+document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>

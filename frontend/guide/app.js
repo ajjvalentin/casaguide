@@ -8,6 +8,7 @@
    localement (qr.js). Tout échoue proprement — sans JS, la page reste lisible. */
 
 import { qrCanvas, wifiPayload } from "./qr.js";
+import { initSearch } from "./search.js";
 
 // Préfixe d'API — UNE SEULE source de vérité (V2-23c volet 1bis). Le SSR le pose
 // en `data-api-base` : `/g/{guide_token}` (maison), `/b/{stay_token}` (séjour),
@@ -730,6 +731,10 @@ initTabs();
 initChips();
 initBackToServices();
 initCategoryLists();
+// Recherche dans le guide (V2-33 volet 2) : après initTabs (utilise _activateTab)
+// et initCategoryLists (le dépliage des listes), AVANT initSecrets (l'index se
+// construit sur le DOM SANS les secrets déchiffrés — ceux-ci arrivent après).
+initSearch();
 initCopy();
 initLightbox();
 initSecrets();
