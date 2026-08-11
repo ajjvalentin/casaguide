@@ -189,8 +189,15 @@ h2{font-family:Fraunces,serif;font-size:23px;margin:32px 0 2px}
 .chapline{height:3px;width:44px;border-radius:2px;margin:0 0 14px}
 h3{font-size:16px;font-weight:600;margin:0 0 6px}
 
+/* scroll-margin-top (V2-07 volet 1quater) : les cartes de section portent l'`id`
+   d'ancre (`#E_food_delivery`…) ; une ancre native (tuile de service, lien profond)
+   ou le scrollIntoView({block:"start"}) de app.js les calerait sinon SOUS la barre
+   d'onglets collante (`.guide-tabs`, sticky top:0, ~54 px) → section masquée. Même
+   valeur que `.cat`/`.svc-grid` (64 px = barre + respiration), identique mobile/
+   desktop (aucun media query ne change la barre). La recherche (V2-33) défile en
+   `block:"center"` → non concernée, aucun double décalage. */
 .sec-card{background:var(--shell);border:1px solid var(--line);border-radius:12px;
-          padding:14px 16px;margin-bottom:10px}
+          padding:14px 16px;margin-bottom:10px;scroll-margin-top:64px}
 .sec-card h3{font-family:Fraunces,serif;font-size:17px}
 
 .fields{margin:6px 0 0;display:grid;gap:8px}

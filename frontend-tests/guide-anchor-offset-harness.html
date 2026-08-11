@@ -1,0 +1,106 @@
+<!doctype html>
+<!-- Harnais headless de la COMPENSATION D'ANCRE (V2-07 volet 1quater). Il pilote
+     le VRAI /frontend/guide/app.js sur un DOM fidèle au rendu SSR ET charge la
+     vraie guide.css : on éprouve le RENDU RÉEL (style calculé), pas les classes.
+     Cas : un tap sur la tuile de service « Livraison de repas » (ancre native
+     #E_food_delivery) doit viser la carte de section — et cette carte porte le
+     scroll-margin-top qui la décolle de la barre d'onglets collante. Verdict dans
+     #result. Aucune Leaflet (pas de #map → initMap no-op). -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>guide-anchor-offset-harness</title>
+<!-- La classe `js` est posée par le SSR : les règles CSS gatées sur html.js s'appliquent. -->
+<script>document.documentElement.className += " js";</script>
+<link rel="stylesheet" href="/frontend/guide/guide.css">
+<script>
+  // Espionne scrollIntoView : app.js défile vers l'ancre cible → on retient son id
+  // (le style scroll-margin-top est réel, appliqué que le défilement soit stubé ou non).
+  window.__lastScroll = "";
+  Element.prototype.scrollIntoView = function () { window.__lastScroll = this.id || ""; };
+  window.scrollTo = () => {};
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+  // Pas de SW ni de réseau dans le harnais : initPwa/initSecrets doivent dégrader.
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.fetch = () => Promise.reject(new Error("no network in harness"));
+</script>
+</head>
+<body data-token="tok" data-api-base="/g/tok">
+<main id="content" class="wrap">
+  <nav class="guide-tabs" role="tablist" aria-label="Onglets">
+    <button class="tab on" role="tab" data-tab="home" id="tabbtn-home" aria-controls="tab-home" aria-selected="true">Le logement</button>
+    <button class="tab" role="tab" data-tab="emergency" id="tabbtn-emergency" aria-controls="tab-emergency" aria-selected="false">Urgences</button>
+    <button class="tab" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="false">Autour de vous</button>
+  </nav>
+
+  <section class="tab-panel tab-active" data-tab="home" id="tab-home" role="tabpanel">home</section>
+  <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
+  <section class="tab-panel" data-tab="around" id="tab-around" role="tabpanel">
+    <!-- Grille de services (V2-12/1bis) : la tuile de fait de zone pointe une SECTION
+         (#E_food_delivery), pas un mode filtré catégorie (#autour/{code}). -->
+    <nav class="svc-grid" id="autour" aria-label="Services autour de vous">
+      <a class="svc-tile" href="#E_food_delivery" aria-label="Livraison de repas : 2"><span class="svc-name">Livraison de repas</span><span class="svc-count">2</span></a>
+      <a class="svc-tile" href="#autour/restaurant" data-cat="restaurant" aria-label="Restaurant : 1"><span class="svc-name">Restaurant</span><span class="svc-count">1</span></a>
+    </nav>
+    <section class="chapter" data-chapter="E">
+      <h2>Services à la demande</h2>
+      <!-- Cible de la tuile : une carte de section COURTE (le cas d'André). -->
+      <article class="sec-card" id="E_food_delivery">
+        <h3>Livraison de repas</h3>
+        <div class="facts food-delivery">
+          <div class="poi-nav">
+            <a class="route-link" href="https://glovoapp.com/es" target="_blank" rel="noopener nofollow">Glovo</a>
+          </div>
+        </div>
+      </article>
+    </section>
+    <div class="cat" data-cat="restaurant" id="autour/restaurant"><h3 class="cat-title">Restaurant</h3></div>
+  </section>
+</main>
+
+<pre id="result">PENDING</pre>
+
+<script id="guide-data" type="application/json">{"property":{"name":"Villa Test"},"pois":[]}</script>
+
+<script type="module">
+  import "/frontend/guide/app.js";
+
+  const q = (s) => document.querySelector(s);
+  const log = [];
+  const chk = (cond, msg) => { if (!cond) log.push(msg); return cond; };
+
+  // app.js s'initialise à l'import (module différé, DOM prêt). On laisse un tour
+  // de boucle, on clique la tuile, puis on lit APRÈS le setTimeout(80) d'applyHash.
+  setTimeout(() => {
+    q('.svc-tile[href="#E_food_delivery"]').click();
+    setTimeout(() => {
+      let pass = true;
+      const sec = document.getElementById("E_food_delivery");
+
+      // 1) La tuile vise bien la carte de section (ancre résolue par app.js).
+      pass = chk(window.__lastScroll === "E_food_delivery",
+        'la tuile doit viser #E_food_delivery (cible=' + window.__lastScroll + ')') && pass;
+
+      // 2) Le panneau « Autour de vous » est activé (la section y vit).
+      pass = chk(q('#tab-around').classList.contains("tab-active"),
+        "l'onglet « Autour de vous » doit être actif après le tap") && pass;
+
+      // 3) LE CŒUR : la carte de section porte le scroll-margin-top qui la décolle
+      //    de la barre d'onglets collante (style CALCULÉ, vraie guide.css chargée).
+      const smt = getComputedStyle(sec).scrollMarginTop;
+      pass = chk(smt === "64px",
+        "scroll-margin-top de la carte de section attendu 64px, obtenu " + smt) && pass;
+
+      // 4) Régression : les autres cibles d'ancre gardent leur compensation.
+      pass = chk(getComputedStyle(q(".svc-grid")).scrollMarginTop === "64px",
+        ".svc-grid doit garder scroll-margin-top:64px") && pass;
+      pass = chk(getComputedStyle(q(".cat")).scrollMarginTop === "64px",
+        ".cat doit garder scroll-margin-top:64px") && pass;
+
+      document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+    }, 220);
+  }, 60);
+</script>
+</body>
+</html>
