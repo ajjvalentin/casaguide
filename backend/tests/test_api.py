@@ -549,6 +549,86 @@ def test_create_manual_poi_computes_distances_shows_in_guide_off_quota(client):
     assert meson["cuisine"] == "seafood" and meson["owner_comment"]
 
 
+# ── Jour du marché (V2-33 volet 1) ───────────────────────────────────────────
+
+def test_create_and_edit_poi_carries_weekday(client):
+    """Le jour du marché est saisi à la création et modifiable à l'édition ; il est
+    servi dans le guide sous forme de badge traduit (« samedi » pour weekday=6)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"lat": PROP_LAT, "lon": PROP_LON})
+    r = client.post(f"/api/properties/{pid}/pois", headers=owner["headers"], json={
+        "category_code": "market", "name": "Mercadillo del Puerto",
+        "lat": 37.929, "lon": -0.747, "weekday": 3, "weekday_note": "soir (été)"})
+    assert r.status_code == 201, r.text
+    poi = r.json()
+    assert poi["weekday"] == 3 and poi["weekday_note"] == "soir (été)"
+    # Édition : on change le jour.
+    r2 = client.patch(f"/api/properties/{pid}/pois/{poi['id']}",
+                      headers=owner["headers"], json={"weekday": 6})
+    assert r2.status_code == 200
+    got = client.get(f"/api/properties/{pid}/pois", headers=owner["headers"]).json()
+    edited = next(p for p in got if p["id"] == poi["id"])
+    assert edited["weekday"] == 6
+    # Jour hors bornes ISO → 422 (validation Pydantic 1..7).
+    r3 = client.post(f"/api/properties/{pid}/pois", headers=owner["headers"], json={
+        "category_code": "market", "name": "X", "lat": 37.9, "lon": -0.74, "weekday": 8})
+    assert r3.status_code == 422
+    # Guide publié : badge du jour rendu et TRADUIT (weekday=6 → « samedi » en FR).
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+    page = client.get(f"/g/{token}").text
+    assert "market-badge" in page and "samedi" in page
+
+
+def test_migration_029_backfills_market_day_from_name(client):
+    """La migration 029 sort le jour du NOM des marchés : « Samedi · X » → weekday=6
+    + nom nettoyé ; « Mercredi soir (été) · X » → weekday=3 + note « soir (été) ».
+    Idempotente. Ne touche NI un marché sans préfixe NI un restaurant homonyme."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    migration = (Path(__file__).resolve().parents[2]
+                 / "db" / "migrations" / "029_poi_weekday.sql").read_text()
+    with _dbdict() as conn:
+        def mk(cat, name):
+            return str(conn.execute(
+                """INSERT INTO pois (property_id, category_code, name, geom,
+                       source, status)
+                   VALUES (%s, %s, %s,
+                       ST_SetSRID(ST_MakePoint(-0.74, 37.9), 4326), 'owner', 'approved')
+                   RETURNING id""", (pid, cat, name)).fetchone()["id"])
+        samedi = mk("market", "Samedi · Mercadillo de Zoco")
+        mercredi = mk("market", "Mercredi soir (été) · Mercadillo del Puerto")
+        plain = mk("market", "Mercadillo sans jour")
+        resto = mk("restaurant", "Lundi au Soleil")
+        conn.commit()
+
+        def snapshot():
+            return {str(r["id"]): r for r in conn.execute(
+                "SELECT id, name, weekday, weekday_note FROM pois "
+                "WHERE property_id = %s", (pid,)).fetchall()}
+
+        conn.execute(migration); conn.commit()      # ADD COLUMN no-op + backfill
+        rows = snapshot()
+        conn.execute(migration); conn.commit()      # rejeu → idempotent
+        rows2 = snapshot()
+
+    s = rows[samedi]
+    assert s["weekday"] == 6 and s["name"] == "Mercadillo de Zoco"
+    assert s["weekday_note"] is None
+    m = rows[mercredi]
+    assert m["weekday"] == 3 and m["name"] == "Mercadillo del Puerto"
+    assert m["weekday_note"] == "soir (été)"
+    assert rows[plain]["weekday"] is None and rows[plain]["name"] == "Mercadillo sans jour"
+    assert rows[resto]["weekday"] is None and rows[resto]["name"] == "Lundi au Soleil"
+    # Idempotence : le rejeu ne re-nettoie rien (le nom n'a plus de préfixe).
+    assert rows2[samedi]["name"] == "Mercadillo de Zoco" and rows2[samedi]["weekday"] == 6
+    assert rows2[mercredi]["weekday_note"] == "soir (été)"
+
+
 def test_undo_restores_previous_poi_status(client):
     """M-23 : l'annulation d'un Approuver/Rejeter restaure le statut précédent
     (y compris 'suggested') via POST /pois/{id}/status."""

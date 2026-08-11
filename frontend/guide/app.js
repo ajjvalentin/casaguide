@@ -36,6 +36,18 @@ function fmtDist(p) {
 }
 function tel(raw) { return (String(raw).trim().startsWith("+") ? "+" : "") + String(raw).replace(/\D/g, ""); }
 
+/* Jour du marché localisé (V2-33) : MÊME source (CLDR) que le SSR (Babel) via
+   Intl.DateTimeFormat — aucune clé i18n, 7 langues gratuites, badge aligné sur le
+   serveur. Pivot 2024-01-01 = lundi ; jour n (1..7 ISO) = pivot + (n-1). */
+const GUIDE_LOCALE = document.documentElement.lang || document.body.dataset.lang || "fr";
+function weekdayLabel(n) {
+  const w = Number(n);
+  if (!Number.isInteger(w) || w < 1 || w > 7) return "";
+  const d = new Date(2024, 0, 1 + (w - 1));
+  try { return new Intl.DateTimeFormat(GUIDE_LOCALE, { weekday: "long" }).format(d); }
+  catch (_) { return new Intl.DateTimeFormat("en", { weekday: "long" }).format(d); }
+}
+
 // ── Carte Leaflet ────────────────────────────────────────────────────────────
 // UNE SEULE instance de carte (window._guideMap), la plus robuste avec Leaflet :
 // la carte vit toujours à la même place DOM (en tête de l'onglet « Autour », sous
@@ -74,6 +86,12 @@ function initMap() {
     const dist = fmtDist(p);
     let html = `<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.category || "")}`;
     if (dist) html += ` · ${dist}`;
+    // Jour du marché (V2-33) : badge localisé dans la popup, aligné sur le SSR.
+    if (p.category_code === "market" && p.weekday) {
+      const day = weekdayLabel(p.weekday);
+      const note = (p.weekday_note || "").trim();
+      if (day) html += `<br>📅 <b>${escapeHtml(day)}</b>${note ? " · " + escapeHtml(note) : ""}`;
+    }
     if (p.phone) html += `<br>📞 <a href="tel:${tel(p.phone)}">${escapeHtml(p.phone)}</a>`;
     html += `<br><a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">Itinéraire ↗</a>`;
     m.bindPopup(html);

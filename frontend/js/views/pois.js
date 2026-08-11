@@ -21,6 +21,34 @@ const FILTERS = [
   ["all", "Tous", () => true],
 ];
 const FILTER_KEYS = new Set(FILTERS.map((f) => f[0]));
+
+// Jour du marché (V2-33) : le champ est À NOUS (jamais OSM), proposé quand la
+// catégorie est « Marché local ». Back-office FR délibéré → libellés en dur.
+// 1=lundi … 7=dimanche (ISO). Le badge du guide est TRADUIT au rendu (Intl/Babel).
+const WEEKDAY_OPTIONS = [
+  ["", "— aucun —"], ["1", "Lundi"], ["2", "Mardi"], ["3", "Mercredi"],
+  ["4", "Jeudi"], ["5", "Vendredi"], ["6", "Samedi"], ["7", "Dimanche"],
+];
+
+// Bloc « Jour du marché » (select + précision), masquable. `get()` renvoie
+// {weekday, weekday_note} prêts pour l'API ; `setVisible(on)` le montre/cache.
+function marketDayField(weekday, note) {
+  const sel = el("select", {}, ...WEEKDAY_OPTIONS.map(([v, l]) =>
+    el("option", { value: v, selected: String(weekday || "") === v }, l)));
+  const noteInput = el("input", { type: "text", value: note || "",
+    placeholder: "Précision (ex. été seulement)" });
+  const node = el("div", { class: "field market-day-field" },
+    el("label", {}, "Jour du marché"),
+    el("div", { class: "grid-2" }, sel, noteInput));
+  return {
+    node, select: sel, note: noteInput,
+    get: () => ({
+      weekday: sel.value ? parseInt(sel.value, 10) : null,
+      weekday_note: noteInput.value.trim() || null,
+    }),
+    setVisible: (on) => { node.style.display = on ? "" : "none"; },
+  };
+}
 const STATUS_BADGE = {
   suggested: ["badge-suggested", "À valider"],
   approved: ["badge-approved", "Approuvé"],
@@ -310,6 +338,9 @@ export async function renderPois(view, pid, initialFilter) {
     const cuisine = isResto
       ? f("Type de cuisine (ex. italien, tapas, poisson)", "cuisine", p.cuisine)
       : null;
+    // Jour du marché (V2-33) : seulement pour la catégorie « Marché local ».
+    const isMarket = p.category_code === "market";
+    const marketDay = isMarket ? marketDayField(p.weekday, p.weekday_note) : null;
     const desc = f("Description", "description_md", p.description_md, "textarea");
     const fav = f("Coup de cœur (commentaire personnel)", "owner_comment", p.owner_comment, "textarea");
     const save = el("button", { class: "btn btn-primary" }, "Enregistrer");
@@ -319,6 +350,7 @@ export async function renderPois(view, pid, initialFilter) {
         name.node,
         el("div", { class: "grid-2" }, phone.node, website.node),
         cuisine ? cuisine.node : null,
+        marketDay ? marketDay.node : null,
         desc.node, fav.node,
         el("div", { class: "notice notice-info" }, icon("info", 18),
           el("div", {}, "Enregistrer classe ce lieu comme « Modifié » : il sera retenu dans le guide."))),
@@ -335,6 +367,7 @@ export async function renderPois(view, pid, initialFilter) {
           owner_comment: fav.control.value.trim() || null,
         };
         if (cuisine) body.cuisine = cuisine.control.value.trim().toLowerCase() || null;
+        if (marketDay) Object.assign(body, marketDay.get());
         const res = await api.editPoi(pid, p.id, body);
         Object.assign(p, body, { status: res.status });
         modal.close();
@@ -381,6 +414,8 @@ export async function renderPois(view, pid, initialFilter) {
     const phone = f("Téléphone", null, "tel");
     const website = f("Site web", null, "url");
     const cuisine = f("Type de cuisine (restaurants)");
+    // Jour du marché (V2-33) : visible seulement quand la catégorie est « Marché local ».
+    const marketDay = marketDayField(null, null);
     const comment = f("Coup de cœur (commentaire personnel)", null, "textarea");
 
     // Recherche Nominatim (debounce) → candidats cliquables
@@ -402,12 +437,17 @@ export async function renderPois(view, pid, initialFilter) {
         el("hr", { class: "soft" }),
         catField, name.node,
         el("div", { class: "grid-2" }, phone.node, website.node),
-        address.node, cuisine.node, comment.node,
+        address.node, cuisine.node, marketDay.node, comment.node,
         el("label", { class: "muted", style: { fontSize: "12.5px" } },
           "Position (faites glisser le marqueur ou cliquez sur la carte)"),
         mapEl2, coordLine),
       footer: [el("button", { class: "btn btn-ghost", type: "button", onClick: () => modal.close() }, "Annuler"), add],
     });
+
+    // Le « Jour du marché » n'apparaît que pour la catégorie « Marché local ».
+    const syncMarketDay = () => marketDay.setVisible(catSel.value === "market");
+    catSel.addEventListener("change", syncMarketDay);
+    syncMarketDay();
 
     // Mini-carte avec marqueur ajustable (repli sur une vue large si logement non placé)
     let lat = property.lat != null ? property.lat : 0;
@@ -422,7 +462,7 @@ export async function renderPois(view, pid, initialFilter) {
     setTimeout(() => amap.invalidateSize(), 80);
 
     function fillFrom(c) {
-      if (c.category_code) catSel.value = c.category_code;
+      if (c.category_code) { catSel.value = c.category_code; syncMarketDay(); }
       name.control.value = c.name || "";
       address.control.value = c.address || "";
       phone.control.value = c.phone || "";
@@ -469,6 +509,8 @@ export async function renderPois(view, pid, initialFilter) {
           website: website.control.value.trim() || null,
           cuisine: cuisine.control.value.trim().toLowerCase() || null,
           owner_comment: comment.control.value.trim() || null,
+          ...(catSel.value === "market" ? marketDay.get()
+            : { weekday: null, weekday_note: null }),
         });
         pois.push(created);
         addMarker(created);

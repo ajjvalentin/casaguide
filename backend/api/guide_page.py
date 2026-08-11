@@ -20,6 +20,7 @@ d'abord », liseré de couleur de chapitre) est celle du prototype validé
 """
 from __future__ import annotations
 
+import datetime as _dt
 import html
 import json
 import re
@@ -29,6 +30,16 @@ from typing import Any
 from . import i18n as _i18n_mod
 from .assets import versioned
 from .poi_icons import category_icon_svg, category_rank
+
+# Noms de jours localisés (V2-33) : Babel/CLDR est l'équivalent SERVEUR d'un
+# `Intl.DateTimeFormat(locale, {weekday:'long'})` — même source de vérité (CLDR),
+# donc SSR et client rendent le même mot. Aucune clé i18n, 7 langues gratuites.
+try:
+    from babel.dates import format_date as _babel_format_date
+except Exception:  # pragma: no cover — Babel est une dépendance déclarée
+    _babel_format_date = None
+# 2024-01-01 est un LUNDI (ISO weekday 1) → jour n = pivot + (n-1) jours.
+_WEEKDAY_PIVOT = _dt.date(2024, 1, 1)
 
 # Locale Open Graph par langue (M-25) : repli fr_FR.
 _OG_LOCALE = {"fr": "fr_FR", "en": "en_GB", "es": "es_ES"}
@@ -304,6 +315,27 @@ def _cuisine_label(value: str, lang: str = "fr") -> str:
     if d:
         return d.get(lang) or d.get("fr") or value
     return value.replace("_", " ").strip().capitalize()
+
+
+def _weekday_label(weekday: Any, lang: str = "fr") -> str:
+    """Nom du jour (1=lundi … 7=dimanche, ISO) localisé dans la langue du guide via
+    Babel/CLDR — l'équivalent serveur d'`Intl.DateTimeFormat` (V2-33) : aucune clé
+    i18n, 7 langues gratuites, aligné avec le client. Chaîne vide si le jour est
+    absent/invalide ; repli anglais si la locale est inconnue ou Babel absent."""
+    try:
+        n = int(weekday)
+    except (TypeError, ValueError):
+        return ""
+    if not 1 <= n <= 7 or _babel_format_date is None:
+        return ""
+    d = _WEEKDAY_PIVOT + _dt.timedelta(days=n - 1)
+    try:
+        return _babel_format_date(d, "EEEE", locale=lang)
+    except Exception:                     # locale inconnue de CLDR → repli anglais
+        try:
+            return _babel_format_date(d, "EEEE", locale="en")
+        except Exception:
+            return ""
 
 
 def _t(lang: str, key: str) -> str:
@@ -780,11 +812,19 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
     # Ordre des catégories = celui du seed (V2-12) → cohérent avec la grille de
     # services (mêmes tuiles, même ordre) et avec l'intention du catalogue.
     for code, lst in sorted(by_cat.items(), key=lambda kv: category_rank(kv[0])):
-        # Coups de cœur (owner_comment) en tête de leur catégorie (M-16), puis
-        # tri par distance à pied.
-        lst.sort(key=lambda p: (
-            0 if (p.get("owner_comment") or "").strip() else 1,
-            p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
+        is_market = code == "market"
+        if is_market:
+            # V2-33 — un voyageur se repère par JOUR, pas par distance : les marchés
+            # sont triés lundi→dimanche (jour absent en dernier), puis par distance.
+            lst.sort(key=lambda p: (
+                p.get("weekday") if p.get("weekday") is not None else 8,
+                p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
+        else:
+            # Autres catégories : coup de cœur (owner_comment) en tête (M-16), puis
+            # distance à pied — le repère naturel d'un lieu reste « à quelle distance ».
+            lst.sort(key=lambda p: (
+                0 if (p.get("owner_comment") or "").strip() else 1,
+                p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
         cat_name = _esc(_seed_label(lang, _i18n_mod.poi_category_key(code),
                                     lst[0].get("category_name"), code))
         is_resto = code == "restaurant"
@@ -802,6 +842,18 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
             cuisine_attr = f' data-cuisine="{_esc(cuisine)}"' if is_resto else ""
             cuisine_tag = (f'<span class="cuisine-tag">{_esc(_cuisine_label(cuisine, lang))}</span>'
                            if is_resto and cuisine else "")
+            # Jour du marché (V2-33) : badge TRADUIT (Babel/CLDR) dans la langue du
+            # guide + précision libre à côté. `data-weekday` porte le rang (1..7) →
+            # le client (popups carte, app.js) rend le MÊME mot via Intl (aligné).
+            day_html = ""
+            if is_market and p.get("weekday"):
+                day_txt = _weekday_label(p.get("weekday"), lang)
+                note = (p.get("weekday_note") or "").strip()
+                note_html = (f'<span class="market-note">{_esc(note)}</span>'
+                             if note else "")
+                day_html = (f'<div class="market-day" data-weekday="{int(p["weekday"])}">'
+                            f'<span class="market-badge">{_esc(day_txt)}</span>'
+                            f'{note_html}</div>')
             meta: list[str] = []
             if p.get("phone"):
                 meta.append(f'<a href="tel:{_tel(p["phone"])}">{_t(lang, "call")}</a>')
@@ -814,7 +866,7 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
             cards.append(
                 f'<div class="poi-card"{cuisine_attr} style="border-left-color:{color}">'
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
-                f'<div class="poi-body"><h4>{_esc(p["name"])}{cuisine_tag}</h4>{comment}'
+                f'<div class="poi-body"><h4>{_esc(p["name"])}{cuisine_tag}</h4>{day_html}{comment}'
                 f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}{nav_html}</div></div>')
         n = len(lst)
         head = f'<h4 class="cat-title">{cat_name} · {n}</h4>'
@@ -1225,7 +1277,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                   "category": _seed_label(lang, _i18n_mod.poi_category_key(p["category_code"]),
                                           p.get("category_name"), p["category_code"]),
                   "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
-                  "travel_mode": p.get("travel_mode"), "phone": p.get("phone")}
+                  "travel_mode": p.get("travel_mode"), "phone": p.get("phone"),
+                  # Jour du marché (V2-33) : le client rend le badge localisé (Intl)
+                  # dans les popups de la carte, aligné sur le SSR (Babel/CLDR).
+                  "weekday": p.get("weekday"), "weekday_note": p.get("weekday_note")}
                  for p in around_pois
                  if p.get("lat") is not None and p.get("lon") is not None],
     }

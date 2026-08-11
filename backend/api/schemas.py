@@ -364,6 +364,10 @@ class PoiEditIn(BaseModel):
     website: str | None = None
     opening_hours: str | None = None
     cuisine: str | None = None
+    # Jour du marché (V2-33) : 1=lundi … 7=dimanche (ISO). Pertinent pour la
+    # catégorie `market` ; traduit au rendu (aucune clé i18n).
+    weekday: int | None = Field(default=None, ge=1, le=7)
+    weekday_note: str | None = None
     description_md: str | None = None
     owner_comment: str | None = None
 
@@ -397,6 +401,9 @@ class PoiCreateIn(BaseModel):
     website: str | None = None
     opening_hours: str | None = None
     cuisine: str | None = None
+    # Jour du marché (V2-33) : 1=lundi … 7=dimanche (ISO), + précision libre.
+    weekday: int | None = Field(default=None, ge=1, le=7)
+    weekday_note: str | None = None
     description_md: str | None = None
     owner_comment: str | None = None
 

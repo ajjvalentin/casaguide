@@ -6,6 +6,7 @@ de dictionnaires de test. Couvre M-17 (chaque area_fact à sa place) et M-14
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -602,12 +603,13 @@ def _panel(html, key):
     return rest if nxt == -1 else rest[:nxt]
 
 
-def _poi(name, cat, ch, walk=5, comment=None):
+def _poi(name, cat, ch, walk=5, comment=None, weekday=None, weekday_note=None):
     return {"id": name, "name": name, "category_code": cat, "chapter": ch,
             "category_name": {"fr": cat}, "map_color": "#0E5A73",
             "lat": 37.9, "lon": -0.74, "walk_min": walk, "dist_walk_m": walk * 70,
             "drive_min": None, "owner_comment": comment, "description_md": None,
-            "opening_hours": None, "phone": None, "website": None, "cuisine": None}
+            "opening_hours": None, "phone": None, "website": None, "cuisine": None,
+            "weekday": weekday, "weekday_note": weekday_note}
 
 
 def test_three_tabs_present_and_labelled():
@@ -858,3 +860,66 @@ def test_service_grid_is_head_of_around_before_map():
                     "around")
     assert '<nav class="svc-grid"' in around and '<div id="map"></div>' in around
     assert around.index('<nav class="svc-grid"') < around.index('<div id="map"></div>')
+
+
+# ── Jour du marché (V2-33 volet 1) ───────────────────────────────────────────
+
+def _markets():
+    """Trois marchés dans le chapitre C : samedi (loin), mercredi (près, avec
+    note), et un sans jour (le plus près) — pour éprouver tri + badge."""
+    return [_poi("Mercadillo Zoco", "market", "C", walk=20, weekday=6),
+            _poi("Mercadillo Puerto", "market", "C", walk=8, weekday=3,
+                 weekday_note="soir (été)"),
+            _poi("Mercadillo sans jour", "market", "C", walk=2)]
+
+
+def test_market_day_badge_translated_fr_and_en():
+    """Le badge du jour est TRADUIT dans la langue du guide (Babel/CLDR), sans clé
+    i18n : « samedi »/« mercredi » en FR, « Saturday »/« Wednesday » en EN. La note
+    s'affiche à côté quand elle est présente."""
+    pois = _markets()
+    fr = _panel(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [], pois, {}, "tok"),
+                "around")
+    assert "market-badge" in fr
+    assert "samedi" in fr and "mercredi" in fr
+    assert "soir (été)" in fr                       # la note à côté du badge
+    en = _panel(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [], pois, {},
+                                        "tok", lang="en"), "around")
+    assert "Saturday" in en and "Wednesday" in en
+    # Casing NATUREL de la langue : pas de capitalisation forcée dans le texte.
+    assert "Samedi" not in en and "samedi" not in en   # EN, pas de mot FR
+
+
+def test_market_sorted_by_weekday_then_distance():
+    """Les marchés sont triés lundi→dimanche (jour absent EN DERNIER), puis par
+    distance — « un voyageur se repère par jour », pas par distance."""
+    around = _panel(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [],
+                                            _markets(), {}, "tok"), "around")
+    order = re.findall(r"<h4>(Mercadillo [^<]+)", around)
+    assert order == ["Mercadillo Puerto",       # mercredi (3)
+                     "Mercadillo Zoco",          # samedi (6)
+                     "Mercadillo sans jour"]     # sans jour → dernier
+
+
+def test_market_without_weekday_has_no_badge():
+    """Un marché sans jour ne porte aucun badge (et finit la liste)."""
+    around = _panel(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [],
+                                            _markets(), {}, "tok"), "around")
+    # Deux badges pour trois marchés (celui sans jour n'en a pas).
+    assert around.count("market-badge") == 2
+    # La carte « sans jour » n'a pas de bloc .market-day.
+    tail = around[around.index("Mercadillo sans jour"):]
+    assert "market-day" not in tail
+
+
+def test_non_market_category_still_sorted_by_distance():
+    """Les AUTRES catégories restent triées par distance (le repère naturel d'un
+    lieu ordinaire) — le tri par jour ne concerne que les marchés."""
+    pois = [_poi("Lidl", "supermarket", "C", walk=15),
+            _poi("Mercadona", "supermarket", "C", walk=4),
+            _poi("Consum", "supermarket", "C", walk=9)]
+    around = _panel(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [],
+                                            pois, {}, "tok"), "around")
+    order = re.findall(r"<h4>(Lidl|Mercadona|Consum)", around)
+    assert order == ["Mercadona", "Consum", "Lidl"]   # 4 < 9 < 15 min
+    assert "market-badge" not in around

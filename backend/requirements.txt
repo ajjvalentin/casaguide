@@ -14,3 +14,4 @@ Pillow>=10.0              # ré-encodage/strip EXIF des images téléversées (M
 reportlab>=4.0            # PDF « QR code à imprimer » (M-07) — QR natif inclus
 stripe>=11.0              # Facturation Stripe : Checkout, webhooks, portail (V2-05b)
 icalendar>=6.0           # Parsing des flux iCal du calendrier des séjours (V2-23a)
+Babel>=2.12              # Noms de jours localisés (CLDR) pour le badge du jour de marché (V2-33)

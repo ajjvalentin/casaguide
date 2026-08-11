@@ -505,6 +505,7 @@ psql -d casaguide -f db/migrations/025_auto_send_guide.sql # envoi auto du guide
 psql -d casaguide -f db/migrations/026_booking_dates_override.sql # dates ajustées à la main protégées de la synchro : bookings.dates_overridden + feed_starts_on/feed_ends_on (V2-23g)
 psql -d casaguide -f db/migrations/027_help_searches.sql # journal des recherches d'aide (santé de l'index) (V2-31 volet 3a)
 psql -d casaguide -f db/migrations/028_guide_send_whatsapp_assisted.sql # origine d'envoi 'whatsapp_assisted' (J-7 assisté WhatsApp, V2-32 volet 1)
+psql -d casaguide -f db/migrations/029_poi_weekday.sql # jour du marché : pois.weekday + weekday_note (+ backfill des marchés préfixés) (V2-33 volet 1)
 
 # Backend
 cd backend
@@ -1086,6 +1087,23 @@ exposé, peer auth).
   catégorie — au tri SQL (`guide_pois`) **et** au rendu (`_render_pois`) : garder
   les deux cohérents. Cuisine saisie au back-office : mise en minuscules (filtre
   cohérent) ; une valeur libre inconnue du dictionnaire s'affiche brute.
+- Jour du marché (V2-33, migration 029) : le jour d'un marché vit dans
+  `pois.weekday` (SMALLINT `1..7`, 1=lundi ISO) + `pois.weekday_note` (précision
+  libre), **jamais dans le nom** (l'ancien compromis « Samedi · … », illisible en
+  anglais, est défait par le backfill de la 029 — ciblé `category_code='market'`,
+  idempotent). Le champ est **à nous, pas à OSM** : proposé dans la modale
+  Ajouter/Modifier **seulement** pour la catégorie `market` (`PoiCreateIn`/
+  `PoiEditIn.weekday` bornés `1..7` → 422 sinon). **Aucune clé i18n pour le nom du
+  jour** : le badge est rendu par **CLDR** des deux côtés — Babel côté serveur
+  (`guide_page._weekday_label`, `Babel` en dépendance) et `Intl.DateTimeFormat`
+  côté client (`guide/app.js`, popups carte), sur une **date pivot** (2024-01-01 =
+  lundi) → même mot, 7 langues gratuites, **casing naturel** de la langue (fr
+  « samedi », en « Saturday » — ne pas forcer la capitale, elle malmènerait
+  l'albanais). La catégorie `market` se trie **par jour croissant** (jour absent en
+  dernier) **puis** distance dans `_render_pois` — les autres catégories restent
+  triées par distance (coup de cœur en tête). `map_data` porte `weekday`/
+  `weekday_note` pour l'alignement client. Toute modif de `guide/*` → **bumper
+  `sw.js VERSION`** (ici v30 → v31).
 - Régénérer des `area_facts` déjà en base (M-17, prompt resserré) : les faits sont
   **mutualisés** par `(country_code, admin_area)` et sautés par le pipeline tant
   qu'ils sont frais (`db.area_facts_fresh`, < 180 j). Pour forcer une régénération
