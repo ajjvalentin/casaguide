@@ -119,10 +119,28 @@ def area_facts_fresh(conn, country_code: str, admin_area: str | None,
     row = conn.execute(
         """SELECT count(*) AS n FROM area_facts
            WHERE country_code = %s AND admin_area IS NOT DISTINCT FROM %s
+             AND fact_type IN ('emergency_numbers', 'waste_rules', 'noise_rules')
              AND fetched_at > now() - make_interval(days => %s)""",
         (country_code, admin_area, max_age_days),
     ).fetchone()
     return row["n"] >= 3
+
+
+def area_fact_fresh(conn, country_code: str, admin_area: str | None,
+                    fact_type: str, max_age_days: int) -> bool:
+    """True si CE fact_type existe déjà et est récent pour (pays, commune) — cadence
+    de rafraîchissement PROPRE, indépendante des 3 area_facts historiques (V2-07 :
+    la livraison de repas a sa propre fenêtre de validité). Mutualisation : deux
+    logements d'une même commune partagent le résultat, aucun nouvel appel dans la
+    fenêtre. Une ligne existante (même à liste vide) suffit à couper l'appel."""
+    row = conn.execute(
+        """SELECT 1 FROM area_facts
+           WHERE country_code = %s AND admin_area IS NOT DISTINCT FROM %s
+             AND fact_type = %s
+             AND fetched_at > now() - make_interval(days => %s)""",
+        (country_code, admin_area, fact_type, max_age_days),
+    ).fetchone()
+    return row is not None
 
 
 # ── Suivi de job et coûts (§5.2) ─────────────────────────────────────────────

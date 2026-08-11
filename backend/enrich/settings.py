@@ -59,6 +59,14 @@ class Settings:
     })
     usd_to_eur: float = float(os.getenv("CASAGUIDE_USD_EUR", "0.86"))
 
+    # Livraison de repas par zone (V2-07 volet 1) : cadence de rafraîchissement
+    # PROPRE (les plateformes évoluent lentement) + plafond de recherches web par
+    # appel (coût maîtrisé). Mutualisé par (pays, commune) via area_facts.
+    food_delivery_max_age_days: int = int(
+        os.getenv("CASAGUIDE_FOOD_DELIVERY_MAX_AGE_DAYS", "90"))
+    food_delivery_max_searches: int = int(
+        os.getenv("CASAGUIDE_FOOD_DELIVERY_MAX_SEARCHES", "5"))
+
     # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial)
     describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity", "market")
 

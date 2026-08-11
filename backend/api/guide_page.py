@@ -1011,9 +1011,36 @@ def _fact_noise(noise: dict, lang: str) -> str:
             f'{f"<span class=quiet>🌙 {_esc(quiet)}</span>" if quiet else ""}</div>')
 
 
+def _fact_food_delivery(fd: dict, lang: str) -> str:
+    """Encart « livraison de repas » → section E_food_delivery (V2-07 volet 1).
+    Liste les plateformes actives dans la zone, sous leur marque locale — NOMS
+    NEUTRES (jamais traduits) avec lien vers la preuve. Prose minimale (`note`).
+    Rien à afficher si aucune plateforme (liste vide = résultat valide)."""
+    if not fd:
+        return ""
+    items: list[str] = []
+    for p in (fd.get("platforms") or []):
+        name = _esc((p.get("name") or "").strip())
+        if not name:
+            continue
+        url = (p.get("url") or "").strip()
+        if url.lower().startswith(("http://", "https://")):
+            items.append(f'<li><a href="{_esc(url)}" target="_blank" '
+                         f'rel="noopener nofollow">{name}</a></li>')
+        else:
+            items.append(f'<li>{name}</li>')
+    if not items:
+        return ""
+    note = (fd.get("note") or "").strip()
+    note_html = f'<p class="fnote">{_esc(note)}</p>' if note else ""
+    return (f'<div class="facts food-delivery">'
+            f'<ul class="fd-list">{"".join(items)}</ul>{note_html}</div>')
+
+
 # Renderers d'encart par type de fait, adossés à une section (M-17). Les
 # `emergency_numbers` n'y figurent PAS : ils restent dans le bloc de fin de guide.
-_FACT_INLINE = {"waste_rules": _fact_waste, "noise_rules": _fact_noise}
+_FACT_INLINE = {"waste_rules": _fact_waste, "noise_rules": _fact_noise,
+                "food_delivery": _fact_food_delivery}
 
 
 def _render_section_facts(area_facts_declared: list, area_facts: dict,

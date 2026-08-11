@@ -923,3 +923,31 @@ def test_non_market_category_still_sorted_by_distance():
     order = re.findall(r"<h4>(Lidl|Mercadona|Consum)", around)
     assert order == ["Mercadona", "Consum", "Lidl"]   # 4 < 9 < 15 min
     assert "market-badge" not in around
+
+
+# ── V2-07 volet 1 : livraison de repas rendue dans E_food_delivery ────────────
+
+def test_food_delivery_fact_renders_inside_its_section():
+    """Restitution selon le motif area_facts : la section E_food_delivery déclare
+    `area_facts:["food_delivery"]` et le fait (plateformes résolues par zone)
+    s'affiche DANS cette section, noms de marques NEUTRES + lien de preuve."""
+    sections = [_section("E_food_delivery", "E",
+                         {"fields": [], "area_facts": ["food_delivery"]})]
+    facts = {"food_delivery": {"platforms": [
+        {"name": "Glovo", "url": "https://glovoapp.com/es", "verified_on": "2026-08-11"},
+        {"name": "Just Eat", "url": "https://just-eat.es"},
+    ], "note": ""}}
+    html = guide_page.render_guide(_prop(), sections, [], facts, "tok")
+    assert 'href="https://glovoapp.com/es"' in html and ">Glovo<" in html
+    assert ">Just Eat<" in html
+    # Le rendu se fait dans la carte de la section (encart .facts food-delivery).
+    assert 'class="facts food-delivery"' in html
+
+
+def test_food_delivery_empty_list_renders_no_encart():
+    """Liste vide (résultat valide) → aucun encart superflu dans le guide."""
+    sections = [_section("E_food_delivery", "E",
+                         {"fields": [], "area_facts": ["food_delivery"]})]
+    facts = {"food_delivery": {"platforms": [], "note": ""}}
+    html = guide_page.render_guide(_prop(), sections, [], facts, "tok")
+    assert "food-delivery" not in html

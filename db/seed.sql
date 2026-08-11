@@ -325,7 +325,7 @@ VALUES
  '{"fr":"Plateformes actives dans la zone (Glovo, Uber Eats, Just Eat…) et restaurants livrant en direct."}',
  '{"fields":[
     {"key":"platforms","type":"textarea","label":{"fr":"Plateformes disponibles","en":"Available platforms","es":"Plataformas disponibles"}}
-  ],"poi_categories":["food_delivery"]}', TRUE, FALSE),
+  ],"poi_categories":["food_delivery"],"area_facts":["food_delivery"]}', TRUE, FALSE),
 
 ('E_services', 'E', 440, 'concierge-bell',
  '{"fr":"Services supplémentaires","en":"Extra services","es":"Servicios adicionales"}',

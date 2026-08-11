@@ -89,8 +89,27 @@ def _mock_handler(request: httpx.Request) -> httpx.Response:
 # ── Bouchon de l'API Claude ──────────────────────────────────────────────────
 
 class FakeMessages:
-    def create(self, *, model, max_tokens, messages):
+    # Le bouchon `food_delivery` renvoie une réponse malformée sur demande (test de
+    # rejet sans écriture) et compte ses appels (test de mutualisation).
+    def __init__(self, food_delivery_malformed=False):
+        self.food_delivery_malformed = food_delivery_malformed
+        self.food_delivery_calls = 0
+
+    def create(self, *, model, max_tokens, messages, tools=None, **kwargs):
         prompt = messages[0]["content"]
+        if '"platforms"' in prompt:  # prompt livraison de repas (recherche web)
+            self.food_delivery_calls += 1
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            text = ("désolé, indisponible" if self.food_delivery_malformed
+                    else json.dumps({"platforms": [
+                        {"name": "Glovo", "url": "https://glovoapp.com/es",
+                         "verified_on": "2026-08-11"}], "note": ""}))
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=text)],
+                stop_reason="end_turn",
+                usage=SimpleNamespace(input_tokens=1200, output_tokens=200,
+                                      server_tool_use=SimpleNamespace(
+                                          web_search_requests=2)))
         if "emergency_numbers" in prompt:  # prompt area_facts
             payload = {
                 "emergency_numbers": {"items": [
@@ -114,7 +133,8 @@ class FakeMessages:
 
 
 class FakeAnthropic:
-    messages = FakeMessages()
+    def __init__(self, food_delivery_malformed=False):
+        self.messages = FakeMessages(food_delivery_malformed)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -183,11 +203,17 @@ def test_full_pipeline(property_id, http_client):
         # Cuisine récoltée et normalisée (premier terme, minuscules) — M-16
         assert resto["cuisine"] == "seafood"
 
-        # area_facts : 3 lignes mutualisées ES / Orihuela Costa
-        n = conn.execute("""SELECT count(*) n FROM area_facts
+        # area_facts : 3 lignes historiques + 1 livraison de repas (V2-07),
+        # mutualisées ES / Orihuela Costa
+        rows = conn.execute("""SELECT fact_type, content FROM area_facts
                             WHERE country_code='ES' AND admin_area='Orihuela Costa'"""
-                         ).fetchone()["n"]
-        assert n == 3
+                            ).fetchall()
+        facts = {r["fact_type"]: r["content"] for r in rows}
+        assert set(facts) == {"emergency_numbers", "waste_rules", "noise_rules",
+                              "food_delivery"}
+        # Plateformes de livraison résolues par zone (nom de marque local + preuve).
+        assert facts["food_delivery"]["platforms"][0]["name"] == "Glovo"
+        assert facts["food_delivery"]["platforms"][0]["url"].startswith("https://")
 
         # Job 'done' avec toutes les étapes ok, coûts comptabilisés
         job = conn.execute("SELECT * FROM enrichment_jobs WHERE id=%s",
@@ -195,9 +221,10 @@ def test_full_pipeline(property_id, http_client):
         assert job["status"] == "done"
         assert all(job["steps"][s]["ok"] for s in
                    ("geocode", "overpass", "distances", "claude"))
-        costs = conn.execute("SELECT count(*) n FROM api_costs WHERE job_id=%s",
-                             (result["job_id"],)).fetchone()["n"]
-        assert costs == 2  # area_facts + describe_pois
+        # area_facts + describe_pois + food_delivery (recherche web) comptabilisés
+        ops = {r["operation"] for r in conn.execute(
+            "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
+        assert ops == {"area_facts", "describe_pois", "food_delivery"}
 
 
 def test_rerun_is_idempotent_and_preserves_owner_choices(property_id, http_client):
@@ -364,3 +391,64 @@ def test_retry_preserves_arbitrated_pois(property_id):
     assert len(rows) == 1                         # aucun doublon
     assert rows[0]["status"] == "approved"        # choix conservé (invariant 1)
     assert rows[0]["name"] == "Mon aéroport à moi"  # non écrasé par le retry
+
+
+# ── V2-07 volet 1 : livraison de repas par zone (mutualisation & rejet) ───────
+
+def test_food_delivery_shared_across_properties_same_commune(http_client):
+    """Mutualisation prouvée : deux logements d'une même commune partagent le
+    résultat de livraison de repas — le 2ᵉ ne déclenche AUCUN nouvel appel (la
+    fenêtre de fraîcheur, pilotée par fetched_at, coupe l'appel)."""
+    fake = FakeAnthropic()
+    oid = str(uuid.uuid4())
+    ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM area_facts WHERE country_code = 'ES'")
+        conn.execute("INSERT INTO owners (id, email, full_name) VALUES (%s, %s, 'T')",
+                     (oid, f"{oid}@test.local"))
+        for pid in ids:
+            conn.execute(
+                """INSERT INTO properties (id, owner_id, name, address_line1, city,
+                                           country_code)
+                   VALUES (%s, %s, 'Villa', 'Calle Ejemplo 1', 'Orihuela Costa', 'ES')""",
+                (pid, oid))
+        conn.commit()
+    try:
+        for pid in ids:
+            pipeline.run(pid, use_claude=True, trigger="initial",
+                         only_categories={"supermarket"},
+                         http_client=http_client, anthropic_client=fake)
+        # Le résultat est calculé UNE fois pour la commune, réutilisé ensuite.
+        assert fake.messages.food_delivery_calls == 1
+        with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+            n = conn.execute(
+                """SELECT count(*) n FROM area_facts WHERE country_code='ES'
+                   AND admin_area='Orihuela Costa' AND fact_type='food_delivery'"""
+            ).fetchone()["n"]
+        assert n == 1
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM owners WHERE id = %s", (oid,))
+            conn.execute("DELETE FROM area_facts WHERE country_code = 'ES'")
+            conn.commit()
+
+
+def test_food_delivery_malformed_rejected_without_write(property_id, http_client):
+    """JSON malformé → rejeté SANS écriture, et le job réussit quand même (best-
+    effort : le reste de l'enrichissement est acquis). Les 3 area_facts historiques
+    restent intacts ; aucun coût 'food_delivery' n'est comptabilisé."""
+    result = pipeline.run(
+        property_id, use_claude=True, trigger="initial",
+        only_categories={"supermarket"}, http_client=http_client,
+        anthropic_client=FakeAnthropic(food_delivery_malformed=True))
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        job = conn.execute("SELECT status, steps FROM enrichment_jobs WHERE id=%s",
+                           (result["job_id"],)).fetchone()
+        assert job["status"] == "done" and job["steps"]["claude"]["ok"]
+        facts = {r["fact_type"] for r in conn.execute(
+            "SELECT fact_type FROM area_facts WHERE country_code='ES' "
+            "AND admin_area='Orihuela Costa'")}
+        assert facts == {"emergency_numbers", "waste_rules", "noise_rules"}
+        ops = {r["operation"] for r in conn.execute(
+            "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
+        assert "food_delivery" not in ops

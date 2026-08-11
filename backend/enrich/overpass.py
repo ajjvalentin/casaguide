@@ -67,8 +67,12 @@ CATEGORY_SELECTORS: dict[str, list[str]] = {
     code: [f'"{k}"="{v}"' for k, v in tags] for code, tags in CATEGORY_TAGS.items()
 }
 
-# Catégories sans tags OSM exploitables -> enrichies par Claude uniquement
-CLAUDE_ONLY_CATEGORIES = {"food_delivery", "babysitter"}
+# Catégories sans tags OSM exploitables. `food_delivery` a quitté cette liste morte
+# (V2-07 volet 1) : elle a désormais un vrai traitement — plateformes résolues PAR
+# ZONE via Claude + recherche web, stockées en area_facts (fact_type='food_delivery').
+# `babysitter` y reste (volet 2). NB : `food_delivery` n'a de toute façon aucun tag
+# dans CATEGORY_TAGS, donc l'Overpass la saute encore par la 2ᵉ condition.
+CLAUDE_ONLY_CATEGORIES = {"babysitter"}
 
 # Paliers de rayon (m) : chaque catégorie est requêtée au plus petit palier
 # >= à son rayon du seed, puis re-filtrée à son rayon exact. Regrouper par palier

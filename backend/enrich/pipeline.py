@@ -14,6 +14,7 @@ Usage :
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 import time
@@ -24,6 +25,8 @@ import httpx
 
 from . import claude_enrich, db, distance, geocode, overpass
 from .settings import settings
+
+log = logging.getLogger("casaguide.pipeline")
 
 
 def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
@@ -121,6 +124,34 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                                    "area_facts", meta["units"], meta["cost_cts"])
                     summary["cost_cts"] += meta["cost_cts"]
                 summary["area_facts"] = True
+
+                # 4a-bis. Livraison de repas par zone (V2-07 volet 1) : appel
+                # SÉPARÉ (recherche web, cadence de rafraîchissement propre),
+                # mutualisé par (pays, commune). Best-effort : un JSON malformé ou
+                # un échec réseau n'écrit rien et NE fait PAS échouer le job (le
+                # reste de l'enrichissement est déjà acquis) — « rejeté sans
+                # écriture », doctrine du prompt intacte (« N'invente jamais »).
+                if not db.area_fact_fresh(conn, prop["country_code"], prop["city"],
+                                          claude_enrich.FOOD_DELIVERY_FACT_TYPE,
+                                          settings.food_delivery_max_age_days):
+                    try:
+                        # SAVEPOINT : un échec ici n'annule QUE ce bloc — les
+                        # area_facts et POI déjà écrits dans cette transaction
+                        # restent intacts (sinon un pépin de livraison ruinerait
+                        # tout l'enrichissement).
+                        with conn.transaction():
+                            fd, meta = claude_enrich.fetch_food_delivery(
+                                prop["city"], prop["country_code"], ai)
+                            db.upsert_area_facts(conn, prop["country_code"],
+                                                 prop["city"], fd,
+                                                 source=settings.anthropic_model)
+                            db.record_cost(conn, property_id, job_id, "anthropic",
+                                           "food_delivery", meta["units"],
+                                           meta["cost_cts"])
+                            summary["cost_cts"] += meta["cost_cts"]
+                    except Exception as fd_exc:  # noqa: BLE001 — best-effort
+                        log.warning("Livraison de repas (%s) non résolue : %s",
+                                    prop["city"], fd_exc)
 
                 # 4b. Descriptions courtes des POI éditoriaux
                 if all_editorial:

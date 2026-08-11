@@ -860,8 +860,35 @@ exposé, peer auth).
   (aucun job). Le repli manuel « aéroport en SQL » documenté plus bas (M-18) est
   désormais faisable depuis l'UI (mais bus_station M-21 couvre le hub d'arrivée
   quand il n'y a pas de gare ferroviaire).
-- `food_delivery` et `babysitter` : pas de tags OSM fiables → à enrichir via
-  Claude + web search (V1.1), voir `CLAUDE_ONLY_CATEGORIES` dans `overpass.py`.
+- **Livraison de repas par zone (V2-07 volet 1)** : la section `E_food_delivery`
+  est remplie automatiquement, pour **n'importe quel pays**, par
+  `claude_enrich.fetch_food_delivery` — un appel Claude **SÉPARÉ** de `_AREA_PROMPT`
+  (il a besoin de l'**outil `web_search`** de l'API Anthropic et d'une cadence de
+  rafraîchissement propre). **Deux niveaux** : (1) pays → **marque locale** (Just Eat
+  Takeaway = Just Eat ES/FR/IT, Lieferando DE/AT, Thuisbezorgd NL ; Delivery Hero =
+  Glovo/Foodora ; Uber Eats ; Wolt ; Deliveroo) — cette connaissance entre dans le
+  **prompt comme CONTEXTE, jamais comme réponse** ; (2) **vérification de couverture**
+  par recherche web pour la **commune** du logement. **Seules** les plateformes avec
+  **preuve** (URL + date) sont retenues ; une **liste vide est un résultat valide**
+  (« N'invente jamais », doctrine du prompt existant). Réponse en **JSON strict validé
+  avant insertion** (même contrat que l'existant ; un JSON malformé lève et **n'écrit
+  rien**). **Stockage mutualisé** : nouveau `area_facts.fact_type = 'food_delivery'`
+  (clé pays+commune) → deux logements d'Orihuela partagent le résultat, un logement de
+  Berlin obtient Lieferando. **Fraîcheur pilotée par `fetched_at`** via
+  `db.area_fact_fresh(..., 'food_delivery', settings.food_delivery_max_age_days)` (90 j
+  par défaut) : **aucun nouvel appel** dans la fenêtre. **Restitution** dans
+  `E_food_delivery` selon le motif area_facts (`guide_page._fact_food_delivery` dans
+  `_FACT_INLINE`, section du seed déclarant `area_facts:["food_delivery"]`) : noms de
+  marques **neutres** (jamais traduits) + lien de preuve, prose minimale. **Branchement
+  pipeline** : appel best-effort (SAVEPOINT — un échec n'annule pas le reste de
+  l'enrichissement ni le job) ; `api_costs` (opération `'food_delivery'`, **unités
+  web_search incluses**, ~10 $/1000 requêtes) ; quota d'enrichissement respecté (dans
+  le même job). `food_delivery` a **quitté** `CLAUDE_ONLY_CATEGORIES` (liste morte) ;
+  **`babysitter` y reste** (volet 2, avec la complétion des coordonnées de service).
+  Pas de migration : `area_facts.fact_type` n'a aucun `CHECK`. Mocks de test : refléter
+  la **surface réelle** du SDK web_search (blocs `server_tool_use`/`web_search_tool_
+  result` + `usage.server_tool_use.web_search_requests`, `stop_reason` `pause_turn`) —
+  leçon OPS-1b.
 - L'upsert des POI exige la migration 001 (ON CONFLICT sur index partiel :
   la clause `WHERE source_ref IS NOT NULL` doit être répétée dans la requête).
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer
