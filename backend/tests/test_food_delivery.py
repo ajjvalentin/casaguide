@@ -151,13 +151,16 @@ def test_pause_turn_is_resumed_and_usage_accumulated():
 def test_ssr_renders_neutral_names_with_proof_links():
     content = {"platforms": [
         {"name": "Glovo", "url": "https://glovoapp.com/es"},
-        {"name": "Just Eat", "url": "glovo.com"},   # sans schéma → texte simple
+        {"name": "Just Eat", "url": "glovo.com"},   # sans schéma → pilule inerte
     ], "note": "Offre limitée."}
     # Le badge n'est PAS traduit (noms neutres) : identique en FR et EN.
     for lang in ("fr", "en"):
         html = guide_page._fact_food_delivery(content, lang)
-        assert 'href="https://glovoapp.com/es"' in html and ">Glovo<" in html
-        assert "<li>Just Eat</li>" in html          # url non http → pas de lien
+        # Pilule-lien (V2-07 volet 1ter) : classe .route-link réutilisée, cible _blank.
+        assert ('<a class="route-link" href="https://glovoapp.com/es" '
+                'target="_blank" rel="noopener nofollow">Glovo') in html
+        # url non http → pilule INERTE (span, pas de lien, pas d'icône externe).
+        assert '<span class="route-link">Just Eat</span>' in html
         assert "Offre limitée." in html
 
 

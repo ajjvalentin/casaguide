@@ -1025,6 +1025,24 @@ def test_food_delivery_service_tile_absent_without_platforms():
     assert "svc-tile" not in html and "svc-grid" not in html
 
 
+def test_food_delivery_platforms_render_as_link_pills_with_note():
+    """V2-07 volet 1ter — chaque plateforme avec URL est un bouton-pilule
+    (`.route-link`, grammaire des cartes de lieux) `target="_blank"` qui ouvre son
+    site ; la note de couverture reste rendue sous les pilules ; plus de `<ul>`."""
+    facts = {"food_delivery": {"platforms": [
+        {"name": "Glovo", "url": "https://glovoapp.com/es"},
+        {"name": "Just Eat", "url": "https://just-eat.es"}],
+        "note": "Bonne couverture le soir."}}
+    html = guide_page.render_guide(_prop(), [_virtual("E_food_delivery", "E",
+                                   _FD_SCHEMA, _FD_NAME)], [], facts, "tok")
+    for brand, url in (("Glovo", "https://glovoapp.com/es"),
+                       ("Just Eat", "https://just-eat.es")):
+        assert (f'<a class="route-link" href="{url}" target="_blank" '
+                f'rel="noopener nofollow">{brand}') in html
+    assert "fd-list" not in html                       # l'ancienne liste a disparu
+    assert "Bonne couverture le soir." in html         # la note reste rendue
+
+
 def test_food_delivery_tile_localized_label_without_new_i18n_key():
     """Pièce 2 — le libellé de la tuile suit `name_i18n` du template (les langues
     existent déjà) : rendu en espagnol → « Comida a domicilio »."""

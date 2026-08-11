@@ -1064,10 +1064,26 @@ def _fact_noise(noise: dict, lang: str) -> str:
             f'{f"<span class=quiet>🌙 {_esc(quiet)}</span>" if quiet else ""}</div>')
 
 
+# Icône « lien externe » (V2-07 volet 1ter) : dit au voyageur que la pilule ouvre
+# le site de la plateforme. Décorative (aria-hidden ; le nom de marque porte le
+# sens) → aucune clé i18n. `currentColor` + taille en attributs → zéro CSS neuf.
+_EXT_LINK_ICON = (
+    '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" '
+    'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" '
+    'stroke-linejoin="round" aria-hidden="true" '
+    'style="margin-left:5px;vertical-align:-1px">'
+    '<path d="M14 5h5v5"/><path d="M19 5l-8 8"/>'
+    '<path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>')
+
+
 def _fact_food_delivery(fd: dict, lang: str) -> str:
     """Encart « livraison de repas » → section E_food_delivery (V2-07 volet 1).
-    Liste les plateformes actives dans la zone, sous leur marque locale — NOMS
-    NEUTRES (jamais traduits) avec lien vers la preuve. Prose minimale (`note`).
+    Les plateformes actives dans la zone sous leur marque locale — NOMS NEUTRES
+    (jamais traduits). Chacune est un **bouton-pilule** dans la grammaire des
+    cartes de lieux (classe `.route-link`, comme Google Maps/Waze/Plans, V2-24) :
+    une pilule qui OUVRE le site de la plateforme, l'icône de lien externe portant
+    l'affordance (V2-07 volet 1ter — zéro clé i18n). Une plateforme sans URL valide
+    reste une pilule INERTE (pas d'icône, rien à ouvrir). Prose minimale (`note`).
     Rien à afficher si aucune plateforme (liste vide = résultat valide)."""
     if not fd:
         return ""
@@ -1078,16 +1094,16 @@ def _fact_food_delivery(fd: dict, lang: str) -> str:
             continue
         url = (p.get("url") or "").strip()
         if url.lower().startswith(("http://", "https://")):
-            items.append(f'<li><a href="{_esc(url)}" target="_blank" '
-                         f'rel="noopener nofollow">{name}</a></li>')
+            items.append(f'<a class="route-link" href="{_esc(url)}" target="_blank" '
+                         f'rel="noopener nofollow">{name}{_EXT_LINK_ICON}</a>')
         else:
-            items.append(f'<li>{name}</li>')
+            items.append(f'<span class="route-link">{name}</span>')
     if not items:
         return ""
     note = (fd.get("note") or "").strip()
     note_html = f'<p class="fnote">{_esc(note)}</p>' if note else ""
     return (f'<div class="facts food-delivery">'
-            f'<ul class="fd-list">{"".join(items)}</ul>{note_html}</div>')
+            f'<div class="poi-nav">{"".join(items)}</div>{note_html}</div>')
 
 
 # Renderers d'encart par type de fait, adossés à une section (M-17). Les
