@@ -905,7 +905,54 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
     return "".join(blocks)
 
 
-def _render_service_grid(pois: list[dict], lang: str = "fr") -> str:
+# Faits de zone qui méritent une TUILE de service (V2-07 volet 1bis) : un fait de
+# zone n'a pas de POI, donc pas de porte d'entrée dans la grille — sans tuile, la
+# livraison de repas n'est atteignable qu'en défilant ou en cherchant. La liste
+# reste minimale et data-driven (le rendu de l'encart, `_FACT_INLINE`, fait foi de
+# la vacuité → aucune tuile sans plateforme, miroir exact de « pas d'encart »).
+_SERVICE_FACT_TYPES = ("food_delivery",)
+
+
+def _service_fact_tiles(sections: list[dict], area_facts: dict,
+                        lang: str = "fr") -> list[tuple[int, str]]:
+    """Tuiles de service adossées à un **fait de zone** (V2-07 volet 1bis).
+
+    Pour chaque section qui déclare un fait de `_SERVICE_FACT_TYPES` **non vide**
+    pour la zone, une tuile de MÊME grammaire que les tuiles de catégorie : icône
+    du seed (section, ici `bike`), libellé `name_i18n` du template (les 7 langues
+    existent déjà via l'overlay — zéro nouvelle clé i18n), compte = nb de
+    plateformes, lien d'ancre `#{code}` vers la section et son encart. On n'émet
+    la tuile que si l'encart se rendrait (correspondance tuiles ↔ blocs 1:1, V2-12) :
+    section virtuelle à fait vide déjà élaguée, section masquée absente de `sections`.
+
+    Retourne des couples `(rang, html)` pour s'intercaler dans l'ordre du seed."""
+    tiles: list[tuple[int, str]] = []
+    for s in sections:
+        declared = (s.get("field_schema") or {}).get("area_facts") or []
+        for ft in declared:
+            if ft not in _SERVICE_FACT_TYPES:
+                continue
+            render = _FACT_INLINE.get(ft)
+            if not render or not render(area_facts.get(ft) or {}, lang):
+                continue  # fait absent/vide → pas de tuile (miroir de l'encart)
+            code = s.get("code") or ""
+            name = _esc(_seed_label(lang, _i18n_mod.section_name_key(code),
+                                    s.get("name_i18n"), code))
+            icon = category_icon_svg(ft, s.get("icon"))
+            count = len((area_facts.get(ft) or {}).get("platforms") or [])
+            color = _esc(_CHAPTER_COLORS.get(s.get("chapter", ""), "#0E5A73"))
+            tiles.append((category_rank(ft),
+                f'<a class="svc-tile" href="#{_esc(code)}" '
+                f'style="--svc-accent:{color}" '
+                f'aria-label="{name} : {count}">'
+                f'<span class="svc-ic">{icon}</span>'
+                f'<span class="svc-name">{name}</span>'
+                f'<span class="svc-count">{count}</span></a>'))
+    return tiles
+
+
+def _render_service_grid(pois: list[dict], lang: str = "fr",
+                         fact_tiles: list[tuple[int, str]] | None = None) -> str:
     """Grille de pictogrammes en tête de « Autour de vous » (V2-12).
 
     Une tuile par catégorie ayant ≥1 POI retenu : grande icône du seed
@@ -915,27 +962,33 @@ def _render_service_grid(pois: list[dict], lang: str = "fr") -> str:
     est justement `autour/{code}`) → fonctionne même sans JS ; l'enrichissement
     client (app.js) résout l'onglet + le défilement doux + le retour arrière.
 
+    `fact_tiles` (V2-07 volet 1bis) = tuiles adossées à un fait de zone (ex.
+    livraison de repas), déjà rendues, avec leur rang pour s'intercaler dans
+    l'ordre du seed. Elles pointent une **section** (`#{code}`), pas une catégorie.
+
     Ordre : celui du seed (`poi_icons.category_rank`), cohérent avec le reste du
-    guide. Aucune tuile si aucun POI (repli : rien, la carte/les listes suffisent)."""
-    if not pois:
+    guide. Aucune tuile si aucun POI ni fait (repli : rien, la carte/les listes
+    suffisent)."""
+    if not pois and not fact_tiles:
         return ""
     groups: dict[str, list[dict]] = {}
     for p in pois:
         groups.setdefault(p["category_code"], []).append(p)
-    tiles: list[str] = []
-    for code, lst in sorted(groups.items(), key=lambda kv: category_rank(kv[0])):
+    ranked: list[tuple[int, str]] = list(fact_tiles or [])
+    for code, lst in groups.items():
         name = _esc(_seed_label(lang, _i18n_mod.poi_category_key(code),
                                 lst[0].get("category_name"), code))
         icon = category_icon_svg(code, lst[0].get("category_icon"))
         count = len(lst)
         color = _esc(lst[0].get("map_color") or "#0E5A73")
-        tiles.append(
+        ranked.append((category_rank(code),
             f'<a class="svc-tile" href="#{_TAB_HASH["around"]}/{_esc(code)}" '
             f'data-cat="{_esc(code)}" style="--svc-accent:{color}" '
             f'aria-label="{name} : {count}">'
             f'<span class="svc-ic">{icon}</span>'
             f'<span class="svc-name">{name}</span>'
-            f'<span class="svc-count">{count}</span></a>')
+            f'<span class="svc-count">{count}</span></a>'))
+    tiles = [html for _, html in sorted(ranked, key=lambda rh: rh[0])]
     # id = « autour » (V2-27) : cible du retour aux services. Comme les liens de
     # retour pointent `#autour`, le navigateur défile nativement jusqu'à la grille
     # (sans JS) ; le hash reste propre (`#autour`, l'onglet), historique cohérent.
@@ -1055,6 +1108,26 @@ def _render_section_facts(area_facts_declared: list, area_facts: dict,
             if html_:
                 out.append(html_)
     return "".join(out)
+
+
+def _prune_virtual_sections(sections: list[dict], area_facts: dict,
+                            lang: str = "fr") -> list[dict]:
+    """Retire les sections **virtuelles** (sans ligne `property_sections`,
+    `virtual=TRUE`) qui ne produiraient qu'une coquille vide (V2-07 volet 1bis).
+
+    Une section virtuelle n'a ni contenu, ni body, ni média : son seul contenu
+    possible est l'encart d'un fait de zone déclaré. On la garde donc **seulement
+    si** au moins un de ses faits déclarés se résout **non vide** pour la zone
+    (`_render_section_facts` ≠ "") — sinon le guide gagnerait une coquille (titre
+    nu). Les sections **réelles** (le propriétaire les a enregistrées, `virtual`
+    absent/faux) ne sont JAMAIS retirées : leur visibilité est son choix.
+
+    La vacuité d'un fait est jugée **par type** (liste de plateformes vide, etc.)
+    via `_FACT_INLINE` — une seule source de vérité, jamais dupliquée en SQL."""
+    return [s for s in sections
+            if not s.get("virtual")
+            or _render_section_facts((s.get("field_schema") or {}).get("area_facts"),
+                                     area_facts, lang)]
 
 
 def _render_numbers(area_facts: dict, chapter_color: str, lang: str = "fr") -> str:
@@ -1233,6 +1306,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                        manifest: bool = True, api_base: str = "") -> str:
     secrets_example = variant == "showcase"
     requests_enabled = variant != "showcase"
+    # Invariant « sections vierges » (V2-07 volet 1bis) : une section virtuelle
+    # (jamais enregistrée) ne survit que si un fait de zone déclaré est non vide.
+    # Idempotent — le routeur a déjà élagué pour /data ; garde-fou pour un appel direct.
+    sections = _prune_virtual_sections(sections, area_facts, lang)
     contact = prop.get("contact") or {}
     name = _esc(prop.get("name") or _t(lang, "home"))
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
@@ -1336,7 +1413,13 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # navigation principale (sur mobile en plein soleil, une grille d'icônes bat
     # dix intitulés texte). La carte + les puces de filtre restent la couche
     # d'exploration en dessous, les listes le niveau 2.
-    grid_html = _render_service_grid(around_card_pois, lang)
+    # Tuiles de service adossées à un fait de zone (V2-07 volet 1bis) : la
+    # livraison de repas n'a pas de POI → sans tuile, aucune porte d'entrée dans
+    # la grille. Rendue au même rang et dans la même grammaire que les catégories,
+    # elle mène (ancre `#{code}`) à sa section et son encart. Le fait vide → aucune
+    # tuile (miroir de « pas d'encart »).
+    fact_tiles = _service_fact_tiles(sections, area_facts, lang)
+    grid_html = _render_service_grid(around_card_pois, lang, fact_tiles=fact_tiles)
     if grid_html:
         around_inner.append(grid_html)
     if has_map:
@@ -1347,10 +1430,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     around_inner += panels["around"]
     # Bouton flottant « Retour aux services » (V2-27) : rendu SSR mais masqué par
     # défaut (bonus JS) — app.js le révèle quand on défile dans « Autour de vous ».
-    # N'a de sens que s'il y a une grille (des POI en cartes autour).
+    # N'a de sens que s'il y a une grille (POI en cartes ou tuile de fait de zone).
     back_float = (f'<a class="back-services back-float" href="#{_TAB_HASH["around"]}" '
                   f'aria-label="{_esc(_t(lang, "back_services"))}">'
-                  f'{_esc(_t(lang, "back_services"))}</a>') if around_card_pois else ""
+                  f'{_esc(_t(lang, "back_services"))}</a>') if grid_html else ""
 
     # Onglets + panneaux (V2-09). Sans JS, tous les panneaux restent visibles
     # (CSS gated sur `html.js`) → aucune perte de contenu (noscript = rouleau).

@@ -951,3 +951,83 @@ def test_food_delivery_empty_list_renders_no_encart():
     facts = {"food_delivery": {"platforms": [], "note": ""}}
     html = guide_page.render_guide(_prop(), sections, [], facts, "tok")
     assert "food-delivery" not in html
+
+
+# ── V2-07 volet 1bis : sections vierges + tuile de service ────────────────────
+
+def _virtual(code, chapter, schema, name=None):
+    """Section VIRTUELLE : déclarée par un template mais jamais enregistrée par le
+    propriétaire (aucune ligne `property_sections`) → `virtual=True`, sans contenu
+    ni média. Son seul contenu possible est l'encart d'un fait de zone déclaré."""
+    return {"code": code, "chapter": chapter, "name_i18n": name or {"fr": code},
+            "field_schema": schema, "content": None, "body_md": None,
+            "media": [], "virtual": True}
+
+
+_FD_SCHEMA = {"fields": [], "area_facts": ["food_delivery"]}
+_FD_NAME = {"fr": "Livraison de repas", "en": "Food delivery",
+            "es": "Comida a domicilio"}
+_FD_FACT = {"food_delivery": {"platforms": [
+    {"name": "Glovo", "url": "https://glovoapp.com/es"},
+    {"name": "Just Eat", "url": "https://just-eat.es"}], "note": "Bonne couverture."}}
+
+
+def test_virtual_section_renders_its_zone_fact_even_if_never_saved():
+    """Pièce 1 — le fait de zone d'une section JAMAIS enregistrée s'affiche quand
+    même (bug prod 11/08 : sans ligne, l'encart restait invisible). La carte de
+    section apparaît avec son encart, ancrable (`id`)."""
+    html = guide_page.render_guide(_prop(), [_virtual("E_food_delivery", "E",
+                                   _FD_SCHEMA, _FD_NAME)], [], _FD_FACT, "tok")
+    assert 'id="E_food_delivery"' in html          # la carte de section existe
+    assert 'class="facts food-delivery"' in html   # son encart est rendu
+    assert ">Glovo<" in html and ">Just Eat<" in html
+
+
+def test_virtual_section_without_resolved_fact_is_not_a_shell():
+    """Pièce 1 — une section virtuelle dont le fait est absent/vide ne produit
+    AUCUNE coquille (pas de titre nu) : ni carte de section, ni encart."""
+    for facts in ({}, {"food_delivery": {"platforms": [], "note": ""}}):
+        html = guide_page.render_guide(_prop(), [_virtual("E_food_delivery", "E",
+                                       _FD_SCHEMA, _FD_NAME)], [], facts, "tok")
+        assert 'id="E_food_delivery"' not in html
+        assert "food-delivery" not in html
+
+
+def test_real_section_is_never_pruned_even_with_empty_fact():
+    """Pièce 1 — une section RÉELLE (enregistrée, `virtual` absent) n'est jamais
+    élaguée : sa visibilité est le choix du propriétaire, même sans contenu."""
+    real = _section("E_food_delivery", "E", _FD_SCHEMA, name=_FD_NAME)  # pas virtual
+    kept = guide_page._prune_virtual_sections([real], {}, "fr")
+    assert kept == [real]
+    virtual_empty = _virtual("E_food_delivery", "E", _FD_SCHEMA, _FD_NAME)
+    assert guide_page._prune_virtual_sections([virtual_empty], {}, "fr") == []
+
+
+def test_food_delivery_service_tile_present_and_anchors_to_section():
+    """Pièce 2 — une tuile « Livraison de repas » entre dans la grille de services
+    (même grammaire que les catégories) quand le fait a ≥1 plateforme ; elle mène
+    (ancre `#{code}`) à la section et son encart, pas à un mode filtré catégorie."""
+    html = guide_page.render_guide(_prop(), [_virtual("E_food_delivery", "E",
+                                   _FD_SCHEMA, _FD_NAME)], [], _FD_FACT, "tok")
+    grid = _grid(html)
+    assert grid, "la grille de services doit exister (au moins la tuile livraison)"
+    assert 'class="svc-tile" href="#E_food_delivery"' in grid
+    assert ">Livraison de repas<" in grid
+    assert ">2<" in grid                    # compte = nombre de plateformes
+    assert 'data-cat="food_delivery"' not in grid   # pas un mode filtré catégorie
+
+
+def test_food_delivery_service_tile_absent_without_platforms():
+    """Pièce 2 — pas de plateforme → pas de tuile (miroir exact de « pas d'encart »)."""
+    facts = {"food_delivery": {"platforms": [], "note": "x"}}
+    html = guide_page.render_guide(_prop(), [_virtual("E_food_delivery", "E",
+                                   _FD_SCHEMA, _FD_NAME)], [], facts, "tok")
+    assert "svc-tile" not in html and "svc-grid" not in html
+
+
+def test_food_delivery_tile_localized_label_without_new_i18n_key():
+    """Pièce 2 — le libellé de la tuile suit `name_i18n` du template (les langues
+    existent déjà) : rendu en espagnol → « Comida a domicilio »."""
+    grid = _grid(guide_page.render_guide(_prop(), [_virtual("E_food_delivery", "E",
+                 _FD_SCHEMA, _FD_NAME)], [], _FD_FACT, "tok", lang="es"))
+    assert ">Comida a domicilio<" in grid

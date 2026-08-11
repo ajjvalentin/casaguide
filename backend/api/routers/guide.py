@@ -170,6 +170,13 @@ def _assemble_guide(conn, prop: dict, lang: str | None, *, media_base: str):
             property_media.append(item)
     for s in sections:
         s["media"] = media_by_section.get(s["code"], [])
+    # Invariant « sections vierges » (V2-07 volet 1bis) : `guide_sections` inclut
+    # les sections **virtuelles** (jamais enregistrées) qui déclarent un fait de
+    # zone ; on n'en garde que celles dont un fait se résout non vide, pour que
+    # /data et le rendu SSR listent EXACTEMENT les mêmes sections (jamais de
+    # coquille vide côté JSON). La vacuité est jugée par type de fait (une seule
+    # source de vérité, `guide_page._FACT_INLINE`).
+    sections = guide_page._prune_virtual_sections(sections, area_facts, effective)
     return prop, sections, pois, area_facts, property_media, effective, lang_names
 
 

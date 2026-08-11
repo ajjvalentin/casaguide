@@ -1293,14 +1293,30 @@ def last_guide_send(conn, property_id: str, *, kind: str,
 def guide_sections(conn, property_id: str) -> list[dict]:
     """Sections **voyageur** visibles d'un guide (audience='guest'), avec les
     métadonnées de leur template. Les sections 'staff' (cahier de l'équipe
-    d'entretien, M-13) ne sortent JAMAIS ici (invariant 7)."""
+    d'entretien, M-13) ne sortent JAMAIS ici (invariant 7).
+
+    Invariant « sections vierges » (V2-07 volet 1bis) : une section qui **déclare
+    un fait de zone** (`field_schema.area_facts`, ex. `food_delivery`, `waste_rules`,
+    `noise_rules`) doit pouvoir porter son encart **même si le propriétaire ne l'a
+    jamais enregistrée** — sans ligne `property_sections`, l'encart resterait
+    invisible (bug prouvé en prod 11/08). On part donc des **templates guest** en
+    LEFT JOIN : une section sans ligne (`virtual=TRUE`) n'est incluse que si elle
+    déclare un fait de zone (jamais une coquille pour les 40+ autres sections). Le
+    tri des vraies coquilles vides (fait absent/vide) se fait au rendu
+    (`guide_page._prune_virtual_sections`), qui connaît la vacuité par type de fait.
+
+    Un `is_visible = FALSE` **explicite** masque toujours (choix du propriétaire, en
+    miroir de l'invariant de visibilité des médias) — même si un fait est présent."""
     return conn.execute(
         """SELECT t.code, t.chapter, t.sort_order, t.icon, t.name_i18n,
-                  t.field_schema, t.is_sensitive, ps.content, ps.body_md
-           FROM property_sections ps
-           JOIN section_templates t ON t.code = ps.template_code
-           WHERE ps.property_id = %s AND ps.is_visible = TRUE
-             AND t.audience = 'guest'
+                  t.field_schema, t.is_sensitive, ps.content, ps.body_md,
+                  (ps.id IS NULL) AS virtual
+           FROM section_templates t
+           LEFT JOIN property_sections ps
+             ON ps.template_code = t.code AND ps.property_id = %s
+           WHERE t.audience = 'guest'
+             AND COALESCE(ps.is_visible, TRUE) = TRUE
+             AND (ps.id IS NOT NULL OR jsonb_exists(t.field_schema, 'area_facts'))
            ORDER BY t.sort_order""",
         (property_id,),
     ).fetchall()

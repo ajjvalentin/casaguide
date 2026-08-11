@@ -472,6 +472,37 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     comme `js/lib/care.js`). Runbook : `docs/parcours.md`. Back-office seul (aucun
     bump SW). Couvert par `test_journey.py` (fonction pure + cas Villa Ballarin réel)
     et `test_api.py::test_property_exposes_journey_measuring_substance`.
+21. **Un fait de zone déclaré se rend même si la section n'a JAMAIS été enregistrée
+    (V2-07 volet 1bis)** : `repo.guide_sections` ne renvoyait que les sections ayant
+    une ligne `property_sections` existante — une section jamais sauvée par le
+    propriétaire n'a pas de ligne, le guide la sautait, et l'`area_fact` adossé
+    (`food_delivery`, mais aussi `waste_rules`/`noise_rules` depuis toujours) restait
+    **invisible** (bug prouvé en prod 11/08 : encart livraison servi seulement après
+    un « Enregistrer » vide). Désormais `guide_sections` **part des templates guest**
+    en LEFT JOIN : une section **sans ligne** (`virtual=TRUE`) n'entre que si elle
+    **déclare un fait de zone** (`jsonb_exists(field_schema,'area_facts')`) — jamais
+    une coquille pour les 40+ autres sections. Le tri final des **vraies coquilles
+    vides** (fait absent/vide) se fait au rendu, **une seule source de vérité par type
+    de fait** : `guide_page._prune_virtual_sections` garde une section virtuelle
+    **seulement si** `_render_section_facts` (via `_FACT_INLINE`) rend un encart non
+    vide — jamais de logique de vacuité dupliquée en SQL. L'élagage est appelé **au
+    point d'assemblage** (`routers/guide._assemble_guide`, pour que `/data` ET le SSR
+    listent EXACTEMENT les mêmes sections) **et** en tête de `render_guide`
+    (idempotent, garde-fou d'un appel direct). Un `is_visible = FALSE` **explicite**
+    masque **toujours** (`COALESCE(ps.is_visible, TRUE)=TRUE` dans la requête), fait
+    présent ou non — le choix du propriétaire prime (miroir de l'invariant de
+    visibilité des médias). **Corollaire tuile (Pièce 2)** : un fait de zone n'a pas
+    de POI → aucune porte d'entrée dans la grille de services ; `_service_fact_tiles`
+    ajoute une tuile (icône `bike` du seed, libellé `name_i18n` du template — 7 langues
+    déjà là, zéro clé i18n neuve) **seulement si** l'encart se rendrait (≥1 plateforme),
+    au même rang et dans la même grammaire que les catégories, `href="#{code}"` (ancre
+    section, pas un mode filtré `data-cat`) → correspondance tuiles ↔ blocs 1:1 (V2-12)
+    préservée. La section rendue rejoint automatiquement l'index de recherche (V2-33,
+    moisson DOM) → une requête « livraison » aboutit. Back-office/SSR seul (aucun bump
+    SW, aucune migration : `virtual` déduit à la lecture). Couvert par `test_guide_page.py`
+    (section virtuelle rendue/non-coquille, section réelle jamais élaguée, tuile
+    présente/absente/localisée) et `test_api.py::test_zone_fact_renders_even_without_saved_section`
+    (bout en bout contre l'état réel : rend sans ligne, `is_visible=FALSE` masque).
 
 ## Commandes
 

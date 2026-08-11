@@ -781,6 +781,52 @@ def test_public_guide(client):
     assert secrets["wifi_pass"] == "MotDePasseUltraSecret"
 
 
+# ── Sections vierges : un fait de zone rend même sans ligne (V2-07 volet 1bis) ─
+
+def test_zone_fact_renders_even_without_saved_section(client):
+    """Invariant « sections vierges » (contre l'ÉTAT RÉEL en base) : une section
+    qui déclare un fait de zone (`E_food_delivery` → `food_delivery`) porte son
+    encart dans le guide MÊME si le propriétaire ne l'a JAMAIS enregistrée (aucune
+    ligne `property_sections`) — bug prouvé en prod 11/08 (`guide_sections` sautait
+    les sections sans ligne). La tuile de service (Pièce 2) apparaît de même. Un
+    `is_visible=FALSE` explicite masque toujours (choix du propriétaire)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+
+    # Fait de zone présent pour la commune (comme le pipeline l'aurait stocké).
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            "INSERT INTO area_facts (country_code, admin_area, fact_type, content) "
+            "VALUES ('ES', 'Orihuela Costa', 'food_delivery', %s) ON CONFLICT "
+            "(country_code, admin_area, fact_type) DO UPDATE SET content = EXCLUDED.content",
+            (json.dumps({"platforms": [{"name": "Glovo", "url": "https://glovoapp.com/es"},
+                                       {"name": "Just Eat", "url": "https://just-eat.es"}],
+                         "note": ""}),))
+        conn.commit()
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+
+    # E_food_delivery JAMAIS enregistrée → l'encart ET la tuile sont pourtant là.
+    page = client.get(f"/g/{token}")
+    assert page.status_code == 200
+    assert 'id="E_food_delivery"' in page.text            # carte de section
+    assert 'class="facts food-delivery"' in page.text     # encart rendu
+    assert ">Glovo<" in page.text and ">Just Eat<" in page.text
+    assert 'class="svc-tile" href="#E_food_delivery"' in page.text  # tuile → ancre
+    data = client.get(f"/g/{token}/data").json()
+    assert "E_food_delivery" in {s["code"] for s in data["sections"]}
+
+    # is_visible=FALSE explicite → masquée malgré le fait présent (Pièce 1, cas 3).
+    client.put(f"/api/properties/{pid}/sections/E_food_delivery",
+               headers=owner["headers"], json={"content": {}, "is_visible": False})
+    hidden = client.get(f"/g/{token}").text
+    assert 'id="E_food_delivery"' not in hidden
+    assert "food-delivery" not in hidden and "svc-tile" not in hidden
+    codes = {s["code"] for s in client.get(f"/g/{token}/data").json()["sections"]}
+    assert "E_food_delivery" not in codes
+
+
 # ── Quota : les jobs en échec ne comptent pas (M-01, tâche 3) ────────────────
 
 def test_quota_excludes_failed_jobs(client):
