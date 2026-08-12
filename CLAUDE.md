@@ -495,14 +495,28 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     de POI → aucune porte d'entrée dans la grille de services ; `_service_fact_tiles`
     ajoute une tuile (icône `bike` du seed, libellé `name_i18n` du template — 7 langues
     déjà là, zéro clé i18n neuve) **seulement si** l'encart se rendrait (≥1 plateforme),
-    au même rang et dans la même grammaire que les catégories, `href="#{code}"` (ancre
-    section, pas un mode filtré `data-cat`) → correspondance tuiles ↔ blocs 1:1 (V2-12)
-    préservée. La section rendue rejoint automatiquement l'index de recherche (V2-33,
-    moisson DOM) → une requête « livraison » aboutit. Back-office/SSR seul (aucun bump
-    SW, aucune migration : `virtual` déduit à la lecture). Couvert par `test_guide_page.py`
-    (section virtuelle rendue/non-coquille, section réelle jamais élaguée, tuile
-    présente/absente/localisée) et `test_api.py::test_zone_fact_renders_even_without_saved_section`
-    (bout en bout contre l'état réel : rend sans ligne, `is_visible=FALSE` masque).
+    au même rang et dans la même grammaire que les catégories → correspondance
+    tuiles ↔ blocs 1:1 (V2-12) préservée. La section rendue rejoint automatiquement
+    l'index de recherche (V2-33, moisson DOM) → une requête « livraison » aboutit.
+    **Comportement de la tuile** : `href="#{code}"` est l'**ancre native** (repli sans
+    JS ; `.sec-card{scroll-margin-top:64px}` la décolle de la barre d'onglets collante
+    — V2-07 1quater) ; `data-fact="{code}"` fait ouvrir à `app.js` (`initServiceFacts`)
+    le **MÊME mode filtré** que les tuiles de catégorie (V2-07 1quinquies) — la section
+    ciblée seule à l'écran + « Retour aux services », `setServiceFilter` étendu aux
+    `.sec-card[id]` (classe `.filter-target` + `.fact-filtered` qui masque la carte,
+    pas de POI). Le tap filtre **directement** puis pose l'ancre en `pushState` (aucun
+    hashchange → le filtre tient) ; un **deep-link nu** `#{code}` reste une ancre
+    (section visible dans la page). La recherche (V2-33) **lève** un filtre actif avant
+    de révéler (`reveal` → `window._setServiceFilter("")`, généralise la levée du filtre
+    cuisine). Généricité : tout futur fait de zone doté d'une tuile en hérite sans
+    nouveau code. Back-office/SSR seul, **sauf** V2-07 1quater/1quinquies (guide.css +
+    app.js précachés → bump SW) ; aucune migration (`virtual` déduit à la lecture).
+    Couvert par `test_guide_page.py` (section virtuelle rendue/non-coquille, section
+    réelle jamais élaguée, tuile présente/absente/localisée, `data-fact`) et
+    `test_api.py::test_zone_fact_renders_even_without_saved_section` (bout en bout contre
+    l'état réel : rend sans ligne, `is_visible=FALSE` masque) ; front `guide-anchor-offset`
+    (scroll-margin) et `guide-fact-filter` (mode filtré, retour, non-régression V2-12,
+    recherche, deep-link).
 
 ## Commandes
 

@@ -921,9 +921,16 @@ def _service_fact_tiles(sections: list[dict], area_facts: dict,
     pour la zone, une tuile de MÊME grammaire que les tuiles de catégorie : icône
     du seed (section, ici `bike`), libellé `name_i18n` du template (les 7 langues
     existent déjà via l'overlay — zéro nouvelle clé i18n), compte = nb de
-    plateformes, lien d'ancre `#{code}` vers la section et son encart. On n'émet
-    la tuile que si l'encart se rendrait (correspondance tuiles ↔ blocs 1:1, V2-12) :
-    section virtuelle à fait vide déjà élaguée, section masquée absente de `sections`.
+    plateformes. On n'émet la tuile que si l'encart se rendrait (correspondance
+    tuiles ↔ blocs 1:1, V2-12) : section virtuelle à fait vide déjà élaguée,
+    section masquée absente de `sections`.
+
+    Comportement de la tuile (V2-07 volet 1quater/1quinquies) : `href="#{code}"`
+    reste l'**ancre native** (repli sans JS — `scroll-margin-top` décolle la section
+    de la barre collante) ; `data-fact="{code}"` demande à `app.js` d'ouvrir le
+    MÊME mode filtré que les tuiles de catégorie (`initServiceFacts`), section ciblée
+    seule à l'écran + « Retour aux services ». Généricité : tout futur fait de zone
+    doté d'une tuile hérite du comportement sans nouveau code.
 
     Retourne des couples `(rang, html)` pour s'intercaler dans l'ordre du seed."""
     tiles: list[tuple[int, str]] = []
@@ -942,7 +949,7 @@ def _service_fact_tiles(sections: list[dict], area_facts: dict,
             count = len((area_facts.get(ft) or {}).get("platforms") or [])
             color = _esc(_CHAPTER_COLORS.get(s.get("chapter", ""), "#0E5A73"))
             tiles.append((category_rank(ft),
-                f'<a class="svc-tile" href="#{_esc(code)}" '
+                f'<a class="svc-tile" href="#{_esc(code)}" data-fact="{_esc(code)}" '
                 f'style="--svc-accent:{color}" '
                 f'aria-label="{name} : {count}">'
                 f'<span class="svc-ic">{icon}</span>'

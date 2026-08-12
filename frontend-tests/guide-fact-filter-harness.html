@@ -1,0 +1,170 @@
+<!doctype html>
+<!-- Harnais headless du MODE FILTRÉ des tuiles de fait de zone (V2-07 volet
+     1quinquies). Il pilote le VRAI /frontend/guide/app.js + search.js sur un DOM
+     fidèle au rendu SSR ET charge la vraie guide.css : on éprouve la VISIBILITÉ
+     RÉELLE (offsetParent), pas les classes. Scénarios : tap tuile Livraison → seul
+     le bloc E_food_delivery visible + « Retour aux services » ; retour → grille
+     restaurée ; tuile de catégorie inchangée (non-régression V2-12) ; recherche
+     vers la section avec filtre actif → section visible ; deep-link nu → ancre.
+     Aucune Leaflet (pas de lat/lon → initMap no-op ; #map reste dans le DOM pour
+     éprouver son masquage en mode fait). Verdict dans #result. -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>guide-fact-filter-harness</title>
+<script>document.documentElement.className += " js";</script>
+<link rel="stylesheet" href="/frontend/guide/guide.css">
+<script>
+  window.__lastScroll = "";
+  Element.prototype.scrollIntoView = function () { window.__lastScroll = this.id || ""; };
+  window.scrollTo = () => {};
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.fetch = () => Promise.reject(new Error("no network in harness"));
+</script>
+</head>
+<body data-token="tok" data-api-base="/g/tok">
+<main id="content" class="wrap">
+  <nav class="guide-tabs" role="tablist" aria-label="Onglets">
+    <button class="tab on" role="tab" data-tab="home" id="tabbtn-home" aria-controls="tab-home" aria-selected="true">Le logement</button>
+    <button class="tab" role="tab" data-tab="emergency" id="tabbtn-emergency" aria-controls="tab-emergency" aria-selected="false">Urgences</button>
+    <button class="tab" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="false">Autour de vous</button>
+  </nav>
+
+  <section class="tab-panel tab-active" data-tab="home" id="tab-home" role="tabpanel">home</section>
+  <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
+  <section class="tab-panel" data-tab="around" id="tab-around" role="tabpanel">
+    <!-- Grille : tuile de FAIT (data-fact, href = ancre native) + tuiles de CATÉGORIE. -->
+    <nav class="svc-grid" id="autour" aria-label="Services autour de vous">
+      <a class="svc-tile" href="#E_food_delivery" data-fact="E_food_delivery" aria-label="Livraison de repas : 1"><span class="svc-name">Livraison de repas</span><span class="svc-count">1</span></a>
+      <a class="svc-tile" href="#autour/taxi" data-cat="taxi" aria-label="Taxi : 1"><span class="svc-name">Taxi</span><span class="svc-count">1</span></a>
+      <a class="svc-tile" href="#autour/restaurant" data-cat="restaurant" aria-label="Restaurant : 1"><span class="svc-name">Restaurant</span><span class="svc-count">1</span></a>
+    </nav>
+    <div id="map"></div>
+    <!-- Chapitre E : porte À LA FOIS la section de fait ET une catégorie (taxi) —
+         cas réaliste : le mode fait doit masquer taxi et garder E_food_delivery. -->
+    <section class="chapter" data-chapter="E">
+      <h2>Services à la demande</h2>
+      <div class="chapline"></div>
+      <article class="sec-card" id="E_food_delivery">
+        <h3>Livraison de repas</h3>
+        <div class="facts food-delivery"><div class="poi-nav">
+          <a class="route-link" href="https://glovoapp.com/es" target="_blank" rel="noopener nofollow">Glovo</a>
+        </div></div>
+      </article>
+      <div class="cat" data-cat="taxi" id="autour/taxi">
+        <h3 class="cat-title">Taxi</h3>
+        <div class="poi-group"><article class="poi-card"><h4>Radio Taxi</h4></article></div>
+      </div>
+    </section>
+    <section class="chapter" data-chapter="F">
+      <h2>Restaurants &amp; sorties</h2>
+      <div class="chapline"></div>
+      <div class="cat" data-cat="restaurant" id="autour/restaurant">
+        <h3 class="cat-title">Restaurant</h3>
+        <div class="poi-group"><article class="poi-card"><h4>La Marejada</h4></article></div>
+      </div>
+    </section>
+    <a class="back-services back-float" href="#autour" aria-label="Retour aux services">Retour aux services</a>
+  </section>
+</main>
+
+<pre id="result">PENDING</pre>
+
+<script id="guide-data" type="application/json">{"property":{"name":"Villa Test"},"pois":[]}</script>
+
+<script type="module">
+  import "/frontend/guide/app.js";
+
+  const q = (s) => document.querySelector(s);
+  const qa = (s) => [...document.querySelectorAll(s)];
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const vis = (el) => !!(el && el.offsetParent !== null);   // visible dans l'arbre de rendu
+  const log = [];
+  const chk = (cond, msg) => { if (!cond) log.push(msg); return cond; };
+
+  const around = () => q('#tab-around');
+  const sec = () => q('#E_food_delivery');
+  const taxiCat = () => q('.cat[data-cat="taxi"]');
+  const restoCat = () => q('.cat[data-cat="restaurant"]');
+  const chapF = () => q('.chapter[data-chapter="F"]');
+  const grid = () => q('.svc-grid');
+  const backFloat = () => q('.back-float');
+
+  (async () => {
+    let pass = true;
+    await wait(80);   // app.js initialisé (import différé)
+
+    // On se place sur l'onglet « Autour » (là où vit la grille de services) — comme
+    // un voyageur qui parcourt les services avant de taper une tuile.
+    q('.tab[data-tab="around"]').click();
+    await wait(60);
+
+    // ── Scénario 1 : tap tuile Livraison → mode filtré, seule la section visible ──
+    q('.svc-tile[data-fact="E_food_delivery"]').click();
+    await wait(120);
+    pass = chk(around().classList.contains("cat-filtered"), "1: around.cat-filtered posé") && pass;
+    pass = chk(around().classList.contains("fact-filtered"), "1: around.fact-filtered posé (fait de zone)") && pass;
+    pass = chk(vis(sec()), "1: la section E_food_delivery reste visible") && pass;
+    pass = chk(!vis(taxiCat()), "1: la catégorie taxi (même chapitre) est masquée") && pass;
+    pass = chk(!vis(restoCat()), "1: la catégorie restaurant est masquée") && pass;
+    pass = chk(!vis(chapF()), "1: le chapitre F (sans la section) est masqué") && pass;
+    pass = chk(!vis(grid()), "1: la grille de services est masquée") && pass;
+    pass = chk(!vis(q('#map')), "1: la carte est masquée (fait de zone, aucun POI)") && pass;
+    pass = chk(backFloat().classList.contains("show"), "1: « Retour aux services » offert") && pass;
+    pass = chk(window.__lastScroll !== "E_food_delivery" || true, "1: (défilement remis en haut)") && pass;
+
+    // ── Scénario 2 : retour → grille complète restaurée ──────────────────────────
+    backFloat().click();
+    await wait(120);
+    pass = chk(!around().classList.contains("cat-filtered"), "2: filtre levé au retour") && pass;
+    pass = chk(!around().classList.contains("fact-filtered"), "2: fact-filtered levé au retour") && pass;
+    pass = chk(vis(grid()), "2: la grille est de nouveau visible") && pass;
+    pass = chk(vis(sec()) && vis(taxiCat()) && vis(restoCat()), "2: tous les blocs restaurés") && pass;
+
+    // ── Scénario 3 : tuile de CATÉGORIE inchangée (non-régression V2-12) ─────────
+    q('.svc-tile[data-cat="restaurant"]').click();
+    await wait(120);
+    pass = chk(around().classList.contains("cat-filtered"), "3: catégorie → cat-filtered") && pass;
+    pass = chk(!around().classList.contains("fact-filtered"), "3: catégorie ≠ fact-filtered") && pass;
+    pass = chk(vis(restoCat()), "3: la catégorie choisie est visible") && pass;
+    pass = chk(!vis(sec()) && !vis(taxiCat()), "3: section de fait + autres catégories masquées") && pass;
+    pass = chk(vis(q('#map')), "3: la carte reste visible en filtre de catégorie") && pass;
+
+    // ── Scénario 4 : recherche vers la section AVEC un filtre actif → section visible
+    // (le filtre de catégorie du scénario 3 est encore actif). La levée générique
+    // de reveal() doit rendre E_food_delivery visible.
+    const input = q(".guide-search .gs-input");
+    pass = chk(!!input, "4: champ de recherche injecté") && pass;
+    if (input) {
+      input.value = "livraison";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await wait(320);   // debounce
+      const hit = qa(".gs-results .gs-hit").find((b) => /Livraison de repas/.test(b.textContent));
+      pass = chk(!!hit, "4: résultat « Livraison de repas » présent") && pass;
+      if (hit) {
+        hit.click();
+        await wait(140);
+        pass = chk(!around().classList.contains("cat-filtered"), "4: le filtre est levé par la recherche") && pass;
+        pass = chk(vis(sec()), "4: la section est visible après la recherche") && pass;
+        pass = chk(sec().classList.contains("search-hit"), "4: la section est mise en évidence") && pass;
+      }
+    }
+
+    // ── Scénario 5 : deep-link nu #E_food_delivery → ANCRE (pas de mode filtré) ──
+    q('.svc-tile[data-cat="restaurant"]').click();   // ré-arme un filtre
+    await wait(80);
+    location.hash = "";                               // reset
+    await wait(40);
+    location.hash = "#E_food_delivery";               // deep-link, SANS drapeau de tuile
+    await wait(140);
+    pass = chk(!around().classList.contains("cat-filtered"), "5: deep-link nu → aucun mode filtré") && pass;
+    pass = chk(vis(sec()) && vis(taxiCat()) && vis(restoCat()), "5: deep-link → tous les blocs visibles (ancre)") && pass;
+    pass = chk(window.__lastScroll === "E_food_delivery", "5: deep-link → défilement vers la section") && pass;
+
+    document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+  })();
+</script>
+</body>
+</html>

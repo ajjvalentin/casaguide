@@ -185,20 +185,36 @@ function setServiceFilter(code) {
   // La barre d'urgences d'en-tête vit HORS du panneau (dans <header>) : une classe
   // au niveau du <body> pilote son retrait en mode filtré (V2-12e).
   document.body.classList.toggle("cat-filtered", on);
-  // Blocs de catégorie : seul le choisi reste visible en mode filtré.
+  // Le code cible désigne SOIT une catégorie POI (.cat[data-cat]) SOIT une SECTION
+  // de fait de zone (.sec-card[id], tuile V2-07 1quinquies) : MÊME mode filtré, une
+  // seule mécanique. Un fait de zone n'a pas de POI → la carte n'a rien à montrer :
+  // classe `fact-filtered` pour la masquer (le bloc de section occupe l'écran).
+  const factTarget = on && [...around.querySelectorAll(".sec-card[id]")]
+    .some((s) => s.id === code);
+  around.classList.toggle("fact-filtered", factTarget);
+  // Blocs de catégorie : seul le choisi reste visible en mode filtré (aucun ne
+  // correspond à une cible de section → tous masqués, la section prend l'écran).
   around.querySelectorAll(".cat").forEach((cat) => {
     cat.classList.toggle("cat-off", on && cat.dataset.cat !== code);
   });
-  // Chapitres : on ne garde (avec son titre) que celui qui contient la catégorie
-  // choisie ; les autres sont masqués (le titre du chapitre hôte donne le contexte).
+  // Section de fait ciblée : marquée pour SURVIVRE au masquage du chapitre hôte
+  // (règle CSS qui, sinon, masque tout enfant de chapitre hors h2/chapline/.cat).
+  around.querySelectorAll(".sec-card[id]").forEach((sec) => {
+    sec.classList.toggle("filter-target", on && sec.id === code);
+  });
+  // Chapitres : on ne garde (avec son titre) que celui qui contient le bloc choisi
+  // — catégorie OU section de fait ; les autres sont masqués (titre = contexte).
   around.querySelectorAll(".chapter[data-chapter]").forEach((ch) => {
-    const holds = [...ch.querySelectorAll(".cat")].some((c) => c.dataset.cat === code);
+    const holds = [...ch.querySelectorAll(".cat")].some((c) => c.dataset.cat === code)
+               || [...ch.querySelectorAll(".sec-card[id]")].some((s) => s.id === code);
     ch.classList.toggle("chapter-off", on && !holds);
   });
   // Carte (V2-12e) : filtrer les marqueurs sur la catégorie choisie et recadrer.
   // On n'agit QUE sur une vraie transition (setServiceFilter("") est appelé à
   // chaque navigation, y compris hors « Autour » : ne pas re-cadrer inutilement).
   if (!changed) return;
+  // Fait de zone : aucun marqueur, carte masquée → rien à filtrer ni recadrer.
+  if (factTarget) return;
   syncMarkers();
   const map = window._guideMap;
   if (!map) return;
@@ -208,6 +224,34 @@ function setServiceFilter(code) {
     map.invalidateSize();
     if (on) fitFiltered(code); else fitAll();
   }, 60);
+}
+// Exposé pour la recherche (V2-33) : révéler une cible masquée par un filtre actif
+// lève ce filtre (généralise la levée du filtre cuisine — search.js `reveal`).
+window._setServiceFilter = setServiceFilter;
+
+// Tuiles de fait de zone (V2-07 volet 1quinquies) : elles ouvrent le MÊME mode
+// filtré que les tuiles de catégorie (mécanique `setServiceFilter` réutilisée),
+// mais leur `href="#{code}"` reste l'ANCRE native (repli sans JS). Au tap, on
+// filtre DIRECTEMENT et on pose le hash de l'ancre via `pushState` (qui NE
+// déclenche PAS de hashchange → applyHash ne relance rien, le filtre tient).
+// Un deep-link nu `#{code}` (lien partagé, rechargement) reste donc une ancre.
+// Générique : toute tuile `data-fact` en hérite, sans nouveau code.
+function initServiceFacts() {
+  document.querySelectorAll(".svc-tile[data-fact]").forEach((tile) => {
+    tile.addEventListener("click", (e) => {
+      const code = tile.dataset.fact;
+      if (!code || !document.getElementById(code)) return;  // repli : ancre native
+      e.preventDefault();
+      // S'assurer que l'onglet « Autour » est actif (la section y vit), puis filtrer
+      // sur elle et poser l'ancre en pushState (aucun hashchange → le filtre n'est
+      // ni relancé ni levé). Le pushState « #autour » d'activate donne un retour
+      // arrière naturel vers la grille.
+      if (window._activateTab) window._activateTab("around");
+      setServiceFilter(code);   // section de fait ciblée → un bloc à l'écran
+      if (location.hash !== "#" + code) history.pushState(null, "", "#" + code);
+      window.scrollTo({ top: 0, behavior: "auto" });
+    });
+  });
 }
 
 function initTabs() {
@@ -249,10 +293,10 @@ function initTabs() {
     const raw = decodeURIComponent(location.hash.replace(/^#/, ""));
     let tabKey = HASH_TAB[raw];
     let scrollEl = null;
-    let catCode = "";   // V2-12b : catégorie du mode filtré (#autour/{code}), sinon ""
+    let catCode = "";    // V2-12b : catégorie du mode filtré (#autour/{code}), sinon ""
     if (!tabKey && raw) {
-      // Ancre directe : section (#B_wifi) OU catégorie de la grille (#autour/{code},
-      // l'id du bloc `.cat` est « autour/{code} », V2-12).
+      // Ancre directe : section (#B_wifi, #E_food_delivery) OU catégorie de la
+      // grille (#autour/{code}, l'id du bloc `.cat` est « autour/{code} », V2-12).
       const elt = document.getElementById(raw);
       const panel = elt && elt.closest(".tab-panel[data-tab]");
       if (panel) { tabKey = panel.dataset.tab; scrollEl = elt; }
@@ -261,7 +305,12 @@ function initTabs() {
       if (elt && tabKey === "around" && elt.classList.contains("cat")) {
         catCode = elt.dataset.cat || "";
       }
+      // NB (V2-07 1quinquies) : un deep-link nu vers une section de fait
+      // (#E_food_delivery, lien partagé) reste une ANCRE — défilement, section
+      // visible dans la page complète. Le mode filtré n'est ouvert QUE par le tap
+      // de la tuile (`initServiceFacts`, filtrage direct + pushState).
     }
+    const filterCode = catCode;
     // V2-12 : si la cible est un bloc de catégorie masqué par une puce de filtre
     // (chapitre), on rétablit « Tout » pour la rendre visible avant le défilement.
     if (scrollEl && scrollEl.classList.contains("cat")) {
@@ -272,13 +321,14 @@ function initTabs() {
         if (allChip) allChip.click();
       }
     }
-    // V2-12b : (dés)active le mode filtré. Hors #autour/{code} (onglet fixe,
-    // grille #autour, ancre de section) → catCode="" → grille + tous les blocs.
-    setServiceFilter(catCode);
+    // V2-12b/1quinquies : (dés)active le mode filtré (catégorie OU section de fait).
+    // Hors mode filtré (onglet fixe, grille #autour, deep-link de section nu) →
+    // filterCode="" → grille + tous les blocs.
+    setServiceFilter(filterCode);
     activate(tabKey || "home", { push });
-    if (catCode) {
-      // Mode filtré : une catégorie = un écran → défilement remis EN HAUT (la
-      // grille et les autres blocs ont disparu, le bloc choisi occupe l'écran).
+    if (filterCode) {
+      // Mode filtré : un bloc = un écran → défilement remis EN HAUT (la grille et
+      // les autres blocs ont disparu, le bloc choisi occupe l'écran).
       setTimeout(() => window.scrollTo({ top: 0, behavior: "auto" }), 0);
     } else if (scrollEl) {
       setTimeout(() => scrollEl.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
@@ -730,6 +780,7 @@ initMap();
 initTabs();
 initChips();
 initBackToServices();
+initServiceFacts();
 initCategoryLists();
 // Recherche dans le guide (V2-33 volet 2) : après initTabs (utilise _activateTab)
 // et initCategoryLists (le dépliage des listes), AVANT initSecrets (l'index se

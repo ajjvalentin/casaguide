@@ -1011,10 +1011,11 @@ def test_food_delivery_service_tile_present_and_anchors_to_section():
                                    _FD_SCHEMA, _FD_NAME)], [], _FD_FACT, "tok")
     grid = _grid(html)
     assert grid, "la grille de services doit exister (au moins la tuile livraison)"
-    assert 'class="svc-tile" href="#E_food_delivery"' in grid
+    # href = ancre native (repli sans JS, 1quater) ; data-fact = mode filtré (1quinquies).
+    assert 'class="svc-tile" href="#E_food_delivery" data-fact="E_food_delivery"' in grid
     assert ">Livraison de repas<" in grid
     assert ">2<" in grid                    # compte = nombre de plateformes
-    assert 'data-cat="food_delivery"' not in grid   # pas un mode filtré catégorie
+    assert 'data-cat="food_delivery"' not in grid   # pas une tuile de catégorie POI
 
 
 def test_food_delivery_service_tile_absent_without_platforms():

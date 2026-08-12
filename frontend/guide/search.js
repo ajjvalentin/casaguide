@@ -65,6 +65,13 @@ function collectEntries(root) {
 function reveal(el) {
   const panel = el.closest(".tab-panel[data-tab]");
   if (panel && window._activateTab) window._activateTab(panel.dataset.tab);
+  // V2-07 1quinquies : un mode filtré de services actif (tuile catégorie OU fait de
+  // zone) masquerait la cible si elle n'est pas le bloc filtré → le lever avant de
+  // révéler. Généralise au filtre de services la levée du filtre cuisine ci-dessous.
+  if (panel && panel.dataset.tab === "around"
+      && panel.classList.contains("cat-filtered") && window._setServiceFilter) {
+    window._setServiceFilter("");
+  }
   const cat = el.closest(".cat");
   if (cat) {
     // Filtre par cuisine actif qui masquerait la carte → revenir à « Tout ».

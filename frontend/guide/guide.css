@@ -141,9 +141,13 @@ html.js body.cat-filtered .guide-head .sos{display:none}
 html.js body.tab-urgences .guide-head .sos{display:none}
 html.js .cat-filtered .chapter.chapter-off{display:none}
 /* Dans le chapitre hôte : on ne garde que le titre (h2/chapline) et la catégorie
-   choisie ; toute autre contenu (sections, autres catégories) est masqué. */
-html.js .cat-filtered .chapter:not(.chapter-off) > :not(h2):not(.chapline):not(.cat){display:none}
+   choisie — OU la section de fait ciblée (.filter-target, V2-07 1quinquies : la
+   tuile Livraison ouvre le même mode filtré) ; tout autre contenu est masqué. */
+html.js .cat-filtered .chapter:not(.chapter-off) > :not(h2):not(.chapline):not(.cat):not(.filter-target){display:none}
 html.js .cat-filtered .cat.cat-off{display:none}
+/* Fait de zone filtré (V2-07 1quinquies) : la section ciblée n'a pas de POI → la
+   carte n'a rien à montrer, on la retire pour que le bloc occupe seul l'écran. */
+html.js .tab-panel[data-tab="around"].fact-filtered > #map{display:none}
 
 /* ── Carte ───────────────────────────────────────────────────────────────── */
 #map{position:relative;height:320px;border-radius:14px;border:1px solid var(--line);margin:14px 0 4px;background:#E9EEF0}
