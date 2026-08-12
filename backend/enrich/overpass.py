@@ -20,12 +20,41 @@ Claude (recherche web) : food_delivery, babysitter.
 """
 from __future__ import annotations
 
+import logging
 import math
 import time
 
 import httpx
 
 from .settings import settings
+
+log = logging.getLogger("casaguide.overpass")
+
+# Codes HTTP transitoires : on réessaie (miroir suivant puis backoff). Le 406 en
+# fait partie : overpass-api.de le renvoie par intermittence sous charge (voir
+# `_post_overpass`). Un 400 (requête invalide) n'y est PAS : insister est inutile.
+_RETRYABLE_STATUS = frozenset({406, 408, 425, 429, 500, 502, 503, 504})
+
+
+class OverpassError(RuntimeError):
+    """Refus HTTP d'un serveur Overpass. `str()` reste COURT (journal `steps` :
+    « HTTP 406 de overpass-api.de ») ; le CORPS complet de la réponse (Overpass y
+    explique parfois son refus) est journalisé à part par `_post_overpass`."""
+
+    def __init__(self, url: str, status: int, body: str):
+        self.url, self.status, self.body = url, status, body
+        host = url.split("//", 1)[-1].split("/", 1)[0]
+        super().__init__(f"HTTP {status} de {host}")
+
+
+def _short(msg: str, limit: int = 160) -> str:
+    """Troncature LISIBLE pour `enrichment_jobs.steps` : coupe à la limite mais sur
+    une frontière de mot (jamais « For more informatio ») et suffixe « … »."""
+    msg = " ".join((msg or "").split())  # normalise espaces/retours à la ligne
+    if len(msg) <= limit:
+        return msg
+    cut = msg[:limit].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return (cut or msg[:limit]) + "…"
 
 # Catégorie CasaGuide -> tags OSM positifs (clé, valeur). Source de vérité unique :
 # les sélecteurs de requête en sont dérivés, et le contrôle de cohérence s'appuie
@@ -177,27 +206,50 @@ def _build_query(selectors: list[str], lat: float, lon: float, radius_m: int,
 
 def _post_overpass(client: httpx.Client, query: str,
                    timeout_s: int | None = None) -> list[dict]:
-    """POST vers Overpass avec bascule automatique sur les miroirs.
+    """POST vers Overpass avec bascule sur les miroirs ET backoff sur 406/429.
 
-    Le serveur principal overpass-api.de renvoie des 406 aux clients automatisés
-    depuis 2026 : on essaie l'URL principale puis chaque miroir dans l'ordre.
-    Lève la dernière erreur si tous échouent (disjoncteur en amont côté appelant).
+    **Correctif OPS-4 (12/08).** Reproduit : la MÊME requête (celle que ce code
+    construit) reçoit par intermittence un **406 Not Acceptable** d'overpass-api.de
+    — corps = page Apache générique (`Server: Apache`, `text/html`), pas un message
+    Overpass. A/B décisif : `Accept: application/json` → ~8/15 en 406 ;
+    `Accept: */*` → **0/15**. Cause : la négociation de contenu Apache
+    (mod_negotiation) de l'endpoint interpreter n'offre aucune variante
+    `application/json` → 406. Le format de sortie est décidé par `[out:json]` DANS
+    la requête, jamais par l'en-tête HTTP `Accept` → on envoie `*/*`.
 
-    `timeout_s` (M-18) surcharge le timeout de la requête HTTP : le palier aéroport
-    a besoin de plus de temps que le timeout du client partagé."""
-    headers = {"User-Agent": settings.user_agent, "Accept": "application/json"}
+    En plus : on essaie l'URL principale puis chaque miroir ; sur un statut
+    **transitoire** (`_RETRYABLE_STATUS`, dont 406/429/503/504) on journalise le
+    CORPS COMPLET (il explique parfois le refus), on passe au miroir suivant, puis on
+    RÉESSAIE la liste avec un backoff croissant. Un 4xx non transitoire (400 :
+    requête invalide) lève tout de suite. `timeout_s` (M-18) surcharge le timeout HTTP
+    (palier aéroport). L'exception levée reste COURTE pour `steps` (corps déjà logué)."""
+    headers = {"User-Agent": settings.user_agent, "Accept": "*/*"}
     post_kwargs: dict = {}
     if timeout_s is not None:
         post_kwargs["timeout"] = timeout_s + 5  # marge au-dessus du [timeout:] serveur
+    urls = (settings.overpass_url, *settings.overpass_mirrors)
     last_error: Exception | None = None
-    for url in (settings.overpass_url, *settings.overpass_mirrors):
-        try:
-            resp = client.post(url, data={"data": query}, headers=headers, **post_kwargs)
-            resp.raise_for_status()
-            return resp.json().get("elements", [])
-        except httpx.HTTPError as exc:
-            last_error = exc
-            continue  # miroir suivant
+    for attempt in range(1, settings.overpass_max_attempts + 1):
+        for url in urls:
+            try:
+                resp = client.post(url, data={"data": query}, headers=headers, **post_kwargs)
+            except httpx.HTTPError as exc:
+                last_error = exc
+                log.warning("Overpass %s : erreur réseau (essai %d) : %s",
+                            url, attempt, exc)
+                continue  # miroir suivant
+            if resp.status_code == 200:
+                return resp.json().get("elements", [])
+            body = (resp.text or "").strip()
+            last_error = OverpassError(url, resp.status_code, body)
+            # Journal COMPLET côté logs (le corps explique le refus) ; tronqué
+            # PROPREMENT côté `steps` par l'appelant via `str(OverpassError)`.
+            log.warning("Overpass %s : HTTP %d (essai %d) — corps :\n%s",
+                        url, resp.status_code, attempt, body[:2000])
+            if resp.status_code not in _RETRYABLE_STATUS:
+                raise last_error  # 400… : insister sur les miroirs ne sert à rien
+        if attempt < settings.overpass_max_attempts:
+            time.sleep(settings.overpass_backoff_s * attempt)  # backoff croissant
     raise last_error or RuntimeError("Aucun serveur Overpass joignable")
 
 
@@ -324,7 +376,12 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
             try:
                 elements = _post_overpass(client, query, timeout_s=timeout_s)
             except Exception as exc:  # tout le palier échoue -> catégories tracées
-                msg = f"{type(exc).__name__}: {exc}"[:120]
+                # `str(OverpassError)` est déjà court et lisible ; le corps complet a
+                # été logué par `_post_overpass`. Troncature PROPRE (jamais un mot
+                # coupé à cru comme « For more informatio ») pour `steps`.
+                msg = _short(f"{type(exc).__name__}: {exc}")
+                log.warning("Palier %s m (%s) en échec : %s",
+                            bucket, ",".join(codes), msg)
                 for code in codes:
                     failures[code] = msg
                 continue

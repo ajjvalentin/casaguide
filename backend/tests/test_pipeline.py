@@ -252,8 +252,16 @@ def test_full_pipeline(property_id, http_client):
         job = conn.execute("SELECT * FROM enrichment_jobs WHERE id=%s",
                            (result["job_id"],)).fetchone()
         assert job["status"] == "done"
-        assert all(job["steps"][s]["ok"] for s in
-                   ("geocode", "overpass", "distances", "claude"))
+        # OPS-4 Pièce 2 : `steps` est le JOURNAL DE VÉRITÉ — chaque étape IA y figure
+        # avec ok + compteurs + coût (plus seulement geocode/overpass/distances/claude).
+        steps = job["steps"]
+        assert all(steps[s]["ok"] for s in
+                   ("geocode", "overpass", "distances", "area_facts",
+                    "describe_pois", "food_delivery", "babysitter", "claude"))
+        assert steps["food_delivery"]["platforms"] == 1          # compteur
+        assert steps["babysitter"]["created"] == 1               # compteur
+        assert "cost_cts" in steps["food_delivery"]              # coût par étape
+        assert steps["overpass"]["failed"] == {}                 # 0 échec (mock)
         # area_facts + describe_pois + food_delivery (recherche web) comptabilisés
         ops = {r["operation"] for r in conn.execute(
             "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
@@ -338,6 +346,14 @@ def test_service_completion_fills_kept_pois_and_never_overwrites(property_id, ht
         ops = {r["operation"] for r in conn.execute(
             "SELECT operation FROM api_costs WHERE property_id=%s", (property_id,))}
         assert "service_complete" in ops
+        # OPS-4 Pièce 2 : l'étape 4c figure au journal (dernier job) avec compteur
+        # PAR catégorie + coût.
+        job = conn.execute(
+            "SELECT steps FROM enrichment_jobs WHERE property_id=%s "
+            "ORDER BY started_at DESC LIMIT 1", (property_id,)).fetchone()
+        sc = job["steps"]["service_complete"]
+        assert sc["ok"] is True and sc["by_category"].get("supermarket") == 1
+        assert sc["completed"] == 1 and "cost_cts" in sc
 
 
 def test_apply_completion_never_overwrites_and_guards_status(property_id):
@@ -439,9 +455,14 @@ def test_bucket_timeout_airport_is_longer():
 
 def test_retry_recovers_airport_and_replays_only_missing(property_id):
     orig = _no_mirrors()
+    orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0            # pas d'attente réelle en test (OPS-4)
     sleeps = []
     try:
-        flaky = FlakyOverpass(fail_airport_times=1)
+        # OPS-4 : `_post_overpass` réessaie déjà `overpass_max_attempts` fois par run
+        # (backoff sur 406/504…). Pour EXERCER le retry M-18 (au niveau pipeline), le
+        # palier doit échouer TOUTES ces tentatives du 1er run → il retombe sur M-18.
+        flaky = FlakyOverpass(fail_airport_times=settings.overpass_max_attempts)
         with httpx.Client(transport=httpx.MockTransport(flaky.handler)) as client:
             result = pipeline.run_with_retries(
                 property_id, use_claude=True,
@@ -450,12 +471,14 @@ def test_retry_recovers_airport_and_replays_only_missing(property_id):
                 retry_delay_s=0, sleep=lambda s: sleeps.append(s))
     finally:
         settings.overpass_mirrors = orig
+        settings.overpass_backoff_s = orig_backoff
 
     assert result["retries"] == 1 and not result["failed_categories"]
-    assert sleeps == [0]                       # une attente avant le seul retry
-    # L'aéroport est requêté 2 fois (échec + retry) ; le supermarché 1 SEULE fois
-    # (le retry ne rejoue que les catégories manquantes).
-    assert flaky.airport_queries == 2
+    assert sleeps == [0]                       # une attente avant le seul retry M-18
+    # Aéroport : `max_attempts` requêtes au 1er run (toutes en échec, backoff interne)
+    # + 1 au retry M-18 (succès) ; supermarché 1 SEULE fois (le retry ne rejoue que
+    # les catégories manquantes).
+    assert flaky.airport_queries == settings.overpass_max_attempts + 1
     assert flaky.supermarket_queries == 1
 
     with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
@@ -467,6 +490,102 @@ def test_retry_recovers_airport_and_replays_only_missing(property_id):
         assert job["status"] == "done"          # le job reste 'done'
         assert job["steps"]["retry_1"]["ok"] is True
         assert "airport" in job["steps"]["retry_1"]["resolved"]
+
+
+# ── OPS-4 : en-têtes Overpass, backoff 406/429, journal complet ───────────────
+
+def test_overpass_sends_wildcard_accept_and_identifying_ua():
+    """Pièce 1 : l'en-tête est `Accept: */*` (surtout PAS `application/json`, qui
+    déclenche le 406 mod_negotiation d'overpass-api.de) et le User-Agent identifiant
+    est présent sur chaque requête."""
+    seen = {}
+
+    def handler(request):
+        seen["accept"] = request.headers.get("accept")
+        seen["ua"] = request.headers.get("user-agent")
+        return httpx.Response(200, json={"elements": []})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        overpass._post_overpass(client, "[out:json];out;")
+    assert seen["accept"] == "*/*"
+    assert seen["ua"] == settings.user_agent and seen["ua"]
+
+
+def test_overpass_406_is_retryable_cycles_mirror_and_logs_full_body(caplog):
+    """Pièce 1 : un 406 transitoire n'échoue pas le palier — on bascule sur le
+    miroir suivant ; le CORPS COMPLET du 406 est journalisé (non tronqué)."""
+    orig_mirrors = settings.overpass_mirrors
+    orig_backoff = settings.overpass_backoff_s
+    settings.overpass_mirrors = ("https://mirror.example/api/interpreter",)
+    settings.overpass_backoff_s = 0
+    body406 = ("<html><body><h1>Not Acceptable</h1><p>An appropriate representation "
+               "could not be found. For more information about this error…</p></body></html>")
+    calls: list[str] = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if len(calls) == 1:  # le 1er serveur 406, le miroir répond
+            return httpx.Response(406, text=body406)
+        return httpx.Response(200, json={"elements": [{"type": "node", "id": 1}]})
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client, \
+                caplog.at_level("WARNING"):
+            els = overpass._post_overpass(client, "[out:json];out;")
+    finally:
+        settings.overpass_mirrors = orig_mirrors
+        settings.overpass_backoff_s = orig_backoff
+
+    assert els == [{"type": "node", "id": 1}]        # a basculé sur le miroir
+    assert len(calls) == 2
+    # Corps COMPLET côté logs (jamais tronqué à « For more informatio »).
+    assert any("For more information about this error" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_overpass_400_raises_short_error_without_cycling():
+    """Pièce 1 : un 4xx NON transitoire (400 requête invalide) lève tout de suite,
+    avec un message COURT pour `steps` (pas de cyclage inutile des miroirs)."""
+    calls: list[int] = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(400, text="line 1: parse error: bad query " * 20)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(overpass.OverpassError) as ei:
+            overpass._post_overpass(client, "bad")
+    assert ei.value.status == 400 and len(calls) == 1
+    assert str(ei.value).startswith("HTTP 400 de") and len(str(ei.value)) < 60
+
+
+def test_short_truncation_is_word_clean():
+    """La troncature pour `steps` coupe sur un mot et suffixe « … » (fini le
+    « For more informatio » à cru)."""
+    s = overpass._short("For more information about this particular error condition",
+                        limit=20)
+    assert s.endswith("…") and len(s) <= 21
+    assert not s[:-1].endswith(" ") and "informatio…" not in s
+
+
+def test_pipeline_closes_internally_created_anthropic_client(property_id, http_client,
+                                                             monkeypatch):
+    """Pièce 4 (sortie propre) : le client Anthropic créé DANS le pipeline (chemin CLI,
+    `anthropic_client=None`) est fermé EXPLICITEMENT → son pool httpx ne retient plus
+    la sortie du process. Un client PASSÉ (API/tests) n'est jamais fermé par le
+    pipeline (il appartient à l'appelant)."""
+    closed: list[bool] = []
+
+    class SpyAnthropic(FakeAnthropic):
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(pipeline.anthropic, "Anthropic", lambda **kw: SpyAnthropic())
+    # anthropic_client=None → le pipeline crée le client (et doit le fermer).
+    pipeline.run(property_id, use_claude=True, only_categories={"supermarket"},
+                 http_client=http_client)
+    assert closed == [True]
 
 
 def test_retry_gives_up_after_max_attempts(property_id):

@@ -17,11 +17,17 @@ class Settings:
 
     # Géocodage — Nominatim (OSM). Politique d'usage : 1 req/s max, User-Agent requis.
     nominatim_url: str = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org/search")
-    user_agent: str = os.getenv("CASAGUIDE_UA", "CasaGuide/0.1 (contact@casaguide.example)")
+    # User-Agent identifiant, conforme aux politiques Nominatim/Overpass (contact
+    # réel joignable). Surchargé par CASAGUIDE_UA. NB (OPS-4) : le 406 d'overpass-api.de
+    # ne venait PAS de l'UA (A/B : placeholder et UA réel reçoivent tous deux des 406)
+    # mais de l'en-tête `Accept` — voir overpass._post_overpass.
+    user_agent: str = os.getenv(
+        "CASAGUIDE_UA", "Holaguia/1.0 (+https://holaguia.com; contact@holaguia.com)")
 
-    # POI — Overpass API (OSM). Le serveur principal overpass-api.de renvoie des
-    # 406 aux clients automatisés depuis avril 2026 : on privilégie les miroirs,
-    # avec bascule automatique (voir overpass.py).
+    # POI — Overpass API (OSM). Le 406 « Not Acceptable » d'overpass-api.de venait de
+    # l'en-tête `Accept: application/json` (négociation Apache), pas d'un blocage des
+    # clients automatisés — corrigé dans overpass.py (Accept: */*). On garde plusieurs
+    # serveurs (bascule + backoff) pour la charge/les pannes ponctuelles.
     overpass_url: str = os.getenv("OVERPASS_URL", "https://overpass.kumi.systems/api/interpreter")
     overpass_mirrors: tuple = (
         "https://overpass.private.coffee/api/interpreter",
@@ -32,6 +38,11 @@ class Settings:
     # Rayon aéroport (100 km) : requête lourde → timeout dédié plus long (M-18).
     overpass_timeout_far_s: int = int(os.getenv("CASAGUIDE_OVERPASS_TIMEOUT_FAR", "60"))
     overpass_far_bucket_m: int = 50000  # au-delà : requête « lointaine » (timeout long)
+    # Backoff sur 406/429/503… (OPS-4) : nb de passes sur la liste URL principale +
+    # miroirs, et délai croissant entre passes (× n° de passe). Un 406 transitoire
+    # d'overpass-api.de sous charge est ainsi rattrapé sans faire échouer le palier.
+    overpass_max_attempts: int = int(os.getenv("CASAGUIDE_OVERPASS_ATTEMPTS", "2"))
+    overpass_backoff_s: float = float(os.getenv("CASAGUIDE_OVERPASS_BACKOFF", "2.0"))
     politeness_delay_s: float = float(os.getenv("CASAGUIDE_DELAY", "1.0"))
     max_pois_per_category: int = int(os.getenv("CASAGUIDE_MAX_POIS", "8"))
 

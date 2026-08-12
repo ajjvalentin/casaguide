@@ -890,6 +890,44 @@ exposé, peer auth).
   Même régime sur le lien de séjour `/b/` (branche miroir de `/g/`, v28).
 - Serveurs OSM publics : 1 req/s max, User-Agent obligatoire → en production,
   prévoir OSRM auto-hébergé et/ou un fournisseur géré.
+- **Overpass 406 — la cause était l'en-tête `Accept`, PAS l'User-Agent (OPS-4,
+  12/08)** : deux runs Ballarin ont vu ~19-21/26 catégories refusées en **406 Not
+  Acceptable** par overpass-api.de (mais pas toutes → pas une absence d'UA).
+  **Reproduit** : la MÊME requête (celle que `overpass._build_query` construit)
+  reçoit par intermittence un 406 dont le corps est une **page Apache générique**
+  (`Server: Apache/2.4.68`, `text/html` — PAS un message Overpass). **A/B décisif**
+  (15 requêtes chacune) : `Accept: application/json` → **8/15 en 406** ;
+  `Accept: */*` ou pas d'`Accept` → **0/15**. Cause : la **négociation de contenu
+  Apache** (mod_negotiation) de l'endpoint interpreter n'offre aucune variante
+  `application/json` → 406. Le format de sortie est décidé par `[out:json]` **dans**
+  la requête, jamais par l'en-tête HTTP → **`overpass._post_overpass` envoie
+  `Accept: */*`**. En défense : **backoff sur 406/429/503/504** (`_RETRYABLE_STATUS`,
+  `overpass_max_attempts`/`overpass_backoff_s`) avec bascule miroir puis nouvelle
+  passe ; un 4xx **non** transitoire (400 requête invalide) lève tout de suite ; le
+  **corps complet** du refus est **logué** (`log.warning`) et **tronqué proprement**
+  côté `steps` (`_short`, coupe sur un mot + « … », fini le « For more informatio »
+  à cru) via `OverpassError` dont le `str()` reste court. L'User-Agent par défaut est
+  passé à un contact réel (`Holaguia/1.0 (+https://holaguia.com; …)`) par conformité,
+  mais ce n'était **pas** la cause (l'A/B l'a montré). **Repro pour le VPS** (avant/
+  après, l'IP peut différer de la machine de dév) :
+  `curl -sS -o /dev/null -w "%{http_code}\n" -A "$CASAGUIDE_UA" -H "Accept: application/json" --data-urlencode 'data=[out:json][timeout:15];(nwr["amenity"="pharmacy"](around:2000,37.9262,-0.7233););out center tags;' https://overpass-api.de/api/interpreter`
+  (répéter ~10×) → des 406 ; remplacer `-H "Accept: application/json"` par
+  `-H "Accept: */*"` → plus de 406.
+- **Pipeline OBSERVABLE & sortie propre (OPS-4)** : (Pièce 2) `enrichment_jobs.steps`
+  est le **journal de vérité** — chaque étape IA y figure avec `ok`/erreur + compteurs
+  + coût : `area_facts`, `food_delivery` (`platforms`), `describe_pois` (`described`),
+  `service_complete` (`by_category` + `completed`), `babysitter` (`created`), en plus
+  de `geocode`/`overpass`/`distances`/`claude`. (Pièce 3) `pipeline._progress(msg)`
+  imprime **avec `flush=True`** (+ `log.info`) à chaque étape (début/fin, compteurs,
+  coût) → un run de 5-30 min donne signe de vie ; le **résumé final** du CLI est
+  étendu aux complétions/créations et liste les **catégories en échec en clair**.
+  (Pièce 4 — sortie propre) le client **Anthropic créé DANS `run()`/`_retry_failed`**
+  (chemin CLI, `anthropic_client=None`) est **fermé explicitement** dans un `finally`
+  (`ai.close()`) — son pool httpx laissé ouvert **bloquait la sortie du process**
+  (~1 h de terminal muet le 12/08). Un client **passé** par l'appelant (API/tests) n'est
+  **jamais** fermé par le pipeline (il lui appartient — `owns_ai = anthropic_client is
+  None`). Couvert par `test_pipeline.py` (`steps` 4c/4d/food_delivery, en-têtes/backoff/
+  troncature Overpass, fermeture du client Anthropic).
 - Ajout manuel de POI (M-22) : `GET /api/properties/{id}/pois/search` est un
   **proxy Nominatim côté serveur** (`api/poi_search.py`) — le navigateur n'appelle
   jamais Nominatim directement (pas de fuite d'User-Agent, politesse centralisée).

@@ -41,6 +41,13 @@ def _slug(name: str, maxlen: int = 48) -> str:
     return s[:maxlen].strip("-") or "service"
 
 
+def _progress(msg: str) -> None:
+    """Signe de vie d'un run (5-30 min) — OPS-4 Pièce 3. Imprimé IMMÉDIATEMENT
+    (flush : le terminal/journal voit chaque étape sans attendre la fin) ET logué."""
+    print(msg, flush=True)
+    log.info(msg)
+
+
 def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         only_categories: set[str] | None = None,
         job_id: str | None = None,
@@ -51,7 +58,14 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
     Si `job_id` est fourni (job 'pending' pré-créé par l'API pour renvoyer un
     identifiant immédiat), il est réutilisé ; sinon un nouveau job est créé.
     """
-    summary: dict = {"pois": 0, "categories": {}, "area_facts": False, "cost_cts": 0.0}
+    summary: dict = {"pois": 0, "categories": {}, "area_facts": False,
+                     "cost_cts": 0.0, "services_completed": 0, "babysitters": 0}
+    # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
+    # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
+    # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
+    # Fermé dans le `finally` de l'étape (ci-dessous), quel que soit le dénouement.
+    ai: anthropic.Anthropic | None = None
+    owns_ai = False
 
     with db.connect() as conn:
         prop = db.load_property(conn, property_id)
@@ -60,6 +74,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         else:
             db.job_mark_running(conn, job_id)
         conn.commit()
+        _progress(f"▶ Enrichissement {prop.get('name') or property_id} "
+                  f"({prop['city']}, {prop['country_code']}) — job {job_id}")
 
         try:
             # ── 1. Géocodage ────────────────────────────────────────────────
@@ -73,8 +89,11 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 prop["lat"], prop["lon"] = geo["lat"], geo["lon"]
                 db.job_step(conn, job_id, "geocode",
                             {"ok": True, "accuracy": geo["accuracy"]})
+                _progress(f"  ✓ géocodage : {geo['accuracy']} "
+                          f"({geo['lat']:.4f}, {geo['lon']:.4f})")
             else:
                 db.job_step(conn, job_id, "geocode", {"ok": True, "skipped": True})
+                _progress("  ✓ géocodage : déjà positionné")
             conn.commit()  # progression visible en temps réel
             origin = (prop["lat"], prop["lon"])
 
@@ -120,11 +139,16 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                          "failed": failed_categories})
             db.job_step(conn, job_id, "distances", {"ok": True})
             conn.commit()
+            _progress(f"  ✓ Overpass : {summary['pois']} POI"
+                      + (f" — {len(failed_categories)} catégorie(s) en échec : "
+                         + ", ".join(sorted(failed_categories))
+                         if failed_categories else " — 0 échec"))
 
             # ── 4. Enrichissement Claude ────────────────────────────────────
             if use_claude:
                 ai = anthropic_client or anthropic.Anthropic(
                     api_key=os.environ["ANTHROPIC_API_KEY"])
+                owns_ai = anthropic_client is None
 
                 # 4a. Données locales mutualisées (pays + commune)
                 if not db.area_facts_fresh(conn, prop["country_code"], prop["city"]):
@@ -135,7 +159,15 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     db.record_cost(conn, property_id, job_id, "anthropic",
                                    "area_facts", meta["units"], meta["cost_cts"])
                     summary["cost_cts"] += meta["cost_cts"]
+                    db.job_step(conn, job_id, "area_facts",
+                                {"ok": True, "cost_cts": round(meta["cost_cts"], 2)})
+                    _progress(f"  ✓ données locales (urgences/tri/bruit) — "
+                              f"{meta['cost_cts']:.2f} ct")
+                else:
+                    db.job_step(conn, job_id, "area_facts",
+                                {"ok": True, "skipped": "frais (mutualisé)"})
                 summary["area_facts"] = True
+                conn.commit()
 
                 # 4a-bis. Livraison de repas par zone (V2-07 volet 1) : appel
                 # SÉPARÉ (recherche web, cadence de rafraîchissement propre),
@@ -154,6 +186,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         with conn.transaction():
                             fd, meta = claude_enrich.fetch_food_delivery(
                                 prop["city"], prop["country_code"], ai)
+                            n_plat = len(fd[claude_enrich.FOOD_DELIVERY_FACT_TYPE]
+                                         ["platforms"])
                             db.upsert_area_facts(conn, prop["country_code"],
                                                  prop["city"], fd,
                                                  source=settings.anthropic_model)
@@ -161,9 +195,19 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                                            "food_delivery", meta["units"],
                                            meta["cost_cts"])
                             summary["cost_cts"] += meta["cost_cts"]
+                            db.job_step(conn, job_id, "food_delivery",
+                                        {"ok": True, "platforms": n_plat,
+                                         "cost_cts": round(meta["cost_cts"], 2)})
+                        _progress(f"  ✓ livraison de repas : {n_plat} plateforme(s) "
+                                  f"— {meta['cost_cts']:.2f} ct")
                     except Exception as fd_exc:  # noqa: BLE001 — best-effort
                         log.warning("Livraison de repas (%s) non résolue : %s",
                                     prop["city"], fd_exc)
+                        db.job_step(conn, job_id, "food_delivery",
+                                    {"ok": False, "error": overpass._short(str(fd_exc))})
+                        conn.commit()
+                        _progress(f"  ⚠ livraison de repas non résolue : "
+                                  f"{overpass._short(str(fd_exc))}")
 
                 # 4b. Descriptions courtes des POI éditoriaux
                 if all_editorial:
@@ -180,6 +224,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     db.record_cost(conn, property_id, job_id, "anthropic",
                                    "describe_pois", meta["units"], meta["cost_cts"])
                     summary["cost_cts"] += meta["cost_cts"]
+                    db.job_step(conn, job_id, "describe_pois",
+                                {"ok": True, "described": len(descs),
+                                 "cost_cts": round(meta["cost_cts"], 2)})
+                    conn.commit()
+                    _progress(f"  ✓ descriptions : {len(descs)} POI — "
+                              f"{meta['cost_cts']:.2f} ct")
 
                 # 4c. Complétion des fiches de SERVICE (V2-07 volet 2) : tel / site /
                 # horaires par recherche web, AVEC PREUVE. Coût maîtrisé : UN appel
@@ -191,6 +241,9 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # n'annule ni le reste ni le job.
                 today = _dt.date.today().isoformat()
                 completed = 0
+                svc_by_cat: dict[str, int] = {}   # compteur PAR catégorie (journal)
+                svc_cost = 0.0
+                svc_errors: dict[str, str] = {}
                 for cat in claude_enrich.SERVICE_COMPLETE_CATEGORIES:
                     todo = db.pois_needing_completion(
                         conn, property_id, cat, claude_enrich.service_fields(cat),
@@ -222,10 +275,24 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                                            "service_complete", meta["units"],
                                            meta["cost_cts"])
                             summary["cost_cts"] += meta["cost_cts"]
+                            svc_by_cat[cat] = len(filled)
+                            svc_cost += meta["cost_cts"]
+                        _progress(f"  ✓ complétion {cat} : {len(filled)}/{len(todo)} "
+                                  f"fiche(s) — {meta['cost_cts']:.2f} ct")
                     except Exception as sc_exc:  # noqa: BLE001 — best-effort
                         log.warning("Complétion services (%s / %s) non résolue : %s",
                                     cat, prop["city"], sc_exc)
+                        svc_errors[cat] = overpass._short(str(sc_exc))
+                        _progress(f"  ⚠ complétion {cat} non résolue : "
+                                  f"{overpass._short(str(sc_exc))}")
                 summary["services_completed"] = completed
+                # 4c au journal : compteurs par catégorie + coût + erreurs éventuelles.
+                if svc_by_cat or svc_errors:
+                    db.job_step(conn, job_id, "service_complete",
+                                {"ok": not svc_errors, "by_category": svc_by_cat,
+                                 "completed": completed, "cost_cts": round(svc_cost, 2),
+                                 **({"errors": svc_errors} if svc_errors else {})})
+                    conn.commit()
 
                 # 4d. Baby-sitting (V2-07 volet 2) : CRÉATION de fiches par recherche
                 # web (source='claude', status='suggested' → validation propriétaire).
@@ -255,22 +322,47 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                                            meta["cost_cts"])
                             summary["cost_cts"] += meta["cost_cts"]
                             summary["babysitters"] = created
+                            db.job_step(conn, job_id, "babysitter",
+                                        {"ok": True, "created": created,
+                                         "cost_cts": round(meta["cost_cts"], 2)})
+                        _progress(f"  ✓ baby-sitting : {created} créé(s) "
+                                  f"— {meta['cost_cts']:.2f} ct")
                     except Exception as bs_exc:  # noqa: BLE001 — best-effort
                         log.warning("Baby-sitting (%s) non résolu : %s",
                                     prop["city"], bs_exc)
+                        db.job_step(conn, job_id, "babysitter",
+                                    {"ok": False, "error": overpass._short(str(bs_exc))})
+                        conn.commit()
+                        _progress(f"  ⚠ baby-sitting non résolu : "
+                                  f"{overpass._short(str(bs_exc))}")
 
                 db.job_step(conn, job_id, "claude",
-                            {"ok": True, "cost_cts": summary["cost_cts"]})
+                            {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})
             else:
                 db.job_step(conn, job_id, "claude", {"ok": True, "skipped": True})
 
             db.job_finish(conn, job_id, "done")
             conn.commit()
+            _progress(
+                f"✔ job {job_id} terminé — {summary['pois']} POI suggérés, "
+                f"{summary['services_completed']} fiche(s) complétée(s), "
+                f"{summary['babysitters']} baby-sitting créé(s), "
+                f"coût IA {summary['cost_cts']:.2f} ct")
         except Exception as exc:  # échec -> job 'failed', rien de corrompu
             conn.rollback()
             db.job_finish(conn, job_id, "failed", error=f"{type(exc).__name__}: {exc}")
             conn.commit()
+            _progress(f"✖ job {job_id} en échec : {type(exc).__name__}: {exc}")
             raise
+        finally:
+            # OPS-4 Pièce 4 : fermeture EXPLICITE du client Anthropic créé ici (son
+            # pool httpx laissé ouvert bloquait la sortie du process). Quel que soit
+            # le dénouement (succès, échec, re-levée).
+            if owns_ai and ai is not None:
+                try:
+                    ai.close()
+                except Exception:  # noqa: BLE001 — la fermeture ne doit jamais lever
+                    log.warning("Fermeture du client Anthropic ignorée")
 
     summary["job_id"] = job_id
     return summary
@@ -360,10 +452,18 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
 
             # Descriptions IA pour les catégories éditoriales récupérées au retry.
             if use_claude and editorial:
+                owns_ai = anthropic_client is None  # fermer si créé ici (Pièce 4)
                 ai = anthropic_client or anthropic.Anthropic(
                     api_key=os.environ["ANTHROPIC_API_KEY"])
-                descs, meta = claude_enrich.describe_pois(
-                    editorial, prop["city"], prop["country_code"], ai)
+                try:
+                    descs, meta = claude_enrich.describe_pois(
+                        editorial, prop["city"], prop["country_code"], ai)
+                finally:
+                    if owns_ai:
+                        try:
+                            ai.close()
+                        except Exception:  # noqa: BLE001
+                            log.warning("Fermeture du client Anthropic ignorée")
                 for p in editorial:
                     if p["source_ref"] in descs:
                         p["description_md"] = descs[p["source_ref"]]
@@ -400,11 +500,28 @@ def main() -> None:
     cats = set(args.categories.split(",")) if args.categories else None
     result = run(args.property_id, use_claude=not args.no_claude,
                  trigger=args.trigger, only_categories=cats)
-    print(f"Job {result['job_id']} terminé : {result['pois']} POI suggérés, "
-          f"coût IA {result['cost_cts']:.2f} ct")
+    # Résumé final ÉTENDU (OPS-4 Pièce 3) : POI moissonnés PAR catégorie, complétions
+    # de service, créations baby-sitting, coût total, et échecs éventuels EN CLAIR.
+    print(f"\n=== Job {result['job_id']} terminé ===", flush=True)
+    print(f"  POI suggérés          : {result['pois']}")
     for cat, n in sorted(result["categories"].items()):
-        print(f"  {cat:<16} {n}")
+        print(f"    {cat:<18} {n}")
+    print(f"  Fiches complétées     : {result.get('services_completed', 0)}")
+    print(f"  Baby-sitting créés    : {result.get('babysitters', 0)}")
+    print(f"  Coût IA               : {result['cost_cts']:.2f} ct")
+    failed = result.get("failed_categories") or {}
+    if failed:
+        print(f"  Catégories en échec   : {len(failed)}")
+        for cat, msg in sorted(failed.items()):
+            print(f"    {cat:<18} {msg}")
+    else:
+        print("  Catégories en échec   : 0")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Pièce 4 : la sortie doit être NETTE. Les clients réseau (Anthropic, httpx) sont
+    # fermés dans `run()` ; ce garde-fou force la fin du process après le résumé même
+    # si un finaliseur tiers s'attardait (aucun thread non-daemon ne doit survivre).
+    main()
+    sys.exit(0)
