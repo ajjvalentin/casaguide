@@ -23,6 +23,9 @@ from .settings import settings
 _ACCURACY = {
     "building": "rooftop", "house": "rooftop", "residential": "rooftop",
     "road": "street", "street": "street",
+    # Types de LIEU précis (V2-07 volet 3) : une place/un marché géocodé à ce niveau
+    # est exploitable pour un marqueur (≠ « city », qui est le repli imprécis).
+    "square": "street", "marketplace": "street", "pedestrian": "street",
 }
 
 

@@ -94,6 +94,12 @@ class Settings:
         os.getenv("CASAGUIDE_BABYSITTER_MAX_AGE_DAYS", "90"))
     babysitter_max_searches: int = int(
         os.getenv("CASAGUIDE_BABYSITTER_MAX_SEARCHES", "5"))
+    # Marchés hebdomadaires (V2-07 volet 3) : découverte MUTUALISÉE par (pays,
+    # commune), cache area_facts (fenêtre comme le volet 1) + plafond de recherches.
+    market_max_age_days: int = int(
+        os.getenv("CASAGUIDE_MARKET_MAX_AGE_DAYS", "90"))
+    market_max_searches: int = int(
+        os.getenv("CASAGUIDE_MARKET_MAX_SEARCHES", "6"))
 
     # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial)
     describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity", "market")

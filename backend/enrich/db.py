@@ -126,6 +126,20 @@ def area_facts_fresh(conn, country_code: str, admin_area: str | None,
     return row["n"] >= 3
 
 
+def get_area_fact(conn, country_code: str, admin_area: str | None,
+                  fact_type: str) -> dict | None:
+    """Contenu d'un `area_fact` précis pour (pays, commune) — lecture pour la
+    matérialisation (V2-07 volet 3 : les marchés sont matérialisés par logement
+    depuis le fait mutualisé de leur commune). None si absent."""
+    row = conn.execute(
+        """SELECT content FROM area_facts
+           WHERE country_code = %s AND admin_area IS NOT DISTINCT FROM %s
+             AND fact_type = %s""",
+        (country_code, admin_area, fact_type),
+    ).fetchone()
+    return row["content"] if row else None
+
+
 def area_fact_fresh(conn, country_code: str, admin_area: str | None,
                     fact_type: str, max_age_days: int) -> bool:
     """True si CE fact_type existe déjà et est récent pour (pays, commune) — cadence
@@ -259,6 +273,63 @@ def insert_service_poi(conn, property_id: str, category: str, name: str,
          "ref": source_ref},
     )
     return cur.rowcount
+
+
+def existing_market_pois(conn, property_id: str) -> list[dict]:
+    """POI `market` du logement — TOUS statuts (V2-07 volet 3, déduplication) :
+    un marché déjà présent (`edited` du propriétaire) n'est jamais recréé, un
+    `rejected` ne ressuscite jamais. Position en lat/lon pour le rapprochement."""
+    return conn.execute(
+        """SELECT name, weekday, ST_Y(geom) AS lat, ST_X(geom) AS lon, status
+           FROM pois WHERE property_id = %s AND category_code = 'market'""",
+        (property_id,),
+    ).fetchall()
+
+
+def insert_market_poi(conn, property_id: str, market: dict) -> int:
+    """Crée un POI `market` issu de Claude+web (V2-07 volet 3) : `source='claude'`,
+    `status='suggested'` (validation propriétaire), avec `weekday`/`weekday_note`
+    (V2-33), position RÉELLE et distances pré-calculées, preuve en `completion_meta`.
+    Idempotent par (property_id, source, source_ref) ; ne réécrit QUE si encore
+    'suggested' (invariant 1). Retourne 1 si inséré, 0 si conflit ignoré."""
+    cur = conn.execute(
+        """INSERT INTO pois (property_id, category_code, name, geom, address,
+                             weekday, weekday_note, dist_walk_m, walk_min,
+                             dist_drive_m, drive_min, completion_meta,
+                             source, source_ref, fetched_at, status)
+           VALUES (%(pid)s, 'market', %(name)s,
+                   ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
+                   %(address)s, %(weekday)s, %(weekday_note)s,
+                   %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
+                   %(meta)s, 'claude', %(ref)s, now(), 'suggested')
+           ON CONFLICT (property_id, source, source_ref) WHERE source_ref IS NOT NULL
+           DO UPDATE SET name = EXCLUDED.name, geom = EXCLUDED.geom,
+                         address = EXCLUDED.address, weekday = EXCLUDED.weekday,
+                         weekday_note = EXCLUDED.weekday_note,
+                         dist_walk_m = EXCLUDED.dist_walk_m, walk_min = EXCLUDED.walk_min,
+                         dist_drive_m = EXCLUDED.dist_drive_m, drive_min = EXCLUDED.drive_min,
+                         completion_meta = EXCLUDED.completion_meta, fetched_at = now()
+           WHERE pois.status = 'suggested'""",
+        {"pid": property_id, "name": market["name"],
+         "lat": market["lat"], "lon": market["lon"],
+         "address": market.get("address"), "weekday": market["weekday"],
+         "weekday_note": market.get("weekday_note"),
+         "dist_walk_m": market.get("dist_walk_m"), "walk_min": market.get("walk_min"),
+         "dist_drive_m": market.get("dist_drive_m"), "drive_min": market.get("drive_min"),
+         "meta": json.dumps(market["completion_meta"]) if market.get("completion_meta")
+                 else None,
+         "ref": market["source_ref"]},
+    )
+    return cur.rowcount
+
+
+def poi_source_ref_exists(conn, property_id: str, source_ref: str) -> bool:
+    """True si un POI de ce (logement, source_ref) existe déjà (TOUS statuts) →
+    idempotence AVANT géocodage (on ne re-géocode pas un marché déjà matérialisé)."""
+    return conn.execute(
+        "SELECT 1 FROM pois WHERE property_id = %s AND source = 'claude' "
+        "AND source_ref = %s LIMIT 1", (property_id, source_ref),
+    ).fetchone() is not None
 
 
 def recent_operation(conn, property_id: str, operation: str,

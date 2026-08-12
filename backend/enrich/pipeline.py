@@ -48,6 +48,36 @@ def _progress(msg: str) -> None:
     log.info(msg)
 
 
+def _resolve_market_position(market: dict, prop: dict,
+                             http_client: httpx.Client | None
+                             ) -> tuple[float | None, float | None]:
+    """Position FIABLE d'un marché (V2-07 volet 3) — sinon (None, None) et l'appelant
+    saute + journalise. Règle de précision : (1) coordonnées de la SOURCE si
+    plausibles (à ≤ MARKET_MAX_DIST_M du logement — garde-fou anti-hallucination) ;
+    (2) sinon géocodage de l'adresse par le module existant, accepté SEULEMENT si la
+    précision N'EST PAS « city » (jamais de marqueur au niveau ville — un marché mal
+    placé est pire qu'absent) et reste dans le rayon plausible."""
+    plat, plon = prop["lat"], prop["lon"]
+    lat, lon = market.get("lat"), market.get("lon")
+    if lat is not None and lon is not None:
+        if overpass.haversine_m(plat, plon, lat, lon) <= claude_enrich.MARKET_MAX_DIST_M:
+            return lat, lon
+        log.warning("Marché « %s » : coordonnées de source aberrantes (%.4f,%.4f) — "
+                    "repli géocodage", market.get("name"), lat, lon)
+    addr = (market.get("address") or "").strip()
+    if addr:
+        try:
+            geo = geocode.geocode(street=addr, city=prop["city"],
+                                  country_code=prop["country_code"], client=http_client)
+        except geocode.GeocodeError:
+            return None, None
+        if (geo["accuracy"] != "city"
+                and overpass.haversine_m(plat, plon, geo["lat"], geo["lon"])
+                <= claude_enrich.MARKET_MAX_DIST_M):
+            return geo["lat"], geo["lon"]
+    return None, None
+
+
 def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         only_categories: set[str] | None = None,
         job_id: str | None = None,
@@ -59,7 +89,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
     identifiant immédiat), il est réutilisé ; sinon un nouveau job est créé.
     """
     summary: dict = {"pois": 0, "categories": {}, "area_facts": False,
-                     "cost_cts": 0.0, "services_completed": 0, "babysitters": 0}
+                     "cost_cts": 0.0, "services_completed": 0, "babysitters": 0,
+                     "markets_created": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -336,6 +367,85 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         _progress(f"  ⚠ baby-sitting non résolu : "
                                   f"{overpass._short(str(bs_exc))}")
 
+                # 4e. Marchés hebdomadaires (V2-07 volet 3) : DÉCOUVERTE mutualisée par
+                # commune (cache area_facts, fenêtre propre) PUIS MATÉRIALISATION en POI
+                # 'market' suggested par logement — idempotents (source_ref), dédoublonnés
+                # contre l'existant (owner edited/rejected jamais touchés), position FIABLE
+                # exigée (jamais un marqueur ville). Best-effort (SAVEPOINT).
+                try:
+                    with conn.transaction():
+                        if not db.area_fact_fresh(
+                                conn, prop["country_code"], prop["city"],
+                                claude_enrich.MARKET_FACT_TYPE,
+                                settings.market_max_age_days):
+                            mk_fact, meta = claude_enrich.fetch_markets(
+                                prop["city"], prop["country_code"], ai, today=today)
+                            db.upsert_area_facts(conn, prop["country_code"],
+                                                 prop["city"], mk_fact,
+                                                 source=settings.anthropic_model)
+                            db.record_cost(conn, property_id, job_id, "anthropic",
+                                           "markets", meta["units"], meta["cost_cts"])
+                            summary["cost_cts"] += meta["cost_cts"]
+                            mk_cost = meta["cost_cts"]
+                        else:
+                            mk_cost = 0.0  # découverte mutualisée déjà fraîche
+                        # Matérialisation depuis le fait (frais ou fraîchement écrit).
+                        fact = db.get_area_fact(conn, prop["country_code"], prop["city"],
+                                                claude_enrich.MARKET_FACT_TYPE) or {}
+                        discovered = fact.get("markets") or []
+                        existing = [dict(r) for r in
+                                    db.existing_market_pois(conn, property_id)]
+                        m_created = m_dup = m_nopos = 0
+                        for mk in discovered:
+                            ref = ("claude:market:" + _slug(mk["name"]) + ":"
+                                   + str(mk["weekday"]))
+                            if db.poi_source_ref_exists(conn, property_id, ref):
+                                continue  # déjà matérialisé (idempotent, pas de géocodage)
+                            # Pré-dédup par NOM (avant tout géocodage).
+                            if claude_enrich.market_matches_existing(
+                                    mk["name"], mk["weekday"], None, None, existing):
+                                m_dup += 1
+                                continue
+                            lat, lon = _resolve_market_position(mk, prop, http_client)
+                            if lat is None:
+                                m_nopos += 1
+                                log.warning("Marché « %s » sauté : position non fiable",
+                                            mk["name"])
+                                continue
+                            # Dédup par POSITION (même jour + même place).
+                            if claude_enrich.market_matches_existing(
+                                    mk["name"], mk["weekday"], lat, lon, existing):
+                                m_dup += 1
+                                continue
+                            poi = {"name": mk["name"], "lat": lat, "lon": lon,
+                                   "weekday": mk["weekday"],
+                                   "weekday_note": mk.get("weekday_note"),
+                                   "address": mk.get("address"), "source_ref": ref,
+                                   "completion_meta": {"_market": {
+                                       "source_url": mk.get("source_url"),
+                                       "verified_on": mk.get("verified_on"),
+                                       "doubtful": mk.get("doubtful", False)}}}
+                            distance.compute_distances(origin, [poi], client=http_client)
+                            m_created += db.insert_market_poi(conn, property_id, poi)
+                            existing.append({"name": mk["name"], "weekday": mk["weekday"],
+                                             "lat": lat, "lon": lon})
+                        summary["markets_created"] = m_created
+                        db.job_step(conn, job_id, "markets",
+                                    {"ok": True, "discovered": len(discovered),
+                                     "created": m_created, "skipped_duplicate": m_dup,
+                                     "skipped_position": m_nopos,
+                                     "cost_cts": round(mk_cost, 2)})
+                    _progress(
+                        f"  ✓ marchés : {m_created} créé(s), {m_dup} doublon(s), "
+                        f"{m_nopos} sans position — {mk_cost:.2f} ct")
+                except Exception as mk_exc:  # noqa: BLE001 — best-effort
+                    log.warning("Marchés (%s) non résolus : %s", prop["city"], mk_exc)
+                    db.job_step(conn, job_id, "markets",
+                                {"ok": False, "error": overpass._short(str(mk_exc))})
+                    conn.commit()
+                    _progress(f"  ⚠ marchés non résolus : "
+                              f"{overpass._short(str(mk_exc))}")
+
                 db.job_step(conn, job_id, "claude",
                             {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})
             else:
@@ -347,6 +457,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 f"✔ job {job_id} terminé — {summary['pois']} POI suggérés, "
                 f"{summary['services_completed']} fiche(s) complétée(s), "
                 f"{summary['babysitters']} baby-sitting créé(s), "
+                f"{summary['markets_created']} marché(s) créé(s), "
                 f"coût IA {summary['cost_cts']:.2f} ct")
         except Exception as exc:  # échec -> job 'failed', rien de corrompu
             conn.rollback()
@@ -508,6 +619,7 @@ def main() -> None:
         print(f"    {cat:<18} {n}")
     print(f"  Fiches complétées     : {result.get('services_completed', 0)}")
     print(f"  Baby-sitting créés    : {result.get('babysitters', 0)}")
+    print(f"  Marchés créés         : {result.get('markets_created', 0)}")
     print(f"  Coût IA               : {result['cost_cts']:.2f} ct")
     failed = result.get("failed_categories") or {}
     if failed:

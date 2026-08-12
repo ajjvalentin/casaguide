@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import re
+import unicodedata
 
 import anthropic
 
+from .overpass import haversine_m
 from .settings import settings
 
 AREA_FACT_TYPES = ("emergency_numbers", "waste_rules", "noise_rules")
@@ -473,3 +476,192 @@ def fetch_babysitters(city: str, country_code: str,
         entry["verified_on"] = (s.get("verified_on") or "").strip() or today
         out.append(entry)
     return out, meta
+
+
+# ── Marchés hebdomadaires par zone : découverte CLAUDE + web (V2-07 volet 3) ──
+#
+# Découverte MUTUALISÉE par (pays, commune), mise en cache area_facts sous
+# `MARKET_FACT_TYPE` (deux logements d'une commune partagent la découverte). La
+# MATÉRIALISATION en POI `market` (source='claude', status='suggested') est faite
+# PAR LOGEMENT depuis ce fait — voir `pipeline` + `db.insert_market_poi`.
+MARKET_FACT_TYPE = "markets"
+# Un marché découvert au-delà de cette distance du logement n'est pas « local » —
+# garde-fou anti-position aberrante (coordonnées hallucinées / mauvaise commune).
+MARKET_MAX_DIST_M = 25000
+# Déduplication (seuils motivés) : un marché est un événement PONCTUEL à une place
+# fixe. Deux marchés DISTINCTS d'une même commune diffèrent en général par le JOUR
+# ET par le lieu. On dédoublonne donc contre les POI `market` existants (TOUS
+# statuts) ainsi : même jour + (nom proche OU même place) → doublon ; ou nom
+# quasi-identique seul (variantes « Mercadillo/Mercado de la Zenia »).
+_MARKET_NAME_SOFT = 0.6    # similarité de nom (trigrammes) « proche »
+_MARKET_NAME_HARD = 0.82   # « quasi-identique » (dédoublonne même jour inconnu)
+_MARKET_SAME_SPOT_M = 250  # deux marchés à moins de 250 m = la même place
+
+_MARKET_PROMPT = """\
+Tu prépares la liste des MARCHÉS HEBDOMADAIRES (mercadillos, rastros, marchés de
+plein air) autour d'un logement de vacances à {city} ({country_code}), pour un
+guide voyageur. Vérifie chaque marché par recherche web.
+
+CE QU'ON CHERCHE : uniquement les marchés qui se tiennent UN (ou plusieurs) JOUR
+FIXE par semaine, en plein air, ambulants — étals de fruits/légumes, vêtements,
+artisanat, brocante.
+
+À EXCLURE ABSOLUMENT (ne les liste JAMAIS) :
+- les commerces FIXES, supérettes, supermarchés, épiceries ;
+- les marchés COUVERTS/municipaux ouverts TOUS LES JOURS (halles permanentes) ;
+- tout ce qui n'a pas un JOUR hebdomadaire identifiable.
+
+SOURCES à privilégier : site de la MAIRIE, OFFICE DE TOURISME, PRESSE LOCALE
+récente. Un marché doit avoir une PREUVE d'activité RÉCENTE : si tu ne trouves que
+des mentions anciennes ou des avis disant qu'il n'existe plus, NE l'affirme pas —
+soit tu l'écartes, soit tu le marques `doubtful: true` avec une note prudente.
+
+Pour chaque marché retenu, fournis :
+- `name` : nom du marché (ex. « Mercadillo de La Zenia ») ;
+- `weekday` : le jour, en ENTIER 1-7 (1=lundi, 7=dimanche) — OBLIGATOIRE ;
+- `hours` : les horaires en texte court (ex. « 8h00–14h00 ») si connus, sinon "" ;
+- `character` : en quelques mots, ce qu'on y trouve (ex. « fruits, légumes,
+  vêtements ») si connu, sinon "" ;
+- `address` : l'emplacement (place, rue, quartier) le plus précis possible ;
+- `lat`, `lon` : les coordonnées SI une source fiable les donne (Google Maps, OSM),
+  sinon omets-les (l'adresse suffira au géocodage) ;
+- `source_url` : l'URL de la preuve ; `verified_on` : « {today} » ;
+- `doubtful` : true seulement si l'activité récente est incertaine.
+
+RÈGLES STRICTES :
+- N'invente JAMAIS. Un marché sans preuve ou sans jour hebdomadaire n'est pas retenu.
+- Une liste VIDE est un résultat parfaitement valide.
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
+{{
+  "markets": [
+    {{"name": "...", "weekday": 6, "hours": "8h00–14h00",
+      "character": "fruits, légumes, vêtements", "address": "...",
+      "lat": 37.93, "lon": -0.75, "source_url": "https://...",
+      "verified_on": "{today}", "doubtful": false}}
+  ]
+}}
+"""
+
+
+def _as_float(v) -> float | None:
+    """Coordonnée numérique valide, sinon None (jamais une chaîne bidon)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None  # rejette NaN
+
+
+def _market_note(m: dict) -> str:
+    """`weekday_note` : horaires (suffixés « Horaires indicatifs », donnée
+    périssable — précédent V2-33/volet 2) + caractère + réserve si douteux."""
+    hours = (m.get("hours") or "").strip()
+    character = (m.get("character") or "").strip()
+    parts = [p for p in (hours, character) if p]
+    note = " — ".join(parts)
+    if hours:
+        note += HOURS_INDICATIVE_SUFFIX
+    if m.get("doubtful"):
+        note = (note + " " if note else "") + "(activité à confirmer)"
+    return note
+
+
+def fetch_markets(city: str, country_code: str, client: anthropic.Anthropic,
+                  today: str | None = None) -> tuple[dict, dict]:
+    """Marchés hebdomadaires de la zone, vérifiés par recherche web (V2-07 volet 3).
+    Retourne ({MARKET_FACT_TYPE: {"markets": [...]}}, méta coût). Chaque marché
+    retenu porte `name`, `weekday` (ENTIER 1-7 — un marché SANS jour valide est
+    ÉCARTÉ), `weekday_note` (horaires + caractère), `address`, `lat`/`lon` si la
+    source les donne, `source_url`/`verified_on`, `doubtful`. **Liste vide valide** ;
+    réponse malformée → ValueError (aucune écriture — « n'invente jamais »)."""
+    today = today or _dt.date.today().isoformat()
+    data, meta = _ask_web_search_json(
+        client, _MARKET_PROMPT.format(city=city, country_code=country_code,
+                                      today=today),
+        city=city, country_code=country_code,
+        max_searches=settings.market_max_searches)
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    markets = data.get("markets")
+    if not isinstance(markets, list):
+        raise ValueError("Réponse IA invalide : 'markets' doit être une liste.")
+    clean: list[dict] = []
+    for m in markets:
+        if not isinstance(m, dict):
+            continue
+        name = (m.get("name") or "").strip()
+        weekday = m.get("weekday")
+        # Jour OBLIGATOIRE et VALIDE (1-7) : un marché sans jour n'est pas un marché.
+        if not name or not isinstance(weekday, int) or isinstance(weekday, bool) \
+                or not (1 <= weekday <= 7):
+            continue
+        source_url = (m.get("source_url") or "").strip()
+        if not source_url:
+            continue  # preuve ou rien
+        entry: dict = {
+            "name": name, "weekday": weekday, "weekday_note": _market_note(m),
+            "address": (m.get("address") or "").strip() or None,
+            "source_url": source_url,
+            "verified_on": (m.get("verified_on") or "").strip() or today,
+            "doubtful": bool(m.get("doubtful")),
+        }
+        lat, lon = _as_float(m.get("lat")), _as_float(m.get("lon"))
+        if lat is not None and lon is not None:
+            entry["lat"], entry["lon"] = lat, lon
+        clean.append(entry)
+    return {MARKET_FACT_TYPE: {"markets": clean}}, meta
+
+
+# ── Déduplication des marchés (pure — testée sans base ni réseau) ─────────────
+
+_MARKET_STOPWORDS = {
+    "mercadillo", "mercado", "market", "rastro", "marche", "marché", "feira",
+    "wochenmarkt", "markt", "de", "del", "la", "el", "los", "las", "du", "des",
+    "le", "of", "the",
+}
+
+
+def _norm_market_name(name: str) -> str:
+    """Nom de marché normalisé pour la comparaison : sans accents, minuscule, sans
+    mots génériques (« mercadillo », « mercado »…) ni articles, espaces compactés."""
+    s = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
+    s = re.sub(r"[^a-z0-9\s]", " ", s.lower())
+    toks = [t for t in s.split() if t and t not in _MARKET_STOPWORDS]
+    return " ".join(toks)
+
+
+def _trigrams(s: str) -> set[str]:
+    s = f"  {s} "
+    return {s[i:i + 3] for i in range(len(s) - 2)} if len(s) >= 3 else {s}
+
+
+def _dice(a: str, b: str) -> float:
+    """Coefficient de Dice sur trigrammes ∈ [0,1] (tolérant aux variantes)."""
+    if not a or not b:
+        return 1.0 if a == b else 0.0
+    ta, tb = _trigrams(a), _trigrams(b)
+    return 2 * len(ta & tb) / (len(ta) + len(tb)) if (ta or tb) else 0.0
+
+
+def market_matches_existing(name: str, weekday: int | None,
+                            lat: float | None, lon: float | None,
+                            existing: list[dict]) -> dict | None:
+    """Retourne le POI `market` EXISTANT que ce candidat dédouble, sinon None.
+
+    `existing` : POI market du logement (TOUS statuts — un `rejected` ne ressuscite
+    jamais, un `edited` n'est jamais recréé) : [{name, weekday, lat, lon}].
+    Règle (seuils motivés) : **même jour** + (nom proche OU même place ≤ 250 m) →
+    doublon ; **ou** nom quasi-identique seul (variante d'orthographe). `lat/lon`
+    peuvent être None (pré-contrôle par le nom, avant tout géocodage)."""
+    for ex in existing:
+        sim = _dice(_norm_market_name(name), _norm_market_name(ex.get("name", "")))
+        if sim >= _MARKET_NAME_HARD:
+            return ex                                    # nom quasi-identique
+        same_day = weekday is not None and ex.get("weekday") == weekday
+        close = (lat is not None and lon is not None
+                 and ex.get("lat") is not None and ex.get("lon") is not None
+                 and haversine_m(lat, lon, ex["lat"], ex["lon"]) <= _MARKET_SAME_SPOT_M)
+        if same_day and (sim >= _MARKET_NAME_SOFT or close):
+            return ex
+    return None

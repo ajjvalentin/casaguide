@@ -1006,6 +1006,37 @@ exposé, peer auth).
   les retenus) ; la complétion opère au **ré-enrichissement**, après arbitrage. Migration 030
   = `ADD COLUMN IF NOT EXISTS completion_meta JSONB` (idempotente, DEFAULT NULL, aucun
   backfill). Mocks : surface web_search réelle (OPS-1b).
+- **Marchés hebdomadaires par zone (V2-07 volet 3)** : DÉCOUVERTE **mutualisée** par
+  (pays, commune) via `claude_enrich.fetch_markets` (Claude + web, sources mairie/
+  office de tourisme/presse), mise en cache **area_facts** sous `MARKET_FACT_TYPE =
+  'markets'` (fraîcheur `market_max_age_days`, 90 j — deux logements d'une commune
+  partagent la découverte, **zéro appel dans la fenêtre**) ; **MATÉRIALISATION** en POI
+  `market` **par logement** (pipeline 4e, `db.get_area_fact` → `db.insert_market_poi`,
+  `source='claude'`, `status='suggested'`, idempotent par `source_ref='claude:market:
+  <slug>:<weekday>'`, distances calculées). **`weekday` OBLIGATOIRE** (entier 1-7 ;
+  un marché sans jour valide n'est **pas** créé — `fetch_markets` l'écarte, jamais
+  `bool`/chaîne) ; `weekday_note` = horaires (suffixe **« · Horaires indicatifs »**,
+  précédent V2-33/volet 2) + caractère + « (activité à confirmer) » si `doubtful` ;
+  preuve `source_url`+`verified_on` en `completion_meta._market`. **Trois écueils du
+  prototype, chacun son mécanisme** : (1) **Doublons** — `market_matches_existing`
+  (PUR) contre les POI market existants **tous statuts** (un `edited` jamais recréé,
+  un `rejected` jamais ressuscité) : **même jour** + (nom trigramme ≥ 0,6 OU même
+  place ≤ 250 m) → doublon, **ou** nom quasi-identique (≥ 0,82) seul ; deux marchés
+  même place mais **jours différents** restent distincts. Pré-dédup par **nom** AVANT
+  géocodage (idempotence par `source_ref` d'abord → pas de re-géocodage au ré-run).
+  (2) **Catégorisation** — le prompt **exclut** explicitement commerces fixes,
+  supérettes, marchés couverts quotidiens (seulement mercadillos/rastros hebdo).
+  (3) **Données mortes** — preuve **récente** exigée ; activité incertaine → `doubtful`
+  (note prudente), jamais affirmé. **Position** (`pipeline._resolve_market_position`) :
+  coordonnées de la source si **plausibles** (≤ `MARKET_MAX_DIST_M` 25 km du logement,
+  garde anti-hallucination), sinon **géocodage** de l'adresse — accepté **seulement si
+  la précision n'est PAS « city »** (`geocode` reconnaît square/marketplace/pedestrian
+  → « street ») ; **jamais un marqueur ville** ; sans position fiable → **sauté +
+  journalisé** (`steps.markets.skipped_position`). Best-effort SAVEPOINT, `api_costs`
+  `operation='markets'`, journal `steps.markets` (discovered/created/skipped_*) +
+  progression (OPS-4). **Aucune migration** (réutilise `weekday`/`weekday_note` de la
+  029, `completion_meta` de la 030). Contenu FR (traductions par le circuit existant,
+  relancées par André après validation). Mocks : surface web_search réelle (OPS-1b).
 - L'upsert des POI exige la migration 001 (ON CONFLICT sur index partiel :
   la clause `WHERE source_ref IS NOT NULL` doit être répétée dans la requête).
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer

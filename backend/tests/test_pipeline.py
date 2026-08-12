@@ -104,9 +104,10 @@ class FakeMessages:
     # rejet sans écriture) et compte ses appels (test de mutualisation). Le bouchon
     # baby-sitting (V2-07 volet 2) renvoie par défaut un service crédible.
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
-                 service_completions=None):
+                 service_completions=None, markets=None):
         self.food_delivery_malformed = food_delivery_malformed
         self.food_delivery_calls = 0
+        self.market_calls = 0
         self.babysitter_services = (
             [{"name": "Canguros Costa", "phone": "+34 966 000 111",
               "website": "https://canguroscosta.example",
@@ -114,12 +115,23 @@ class FakeMessages:
               "verified_on": "2026-08-11"}]
             if babysitter_services is None else babysitter_services)
         self.service_completions = service_completions or {}
+        # V2-07 volet 3 : un marché crédible AVEC coordonnées (pas de géocodage).
+        self.markets = ([{"name": "Mercadillo de La Zenia", "weekday": 6,
+                          "hours": "8h00–14h00", "character": "fruits, vêtements",
+                          "address": "Plaza de La Zenia", "lat": 37.930, "lon": -0.750,
+                          "source_url": "https://orihuela.es/mercadillos",
+                          "verified_on": "2026-08-12", "doubtful": False}]
+                        if markets is None else markets)
 
     def create(self, *, model, max_tokens, messages, tools=None, **kwargs):
         prompt = messages[0]["content"]
         if "BABY-SITTING" in prompt:  # création baby-sitting (V2-07 volet 2)
             assert tools and tools[0]["type"] == "web_search_20250305"
             return _web_reply(json.dumps({"services": self.babysitter_services}))
+        if "MARCHÉS HEBDOMADAIRES" in prompt:  # découverte marchés (V2-07 volet 3)
+            self.market_calls += 1
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            return _web_reply(json.dumps({"markets": self.markets}))
         if "LIEUX DE SERVICE" in prompt:  # complétion tel/site/horaires (volet 2)
             assert tools and tools[0]["type"] == "web_search_20250305"
             return _web_reply(json.dumps(self.service_completions))
@@ -155,9 +167,9 @@ class FakeMessages:
 
 class FakeAnthropic:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
-                 service_completions=None):
+                 service_completions=None, markets=None):
         self.messages = FakeMessages(food_delivery_malformed, babysitter_services,
-                                     service_completions)
+                                     service_completions, markets)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -218,7 +230,7 @@ def test_full_pipeline(property_id, http_client):
             "SELECT * FROM pois WHERE property_id=%s ORDER BY name",
             (property_id,)).fetchall()
         assert {p["status"] for p in pois} == {"suggested"}
-        osm = [p for p in pois if p["category_code"] != "babysitter"]
+        osm = [p for p in pois if p["category_code"] not in ("babysitter", "market")]
         assert len(osm) == 4
         assert all(p["walk_min"] and p["drive_min"] for p in osm)
         assert all(p["source"] == "osm" and p["source_ref"] for p in osm)
@@ -229,6 +241,14 @@ def test_full_pipeline(property_id, http_client):
         assert sitter["source"] == "claude" and sitter["status"] == "suggested"
         assert sitter["name"] == "Canguros Costa" and sitter["phone"]
         assert sitter["completion_meta"]["_created"]["source_url"].startswith("http")
+
+        # Marché CRÉÉ par Claude + recherche web (V2-07 volet 3) : source 'claude',
+        # 'suggested', JOUR (weekday) + note (horaires « indicatifs ») + preuve +
+        # position réelle + distances calculées.
+        market = next(p for p in pois if p["category_code"] == "market")
+        assert market["source"] == "claude" and market["status"] == "suggested"
+        assert market["weekday"] == 6 and "Horaires indicatifs" in market["weekday_note"]
+        assert market["walk_min"] and market["completion_meta"]["_market"]["source_url"]
 
         # Description IA appliquée au restaurant uniquement
         resto = next(p for p in pois if p["name"] == "La Marejada")
@@ -242,8 +262,11 @@ def test_full_pipeline(property_id, http_client):
                             WHERE country_code='ES' AND admin_area='Orihuela Costa'"""
                             ).fetchall()
         facts = {r["fact_type"]: r["content"] for r in rows}
+        # + 'markets' : la DÉCOUVERTE des marchés est mutualisée par commune (V2-07
+        # volet 3), mise en cache area_facts comme la livraison de repas.
         assert set(facts) == {"emergency_numbers", "waste_rules", "noise_rules",
-                              "food_delivery"}
+                              "food_delivery", "markets"}
+        assert facts["markets"]["markets"][0]["weekday"] == 6
         # Plateformes de livraison résolues par zone (nom de marque local + preuve).
         assert facts["food_delivery"]["platforms"][0]["name"] == "Glovo"
         assert facts["food_delivery"]["platforms"][0]["url"].startswith("https://")
@@ -256,18 +279,20 @@ def test_full_pipeline(property_id, http_client):
         # avec ok + compteurs + coût (plus seulement geocode/overpass/distances/claude).
         steps = job["steps"]
         assert all(steps[s]["ok"] for s in
-                   ("geocode", "overpass", "distances", "area_facts",
-                    "describe_pois", "food_delivery", "babysitter", "claude"))
+                   ("geocode", "overpass", "distances", "area_facts", "describe_pois",
+                    "food_delivery", "babysitter", "markets", "claude"))
         assert steps["food_delivery"]["platforms"] == 1          # compteur
         assert steps["babysitter"]["created"] == 1               # compteur
+        assert steps["markets"]["discovered"] == 1 and steps["markets"]["created"] == 1
         assert "cost_cts" in steps["food_delivery"]              # coût par étape
         assert steps["overpass"]["failed"] == {}                 # 0 échec (mock)
         # area_facts + describe_pois + food_delivery (recherche web) comptabilisés
         ops = {r["operation"] for r in conn.execute(
             "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
-        # + baby-sitting (V2-07 volet 2). Pas de 'service_complete' : sur un run
-        # neuf tous les POI sont 'suggested', la complétion ne vise que les retenus.
-        assert ops == {"area_facts", "describe_pois", "food_delivery", "babysitter"}
+        # + baby-sitting + marchés (volets 2/3). Pas de 'service_complete' : sur un
+        # run neuf tous les POI sont 'suggested', la complétion ne vise que les retenus.
+        assert ops == {"area_facts", "describe_pois", "food_delivery", "babysitter",
+                       "markets"}
 
 
 def test_rerun_is_idempotent_and_preserves_owner_choices(property_id, http_client):
@@ -394,6 +419,104 @@ def test_apply_completion_never_overwrites_and_guards_status(property_id):
         got2 = conn.execute("SELECT phone FROM pois WHERE id=%s",
                             (sugg["id"],)).fetchone()
         assert got2["phone"] is None                     # 'suggested' intact
+
+
+# ── V2-07 volet 3 : marchés hebdomadaires (découverte + matérialisation) ──────
+
+def _insert_market(conn, property_id, name, weekday, lat, lon, status):
+    conn.execute(
+        """INSERT INTO pois (property_id, category_code, name, geom, weekday,
+                             source, source_ref, status)
+           VALUES (%s, 'market', %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s,
+                   'owner', %s, %s)""",
+        (property_id, name, lon, lat, weekday, "owner:" + name, status))
+
+
+def test_markets_dedup_preserves_edited_and_rejected(property_id, http_client):
+    """Le propriétaire a DÉJÀ un marché ÉDITÉ + un REJETÉ. La découverte, qui
+    retrouve largement les mêmes, ne recrée NI l'un NI l'autre (jamais de
+    résurrection d'un rejeté, jamais de doublon d'un édité) — seul un marché
+    RÉELLEMENT nouveau est créé, en 'suggested'."""
+    with psycopg.connect(settings.db_dsn) as conn:
+        _insert_market(conn, property_id, "Mercadillo de La Zenia", 6, 37.930, -0.750,
+                       "edited")
+        _insert_market(conn, property_id, "Rastro de Los Dolses", 3, 37.940, -0.740,
+                       "rejected")
+        conn.commit()
+    discovery = [
+        {"name": "Mercado de la Zenia", "weekday": 6, "hours": "8h–14h",
+         "address": "Zenia", "lat": 37.930, "lon": -0.750,
+         "source_url": "https://x", "verified_on": "2026-08-12"},   # doublon (édité)
+        {"name": "Rastro Los Dolses", "weekday": 3, "address": "Dolses",
+         "lat": 37.9401, "lon": -0.7401, "source_url": "https://x",
+         "verified_on": "2026-08-12"},                              # doublon (rejeté)
+        {"name": "Mercadillo de Torrevieja", "weekday": 5, "hours": "9h–14h",
+         "address": "Torrevieja", "lat": 37.980, "lon": -0.680,
+         "source_url": "https://x", "verified_on": "2026-08-12"},   # RÉELLEMENT nouveau
+    ]
+    result = pipeline.run(property_id, use_claude=True, only_categories={"supermarket"},
+                          http_client=http_client,
+                          anthropic_client=FakeAnthropic(markets=discovery))
+    assert result["markets_created"] == 1
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        mkts = {m["name"]: m for m in conn.execute(
+            "SELECT name, status, source FROM pois WHERE property_id=%s "
+            "AND category_code='market'", (property_id,))}
+        assert len(mkts) == 3                             # 2 propriétaire + 1 nouveau
+        assert mkts["Mercadillo de La Zenia"]["status"] == "edited"      # intact
+        assert mkts["Mercadillo de La Zenia"]["source"] == "owner"
+        assert mkts["Rastro de Los Dolses"]["status"] == "rejected"      # jamais ressuscité
+        assert mkts["Mercadillo de Torrevieja"]["status"] == "suggested"
+        assert mkts["Mercadillo de Torrevieja"]["source"] == "claude"
+        step = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                            (result["job_id"],)).fetchone()["steps"]["markets"]
+        assert step["created"] == 1 and step["skipped_duplicate"] == 2
+
+
+def test_market_without_reliable_position_is_skipped(property_id, http_client):
+    """Position non fiable (coordonnées aberrantes, aucune adresse géocodable) →
+    marché SAUTÉ (jamais un marqueur ville) et journalisé (steps.skipped_position)."""
+    discovery = [{"name": "Marché fantôme", "weekday": 4, "lat": 0.0, "lon": 0.0,
+                  "source_url": "https://x", "verified_on": "2026-08-12"}]
+    result = pipeline.run(property_id, use_claude=True, only_categories={"supermarket"},
+                          http_client=http_client,
+                          anthropic_client=FakeAnthropic(markets=discovery))
+    assert result["markets_created"] == 0
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        n = conn.execute("SELECT count(*) c FROM pois WHERE property_id=%s "
+                         "AND category_code='market'", (property_id,)).fetchone()["c"]
+        assert n == 0
+        step = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                            (result["job_id"],)).fetchone()["steps"]["markets"]
+        assert step["skipped_position"] == 1 and step["created"] == 0
+
+
+def test_market_discovery_is_mutualised_per_commune(property_id, http_client):
+    """Deux logements d'une même commune PARTAGENT la découverte (cache area_facts) :
+    le 2ᵉ logement ne déclenche AUCUN nouvel appel web de découverte."""
+    fake = FakeAnthropic()   # PARTAGÉ entre les deux runs → compteur cumulatif
+    pipeline.run(property_id, use_claude=True, only_categories={"supermarket"},
+                 http_client=http_client, anthropic_client=fake)
+    assert fake.messages.market_calls == 1               # 1er logement : découverte
+
+    oid2, pid2 = str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("INSERT INTO owners (id, email, full_name) VALUES (%s, %s, 'T')",
+                     (oid2, f"{oid2}@test.local"))
+        conn.execute(
+            """INSERT INTO properties (id, owner_id, name, address_line1, city,
+                                       country_code)
+               VALUES (%s, %s, 'Villa B', 'Calle Ejemplo 2', 'Orihuela Costa', 'ES')""",
+            (pid2, oid2))
+        conn.commit()
+    try:
+        pipeline.run(pid2, use_claude=True, only_categories={"supermarket"},
+                     http_client=http_client, anthropic_client=fake)
+        assert fake.messages.market_calls == 1           # ZÉRO nouvel appel (mutualisé)
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM owners WHERE id = %s", (oid2,))
+            conn.commit()
 
 
 # ── M-18 : fiabilisation de la moisson (ré-essai + timeout aéroport) ──────────
@@ -697,7 +820,9 @@ def test_food_delivery_malformed_rejected_without_write(property_id, http_client
         facts = {r["fact_type"] for r in conn.execute(
             "SELECT fact_type FROM area_facts WHERE country_code='ES' "
             "AND admin_area='Orihuela Costa'")}
-        assert facts == {"emergency_numbers", "waste_rules", "noise_rules"}
+        # 'markets' présent (découverte mutualisée, non affectée par le malformé
+        # livraison) ; PAS de 'food_delivery' (malformé → rejeté sans écriture).
+        assert facts == {"emergency_numbers", "waste_rules", "noise_rules", "markets"}
         ops = {r["operation"] for r in conn.execute(
             "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
         assert "food_delivery" not in ops
