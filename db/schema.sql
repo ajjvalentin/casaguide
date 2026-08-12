@@ -431,6 +431,7 @@ CREATE TABLE pois (
     cuisine        TEXT,                            -- type de cuisine (tag OSM normalisé, M-16)
     weekday        SMALLINT CHECK (weekday BETWEEN 1 AND 7),  -- jour du marché (1=lundi ISO), V2-33
     weekday_note   TEXT,                            -- précision du jour (« été seulement »…), V2-33
+    completion_meta JSONB,                          -- provenance de la complétion auto (tel/site/horaires), V2-07 volet 2
     description_md TEXT,                           -- rédigé par l'IA ou le propriétaire
     owner_comment  TEXT,                           -- le "coup de cœur" personnel (§4.F)
     -- Distances pré-calculées (cache — aucun appel API côté voyageur)

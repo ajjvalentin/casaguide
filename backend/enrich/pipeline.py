@@ -14,10 +14,13 @@ Usage :
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import logging
 import os
+import re
 import sys
 import time
+import unicodedata
 from typing import Callable
 
 import anthropic
@@ -27,6 +30,15 @@ from . import claude_enrich, db, distance, geocode, overpass
 from .settings import settings
 
 log = logging.getLogger("casaguide.pipeline")
+
+
+def _slug(name: str, maxlen: int = 48) -> str:
+    """Fragment stable pour `source_ref` d'un POI créé (baby-sitting) → l'upsert
+    par (property, source, source_ref) reste idempotent d'un run à l'autre."""
+    ascii_name = (unicodedata.normalize("NFKD", name or "")
+                  .encode("ascii", "ignore").decode())
+    s = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-")
+    return s[:maxlen].strip("-") or "service"
 
 
 def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
@@ -168,6 +180,85 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     db.record_cost(conn, property_id, job_id, "anthropic",
                                    "describe_pois", meta["units"], meta["cost_cts"])
                     summary["cost_cts"] += meta["cost_cts"]
+
+                # 4c. Complétion des fiches de SERVICE (V2-07 volet 2) : tel / site /
+                # horaires par recherche web, AVEC PREUVE. Coût maîtrisé : UN appel
+                # par catégorie/commune, et UNIQUEMENT pour les fiches RETENUES
+                # (approved/edited) auxquelles il manque un champ du périmètre (les
+                # 'suggested'/'rejected' ne sont jamais touchées). La complétion ne
+                # remplit que les champs NULL (COALESCE) et ne change ni le `status`
+                # ni le `source`. Best-effort par catégorie (SAVEPOINT) : un échec
+                # n'annule ni le reste ni le job.
+                today = _dt.date.today().isoformat()
+                completed = 0
+                for cat in claude_enrich.SERVICE_COMPLETE_CATEGORIES:
+                    todo = db.pois_needing_completion(
+                        conn, property_id, cat, claude_enrich.service_fields(cat),
+                        settings.service_complete_max_age_days)
+                    if not todo:
+                        continue
+                    try:
+                        with conn.transaction():
+                            label = db.category_label_fr(conn, cat)
+                            done, meta = claude_enrich.complete_service_pois(
+                                cat, label, todo, prop["city"],
+                                prop["country_code"], ai, today=today)
+                            filled: set[str] = set()
+                            for p in todo:
+                                res = done.get(p["id"])
+                                if not res:
+                                    continue
+                                if db.apply_poi_completion(
+                                        conn, p["id"], res["fields"],
+                                        res["source_url"], res["verified_on"], today):
+                                    filled.add(p["id"])
+                                    completed += 1
+                            # Fiches restées introuvables → marquées revérifiées
+                            # (pas de re-appel avant l'échéance).
+                            db.mark_pois_checked(
+                                conn, [p["id"] for p in todo if p["id"] not in filled],
+                                today)
+                            db.record_cost(conn, property_id, job_id, "anthropic",
+                                           "service_complete", meta["units"],
+                                           meta["cost_cts"])
+                            summary["cost_cts"] += meta["cost_cts"]
+                    except Exception as sc_exc:  # noqa: BLE001 — best-effort
+                        log.warning("Complétion services (%s / %s) non résolue : %s",
+                                    cat, prop["city"], sc_exc)
+                summary["services_completed"] = completed
+
+                # 4d. Baby-sitting (V2-07 volet 2) : CRÉATION de fiches par recherche
+                # web (source='claude', status='suggested' → validation propriétaire).
+                # Position = celle du logement (service TÉLÉPHONIQUE). Cadence propre
+                # par logement, mémorisée via api_costs (un VIDE est un résultat
+                # valide qu'on ne re-cherche pas à chaque run). Best-effort.
+                if (prop["lat"] is not None
+                        and not db.recent_operation(
+                            conn, property_id, "babysitter",
+                            settings.babysitter_max_age_days)):
+                    try:
+                        with conn.transaction():
+                            sitters, meta = claude_enrich.fetch_babysitters(
+                                prop["city"], prop["country_code"], ai, today=today)
+                            created = 0
+                            for s in sitters:
+                                created += db.insert_service_poi(
+                                    conn, property_id, "babysitter", s["name"],
+                                    prop["lat"], prop["lon"], phone=s.get("phone"),
+                                    website=s.get("website"),
+                                    source_ref="claude:babysitter:" + _slug(s["name"]),
+                                    completion_meta={"_created": {
+                                        "source_url": s.get("source_url"),
+                                        "verified_on": s.get("verified_on")}})
+                            db.record_cost(conn, property_id, job_id, "anthropic",
+                                           "babysitter", meta["units"],
+                                           meta["cost_cts"])
+                            summary["cost_cts"] += meta["cost_cts"]
+                            summary["babysitters"] = created
+                    except Exception as bs_exc:  # noqa: BLE001 — best-effort
+                        log.warning("Baby-sitting (%s) non résolu : %s",
+                                    prop["city"], bs_exc)
+
                 db.job_step(conn, job_id, "claude",
                             {"ok": True, "cost_cts": summary["cost_cts"]})
             else:

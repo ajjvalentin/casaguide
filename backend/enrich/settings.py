@@ -67,6 +67,23 @@ class Settings:
     food_delivery_max_searches: int = int(
         os.getenv("CASAGUIDE_FOOD_DELIVERY_MAX_SEARCHES", "5"))
 
+    # Complétion des fiches de service (V2-07 volet 2) : téléphone/site/horaires par
+    # Claude + recherche web, avec preuve. Coût MAÎTRISÉ — un appel PAR
+    # catégorie/commune (les N fiches incomplètes en un lot), plafond de recherches
+    # web par appel, et re-vérification d'une fiche au plus tous les N jours
+    # (marqueur `_checked_on` → jamais de re-appel en boucle sur un champ introuvable).
+    service_complete_max_age_days: int = int(
+        os.getenv("CASAGUIDE_SERVICE_COMPLETE_MAX_AGE_DAYS", "30"))
+    service_complete_max_searches: int = int(
+        os.getenv("CASAGUIDE_SERVICE_COMPLETE_MAX_SEARCHES", "6"))
+    # Baby-sitting (V2-07 volet 2) : POI créés par Claude+web (validation
+    # propriétaire), cadence de re-recherche PROPRE (par logement — le vide est un
+    # résultat valide qu'on mémorise via api_costs pour ne pas re-appeler).
+    babysitter_max_age_days: int = int(
+        os.getenv("CASAGUIDE_BABYSITTER_MAX_AGE_DAYS", "90"))
+    babysitter_max_searches: int = int(
+        os.getenv("CASAGUIDE_BABYSITTER_MAX_SEARCHES", "5"))
+
     # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial)
     describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity", "market")
 

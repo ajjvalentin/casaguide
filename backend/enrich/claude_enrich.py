@@ -203,14 +203,17 @@ def _parse_strict_json(text: str) -> dict:
 
 
 def _ask_web_search_json(client: anthropic.Anthropic, prompt: str, *,
-                         city: str, country_code: str) -> tuple[dict, dict]:
+                         city: str, country_code: str,
+                         max_searches: int | None = None) -> tuple[dict, dict]:
     """Appel Claude AVEC l'outil de recherche web de l'API Anthropic → (données
     JSON, méta {units, cost_cts, web_searches}). La recherche web tourne côté
     serveur ; un `pause_turn` est relancé (boucle bornée). Les unités de recherche
-    web sont comptabilisées dans le coût (10 $ / 1000 requêtes)."""
+    web sont comptabilisées dans le coût (10 $ / 1000 requêtes). `max_searches`
+    plafonne le nombre de recherches web de CET appel (coût maîtrisé) ; défaut =
+    plafond de la livraison de repas (volet 1)."""
     tool = {
         "type": "web_search_20250305", "name": "web_search",
-        "max_uses": settings.food_delivery_max_searches,
+        "max_uses": max_searches or settings.food_delivery_max_searches,
         "user_location": {"type": "approximate", "country": country_code,
                           "city": city},
     }
@@ -280,3 +283,193 @@ def fetch_food_delivery(city: str, country_code: str,
         clean.append(entry)
     note = (data.get("note") or "").strip() if isinstance(data.get("note"), str) else ""
     return {FOOD_DELIVERY_FACT_TYPE: {"platforms": clean, "note": note}}, meta
+
+
+# ── Complétion des fiches de service : tel / site / horaires (V2-07 volet 2) ──
+#
+# On COMPLÈTE (jamais on n'écrase) les fiches RETENUES (approved/edited), avec
+# preuve. Deux périmètres de champs par catégorie :
+#   - téléphone + site : l'action principale est APPELER (taxi, médecin,
+#     vétérinaire, pharmacie, police, location, baby-sitting) ;
+#   - horaires + site : ils conditionnent la visite (supérette, centre commercial,
+#     boulangerie, laverie, poste, pharmacie).
+# EXCLUS volontairement : restaurant/bar (horaires trop volatils — le risque
+# d'info fausse dépasse le gain) et market (porté par weekday/weekday_note, V2-33).
+SERVICE_PHONE_CATEGORIES = ("taxi", "doctor", "veterinary", "pharmacy",
+                            "police", "rental", "babysitter")
+SERVICE_HOURS_CATEGORIES = ("supermarket", "mall", "bakery", "laundry",
+                            "post_office", "pharmacy")
+# Catégories dont on complète au moins un champ (union, ordre stable).
+SERVICE_COMPLETE_CATEGORIES = tuple(dict.fromkeys(
+    SERVICE_PHONE_CATEGORIES + SERVICE_HOURS_CATEGORIES))
+# Champs complétables tout court (garde-fou : on n'écrit jamais ailleurs).
+_SERVICE_FIELDS = ("phone", "website", "opening_hours")
+# Mention accolée aux horaires (donnée périssable — précédent des notes de marché,
+# V2-33). i18n hors périmètre (V2-29) : français, comme weekday_note.
+HOURS_INDICATIVE_SUFFIX = " · Horaires indicatifs"
+# La valeur voyageur d'un taxi/poste est le numéro du CENTRAL de la zone (leçon des
+# taxis Ballarin, 11/08), pas celui d'une borne/parada physique.
+_CENTRAL_PHONE_CATEGORIES = ("taxi", "police")
+
+
+def service_fields(category: str) -> tuple[str, ...]:
+    """Champs du périmètre de complétion pour une catégorie (ordre stable)."""
+    fields: list[str] = []
+    if category in SERVICE_PHONE_CATEGORIES:
+        fields += ["phone", "website"]
+    if category in SERVICE_HOURS_CATEGORIES:
+        fields += ["opening_hours", "website"]
+    return tuple(dict.fromkeys(fields))
+
+
+_FIELD_LABELS = {"phone": "téléphone", "website": "site officiel",
+                 "opening_hours": "horaires"}
+
+_SERVICE_COMPLETE_PROMPT = """\
+Tu complètes des fiches de LIEUX DE SERVICE du guide d'un logement de vacances à
+{city} ({country_code}), catégorie « {category_label} ». Pour CHAQUE lieu listé,
+trouve UNIQUEMENT les champs marqués « manquant », en les VÉRIFIANT par recherche web.
+
+CHAMPS possibles :
+- phone : le numéro de téléphone à composer.{phone_hint}
+- website : le site OFFICIEL de l'établissement (jamais un annuaire tiers).
+- opening_hours : les horaires d'ouverture, en TEXTE COURT lisible
+  (ex. « Lun–Sam 9h–21h, Dim 9h–14h »). N'utilise QUE des horaires publiés
+  RÉCEMMENT (moins d'un an) ; sinon laisse ce champ de côté.
+
+RÈGLES STRICTES :
+- PREUVE OU RIEN : ne renseigne un champ QUE si une page en ligne le confirme
+  (priorité au site officiel de l'enseigne ou à la mairie). Un numéro FAUX est
+  pire qu'absent.
+- N'invente JAMAIS. Un champ non vérifié est simplement OMIS (ne le mets pas).
+- Ne renvoie QUE les champs marqués « manquant » de chaque lieu.
+- Pour chaque lieu, conserve l'URL de preuve (source_url) et la date ({today}).
+
+Lieux (ref — nom — adresse — champs manquants) :
+{poi_list}
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
+{{
+  "<ref>": {{"phone": "...", "website": "...", "opening_hours": "...",
+             "source_url": "https://...", "verified_on": "{today}"}}
+}}
+Omets tout champ non vérifié ; omets une ref entière si tu n'as rien de fiable.
+Une réponse VIDE ({{}}) est acceptable si rien n'est vérifiable.
+"""
+
+
+def complete_service_pois(category: str, category_label: str, pois: list[dict],
+                          city: str, country_code: str,
+                          client: anthropic.Anthropic,
+                          today: str | None = None) -> tuple[dict, dict]:
+    """Complète EN UN LOT (un appel web par catégorie/commune, coût maîtrisé) les
+    fiches incomplètes d'une catégorie. `pois` = [{id, name, address, missing:
+    [champs]}]. Retourne ({id: {"fields": {champ: valeur}, "source_url", "verified_on"}},
+    méta coût). Seuls les champs du périmètre ET « manquant » de CHAQUE fiche sont
+    retenus, ET seulement avec une preuve (source_url) — « n'invente jamais ». Une
+    réponse malformée lève ValueError (aucune écriture). Les horaires reçoivent la
+    mention « Horaires indicatifs »."""
+    today = today or _dt.date.today().isoformat()
+    perim = service_fields(category)
+    phone_hint = (" Pour un taxi ou un poste, donne le numéro du CENTRAL/standard "
+                  "de la zone, jamais celui d'une borne physique."
+                  if category in _CENTRAL_PHONE_CATEGORIES else "")
+    lines = []
+    for p in pois:
+        miss = ", ".join(_FIELD_LABELS.get(f, f) for f in p.get("missing", []))
+        addr = (p.get("address") or "").strip() or "adresse inconnue"
+        lines.append(f'- {p["id"]} — {p["name"]} — {addr} — manquant : {miss}')
+    prompt = _SERVICE_COMPLETE_PROMPT.format(
+        city=city, country_code=country_code, category_label=category_label,
+        phone_hint=phone_hint, today=today, poi_list="\n".join(lines))
+    data, meta = _ask_web_search_json(
+        client, prompt, city=city, country_code=country_code,
+        max_searches=settings.service_complete_max_searches)
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    missing_by_ref = {str(p["id"]): set(p.get("missing", [])) for p in pois}
+    out: dict[str, dict] = {}
+    for ref, entry in data.items():
+        ref = str(ref)
+        if not isinstance(entry, dict) or ref not in missing_by_ref:
+            continue
+        source_url = (entry.get("source_url") or "").strip()
+        verified = (entry.get("verified_on") or "").strip() or today
+        if not source_url:
+            continue  # preuve ou rien
+        fields: dict[str, str] = {}
+        for f in perim:
+            if f not in missing_by_ref[ref]:
+                continue
+            val = entry.get(f)
+            if not isinstance(val, str) or not val.strip():
+                continue
+            val = val.strip()
+            if f == "opening_hours":
+                val = val + HOURS_INDICATIVE_SUFFIX
+            fields[f] = val
+        if fields:
+            out[ref] = {"fields": fields, "source_url": source_url,
+                        "verified_on": verified}
+    return out, meta
+
+
+# ── Baby-sitting : CRÉATION de fiches par Claude + recherche web (V2-07 volet 2) ─
+
+_BABYSITTER_PROMPT = """\
+Tu cherches des services de BABY-SITTING / GARDE D'ENFANTS crédibles pour des
+vacanciers séjournant à {city} ({country_code}) : agences locales, plateformes
+couvrant la zone, services d'hôtel/conciergerie ouverts au public. Vérifie chacun
+par recherche web.
+
+RÈGLES STRICTES :
+- PREUVE OU RIEN : ne retiens un service QUE si une page en ligne le confirme
+  (site officiel de préférence). Fournis un TÉLÉPHONE quand tu l'as (l'action est
+  d'appeler) et l'URL de preuve.
+- N'invente JAMAIS. Une liste VIDE est un résultat parfaitement valide (si aucune
+  offre identifiable, renvoie une liste vide).
+- Reste sobre : le nom du service, son téléphone si vérifié, son site, la preuve.
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
+{{
+  "services": [
+    {{"name": "...", "phone": "...", "website": "...",
+      "source_url": "https://...", "verified_on": "{today}"}}
+  ]
+}}
+"""
+
+
+def fetch_babysitters(city: str, country_code: str,
+                      client: anthropic.Anthropic,
+                      today: str | None = None) -> tuple[list[dict], dict]:
+    """Services de baby-sitting crédibles de la zone, vérifiés par recherche web
+    (V2-07 volet 2). Retourne (liste de {name, phone?, website?, source_url?,
+    verified_on}, méta coût). **Une liste vide est un résultat valide** (« vide
+    assumé »). Réponse malformée → ValueError (aucune écriture)."""
+    today = today or _dt.date.today().isoformat()
+    data, meta = _ask_web_search_json(
+        client, _BABYSITTER_PROMPT.format(city=city, country_code=country_code,
+                                          today=today),
+        city=city, country_code=country_code,
+        max_searches=settings.babysitter_max_searches)
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    services = data.get("services")
+    if not isinstance(services, list):
+        raise ValueError("Réponse IA invalide : 'services' doit être une liste.")
+    out: list[dict] = []
+    for s in services:
+        if not isinstance(s, dict):
+            continue
+        name = (s.get("name") or "").strip()
+        if not name:
+            continue
+        entry: dict = {"name": name}
+        for f in ("phone", "website", "source_url"):
+            v = (s.get(f) or "").strip() if isinstance(s.get(f), str) else ""
+            if v:
+                entry[f] = v
+        entry["verified_on"] = (s.get("verified_on") or "").strip() or today
+        out.append(entry)
+    return out, meta

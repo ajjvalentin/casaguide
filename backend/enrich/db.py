@@ -143,6 +143,139 @@ def area_fact_fresh(conn, country_code: str, admin_area: str | None,
     return row is not None
 
 
+# ── Complétion des fiches de service (V2-07 volet 2) ─────────────────────────
+
+def category_label_fr(conn, category: str) -> str:
+    """Libellé français d'une catégorie (pour le prompt de complétion)."""
+    row = conn.execute(
+        "SELECT name_i18n FROM poi_categories WHERE code = %s", (category,)
+    ).fetchone()
+    if not row:
+        return category
+    n = row["name_i18n"] or {}
+    return n.get("fr") or n.get("en") or category
+
+
+def pois_needing_completion(conn, property_id: str, category: str,
+                            fields: tuple[str, ...],
+                            max_age_days: int) -> list[dict]:
+    """POI RETENUS (approved/edited) d'une catégorie auxquels il MANQUE au moins un
+    champ du périmètre (`fields` ⊆ {phone, website, opening_hours}), et non revérifiés
+    récemment (marqueur `completion_meta->>'_checked_on'`, cadence propre → jamais de
+    re-appel en boucle). Chaque ligne porte `missing` = les champs NULL du périmètre.
+
+    `fields` est CODE-CONTRÔLÉ (constantes du périmètre) → interpolé sans risque.
+    Ne remonte JAMAIS un POI 'suggested'/'rejected' : la complétion ne vise que ce
+    que le propriétaire a retenu (invariant du volet : compléter, jamais écraser)."""
+    safe = [f for f in fields if f in ("phone", "website", "opening_hours")]
+    if not safe:
+        return []
+    null_clause = " OR ".join(f"{f} IS NULL" for f in safe)
+    rows = conn.execute(
+        f"""SELECT id, name, address, phone, website, opening_hours
+            FROM pois
+            WHERE property_id = %s AND category_code = %s
+              AND status IN ('approved', 'edited')
+              AND ({null_clause})
+              AND (completion_meta->>'_checked_on' IS NULL
+                   OR (completion_meta->>'_checked_on')::date
+                        < (now()::date - make_interval(days => %s)))""",
+        (property_id, category, max_age_days),
+    ).fetchall()
+    out = []
+    for r in rows:
+        missing = [f for f in safe if r[f] is None]
+        if missing:
+            out.append({"id": str(r["id"]), "name": r["name"],
+                        "address": r["address"], "missing": missing})
+    return out
+
+
+def apply_poi_completion(conn, poi_id: str, fields: dict, source_url: str,
+                         verified_on: str, checked_on: str) -> int:
+    """COMPLÈTE un POI retenu : ne remplit que les champs NULL (COALESCE — jamais
+    d'écrasement d'une saisie propriétaire), sans toucher au `status` ni au `source`
+    (ce n'est pas une édition propriétaire). La provenance par champ (source_url +
+    date) et le marqueur `_checked_on` vont dans `completion_meta`. Retourne le
+    nombre de POI modifiés (0 si aucun champ n'était NULL — course bénigne).
+
+    Garde-fou : n'agit QUE sur les POI approved/edited ; `fields` est restreint aux
+    trois colonnes du périmètre."""
+    cols = {f: v for f, v in fields.items()
+            if f in ("phone", "website", "opening_hours")}
+    meta = {f: {"source_url": source_url, "verified_on": verified_on} for f in cols}
+    meta["_checked_on"] = checked_on
+    set_parts = [f"{f} = COALESCE({f}, %({f})s)" for f in cols]
+    set_parts.append("completion_meta = COALESCE(completion_meta, '{}'::jsonb) || %(meta)s")
+    set_parts.append("updated_at = now()")
+    params = dict(cols)
+    params["meta"] = json.dumps(meta)
+    params["pid"] = poi_id
+    cur = conn.execute(
+        f"UPDATE pois SET {', '.join(set_parts)} "
+        "WHERE id = %(pid)s AND status IN ('approved', 'edited')",
+        params,
+    )
+    return cur.rowcount
+
+
+def mark_pois_checked(conn, poi_ids: list[str], checked_on: str) -> None:
+    """Marque des POI retenus « revérifiés le {checked_on} » sans rien remplir
+    (champs restés introuvables) → pas de re-appel avant l'échéance suivante."""
+    if not poi_ids:
+        return
+    conn.execute(
+        """UPDATE pois
+           SET completion_meta = COALESCE(completion_meta, '{}'::jsonb) || %s
+           WHERE id = ANY(%s) AND status IN ('approved', 'edited')""",
+        (json.dumps({"_checked_on": checked_on}), list(poi_ids)),
+    )
+
+
+def insert_service_poi(conn, property_id: str, category: str, name: str,
+                       lat: float, lon: float, *, phone: str | None,
+                       website: str | None, source_ref: str,
+                       completion_meta: dict | None = None) -> int:
+    """Crée un POI de SERVICE issu de Claude+web (baby-sitting, V2-07 volet 2) :
+    `source='claude'`, `status='suggested'` (validation propriétaire comme tout le
+    pipeline). Idempotent par (property_id, source, source_ref) → un ré-enrichissement
+    ne duplique pas ; ne réécrit QUE si la fiche est encore 'suggested' (invariant 1).
+    La position vaut celle du logement (service TÉLÉPHONIQUE, pas une destination) —
+    le propriétaire peut la préciser. Retourne 1 si inséré, 0 si conflit ignoré."""
+    cur = conn.execute(
+        """INSERT INTO pois (property_id, category_code, name, geom, phone, website,
+                             completion_meta, source, source_ref, fetched_at, status)
+           VALUES (%(pid)s, %(cat)s, %(name)s,
+                   ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
+                   %(phone)s, %(website)s, %(meta)s, 'claude', %(ref)s, now(), 'suggested')
+           ON CONFLICT (property_id, source, source_ref) WHERE source_ref IS NOT NULL
+           DO UPDATE SET name = EXCLUDED.name, phone = EXCLUDED.phone,
+                         website = EXCLUDED.website,
+                         completion_meta = EXCLUDED.completion_meta, fetched_at = now()
+           WHERE pois.status = 'suggested'""",
+        {"pid": property_id, "cat": category, "name": name, "lat": lat, "lon": lon,
+         "phone": phone, "website": website,
+         "meta": json.dumps(completion_meta) if completion_meta else None,
+         "ref": source_ref},
+    )
+    return cur.rowcount
+
+
+def recent_operation(conn, property_id: str, operation: str,
+                     max_age_days: int) -> bool:
+    """True si une opération `operation` (api_costs) a été enregistrée pour ce
+    logement dans la fenêtre — sert de mémoire « on a déjà cherché » (baby-sitting :
+    un vide est un résultat valide qu'on ne re-cherche pas à chaque run)."""
+    row = conn.execute(
+        """SELECT 1 FROM api_costs
+           WHERE property_id = %s AND operation = %s
+             AND created_at > now() - make_interval(days => %s)
+           LIMIT 1""",
+        (property_id, operation, max_age_days),
+    ).fetchone()
+    return row is not None
+
+
 # ── Suivi de job et coûts (§5.2) ─────────────────────────────────────────────
 
 def job_start(conn, property_id: str, trigger: str) -> str:

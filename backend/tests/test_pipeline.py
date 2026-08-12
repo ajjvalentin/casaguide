@@ -88,15 +88,41 @@ def _mock_handler(request: httpx.Request) -> httpx.Response:
 
 # ── Bouchon de l'API Claude ──────────────────────────────────────────────────
 
+def _web_reply(text, *, searches=2):
+    """Réponse à surface SDK RÉELLE d'un appel avec recherche web (OPS-1b) : blocs
+    text + `usage.server_tool_use.web_search_requests`."""
+    return SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=text)],
+        stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=1200, output_tokens=200,
+                              server_tool_use=SimpleNamespace(
+                                  web_search_requests=searches)))
+
+
 class FakeMessages:
     # Le bouchon `food_delivery` renvoie une réponse malformée sur demande (test de
-    # rejet sans écriture) et compte ses appels (test de mutualisation).
-    def __init__(self, food_delivery_malformed=False):
+    # rejet sans écriture) et compte ses appels (test de mutualisation). Le bouchon
+    # baby-sitting (V2-07 volet 2) renvoie par défaut un service crédible.
+    def __init__(self, food_delivery_malformed=False, babysitter_services=None,
+                 service_completions=None):
         self.food_delivery_malformed = food_delivery_malformed
         self.food_delivery_calls = 0
+        self.babysitter_services = (
+            [{"name": "Canguros Costa", "phone": "+34 966 000 111",
+              "website": "https://canguroscosta.example",
+              "source_url": "https://canguroscosta.example",
+              "verified_on": "2026-08-11"}]
+            if babysitter_services is None else babysitter_services)
+        self.service_completions = service_completions or {}
 
     def create(self, *, model, max_tokens, messages, tools=None, **kwargs):
         prompt = messages[0]["content"]
+        if "BABY-SITTING" in prompt:  # création baby-sitting (V2-07 volet 2)
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            return _web_reply(json.dumps({"services": self.babysitter_services}))
+        if "LIEUX DE SERVICE" in prompt:  # complétion tel/site/horaires (volet 2)
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            return _web_reply(json.dumps(self.service_completions))
         if '"platforms"' in prompt:  # prompt livraison de repas (recherche web)
             self.food_delivery_calls += 1
             assert tools and tools[0]["type"] == "web_search_20250305"
@@ -104,12 +130,7 @@ class FakeMessages:
                     else json.dumps({"platforms": [
                         {"name": "Glovo", "url": "https://glovoapp.com/es",
                          "verified_on": "2026-08-11"}], "note": ""}))
-            return SimpleNamespace(
-                content=[SimpleNamespace(type="text", text=text)],
-                stop_reason="end_turn",
-                usage=SimpleNamespace(input_tokens=1200, output_tokens=200,
-                                      server_tool_use=SimpleNamespace(
-                                          web_search_requests=2)))
+            return _web_reply(text)
         if "emergency_numbers" in prompt:  # prompt area_facts
             payload = {
                 "emergency_numbers": {"items": [
@@ -133,8 +154,10 @@ class FakeMessages:
 
 
 class FakeAnthropic:
-    def __init__(self, food_delivery_malformed=False):
-        self.messages = FakeMessages(food_delivery_malformed)
+    def __init__(self, food_delivery_malformed=False, babysitter_services=None,
+                 service_completions=None):
+        self.messages = FakeMessages(food_delivery_malformed, babysitter_services,
+                                     service_completions)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -189,13 +212,23 @@ def test_full_pipeline(property_id, http_client):
         assert prop["lat"] == pytest.approx(PROP_LAT)
         assert prop["geocode_accuracy"] == "rooftop"
 
-        # POI en 'suggested', avec distances pré-calculées et traçabilité
+        # POI en 'suggested', avec distances pré-calculées et traçabilité. Les POI
+        # OSM (moisson) sont distincts du baby-sitting créé par Claude (V2-07 volet 2).
         pois = conn.execute(
             "SELECT * FROM pois WHERE property_id=%s ORDER BY name",
             (property_id,)).fetchall()
         assert {p["status"] for p in pois} == {"suggested"}
-        assert all(p["walk_min"] and p["drive_min"] for p in pois)
-        assert all(p["source"] == "osm" and p["source_ref"] for p in pois)
+        osm = [p for p in pois if p["category_code"] != "babysitter"]
+        assert len(osm) == 4
+        assert all(p["walk_min"] and p["drive_min"] for p in osm)
+        assert all(p["source"] == "osm" and p["source_ref"] for p in osm)
+
+        # Baby-sitting CRÉÉ par Claude + recherche web (V2-07 volet 2) : source
+        # 'claude', status 'suggested' (validation propriétaire), téléphone + preuve.
+        sitter = next(p for p in pois if p["category_code"] == "babysitter")
+        assert sitter["source"] == "claude" and sitter["status"] == "suggested"
+        assert sitter["name"] == "Canguros Costa" and sitter["phone"]
+        assert sitter["completion_meta"]["_created"]["source_url"].startswith("http")
 
         # Description IA appliquée au restaurant uniquement
         resto = next(p for p in pois if p["name"] == "La Marejada")
@@ -224,7 +257,9 @@ def test_full_pipeline(property_id, http_client):
         # area_facts + describe_pois + food_delivery (recherche web) comptabilisés
         ops = {r["operation"] for r in conn.execute(
             "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
-        assert ops == {"area_facts", "describe_pois", "food_delivery"}
+        # + baby-sitting (V2-07 volet 2). Pas de 'service_complete' : sur un run
+        # neuf tous les POI sont 'suggested', la complétion ne vise que les retenus.
+        assert ops == {"area_facts", "describe_pois", "food_delivery", "babysitter"}
 
 
 def test_rerun_is_idempotent_and_preserves_owner_choices(property_id, http_client):
@@ -248,6 +283,101 @@ def test_rerun_is_idempotent_and_preserves_owner_choices(property_id, http_clien
         merca = next(p for p in pois if p["name"] == "Mercadona")
         assert merca["status"] == "approved"          # choix conservé
         assert merca["owner_comment"] == "Le plus pratique"
+
+
+# ── V2-07 volet 2 : complétion des fiches de service (tel/site/horaires) ──────
+
+def test_service_completion_fills_kept_pois_and_never_overwrites(property_id, http_client):
+    """Complète (avec preuve) les fiches RETENUES : Lidl (approved, sans horaires)
+    gagne des horaires sourcés + mention « Horaires indicatifs » ; son site saisi
+    PAR LE PROPRIÉTAIRE n'est jamais écrasé (il n'est même pas demandé) ; Mercadona
+    resté 'suggested' n'est JAMAIS touché ; ni le status ni le source ne changent."""
+    pipeline.run(property_id, use_claude=False, only_categories={"supermarket"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        # Le propriétaire retient Lidl (sans horaires) et lui saisit un SITE.
+        conn.execute("""UPDATE pois SET status='approved',
+                        website='https://owner-lidl.example'
+                        WHERE property_id=%s AND name='Lidl'""", (property_id,))
+        conn.commit()
+        lidl = conn.execute("SELECT id FROM pois WHERE property_id=%s AND name='Lidl'",
+                            (property_id,)).fetchone()
+        lidl_id = str(lidl["id"])
+
+    # La recherche web « renvoie » des horaires ET un site pour Lidl — mais le site
+    # ne sera pas demandé (déjà saisi) donc jamais retenu.
+    completions = {lidl_id: {
+        "opening_hours": "Lun–Sam 8h–22h",
+        "website": "https://claude-lidl.example",   # doit être ignoré (site saisi)
+        "source_url": "https://lidl.es/tiendas/orihuela", "verified_on": "2026-08-12"}}
+    pipeline.run(property_id, use_claude=True, only_categories={"supermarket"},
+                 http_client=http_client,
+                 anthropic_client=FakeAnthropic(service_completions=completions))
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        lidl = conn.execute("SELECT * FROM pois WHERE id=%s", (lidl_id,)).fetchone()
+        # Horaires complétés + mention (donnée périssable).
+        assert lidl["opening_hours"] == "Lun–Sam 8h–22h · Horaires indicatifs"
+        # Site du PROPRIÉTAIRE intact (jamais écrasé, ni même demandé).
+        assert lidl["website"] == "https://owner-lidl.example"
+        # Status/source inchangés : la complétion n'est pas une édition propriétaire.
+        assert lidl["status"] == "approved" and lidl["source"] == "osm"
+        # Provenance traçable par champ + marqueur de re-vérification.
+        meta = lidl["completion_meta"]
+        assert meta["opening_hours"]["source_url"].startswith("https://")
+        assert meta["opening_hours"]["verified_on"] == "2026-08-12"
+        assert meta["_checked_on"]
+
+        # Mercadona resté 'suggested' n'est jamais touché par la complétion.
+        merca = conn.execute("SELECT * FROM pois WHERE property_id=%s AND name='Mercadona'",
+                             (property_id,)).fetchone()
+        assert merca["status"] == "suggested" and merca["completion_meta"] is None
+
+        # Coût comptabilisé sous une opération dédiée (unités web incluses).
+        ops = {r["operation"] for r in conn.execute(
+            "SELECT operation FROM api_costs WHERE property_id=%s", (property_id,))}
+        assert "service_complete" in ops
+
+
+def test_apply_completion_never_overwrites_and_guards_status(property_id):
+    """Garde-fou unitaire de `db.apply_poi_completion` : COALESCE (jamais d'écrasement)
+    et refus des POI non retenus (suggested/rejected)."""
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        # POI approuvé avec un téléphone DÉJÀ saisi + une catégorie du périmètre.
+        appr = conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom, phone,
+                                 source, source_ref, status)
+               VALUES (%s, 'taxi', 'Taxi A',
+                       ST_SetSRID(ST_MakePoint(-0.7, 37.9), 4326),
+                       '+34 111', 'osm', 'n1', 'approved') RETURNING id""",
+            (property_id,)).fetchone()
+        sugg = conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom,
+                                 source, source_ref, status)
+               VALUES (%s, 'taxi', 'Taxi B',
+                       ST_SetSRID(ST_MakePoint(-0.7, 37.9), 4326),
+                       'osm', 'n2', 'suggested') RETURNING id""",
+            (property_id,)).fetchone()
+        conn.commit()
+
+        # Tente d'écraser le téléphone d'un POI approuvé → COALESCE le protège.
+        n = db.apply_poi_completion(conn, str(appr["id"]),
+                                    {"phone": "+34 999"}, "https://x", "2026-08-12",
+                                    "2026-08-12")
+        # Une fiche 'suggested' n'est jamais complétée (garde de status).
+        n2 = db.apply_poi_completion(conn, str(sugg["id"]),
+                                     {"phone": "+34 888"}, "https://x", "2026-08-12",
+                                     "2026-08-12")
+        conn.commit()
+        assert n == 1 and n2 == 0
+        got = conn.execute("SELECT phone, completion_meta FROM pois WHERE id=%s",
+                           (appr["id"],)).fetchone()
+        assert got["phone"] == "+34 111"                 # jamais écrasé
+        assert got["completion_meta"]["_checked_on"]     # provenance/marqueur posés
+        got2 = conn.execute("SELECT phone FROM pois WHERE id=%s",
+                            (sugg["id"],)).fetchone()
+        assert got2["phone"] is None                     # 'suggested' intact
 
 
 # ── M-18 : fiabilisation de la moisson (ré-essai + timeout aéroport) ──────────

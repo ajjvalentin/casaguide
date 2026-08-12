@@ -67,12 +67,14 @@ CATEGORY_SELECTORS: dict[str, list[str]] = {
     code: [f'"{k}"="{v}"' for k, v in tags] for code, tags in CATEGORY_TAGS.items()
 }
 
-# Catégories sans tags OSM exploitables. `food_delivery` a quitté cette liste morte
-# (V2-07 volet 1) : elle a désormais un vrai traitement — plateformes résolues PAR
-# ZONE via Claude + recherche web, stockées en area_facts (fact_type='food_delivery').
-# `babysitter` y reste (volet 2). NB : `food_delivery` n'a de toute façon aucun tag
-# dans CATEGORY_TAGS, donc l'Overpass la saute encore par la 2ᵉ condition.
-CLAUDE_ONLY_CATEGORIES = {"babysitter"}
+# Catégories sans tags OSM exploitables, traitées AILLEURS. La liste est désormais
+# VIDE (V2-07) : `food_delivery` (volet 1) est résolue par zone (Claude + recherche
+# web → area_facts) et `babysitter` (volet 2) est CRÉÉE par Claude + recherche web
+# (`claude_enrich.fetch_babysitters`, POI source='claude'). Aucune des deux n'a de
+# tag dans CATEGORY_TAGS → l'Overpass les saute de toute façon par la 2ᵉ condition
+# (`code not in CATEGORY_TAGS`). On garde le nom (référencé par le pipeline) comme
+# ensemble vide plutôt que de disperser des `if` : le contrat reste lisible.
+CLAUDE_ONLY_CATEGORIES: set[str] = set()
 
 # Paliers de rayon (m) : chaque catégorie est requêtée au plus petit palier
 # >= à son rayon du seed, puis re-filtrée à son rayon exact. Regrouper par palier

@@ -551,6 +551,7 @@ psql -d casaguide -f db/migrations/026_booking_dates_override.sql # dates ajust�
 psql -d casaguide -f db/migrations/027_help_searches.sql # journal des recherches d'aide (santé de l'index) (V2-31 volet 3a)
 psql -d casaguide -f db/migrations/028_guide_send_whatsapp_assisted.sql # origine d'envoi 'whatsapp_assisted' (J-7 assisté WhatsApp, V2-32 volet 1)
 psql -d casaguide -f db/migrations/029_poi_weekday.sql # jour du marché : pois.weekday + weekday_note (+ backfill des marchés préfixés) (V2-33 volet 1)
+psql -d casaguide -f db/migrations/030_poi_completion_meta.sql # provenance de la complétion auto des fiches de service (pois.completion_meta) (V2-07 volet 2)
 
 # Backend
 cd backend
@@ -934,6 +935,39 @@ exposé, peer auth).
   la **surface réelle** du SDK web_search (blocs `server_tool_use`/`web_search_tool_
   result` + `usage.server_tool_use.web_search_requests`, `stop_reason` `pause_turn`) —
   leçon OPS-1b.
+- **Complétion des fiches de service (V2-07 volet 2)** : tel/site (catégories où
+  l'action est APPELER : `taxi`/`doctor`/`veterinary`/`pharmacy`/`police`/`rental`/
+  `babysitter`) et horaires+site (où ils conditionnent la visite : `supermarket`/`mall`/
+  `bakery`/`laundry`/`post_office`/`pharmacy`) sont complétés par Claude + recherche web
+  AVEC PREUVE (`claude_enrich.complete_service_pois`, périmètre par catégorie via
+  `service_fields`). **Compléter, jamais écraser** : seules les fiches **retenues**
+  (`approved`/`edited`) et seulement leurs champs **NULL** sont visées
+  (`db.pois_needing_completion` filtre `status IN ('approved','edited')` + au moins un
+  champ NULL ; `db.apply_poi_completion` remplit en **COALESCE** — une valeur du
+  propriétaire n'est même pas demandée — et garde `WHERE status IN ('approved','edited')`).
+  La complétion **ne change ni `status` ni `source`** (ce n'est pas une édition
+  propriétaire) : la **provenance** vit dans `pois.completion_meta` JSONB (migration 030),
+  par champ (`{source_url, verified_on}`) + un marqueur `_checked_on` (dernière tentative,
+  même infructueuse → jamais de re-appel en boucle sur un champ introuvable ; cadence
+  `service_complete_max_age_days`). **Preuve ou rien** (même contrat que le volet 1) :
+  une entrée sans `source_url` est écartée, JSON malformé → ValueError (aucune écriture),
+  vide accepté. Les **horaires** (donnée périssable) reçoivent la mention
+  `HOURS_INDICATIVE_SUFFIX` (« · Horaires indicatifs », précédent des notes de marché,
+  i18n hors périmètre V2-29) et jamais de source de plus d'un an (consigne du prompt).
+  **Coût MAÎTRISÉ** (point central) : **un appel web par catégorie/commune** (les N fiches
+  incomplètes en un lot, jamais un appel par POI), plafond `service_complete_max_searches`,
+  et le filtre NULL+`_checked_on` réduit le lot. **Baby-sitting** : `fetch_babysitters`
+  **crée** des POI (`db.insert_service_poi`, `source='claude'`, `status='suggested'` →
+  validation propriétaire ; position = celle du logement, service TÉLÉPHONIQUE ; idempotent
+  par `source_ref='claude:babysitter:<slug>'`), vide assumé, cadence propre par logement
+  (`db.recent_operation('babysitter', …)` — mémoire via `api_costs`, un vide n'est pas
+  re-cherché). `babysitter` a **quitté** `CLAUDE_ONLY_CATEGORIES` (désormais **vide** — les
+  deux catégories claude-only sont traitées ailleurs). Étapes best-effort SAVEPOINT dans le
+  pipeline (4c/4d), `api_costs` (`operation='service_complete'`/`'babysitter'`, unités web
+  incluses). NB : sur un run NEUF tous les POI sont `suggested` → 4c ne fait rien (elle vise
+  les retenus) ; la complétion opère au **ré-enrichissement**, après arbitrage. Migration 030
+  = `ADD COLUMN IF NOT EXISTS completion_meta JSONB` (idempotente, DEFAULT NULL, aucun
+  backfill). Mocks : surface web_search réelle (OPS-1b).
 - L'upsert des POI exige la migration 001 (ON CONFLICT sur index partiel :
   la clause `WHERE source_ref IS NOT NULL` doit être répétée dans la requête).
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer
