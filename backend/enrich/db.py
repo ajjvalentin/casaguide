@@ -392,6 +392,16 @@ def record_cost(conn, property_id: str, job_id: str, provider: str,
     )
 
 
+def record_costs(conn, property_id: str, job_id: str, provider: str,
+                 operation: str, attempts: list[dict]) -> None:
+    """Une ligne `api_costs` PAR essai d'appel (V2-07 volet 3bis) : un appel
+    web_search régénéré après JSON invalide a été PAYÉ deux fois — l'argent est
+    dépensé à la réponse, pas au succès. `attempts` = [{units, cost_cts}, …]."""
+    for c in attempts or []:
+        record_cost(conn, property_id, job_id, provider, operation,
+                    c["units"], c["cost_cts"])
+
+
 # ── Traductions du guide voyageur (M-09, §9) ─────────────────────────────────
 # Lectures/écritures utilisées par le pipeline de traduction (tâche de fond,
 # connexion propre). Ne concernent QUE les sections voyageur (audience='guest')

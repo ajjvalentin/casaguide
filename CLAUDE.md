@@ -1037,6 +1037,29 @@ exposé, peer auth).
   progression (OPS-4). **Aucune migration** (réutilise `weekday`/`weekday_note` de la
   029, `completion_meta` de la 030). Contenu FR (traductions par le circuit existant,
   relancées par André après validation). Mocks : surface web_search réelle (OPS-1b).
+- **Robustesse de `_ask_web_search_json` (V2-07 volet 3bis)** : constat prod 12/08 —
+  `fetch_markets` a échoué sur un JSON long **tronqué** (`Expecting ',' delimiter`),
+  zéro écriture (garde-fou OK) mais **un seul essai** et **coût non enregistré** (il ne
+  l'était qu'au succès). Correctifs, au **motif commun** (tous les volets en héritent) :
+  (1) **max_tokens** — l'appel marchés relève son plafond de SORTIE (`market_max_tokens`
+  8000 ; défaut 2000 tronquait une commune riche) ; le `stop_reason` du dernier essai est
+  **journalisé dans l'erreur** (`WebSearchJSONError`, `stop_reason=max_tokens` = smoking
+  gun). (2) **Retry borné** — sur JSON invalide, la réponse est **RÉGÉNÉRÉE une fois**
+  (jamais un re-parse ; `web_search_max_attempts`=2) : `_one_web_call` = un appel logique
+  (boucle `pause_turn` incluse), `_ask_web_search_json` boucle dessus. (3) **Comptabilité
+  à la réponse, pas au succès** — chaque essai porte son coût (`meta["attempts"]`, liste) ;
+  `db.record_costs` écrit **une ligne `api_costs` PAR essai**. Sur ÉCHEC de parsing,
+  `WebSearchJSONError` (sous-classe `ValueError` → gardes best-effort inchangées) **porte
+  les coûts** ; `pipeline._record_web_failure_cost` les comptabilise dans le `except`,
+  **APRÈS le rollback du SAVEPOINT** (donc sur la transaction principale, `conn.commit()`)
+  → **coût enregistré, zéro donnée écrite**. Corollaire assumé : un `food_delivery`/
+  `markets` malformé enregistre désormais **2 lignes** `api_costs` (essai + retry), area_fact
+  toujours non écrit. NB : les échecs de validation **structurelle** APRÈS parsing réussi
+  (`'platforms' doit être une liste`) restent un `ValueError` nu sans coût porté — hors
+  périmètre (le parsing avait réussi). Couvert par `test_markets.py` (troncature→erreur
+  mentionne max_tokens, retry 1er malformé+2e valide→2 coûts, succès=1 essai) et
+  `test_pipeline.py` (double malformé marchés→0 écriture+2 coûts ; food_delivery malformé
+  →2 coûts, area_fact non écrit).
 - L'upsert des POI exige la migration 001 (ON CONFLICT sur index partiel :
   la clause `WHERE source_ref IS NOT NULL` doit être répétée dans la requête).
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer

@@ -100,6 +100,13 @@ class Settings:
         os.getenv("CASAGUIDE_MARKET_MAX_AGE_DAYS", "90"))
     market_max_searches: int = int(
         os.getenv("CASAGUIDE_MARKET_MAX_SEARCHES", "6"))
+    # Plafond de SORTIE relevé pour les marchés (V2-07 volet 3bis) : une commune
+    # riche = réponse JSON longue ; 2000 (défaut) la tronquait (stop_reason=max_tokens).
+    market_max_tokens: int = int(os.getenv("CASAGUIDE_MARKET_MAX_TOKENS", "8000"))
+    # Retry BORNÉ des appels web_search sur JSON invalide (réponse RÉGÉNÉRÉE, pas
+    # re-parsée) — motif commun, hérité par tous les volets. 2 = un seul retry.
+    web_search_max_attempts: int = int(
+        os.getenv("CASAGUIDE_WEB_SEARCH_ATTEMPTS", "2"))
 
     # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial)
     describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity", "market")

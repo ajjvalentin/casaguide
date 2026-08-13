@@ -205,28 +205,30 @@ def _parse_strict_json(text: str) -> dict:
         raise
 
 
-def _ask_web_search_json(client: anthropic.Anthropic, prompt: str, *,
-                         city: str, country_code: str,
-                         max_searches: int | None = None) -> tuple[dict, dict]:
-    """Appel Claude AVEC l'outil de recherche web de l'API Anthropic → (données
-    JSON, méta {units, cost_cts, web_searches}). La recherche web tourne côté
-    serveur ; un `pause_turn` est relancé (boucle bornée). Les unités de recherche
-    web sont comptabilisées dans le coût (10 $ / 1000 requêtes). `max_searches`
-    plafonne le nombre de recherches web de CET appel (coût maîtrisé) ; défaut =
-    plafond de la livraison de repas (volet 1)."""
-    tool = {
-        "type": "web_search_20250305", "name": "web_search",
-        "max_uses": max_searches or settings.food_delivery_max_searches,
-        "user_location": {"type": "approximate", "country": country_code,
-                          "city": city},
-    }
+class WebSearchJSONError(ValueError):
+    """Réponse d'un appel web_search NON parsable en JSON, après retry (V2-07
+    volet 3bis). Sous-classe `ValueError` → les gardes best-effort existantes
+    (`except ValueError`/`Exception`) la rattrapent inchangées. Porte le coût de
+    CHAQUE essai (`attempts`) — l'argent est dépensé à la réponse, pas au succès,
+    donc l'appelant DOIT le comptabiliser malgré l'échec — et le `stop_reason` du
+    dernier essai (`max_tokens` = troncature : le plafond de sortie est en cause)."""
+
+    def __init__(self, message: str, attempts: list[dict], stop_reason: str | None):
+        super().__init__(message)
+        self.attempts = attempts
+        self.stop_reason = stop_reason
+
+
+def _one_web_call(client: anthropic.Anthropic, prompt: str, tool: dict,
+                  max_tokens: int) -> tuple[str, dict, str | None]:
+    """UN appel logique (boucle de `pause_turn` incluse) → (texte final, coût de
+    l'appel {units, cost_cts, web_searches}, stop_reason du dernier tour)."""
     messages = [{"role": "user", "content": prompt}]
     inp = out = searches = 0
     final = None
     for _ in range(_MAX_WEB_SEARCH_TURNS):
         msg = client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=settings.anthropic_max_tokens,
+            model=settings.anthropic_model, max_tokens=max_tokens,
             messages=messages, tools=[tool])
         usage = msg.usage
         inp += getattr(usage, "input_tokens", 0) or 0
@@ -239,16 +241,59 @@ def _ask_web_search_json(client: anthropic.Anthropic, prompt: str, *,
             messages = messages + [{"role": "assistant", "content": msg.content}]
             continue
         break
-    data = _parse_strict_json(_extract_text(final.content))
     inp_p, out_p = settings.model_prices_usd.get(settings.anthropic_model, (3.0, 15.0))
     usd = (inp / 1e6 * inp_p + out / 1e6 * out_p
            + searches * _WEB_SEARCH_USD_PER_REQUEST)
-    meta = {
-        "units": inp + out + searches,   # unités web_search incluses
-        "cost_cts": round(usd * settings.usd_to_eur * 100, 4),
-        "web_searches": searches,
+    cost = {"units": inp + out + searches,
+            "cost_cts": round(usd * settings.usd_to_eur * 100, 4),
+            "web_searches": searches}
+    return (_extract_text(final.content), cost,
+            getattr(final, "stop_reason", None))
+
+
+def _ask_web_search_json(client: anthropic.Anthropic, prompt: str, *,
+                         city: str, country_code: str,
+                         max_searches: int | None = None,
+                         max_tokens: int | None = None) -> tuple[dict, dict]:
+    """Appel Claude AVEC l'outil de recherche web → (données JSON, méta {units,
+    cost_cts, web_searches, **attempts**}). `attempts` = coût de CHAQUE essai (retry
+    V2-07 volet 3bis compris) → l'appelant en comptabilise une ligne par essai.
+
+    `max_searches` plafonne les recherches web (coût maîtrisé) ; `max_tokens`
+    surcharge le plafond de SORTIE (marchés : réponse longue). Sur JSON invalide, on
+    **régénère UNE fois** la réponse (pas un re-parse de la même — bornée par
+    `web_search_max_attempts`) ; l'échec final lève `WebSearchJSONError` PORTANT le
+    coût de chaque essai et le `stop_reason` (troncature `max_tokens` = smoking gun)."""
+    tool = {
+        "type": "web_search_20250305", "name": "web_search",
+        "max_uses": max_searches or settings.food_delivery_max_searches,
+        "user_location": {"type": "approximate", "country": country_code,
+                          "city": city},
     }
-    return data, meta
+    mt = max_tokens or settings.anthropic_max_tokens
+    attempts: list[dict] = []
+    last_stop: str | None = None
+    for attempt in range(1, settings.web_search_max_attempts + 1):
+        text, cost, stop_reason = _one_web_call(client, prompt, tool, mt)
+        attempts.append(cost)
+        last_stop = stop_reason
+        try:
+            data = _parse_strict_json(text)
+        except ValueError:
+            if attempt < settings.web_search_max_attempts:
+                continue  # réponse RÉGÉNÉRÉE au tour suivant (jamais un re-parse)
+            raise WebSearchJSONError(
+                f"Réponse web_search non parsable après {attempt} essai(s) "
+                f"(stop_reason={stop_reason})", attempts=attempts,
+                stop_reason=stop_reason)
+        meta = {
+            "units": sum(c["units"] for c in attempts),
+            "cost_cts": round(sum(c["cost_cts"] for c in attempts), 4),
+            "web_searches": sum(c["web_searches"] for c in attempts),
+            "attempts": attempts,
+            "stop_reason": last_stop,
+        }
+        return data, meta
 
 
 def fetch_food_delivery(city: str, country_code: str,
@@ -580,7 +625,10 @@ def fetch_markets(city: str, country_code: str, client: anthropic.Anthropic,
         client, _MARKET_PROMPT.format(city=city, country_code=country_code,
                                       today=today),
         city=city, country_code=country_code,
-        max_searches=settings.market_max_searches)
+        max_searches=settings.market_max_searches,
+        # Une commune riche peut compter des dizaines de marchés → réponse LONGUE :
+        # plafond de sortie relevé pour éviter la troncature (constat prod 12/08).
+        max_tokens=settings.market_max_tokens)
     if not isinstance(data, dict):
         raise ValueError("Réponse IA invalide : objet JSON attendu.")
     markets = data.get("markets")

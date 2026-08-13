@@ -104,8 +104,9 @@ class FakeMessages:
     # rejet sans écriture) et compte ses appels (test de mutualisation). Le bouchon
     # baby-sitting (V2-07 volet 2) renvoie par défaut un service crédible.
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
-                 service_completions=None, markets=None):
+                 service_completions=None, markets=None, markets_malformed=False):
         self.food_delivery_malformed = food_delivery_malformed
+        self.markets_malformed = markets_malformed
         self.food_delivery_calls = 0
         self.market_calls = 0
         self.babysitter_services = (
@@ -131,6 +132,8 @@ class FakeMessages:
         if "MARCHÉS HEBDOMADAIRES" in prompt:  # découverte marchés (V2-07 volet 3)
             self.market_calls += 1
             assert tools and tools[0]["type"] == "web_search_20250305"
+            if self.markets_malformed:            # JSON tronqué/malformé (volet 3bis)
+                return _web_reply("désolé, réponse tronquée…")
             return _web_reply(json.dumps({"markets": self.markets}))
         if "LIEUX DE SERVICE" in prompt:  # complétion tel/site/horaires (volet 2)
             assert tools and tools[0]["type"] == "web_search_20250305"
@@ -167,9 +170,9 @@ class FakeMessages:
 
 class FakeAnthropic:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
-                 service_completions=None, markets=None):
+                 service_completions=None, markets=None, markets_malformed=False):
         self.messages = FakeMessages(food_delivery_malformed, babysitter_services,
-                                     service_completions, markets)
+                                     service_completions, markets, markets_malformed)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -519,6 +522,33 @@ def test_market_discovery_is_mutualised_per_commune(property_id, http_client):
             conn.commit()
 
 
+def test_markets_double_malformed_counts_two_costs_and_writes_nothing(property_id,
+                                                                      http_client):
+    """V2-07 volet 3bis : deux essais malformés → ZÉRO écriture (ni area_fact ni POI)
+    mais DEUX coûts comptabilisés (l'argent est dépensé à la réponse, pas au succès) ;
+    l'étape marchés est journalisée en échec, le job reste 'done'."""
+    result = pipeline.run(property_id, use_claude=True, only_categories={"supermarket"},
+                          http_client=http_client,
+                          anthropic_client=FakeAnthropic(markets_malformed=True))
+    assert result["markets_created"] == 0
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        n = conn.execute("SELECT count(*) c FROM pois WHERE property_id=%s "
+                         "AND category_code='market'", (property_id,)).fetchone()["c"]
+        assert n == 0                                    # aucune donnée écrite
+        mk_fact = conn.execute(
+            "SELECT 1 FROM area_facts WHERE country_code='ES' "
+            "AND admin_area='Orihuela Costa' AND fact_type='markets'").fetchone()
+        assert mk_fact is None                           # pas d'area_fact non plus
+        mk_costs = conn.execute(
+            "SELECT count(*) c FROM api_costs WHERE job_id=%s AND operation='markets'",
+            (result["job_id"],)).fetchone()["c"]
+        assert mk_costs == 2                             # essai + retry, tous deux payés
+        job = conn.execute("SELECT status, steps FROM enrichment_jobs WHERE id=%s",
+                           (result["job_id"],)).fetchone()
+        assert job["status"] == "done"
+        assert job["steps"]["markets"]["ok"] is False and "cost_cts" in job["steps"]["markets"]
+
+
 # ── M-18 : fiabilisation de la moisson (ré-essai + timeout aéroport) ──────────
 
 from enrich import overpass  # noqa: E402
@@ -806,9 +836,10 @@ def test_food_delivery_shared_across_properties_same_commune(http_client):
 
 
 def test_food_delivery_malformed_rejected_without_write(property_id, http_client):
-    """JSON malformé → rejeté SANS écriture, et le job réussit quand même (best-
-    effort : le reste de l'enrichissement est acquis). Les 3 area_facts historiques
-    restent intacts ; aucun coût 'food_delivery' n'est comptabilisé."""
+    """JSON malformé → rejeté SANS écriture de données, et le job réussit quand même
+    (best-effort). MAIS le coût des essais est comptabilisé (V2-07 volet 3bis : l'argent
+    est dépensé à la réponse) : DEUX lignes 'food_delivery' (essai + retry régénéré),
+    tandis qu'AUCUN area_fact 'food_delivery' n'est écrit."""
     result = pipeline.run(
         property_id, use_claude=True, trigger="initial",
         only_categories={"supermarket"}, http_client=http_client,
@@ -817,12 +848,13 @@ def test_food_delivery_malformed_rejected_without_write(property_id, http_client
         job = conn.execute("SELECT status, steps FROM enrichment_jobs WHERE id=%s",
                            (result["job_id"],)).fetchone()
         assert job["status"] == "done" and job["steps"]["claude"]["ok"]
+        assert job["steps"]["food_delivery"]["ok"] is False   # étape en échec, journalisée
         facts = {r["fact_type"] for r in conn.execute(
             "SELECT fact_type FROM area_facts WHERE country_code='ES' "
             "AND admin_area='Orihuela Costa'")}
-        # 'markets' présent (découverte mutualisée, non affectée par le malformé
-        # livraison) ; PAS de 'food_delivery' (malformé → rejeté sans écriture).
+        # 'markets' présent (mutualisé) ; PAS de 'food_delivery' (rejeté sans écriture).
         assert facts == {"emergency_numbers", "waste_rules", "noise_rules", "markets"}
-        ops = {r["operation"] for r in conn.execute(
-            "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
-        assert "food_delivery" not in ops
+        fd_costs = conn.execute(
+            "SELECT count(*) c FROM api_costs WHERE job_id=%s AND operation='food_delivery'",
+            (result["job_id"],)).fetchone()["c"]
+        assert fd_costs == 2                                   # essai + retry, tous deux payés

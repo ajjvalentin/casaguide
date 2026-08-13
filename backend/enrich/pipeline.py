@@ -48,6 +48,18 @@ def _progress(msg: str) -> None:
     log.info(msg)
 
 
+def _record_web_failure_cost(conn, property_id: str, job_id: str, operation: str,
+                             exc: Exception) -> float:
+    """Comptabilise le coût des essais d'un appel web_search qui a ÉCHOUÉ au parsing
+    (V2-07 volet 3bis) : l'argent est dépensé à la réponse, pas au succès. À appeler
+    dans le `except` best-effort, APRÈS le rollback du SAVEPOINT (donc sur la
+    transaction principale : `conn.commit()` par l'appelant). Renvoie le coût total
+    comptabilisé (0 si l'exception ne porte pas de coût — panne réseau, etc.)."""
+    attempts = getattr(exc, "attempts", None) or []
+    db.record_costs(conn, property_id, job_id, "anthropic", operation, attempts)
+    return round(sum(c["cost_cts"] for c in attempts), 4)
+
+
 def _resolve_market_position(market: dict, prop: dict,
                              http_client: httpx.Client | None
                              ) -> tuple[float | None, float | None]:
@@ -222,9 +234,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             db.upsert_area_facts(conn, prop["country_code"],
                                                  prop["city"], fd,
                                                  source=settings.anthropic_model)
-                            db.record_cost(conn, property_id, job_id, "anthropic",
-                                           "food_delivery", meta["units"],
-                                           meta["cost_cts"])
+                            db.record_costs(conn, property_id, job_id, "anthropic",
+                                            "food_delivery", meta["attempts"])
                             summary["cost_cts"] += meta["cost_cts"]
                             db.job_step(conn, job_id, "food_delivery",
                                         {"ok": True, "platforms": n_plat,
@@ -234,8 +245,13 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     except Exception as fd_exc:  # noqa: BLE001 — best-effort
                         log.warning("Livraison de repas (%s) non résolue : %s",
                                     prop["city"], fd_exc)
+                        # Coût des essais PAYÉS malgré l'échec (volet 3bis).
+                        c = _record_web_failure_cost(conn, property_id, job_id,
+                                                     "food_delivery", fd_exc)
+                        summary["cost_cts"] += c
                         db.job_step(conn, job_id, "food_delivery",
-                                    {"ok": False, "error": overpass._short(str(fd_exc))})
+                                    {"ok": False, "error": overpass._short(str(fd_exc)),
+                                     "cost_cts": round(c, 2)})
                         conn.commit()
                         _progress(f"  ⚠ livraison de repas non résolue : "
                                   f"{overpass._short(str(fd_exc))}")
@@ -302,9 +318,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             db.mark_pois_checked(
                                 conn, [p["id"] for p in todo if p["id"] not in filled],
                                 today)
-                            db.record_cost(conn, property_id, job_id, "anthropic",
-                                           "service_complete", meta["units"],
-                                           meta["cost_cts"])
+                            db.record_costs(conn, property_id, job_id, "anthropic",
+                                            "service_complete", meta["attempts"])
                             summary["cost_cts"] += meta["cost_cts"]
                             svc_by_cat[cat] = len(filled)
                             svc_cost += meta["cost_cts"]
@@ -313,6 +328,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     except Exception as sc_exc:  # noqa: BLE001 — best-effort
                         log.warning("Complétion services (%s / %s) non résolue : %s",
                                     cat, prop["city"], sc_exc)
+                        c = _record_web_failure_cost(conn, property_id, job_id,
+                                                     "service_complete", sc_exc)
+                        summary["cost_cts"] += c
+                        svc_cost += c
                         svc_errors[cat] = overpass._short(str(sc_exc))
                         _progress(f"  ⚠ complétion {cat} non résolue : "
                                   f"{overpass._short(str(sc_exc))}")
@@ -348,9 +367,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                                     completion_meta={"_created": {
                                         "source_url": s.get("source_url"),
                                         "verified_on": s.get("verified_on")}})
-                            db.record_cost(conn, property_id, job_id, "anthropic",
-                                           "babysitter", meta["units"],
-                                           meta["cost_cts"])
+                            db.record_costs(conn, property_id, job_id, "anthropic",
+                                            "babysitter", meta["attempts"])
                             summary["cost_cts"] += meta["cost_cts"]
                             summary["babysitters"] = created
                             db.job_step(conn, job_id, "babysitter",
@@ -361,8 +379,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     except Exception as bs_exc:  # noqa: BLE001 — best-effort
                         log.warning("Baby-sitting (%s) non résolu : %s",
                                     prop["city"], bs_exc)
+                        c = _record_web_failure_cost(conn, property_id, job_id,
+                                                     "babysitter", bs_exc)
+                        summary["cost_cts"] += c
                         db.job_step(conn, job_id, "babysitter",
-                                    {"ok": False, "error": overpass._short(str(bs_exc))})
+                                    {"ok": False, "error": overpass._short(str(bs_exc)),
+                                     "cost_cts": round(c, 2)})
                         conn.commit()
                         _progress(f"  ⚠ baby-sitting non résolu : "
                                   f"{overpass._short(str(bs_exc))}")
@@ -383,8 +405,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             db.upsert_area_facts(conn, prop["country_code"],
                                                  prop["city"], mk_fact,
                                                  source=settings.anthropic_model)
-                            db.record_cost(conn, property_id, job_id, "anthropic",
-                                           "markets", meta["units"], meta["cost_cts"])
+                            db.record_costs(conn, property_id, job_id, "anthropic",
+                                            "markets", meta["attempts"])
                             summary["cost_cts"] += meta["cost_cts"]
                             mk_cost = meta["cost_cts"]
                         else:
@@ -440,11 +462,18 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         f"{m_nopos} sans position — {mk_cost:.2f} ct")
                 except Exception as mk_exc:  # noqa: BLE001 — best-effort
                     log.warning("Marchés (%s) non résolus : %s", prop["city"], mk_exc)
+                    # Appel(s) web PAYÉ(S) malgré l'échec de parsing (volet 3bis) : le
+                    # coût est comptabilisé (zéro écriture de données pour autant).
+                    c = _record_web_failure_cost(conn, property_id, job_id,
+                                                 "markets", mk_exc)
+                    summary["cost_cts"] += c
                     db.job_step(conn, job_id, "markets",
-                                {"ok": False, "error": overpass._short(str(mk_exc))})
+                                {"ok": False, "error": overpass._short(str(mk_exc)),
+                                 "cost_cts": round(c, 2)})
                     conn.commit()
                     _progress(f"  ⚠ marchés non résolus : "
-                              f"{overpass._short(str(mk_exc))}")
+                              f"{overpass._short(str(mk_exc))} "
+                              f"({c:.2f} ct comptabilisé)")
 
                 db.job_step(conn, job_id, "claude",
                             {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})

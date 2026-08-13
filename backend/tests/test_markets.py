@@ -19,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from enrich import claude_enrich as ce  # noqa: E402
 
 
-def _web_msg(text, *, searches=2):
+def _web_msg(text, *, searches=2, stop_reason="end_turn"):
     return NS(
-        stop_reason="end_turn",
+        stop_reason=stop_reason,
         content=[
             NS(type="server_tool_use", name="web_search", input={"query": "x"}),
             NS(type="web_search_tool_result",
@@ -160,3 +160,42 @@ def test_dedup_name_prefilter_without_position():
     même sans coordonnées."""
     existing = [_ex("Mercadillo de La Zenia", 6, 37.93, -0.75)]
     assert ce.market_matches_existing("Mercadillo La Zenia", 6, None, None, existing)
+
+
+# ── V2-07 volet 3bis : robustesse de l'appel web_search (retry, coût, troncature) ─
+
+def test_web_search_truncation_error_mentions_stop_reason_max_tokens():
+    """Réponse tronquée (stop_reason='max_tokens') non parsable → l'erreur MENTIONNE
+    max_tokens (smoking gun du plafond de sortie) et porte le coût de CHAQUE essai."""
+    truncated = '{"markets": [{"name": "A", "weekday": 6, "source_url": "http'  # coupé
+    cli = Fake(_web_msg(truncated, searches=2, stop_reason="max_tokens"))
+    try:
+        ce._ask_web_search_json(cli, "prompt", city="X", country_code="ES")
+        assert False, "aurait dû lever WebSearchJSONError"
+    except ce.WebSearchJSONError as e:
+        assert "max_tokens" in str(e)
+        assert e.stop_reason == "max_tokens"
+        assert len(e.attempts) == 2                 # essai + retry, tous deux comptés
+        assert all(a["cost_cts"] >= 0 for a in e.attempts)
+    assert cli.messages.calls == 2                   # la réponse a bien été RÉGÉNÉRÉE
+
+
+def test_web_search_retry_first_malformed_then_valid_counts_both_costs():
+    """1er essai malformé + 2e valide → résultat écrit, DEUX coûts comptés
+    (`meta.attempts`), et l'appel a bien été relancé (calls == 2)."""
+    valid = json.dumps({"markets": []})
+    cli = Fake(_web_msg("pas du JSON", searches=1),
+               _web_msg(valid, searches=3))
+    data, meta = ce._ask_web_search_json(cli, "p", city="X", country_code="ES")
+    assert data == {"markets": []}
+    assert len(meta["attempts"]) == 2
+    assert meta["web_searches"] == 1 + 3             # somme des deux essais
+    assert meta["cost_cts"] == round(sum(a["cost_cts"] for a in meta["attempts"]), 4)
+    assert cli.messages.calls == 2
+
+
+def test_web_search_success_first_try_is_single_attempt():
+    """Un succès du premier coup n'engage qu'UN essai (pas de retry inutile)."""
+    cli = Fake(_web_msg(json.dumps({"markets": []})))
+    _, meta = ce._ask_web_search_json(cli, "p", city="X", country_code="ES")
+    assert len(meta["attempts"]) == 1 and cli.messages.calls == 1
