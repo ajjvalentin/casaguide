@@ -1903,6 +1903,20 @@
     "fr": "Votre logement",
     "key": "ui.home"
   },
+  "ui.hours_closed": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "closed",
+    "es": "cerrado",
+    "fr": "fermé",
+    "key": "ui.hours_closed"
+  },
+  "ui.hours_indicative": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Indicative hours",
+    "es": "Horario orientativo",
+    "fr": "Horaires indicatifs",
+    "key": "ui.hours_indicative"
+  },
   "ui.keybox_code": {
     "context": "Guide voyageur — libellé d'interface",
     "en": "Code",

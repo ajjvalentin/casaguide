@@ -1050,3 +1050,68 @@ def test_food_delivery_tile_localized_label_without_new_i18n_key():
     grid = _grid(guide_page.render_guide(_prop(), [_virtual("E_food_delivery", "E",
                  _FD_SCHEMA, _FD_NAME)], [], _FD_FACT, "tok", lang="es"))
     assert ">Comida a domicilio<" in grid
+
+
+# ── V2-34 : horaires normalisés + mention systématique (au rendu) ────────────
+
+def test_hours_osm_range_localized_fr_en_de():
+    assert guide_page._normalize_hours("Mo-Sa 09:00-21:30", "fr") == "lundi–samedi 09:00–21:30"
+    en = guide_page._normalize_hours("Mo-Sa 09:00-21:30", "en")
+    assert en.startswith("Monday–Saturday") and "AM" in en and "PM" in en   # 12 h en anglais
+    de = guide_page._normalize_hours("Mo-Sa 09:00-21:30", "de")
+    assert de.startswith("Montag–Samstag") and "09:00" in de
+
+
+def test_hours_247_multiranges_and_closed():
+    assert guide_page._normalize_hours("24/7", "fr") == "24/7"
+    assert (guide_page._normalize_hours("Mo-Fr 09:00-13:00,16:00-20:00", "fr")
+            == "lundi–vendredi 09:00–13:00, 16:00–20:00")
+    assert guide_page._normalize_hours("Su off", "en") == "Sunday closed"
+    assert guide_page._normalize_hours("Su off", "fr").endswith("fermé")
+    # Plusieurs règles → jointes par « · ».
+    rules = guide_page._normalize_hours("Mo-Fr 09:00-18:00; Sa 09:00-13:00; Su off", "fr")
+    assert rules == "lundi–vendredi 09:00–18:00 · samedi 09:00–13:00 · dimanche fermé"
+
+
+def test_hours_complex_rule_falls_back_to_raw_never_deformed():
+    """Règle d'or : toute valeur non parsée (PH, prose, saisie libre) reste BRUTE."""
+    for raw in ("Mo-Fr 08:00-18:00; PH off", "Mo-Su sunrise-sunset",
+                "Lun–Sam 9h–21h30, Dim fermé", "sur rendez-vous"):
+        assert guide_page._normalize_hours(raw, "en") == raw
+
+
+def test_hours_render_adds_localized_mention_and_dedupes():
+    fr = guide_page._render_opening_hours("Mo-Sa 09:00-21:30", "fr")
+    assert 'class="hours"' in fr and "lundi–samedi 09:00–21:30" in fr
+    assert "· Horaires indicatifs</div>" in fr
+    en = guide_page._render_opening_hours("Mo-Sa 09:00-21:30", "en")
+    assert "· Indicative hours</div>" in en
+    # Prose héritée du volet 2 : la mention STOCKÉE est dédupliquée (jamais deux).
+    dedup = guide_page._render_opening_hours("Lun–Sam 8h–22h · Horaires indicatifs", "fr")
+    assert dedup.count("Horaires indicatifs") == 1 and "Lun–Sam 8h–22h" in dedup
+    # En anglais : mention localisée, prose héritée restée FR (dette V2-29).
+    dedup_en = guide_page._render_opening_hours("Lun–Sam 8h–22h · Horaires indicatifs", "en")
+    assert "Indicative hours" in dedup_en and "Horaires indicatifs" not in dedup_en
+
+
+def test_hours_empty_renders_nothing():
+    assert guide_page._render_opening_hours(None, "fr") == ""
+    assert guide_page._render_opening_hours("", "fr") == ""
+    # Une mention héritée SEULE (aucun horaire) → ni horaire ni mention.
+    assert guide_page._render_opening_hours(" · Horaires indicatifs", "fr") == ""
+
+
+def _poi_with_hours(name, hours):
+    p = _poi(name, "supermarket", "C")
+    p["opening_hours"] = hours
+    return p
+
+
+def test_hours_rendered_in_poi_card_fr_and_en():
+    """DOM rendu : la carte Consum (OSM brut) devient lisible + mention, FR et EN."""
+    consum = _poi_with_hours("Consum", "Mo-Sa 09:00-21:30")
+    fr = guide_page.render_guide(_prop(), [], [consum], {}, "tok")
+    assert "lundi–samedi 09:00–21:30 · Horaires indicatifs" in fr
+    en = guide_page.render_guide(_prop(), [], [consum], {}, "tok", lang="en")
+    assert "Monday–Saturday" in en and "· Indicative hours</div>" in en
+    assert "Mo-Sa" not in fr and "Mo-Sa" not in en   # plus jamais la syntaxe OSM brute

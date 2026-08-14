@@ -1328,6 +1328,31 @@ exposé, peer auth).
   triées par distance (coup de cœur en tête). `map_data` porte `weekday`/
   `weekday_note` pour l'alignement client. Toute modif de `guide/*` → **bumper
   `sw.js VERSION`** (ici v30 → v31).
+- Horaires au rendu (V2-34) : la donnée `pois.opening_hours` **STOCKÉE ne bouge
+  pas** ; **au rendu SSR** (`guide_page._render_opening_hours`, appelé par
+  `_render_pois`), tout horaire s'affiche en **texte humain localisé** + une mention
+  **« Horaires indicatifs » LOCALISÉE et SYSTÉMATIQUE** (toute source — OSM comme
+  complété IA). Le **normaliseur `_normalize_hours` est PUR** : il parse le
+  sous-ensemble courant de la syntaxe OSM (`Mo-Sa 09:00-21:30`, listes/plages de
+  jours, plages multiples, `off`/`closed`, `24/7`) et rend les **jours par CLDR**
+  (`_weekday_label`, Babel — même source que les badges de marché V2-33, jamais de
+  liste de jours en dur) et l'**heure au format du locale** (`_fmt_time`, Babel
+  `format_time` `short` — l'anglais gagne son AM/PM). **RÈGLE D'OR : jamais dégrader**
+  — toute valeur non parsée (PH, règles complexes, **prose héritée du volet 2**,
+  saisie libre) s'affiche **telle quelle** (un horaire brut vaut mieux qu'un horaire
+  déformé) ; sans Babel, repli brut aussi. La mention stockée par le volet 2
+  (`· Horaires indicatifs`) est **retirée** avant d'apposer la mention localisée
+  (`_STORED_HOURS_MENTION`, **jamais deux**) ; une valeur vide (ou une mention seule)
+  → **ni horaire ni mention**. La mention est un **libellé d'interface, PAS du CLDR** :
+  deux clés `ui.hours_indicative`/`ui.hours_closed` (fr/en/es dans `_UI`, overlay
+  nl/de/it/sq au régime existant, repli FR) **versées à l'inventaire**
+  (`i18n/inventory.json` régénéré, `--check` vert) — **dette i18n consignée à V2-29**
+  comme les `ui.search_*`. **SSR SEUL** : les popups de carte ne rendent PAS
+  `opening_hours` (absent de `map_data`) → **aucun bump SW**. HORS PÉRIMÈTRE (dettes
+  ouvertes) : faire produire de la syntaxe OSM par la complétion du volet 2 (→ V2-35,
+  passe prompts) et traduire les valeurs en prose héritées (→ V2-29). Couvert par
+  `test_guide_page.py` (normaliseur pur fr/en/de, 24/7, multi-plages, `Su off`, règle
+  complexe→brut, prose→brut+mention dédupliquée, vide→rien ; DOM rendu carte fr/en).
 - Régénérer des `area_facts` déjà en base (M-17, prompt resserré) : les faits sont
   **mutualisés** par `(country_code, admin_area)` et sautés par le pipeline tant
   qu'ils sont frais (`db.area_facts_fresh`, < 180 j). Pour forcer une régénération

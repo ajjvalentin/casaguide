@@ -36,8 +36,10 @@ from .poi_icons import category_icon_svg, category_rank
 # donc SSR et client rendent le même mot. Aucune clé i18n, 7 langues gratuites.
 try:
     from babel.dates import format_date as _babel_format_date
+    from babel.dates import format_time as _babel_format_time
 except Exception:  # pragma: no cover — Babel est une dépendance déclarée
     _babel_format_date = None
+    _babel_format_time = None
 # 2024-01-01 est un LUNDI (ISO weekday 1) → jour n = pivot + (n-1) jours.
 _WEEKDAY_PIVOT = _dt.date(2024, 1, 1)
 
@@ -136,6 +138,7 @@ _UI: dict[str, dict[str, str]] = {
         "walk": "min à pied", "drive": "min en voiture",
         "call": "Appeler", "email": "Email", "route": "Itinéraire",
         "website": "Site web", "yes": "Oui", "no": "Non",
+        "hours_indicative": "Horaires indicatifs", "hours_closed": "fermé",
         "license": "Licence touristique", "pdf": "Document PDF",
         "photo": "Photo", "enlarge": "Agrandir la photo",
         "good_to_know": "Bon à savoir sur place", "waste": "Poubelles & tri",
@@ -181,6 +184,7 @@ _UI: dict[str, dict[str, str]] = {
         "walk": "min walk", "drive": "min by car",
         "call": "Call", "email": "Email", "route": "Directions",
         "website": "Website", "yes": "Yes", "no": "No",
+        "hours_indicative": "Indicative hours", "hours_closed": "closed",
         "license": "Tourist licence", "pdf": "PDF document",
         "photo": "Photo", "enlarge": "Enlarge photo",
         "good_to_know": "Good to know", "waste": "Waste & recycling",
@@ -226,6 +230,7 @@ _UI: dict[str, dict[str, str]] = {
         "walk": "min a pie", "drive": "min en coche",
         "call": "Llamar", "email": "Correo", "route": "Cómo llegar",
         "website": "Sitio web", "yes": "Sí", "no": "No",
+        "hours_indicative": "Horario orientativo", "hours_closed": "cerrado",
         "license": "Licencia turística", "pdf": "Documento PDF",
         "photo": "Foto", "enlarge": "Ampliar la foto",
         "good_to_know": "Bueno saber en el lugar", "waste": "Basura y reciclaje",
@@ -353,6 +358,133 @@ def _t(lang: str, key: str) -> str:
     puis au français. Pour FR/EN/ES l'overlay est vide → rendu identique."""
     return (_i18n_mod.overlaid(_i18n_mod.ui_key(key))
             or _UI.get(lang, {}).get(key) or _UI["fr"][key])
+
+
+# ── Horaires : normalisation localisée au rendu (V2-34) ──────────────────────
+# La donnée STOCKÉE ne bouge pas ; au rendu, un horaire s'affiche en texte humain
+# dans la langue du guide (jours par CLDR/Babel — même source que les badges de
+# marché V2-33 — et format d'heure du locale, l'anglais gagnant son AM/PM), suffixé
+# d'une mention « Horaires indicatifs » LOCALISÉE et SYSTÉMATIQUE (toute source).
+# RÈGLE D'OR : jamais dégrader — toute valeur non parsée (règles complexes, PH,
+# prose héritée du volet 2, saisie libre) s'affiche TELLE QUELLE ; un horaire brut
+# vaut mieux qu'un horaire déformé.
+_OSM_DAY_NUM = {"Mo": 1, "Tu": 2, "We": 3, "Th": 4, "Fr": 5, "Sa": 6, "Su": 7}
+_OSM_DAY_TOKEN = re.compile(r"^(Mo|Tu|We|Th|Fr|Sa|Su)(?:-(Mo|Tu|We|Th|Fr|Sa|Su))?$")
+_OSM_TIME_RANGE = re.compile(r"^(\d{1,2}):([0-5]\d)-(\d{1,2}):([0-5]\d)$")
+# Mention stockée par le volet 2 (`claude_enrich.HOURS_INDICATIVE_SUFFIX`) : on la
+# retire de la donnée avant d'apposer la mention localisée (jamais deux mentions).
+_STORED_HOURS_MENTION = re.compile(r"\s*·\s*Horaires indicatifs\s*$")
+
+
+def _parse_day_tokens(spec: str) -> list[int] | None:
+    """« Mo-Sa » / « Mo,We,Fr » / « Mo » → [rangs ISO], ou None si non reconnu."""
+    days: list[int] = []
+    for part in spec.split(","):
+        m = _OSM_DAY_TOKEN.match(part.strip())
+        if not m:
+            return None
+        a = _OSM_DAY_NUM[m.group(1)]
+        b = _OSM_DAY_NUM[m.group(2)] if m.group(2) else a
+        if b < a:
+            return None  # pas de bouclage sur la semaine (rare) → repli brut
+        days.extend(range(a, b + 1))
+    return days
+
+
+def _parse_time_ranges(spec: str) -> list[tuple[int, int, int, int]] | None:
+    """« 09:00-21:30 » / « 09:00-13:00,16:00-20:00 » → [(h,m,h,m)], ou None."""
+    out: list[tuple[int, int, int, int]] = []
+    for part in spec.split(","):
+        m = _OSM_TIME_RANGE.match(part.strip())
+        if not m:
+            return None
+        h1, m1, h2, m2 = (int(m.group(1)), int(m.group(2)),
+                          int(m.group(3)), int(m.group(4)))
+        if h1 > 24 or h2 > 24:
+            return None
+        out.append((h1, m1, h2, m2))
+    return out
+
+
+def _parse_osm_hours(raw: str):
+    """Parse le sous-ensemble courant d'`opening_hours` OSM. Retourne une liste de
+    règles `(jours, plages | None-si-fermé)`, ou None si QUOI QUE CE SOIT n'est pas
+    reconnu (repli brut — jamais un horaire déformé)."""
+    rules = []
+    for rule in raw.split(";"):
+        toks = rule.split()
+        if len(toks) < 2:
+            return None                      # besoin d'un jour + horaires/off
+        days = _parse_day_tokens(toks[0])
+        if days is None:
+            return None
+        rest = " ".join(toks[1:]).strip()
+        if rest.lower() in ("off", "closed"):
+            rules.append((days, None))
+        else:
+            times = _parse_time_ranges(rest.replace(" ", ""))
+            if times is None:
+                return None
+            rules.append((days, times))
+    return rules or None
+
+
+def _fmt_time(h: int, m: int, lang: str) -> str:
+    """Heure au format du locale via Babel/CLDR (l'anglais gagne son AM/PM). 24:00
+    (fin de journée OSM) → minuit du locale. Repli 24 h si Babel indisponible."""
+    if _babel_format_time is None:
+        return f"{h % 24:02d}:{m:02d}"
+    try:
+        return _babel_format_time(_dt.time(h % 24, m), format="short", locale=lang)
+    except Exception:
+        return f"{h % 24:02d}:{m:02d}"
+
+
+def _fmt_day_range(days: list[int], lang: str) -> str:
+    """Jours localisés (CLDR) : contigus → « lundi–samedi » ; sinon liste."""
+    if len(days) == 1:
+        return _weekday_label(days[0], lang)
+    if days == list(range(days[0], days[-1] + 1)):      # contigus → plage
+        return f"{_weekday_label(days[0], lang)}–{_weekday_label(days[-1], lang)}"
+    return ", ".join(_weekday_label(d, lang) for d in days)
+
+
+def _normalize_hours(val: str, lang: str) -> str:
+    """Texte d'horaires HUMANISÉ dans `lang`, ou la valeur brute si non parsable
+    (règle d'or : jamais dégrader). Ne porte PAS la mention (ajoutée par l'appelant)."""
+    if _babel_format_date is None:            # sans Babel, pas de localisation fiable
+        return val
+    if val.strip() == "24/7":
+        return "24/7"                          # universel, aucune traduction utile
+    rules = _parse_osm_hours(val)
+    if not rules:
+        return val                             # brut intact (prose, PH, saisie libre…)
+    try:
+        parts = []
+        for days, times in rules:
+            day_txt = _fmt_day_range(days, lang)
+            if times is None:
+                parts.append(f"{day_txt} {_t(lang, 'hours_closed')}")
+            else:
+                rng = ", ".join(f"{_fmt_time(h1, m1, lang)}–{_fmt_time(h2, m2, lang)}"
+                                for h1, m1, h2, m2 in times)
+                parts.append(f"{day_txt} {rng}")
+        return " · ".join(parts)
+    except Exception:                          # tout imprévu → repli brut
+        return val
+
+
+def _render_opening_hours(raw: Any, lang: str) -> str:
+    """Bloc `.hours` d'une carte de lieu (V2-34) : horaire humanisé + mention
+    « Horaires indicatifs » LOCALISÉE et SYSTÉMATIQUE. Vide (ou seulement une
+    mention héritée) → RIEN (ni horaire ni mention). La mention stockée par le
+    volet 2 est retirée avant d'apposer la mention localisée (jamais deux)."""
+    val = _STORED_HOURS_MENTION.sub("", (raw or "").strip()).strip()
+    if not val:
+        return ""
+    human = _normalize_hours(val, lang)
+    return (f'<div class="hours">{_esc(human)} · '
+            f'{_esc(_t(lang, "hours_indicative"))}</div>')
 
 
 def _seed_label(lang: str, key: str, i18n: Any, fallback: str = "") -> str:
@@ -844,8 +976,7 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
             desc = _md_to_html(p.get("description_md")) if p.get("description_md") else ""
             comment = (f'<p class="fav">❤ {_esc(p["owner_comment"])}</p>'
                        if p.get("owner_comment") else "")
-            hours = (f'<div class="hours">{_esc(p["opening_hours"])}</div>'
-                     if p.get("opening_hours") else "")
+            hours = _render_opening_hours(p.get("opening_hours"), lang)
             # Type de cuisine (M-16) : étiquette localisée + attribut de filtrage.
             cuisine = (p.get("cuisine") or "").strip().lower()
             cuisine_attr = f' data-cuisine="{_esc(cuisine)}"' if is_resto else ""
