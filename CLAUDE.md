@@ -1060,6 +1060,34 @@ exposé, peer auth).
   mentionne max_tokens, retry 1er malformé+2e valide→2 coûts, succès=1 essai) et
   `test_pipeline.py` (double malformé marchés→0 écriture+2 coûts ; food_delivery malformé
   →2 coûts, area_fact non écrit).
+- **Passe qualité des prompts — interdiction du REMPLISSAGE (V2-35)** : « n'invente
+  jamais » **étendu au style** — le remplissage est une invention polie (constat 14/08,
+  « La Marquesa » : « Site à visiter à Orihuela, accessible aux vacanciers intéressés
+  par la culture locale » = zéro information). **(a) Descriptions** : `_POI_PROMPT`
+  impose de renvoyer **`""`** si aucune connaissance PROPRE au lieu, exige **≥1 fait
+  spécifique par phrase**, bannit des tournures explicites (« à visiter à X »,
+  « accessible aux vacanciers », « pour un repas sur place », « durant votre séjour »,
+  « à découvrir », et la famille) et interdit la paraphrase du nom/catégorie. À la
+  RÉCEPTION, `describe_pois` **accepte une description vide** (absente du résultat →
+  l'upsert n'écrit rien, **JAMAIS de repli générique** ; NULL pour un POI neuf, COALESCE
+  conserve l'existant) **et** rejette une réponse de remplissage (`is_filler_description`
+  / `FILLER_MARKERS`, garde-fou si le modèle désobéit). Les descriptions **déjà en base
+  ne sont pas touchées** (COALESCE) ; le script **lecture seule** `ops/list_filler_
+  descriptions.py` les **recense par logement** (mêmes `FILLER_MARKERS`) — **André décide**
+  quoi purger (aucune écriture). **(b) Tags de cuisine** : `overpass._norm_cuisine`
+  valide la **forme** (1 à 3 mots, jamais une phrase) — au-delà de 3 mots → tag **IGNORÉ**
+  (None), **jamais tronqué** (couper « Modern, … » à « modern » inventerait un tag). NB :
+  la cuisine est **OSM-sourcée** (aucun prompt ne la produit), d'où la validation à la
+  réception. **(c) Site web « en savoir plus »** : `SERVICE_SITE_CATEGORIES = (sight,
+  family_activity, sport)` ajoutées à `service_fields`/`SERVICE_COMPLETE_CATEGORIES` en
+  **site SEUL** (ni téléphone ni horaires) — même mécanique volet 2 (preuve URL+date,
+  batché par catégorie/commune, champs NULL, `_checked_on`) ; ~3 appels web de plus par
+  run. Couvert par `test_quality_prompts.py` (interdictions au prompt, vide→écrit vide
+  jamais générique, remplissage→rejeté/factuel gardé, cuisine phrase→ignorée, 3 catégories
+  site-seul) + `test_pipeline.py` (script ops lecture seule). **Le vrai test des
+  descriptions est « sortie de boîte » sur un logement NEUF** (les fiches existantes
+  gardant leur texte) → juge de paix = premier enrichissement de Villa Ardon (+ première
+  mesure du taux de retouche). Hors périmètre : purge auto (l'humain décide), i18n (V2-29).
 - L'upsert des POI exige la migration 001 (ON CONFLICT sur index partiel :
   la clause `WHERE source_ref IS NOT NULL` doit être répétée dans la requête).
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer

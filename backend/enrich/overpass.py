@@ -285,14 +285,20 @@ def _element_to_poi(el: dict, lat0: float, lon0: float) -> dict | None:
 
 
 def _norm_cuisine(raw: str | None) -> str | None:
-    """Normalise le tag OSM `cuisine` (M-16) : premier terme, minuscules.
+    """Normalise le tag OSM `cuisine` (M-16 + validation de forme V2-35).
 
-    Le tag OSM peut être multi-valué (`italian;pizza`) : on ne garde que le
-    premier terme, en minuscules, sans espaces superflus. Renvoie None si vide."""
+    Le tag OSM est multi-valué par `;` (`italian;pizza`) — on ne garde que le PREMIER
+    terme, en minuscules. **Validation de forme (V2-35)** : un tag de cuisine fait 1 à
+    3 mots, jamais une phrase — un mappeur OSM écrit parfois de la prose (« Modern,
+    international cuisine and mixology », séparée par des virgules, pas par `;`). Au-delà
+    de 3 mots → tag IGNORÉ (renvoie None) et NON tronqué : couper « Modern, … » à
+    « modern » inventerait un tag que le lieu ne revendique pas. Renvoie None si vide."""
     if not raw:
         return None
-    first = raw.split(";")[0].strip().lower()
-    return first or None
+    first = raw.split(";")[0].strip().lower()   # séparateur OSM standard : `;`
+    if not first or len(first.split()) > 3:
+        return None
+    return first
 
 
 def _finalize(pois: list[dict], limit: int) -> list[dict]:

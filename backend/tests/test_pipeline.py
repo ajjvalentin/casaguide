@@ -424,6 +424,42 @@ def test_apply_completion_never_overwrites_and_guards_status(property_id):
         assert got2["phone"] is None                     # 'suggested' intact
 
 
+# ── V2-35 : script ops de recensement des descriptions de remplissage ─────────
+
+def test_ops_list_filler_descriptions_is_read_only(property_id):
+    """Le script `ops/list_filler_descriptions.py` recense les descriptions de
+    remplissage PAR LOGEMENT, en LECTURE SEULE (aucune écriture) — l'humain purge."""
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ops"))
+    mod = importlib.import_module("list_filler_descriptions")
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        for name, cat, desc in [
+            ("La Marquesa", "sight",
+             "Site à visiter à Orihuela, accessible aux vacanciers."),   # remplissage
+            ("Casa Pepe", "restaurant",
+             "Restaurant de tapas réputé pour ses gambas al ajillo.")]:  # factuel
+            conn.execute(
+                """INSERT INTO pois (property_id, category_code, name, geom,
+                                     description_md, source, source_ref, status)
+                   VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(-0.7, 37.9), 4326),
+                           %s, 'osm', %s, 'approved')""",
+                (property_id, cat, name, desc, "n:" + name))
+        conn.commit()
+        groups = mod.find_filler_descriptions(conn, property_id)
+        conn.commit()
+
+    # Seul le remplissage est recensé (le factuel est épargné).
+    assert len(groups) == 1
+    assert {it["name"] for it in groups[0]["items"]} == {"La Marquesa"}
+    # LECTURE SEULE : les deux descriptions restent INTACTES en base.
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        descs = {r["name"]: r["description_md"] for r in conn.execute(
+            "SELECT name, description_md FROM pois WHERE property_id=%s", (property_id,))}
+        assert descs["La Marquesa"].startswith("Site à visiter")
+        assert descs["Casa Pepe"].startswith("Restaurant de tapas")
+
+
 # ── V2-07 volet 3 : marchés hebdomadaires (découverte + matérialisation) ──────
 
 def _insert_market(conn, property_id, name, weekday, lat, lon, status):

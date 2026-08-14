@@ -69,24 +69,62 @@ INTERDICTIONS STRICTES (à ne jamais écrire) :
 - Textes courts, factuels, impératifs, en français. N'invente jamais.
 """
 
+# Tournures de REMPLISSAGE (V2-35) : « n'invente jamais » étendu au style — le
+# remplissage est une invention polie (constat 14/08, « La Marquesa » : « Site à
+# visiter à Orihuela, accessible aux vacanciers intéressés par la culture locale »
+# = zéro information). Ces marqueurs (sans accents, minuscules) servent DEUX fois :
+# ils sont cités au prompt comme INTERDITS, et détectés à la réception (`describe_
+# pois` traite une description de remplissage comme vide → jamais écrite) ; le script
+# `ops/list_filler_descriptions.py` s'en sert pour recenser l'existant.
+FILLER_MARKERS = (
+    "a visiter a", "site a visiter", "a decouvrir", "lieu a decouvrir",
+    "accessible aux vacanciers", "ouvert aux vacanciers", "pour les vacanciers",
+    "interesses par la culture locale", "amateurs de culture locale",
+    "pour un repas sur place", "un repas sur place",
+    "durant votre sejour", "lors de votre sejour", "pendant votre sejour",
+)
+
+
+def _strip_accents(s: str) -> str:
+    return (unicodedata.normalize("NFKD", s or "")
+            .encode("ascii", "ignore").decode().lower())
+
+
+def is_filler_description(text: str) -> bool:
+    """True si la description est du REMPLISSAGE (une tournure bannie, quelle que
+    soit sa casse/ses accents) — donc à ne JAMAIS écrire (V2-35)."""
+    norm = _strip_accents(text)
+    return any(m in norm for m in FILLER_MARKERS)
+
+
 _POI_PROMPT = """\
 Voici des points d'intérêt proches d'un logement de vacances à {city}
 ({country_code}). Pour chacun, écris une description d'UNE phrase (max 25 mots),
-utile et factuelle, en français, sans superlatifs inventés.
+utile et FACTUELLE, en français.
 
-RÈGLES STRICTES (anti-hallucination) — le respect est impératif :
-- N'affirme AUCUN fait qui ne découle pas des données fournies ici (nom,
-  catégorie, ville {city}). En particulier, n'invente jamais de localisation,
-  de commune, de quartier, de distance, d'horaire, de prix, de note ou
-  d'anecdote historique.
-- Ne cite pas d'autre ville que {city}, sauf si elle apparaît explicitement
-  dans le nom du POI.
-- Limite-toi au TYPE d'établissement (déduit de sa catégorie) et à son usage
-  pour un vacancier, formulé de façon générique et prudente.
-- Si tu n'as rien de fiable et de spécifique à écrire, renvoie une chaîne vide
-  ("") pour ce POI plutôt que d'inventer.
+RÈGLE ABSOLUE — « n'invente jamais » ÉTENDU AU STYLE : le remplissage est une
+invention polie. Si tu n'as pas de connaissance PROPRE à ce lieu précis (ce qu'il
+est vraiment, ce qu'on y fait de particulier), renvoie une chaîne VIDE ("") — ne
+MEUBLE JAMAIS. Le silence vaut mieux qu'une phrase creuse.
 
-Réponds UNIQUEMENT avec un objet JSON valide : {{"<ref>": "description", ...}}
+Une description n'est acceptable QUE si :
+- chaque phrase porte AU MOINS UN FAIT SPÉCIFIQUE au lieu (type précis, spécialité,
+  particularité) — jamais une généralité vraie de n'importe quel lieu du même type ;
+- elle n'est PAS une paraphrase du nom ni de la catégorie.
+
+TOURNURES BANNIES (et toute leur famille) — leur présence rend la description
+IRRECEVABLE, renvoie "" plutôt :
+- « à visiter à {city} », « site à visiter », « à découvrir » ;
+- « accessible aux vacanciers », « pour les vacanciers » ;
+- « intéressés par la culture locale » ;
+- « pour un repas sur place », « durant votre séjour », « lors de votre séjour ».
+
+Contraintes factuelles : n'invente ni localisation, ni distance, ni horaire, ni
+prix, ni note, ni anecdote ; ne cite pas d'autre ville que {city} sauf si elle
+figure dans le nom du POI.
+
+Réponds UNIQUEMENT avec un objet JSON valide, la valeur étant la description OU une
+chaîne vide : {{"<ref>": "description ou \\"\\"", ...}}
 
 Points d'intérêt (ref, nom, catégorie) :
 {poi_list}
@@ -178,7 +216,16 @@ def describe_pois(pois: list[dict], city: str, country_code: str,
     data, meta = _ask_json(
         client, _POI_PROMPT.format(city=city, country_code=country_code, poi_list=poi_list)
     )
-    return {k: v for k, v in data.items() if isinstance(v, str) and v.strip()}, meta
+    # Validation (V2-35) : une description VIDE est acceptée telle quelle (le POI
+    # reste sans description — JAMAIS de repli vers du générique) ; une description
+    # de REMPLISSAGE est traitée comme vide (garde-fou si le modèle désobéit au
+    # prompt). Dans les deux cas la clé est ABSENTE du résultat → l'upsert n'écrit
+    # rien (NULL pour un POI neuf ; COALESCE conserve l'existant au ré-enrichissement).
+    out: dict[str, str] = {}
+    for k, v in data.items():
+        if isinstance(v, str) and v.strip() and not is_filler_description(v):
+            out[k] = v.strip()
+    return out, meta
 
 
 # ── Livraison de repas par zone : CLAUDE + recherche web (V2-07 volet 1) ──────
@@ -347,9 +394,13 @@ SERVICE_PHONE_CATEGORIES = ("taxi", "doctor", "veterinary", "pharmacy",
                             "police", "rental", "babysitter")
 SERVICE_HOURS_CATEGORIES = ("supermarket", "mall", "bakery", "laundry",
                             "post_office", "pharmacy")
+# Site web SEUL (ni téléphone ni horaires) — catégories « en savoir plus » (V2-35) :
+# on ne complète que le lien officiel où le voyageur approfondira (l'horaire d'un
+# site/activité est trop variable, le téléphone rarement l'action principale).
+SERVICE_SITE_CATEGORIES = ("sight", "family_activity", "sport")
 # Catégories dont on complète au moins un champ (union, ordre stable).
 SERVICE_COMPLETE_CATEGORIES = tuple(dict.fromkeys(
-    SERVICE_PHONE_CATEGORIES + SERVICE_HOURS_CATEGORIES))
+    SERVICE_PHONE_CATEGORIES + SERVICE_HOURS_CATEGORIES + SERVICE_SITE_CATEGORIES))
 # Champs complétables tout court (garde-fou : on n'écrit jamais ailleurs).
 _SERVICE_FIELDS = ("phone", "website", "opening_hours")
 # Mention accolée aux horaires (donnée périssable — précédent des notes de marché,
@@ -367,6 +418,8 @@ def service_fields(category: str) -> tuple[str, ...]:
         fields += ["phone", "website"]
     if category in SERVICE_HOURS_CATEGORIES:
         fields += ["opening_hours", "website"]
+    if category in SERVICE_SITE_CATEGORIES:      # V2-35 : « en savoir plus » = site seul
+        fields += ["website"]
     return tuple(dict.fromkeys(fields))
 
 
