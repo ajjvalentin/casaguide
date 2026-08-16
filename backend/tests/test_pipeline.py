@@ -460,6 +460,47 @@ def test_ops_list_filler_descriptions_is_read_only(property_id):
         assert descs["Casa Pepe"].startswith("Restaurant de tapas")
 
 
+def test_ops_suspect_communes_flags_wrong_city_read_only(property_id):
+    """V2-37 bonus : le script détecte une description qui affirme la commune du
+    LOGEMENT alors que l'adresse OSM est ailleurs (cas Régence) — lecture seule."""
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ops"))
+    mod = importlib.import_module("list_filler_descriptions")
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        # Le logement est à « Orihuela Costa » (fixture) ; ce POI a une adresse à
+        # Torrevieja mais sa description affirme « à Orihuela Costa » → SUSPECT.
+        conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom, address,
+                                 description_md, source, source_ref, status)
+               VALUES (%s, 'restaurant', 'Le Régence',
+                       ST_SetSRID(ST_MakePoint(-0.7, 37.9), 4326),
+                       '5 Calle Mayor, Torrevieja',
+                       'Restaurant à Orihuela Costa réputé pour sa paella.',
+                       'osm', 'n1', 'approved')""", (property_id,))
+        # POI cohérent (adresse ET description à Orihuela Costa) → jamais suspect.
+        conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom, address,
+                                 description_md, source, source_ref, status)
+               VALUES (%s, 'restaurant', 'Casa Pepe',
+                       ST_SetSRID(ST_MakePoint(-0.7, 37.9), 4326),
+                       '2 Calle X, Orihuela Costa',
+                       'Bar de tapas à Orihuela Costa.', 'osm', 'n2', 'approved')""",
+            (property_id,))
+        conn.commit()
+        suspects = mod.find_suspect_communes(conn, property_id)
+        conn.commit()
+
+    assert len(suspects) == 1
+    assert {it["name"] for it in suspects[0]["items"]} == {"Le Régence"}
+    assert suspects[0]["items"][0]["address_city"] == "Torrevieja"
+    # LECTURE SEULE : les descriptions restent intactes.
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        n = conn.execute("SELECT count(*) c FROM pois WHERE property_id=%s "
+                         "AND description_md IS NOT NULL", (property_id,)).fetchone()["c"]
+        assert n == 2
+
+
 # ── V2-07 volet 3 : marchés hebdomadaires (découverte + matérialisation) ──────
 
 def _insert_market(conn, property_id, name, weekday, lat, lon, status):

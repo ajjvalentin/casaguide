@@ -1088,6 +1088,35 @@ exposé, peer auth).
   descriptions est « sortie de boîte » sur un logement NEUF** (les fiches existantes
   gardant leur texte) → juge de paix = premier enrichissement de Villa Ardon (+ première
   mesure du taux de retouche). Hors périmètre : purge auto (l'humain décide), i18n (V2-29).
+- **Qualité sortie de boîte — marqueurs v2, commune jamais inventée, restaurants (V2-37
+  volet 1)** : revue réelle des restaurants d'Ardon (16/08, taux de retouche ~7 %). **(a)
+  FILLER_MARKERS v2** : quatre variantes avaient échappé (« où les vacanciers peuvent
+  prendre leurs repas », « pouvant convenir aux vacanciers cherchant un repas », « une
+  option de restauration », « pour les visiteurs »). Plutôt qu'empiler des littéraux,
+  `is_filler_description` teste aussi `_FILLER_PATTERNS` (regex) qui captent le MOTIF —
+  un **public générique** (`vacanciers|visiteurs|touristes|voyageurs`) + un **but/verbe
+  creux** (peuvent prendre, pouvant convenir, « pour les X », « option de restauration »).
+  **Ancré sur le mot de public** (ou « option de … ») pour NE PAS sur-bloquer le factuel
+  (« … apprécié depuis Chaplin », « saut à l'élastique de 190 m » ne matchent jamais) ; le
+  script ops **hérite** des marqueurs. **(b) La commune jamais inventée** : `describe_pois`
+  affirmait « restaurant à Ardon » pour un lieu de Vétroz (le prompt supposait la commune
+  du logement). Correctifs : la **localité RÉELLE** du POI (`addr:city` OSM, portée par
+  `overpass._element_to_poi` en champ `locality`, en mémoire, non stockée) est **passée au
+  prompt par POI** ; le prompt **interdit d'affirmer toute commune non fournie** (sans
+  localité → aucune mention de lieu, jamais « à {city} » par défaut). Bonus recensement :
+  `ops/list_filler_descriptions.py` gagne une section **« communes suspectes »**
+  (`find_suspect_communes` : la ville du logement apparaît dans la description mais pas dans
+  le nom, et l'adresse OSM porte une AUTRE ville — le motif-filler ne voit pas ce défaut ;
+  lecture seule, l'humain tranche). **(c) Complétion des restaurants** : `restaurant`, `bar`,
+  `cafe` réintégrés dans la complétion en **téléphone + site SEULS** (`SERVICE_TELSITE_
+  CATEGORIES`) — les **horaires restent EXCLUS** (trop volatils) et ne sont **jamais écrits**
+  même si la réponse web en propose (garantie par le filtre `perim = service_fields(cat)` de
+  `complete_service_pois`). Même mécanique volet 2 (preuve, batch, NULL, `_checked_on`) ;
+  surcoût d'un re-run ≈ 3 catégories bien peuplées (~30-45 ct/logement). Couvert par
+  `test_quality_prompts.py` (4 échappées matchent, factuel épargné Chaplin+Bungy, règle
+  localité + localité par POI au prompt, restauration tél+site) + `test_service_complete.py`
+  (restaurant : horaires jamais écrits même si proposés) + `test_pipeline.py` (ops :
+  communes suspectes, lecture seule). Hors périmètre : sélecteur de catégorie (V2-37 volet 2).
 - L'upsert des POI exige la migration 001 (ON CONFLICT sur index partiel :
   la clause `WHERE source_ref IS NOT NULL` doit être répétée dans la requête).
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer

@@ -45,8 +45,9 @@ def test_describe_prompt_carries_the_bans_and_silence_rule():
     ce.describe_pois([{"source_ref": "node/1", "name": "La Marquesa",
                        "category": "sport"}], "Orihuela", "ES", cli)
     prompt = cli.messages.prompts[0]
-    for banned in ("à visiter à", "accessible aux vacanciers", "durant votre séjour",
-                   "intéressés par la culture locale", "pour un repas sur place"):
+    for banned in ("à visiter", "accessible aux vacanciers", "durant votre séjour",
+                   "intéressés par la culture locale", "pour un repas sur place",
+                   "pour les visiteurs", "option de restauration"):
         assert banned in prompt
     assert "ÉTENDU AU STYLE" in prompt and "VIDE" in prompt
     assert "FAIT SPÉCIFIQUE" in prompt
@@ -85,6 +86,53 @@ def test_is_filler_detects_family_and_spares_factual():
     assert not ce.is_filler_description("")
 
 
+def test_filler_v2_catches_ardon_escapees():
+    """V2-37 : les quatre variantes qui avaient échappé au recensement d'Ardon."""
+    escapees = [
+        "Restaurant où les vacanciers peuvent prendre leurs repas.",
+        "Établissement pouvant convenir aux vacanciers cherchant un repas à proximité.",
+        "Une option de restauration disponible dans le village.",
+        "Espace muséal pour les visiteurs.",   # Fondation Domus
+    ]
+    for e in escapees:
+        assert ce.is_filler_description(e), e
+
+
+def test_filler_v2_spares_factual_never_overblocks():
+    """Sans sur-bloquer : le factuel (Chaplin, Bungy « saut à l'élastique ») ne
+    matche JAMAIS le motif généralisé."""
+    factual = [
+        "Bains thermaux de Saillon, complexe apprécié depuis le tournage de Chaplin.",
+        "Bungy : saut à l'élastique de 190 m depuis le barrage du Verzasca.",
+        "Restaurant de tapas réputé pour ses gambas al ajillo.",
+        "Musée ouvert du mardi au dimanche, collection de peinture valaisanne.",
+    ]
+    for f in factual:
+        assert not ce.is_filler_description(f), f
+
+
+def test_describe_prompt_forbids_inventing_commune_and_passes_locality():
+    """V2-37 : la règle « ne jamais affirmer une commune non fournie » est au prompt,
+    et la localité RÉELLE de chaque POI (ville de l'adresse OSM) y est transmise."""
+    cli = _PlainClient(json.dumps({"node/1": ""}))
+    ce.describe_pois([{"source_ref": "node/1", "name": "Le Régence",
+                       "category": "restaurant", "locality": "Vétroz"}],
+                     "Ardon", "CH", cli)
+    prompt = cli.messages.prompts[0]
+    assert "n'affirme JAMAIS la commune" in prompt        # règle localité
+    assert "localité : Vétroz" in prompt                  # localité RÉELLE transmise
+
+
+def test_describe_prompt_omits_locality_when_unknown():
+    """Sans localité fournie, rien n'est transmis (le prompt interdit toute
+    mention de lieu — jamais « à {city} » par défaut)."""
+    cli = _PlainClient(json.dumps({"node/1": ""}))
+    ce.describe_pois([{"source_ref": "node/1", "name": "Chez Machin",
+                       "category": "restaurant"}], "Ardon", "CH", cli)
+    prompt = cli.messages.prompts[0]
+    assert "localité :" not in prompt.split("Points d'intérêt")[1]  # aucune localité listée
+
+
 # ── Pièce (b) : tags de cuisine — 1 à 3 mots, jamais une phrase ──────────────
 
 def test_cuisine_phrase_is_ignored_not_truncated():
@@ -106,4 +154,5 @@ def test_service_fields_site_only_for_sight_family_sport():
         assert cat in ce.SERVICE_COMPLETE_CATEGORIES
     # Les catégories existantes ne changent pas.
     assert ce.service_fields("pharmacy") == ("phone", "website", "opening_hours")
-    assert ce.service_fields("restaurant") == ()        # toujours exclu
+    # Restauration : tél + site (V2-37), jamais d'horaires.
+    assert ce.service_fields("restaurant") == ("phone", "website")

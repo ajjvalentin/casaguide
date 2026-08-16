@@ -273,6 +273,9 @@ def _element_to_poi(el: dict, lat0: float, lon0: float) -> dict | None:
         "lat": float(lat),
         "lon": float(lon),
         "address": addr,
+        # Localité RÉELLE du POI (V2-37) : passée telle quelle au prompt de description
+        # (ne JAMAIS supposer la commune du logement). En mémoire seulement, non stockée.
+        "locality": (tags.get("addr:city") or "").strip() or None,
         "phone": tags.get("phone") or tags.get("contact:phone"),
         "website": tags.get("website") or tags.get("contact:website"),
         "opening_hours": tags.get("opening_hours"),

@@ -60,7 +60,26 @@ def test_service_fields_perimeter_per_category():
     assert ce.service_fields("supermarket") == ("opening_hours", "website")  # horaires
     # pharmacie = les deux périmètres, sans doublon de website
     assert ce.service_fields("pharmacy") == ("phone", "website", "opening_hours")
-    assert ce.service_fields("restaurant") == ()   # exclu volontairement
+    # Restauration (V2-37) : téléphone + site SEULS ; les HORAIRES restent EXCLUS.
+    for cat in ("restaurant", "bar", "cafe"):
+        assert ce.service_fields(cat) == ("phone", "website")
+        assert "opening_hours" not in ce.service_fields(cat)
+
+
+def test_completion_never_writes_hours_for_restaurants_even_if_offered():
+    """V2-37 : même si la recherche web PROPOSE des horaires pour un restaurant, ils
+    ne sont JAMAIS retenus (hors périmètre — trop volatils)."""
+    poi = {"id": "p1", "name": "La Coopérative", "address": "Ardon",
+           "missing": ["phone", "website"]}
+    payload = {"p1": {"phone": "+41 27 306 00 00", "website": "https://coop.example",
+                      "opening_hours": "Mo-Sa 09:00-23:00",   # proposé mais HORS périmètre
+                      "source_url": "https://coop.example", "verified_on": "2026-08-16"}}
+    cli = Fake(_web_msg(json.dumps(payload)))
+    out, _ = ce.complete_service_pois("restaurant", "Restaurant", [poi], "Ardon", "CH",
+                                      cli, today="2026-08-16")
+    fields = out["p1"]["fields"]
+    assert fields.get("phone") and fields.get("website")
+    assert "opening_hours" not in fields          # jamais d'horaires pour un restaurant
 
 
 # ── Complétion : preuve, périmètre, mention horaires ─────────────────────────

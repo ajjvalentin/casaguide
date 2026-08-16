@@ -78,11 +78,28 @@ INTERDICTIONS STRICTES (à ne jamais écrire) :
 # `ops/list_filler_descriptions.py` s'en sert pour recenser l'existant.
 FILLER_MARKERS = (
     "a visiter a", "site a visiter", "a decouvrir", "lieu a decouvrir",
-    "accessible aux vacanciers", "ouvert aux vacanciers", "pour les vacanciers",
+    "accessible aux vacanciers", "ouvert aux vacanciers",
     "interesses par la culture locale", "amateurs de culture locale",
-    "pour un repas sur place", "un repas sur place",
+    "pour un repas sur place", "un repas sur place", "une option de restauration",
     "durant votre sejour", "lors de votre sejour", "pendant votre sejour",
 )
+
+# FILLER_MARKERS v2 (V2-37) : plutôt qu'empiler des chaînes littérales, on capte le
+# MOTIF — un PUBLIC générique (vacanciers/visiteurs/touristes/voyageurs) associé à un
+# but/verbe CREUX (peuvent prendre, pouvant convenir, option de restauration, « pour
+# les visiteurs »…). Quatre variantes avaient échappé au recensement d'Ardon (16/08).
+# Ancré sur le mot de public (ou « option de … ») pour ne PAS sur-bloquer le factuel
+# (« … apprécié depuis Chaplin », « saut à l'élastique de 190 m » ne matchent jamais).
+_FILLER_AUDIENCE = r"(?:vacanciers|visiteurs|touristes|voyageurs)"
+_FILLER_PATTERNS = tuple(re.compile(p) for p in (
+    rf"\bpour (?:les |le |la |des |un |une )?{_FILLER_AUDIENCE}\b",          # « pour les visiteurs »
+    rf"\b(?:aux?|des|les) {_FILLER_AUDIENCE} (?:cherchant|souhaitant|desirant|"
+    rf"voulant|en quete|qui cherchent|qui souhaitent|pouvant)\b",            # « aux vacanciers cherchant… »
+    r"\b(?:pouvant|peut|peuvent) convenir\b",                                # « pouvant convenir aux… »
+    rf"\b{_FILLER_AUDIENCE} (?:peuvent|peut|pourront|pourraient)\b",         # « où les vacanciers peuvent… »
+    r"\bpeuvent (?:y )?(?:prendre|deguster|savourer|profiter)\b",            # « peuvent (y) prendre leurs repas »
+    r"\boption de (?:restauration|repas|restaurant|nourriture)\b",           # « une option de restauration »
+))
 
 
 def _strip_accents(s: str) -> str:
@@ -91,10 +108,13 @@ def _strip_accents(s: str) -> str:
 
 
 def is_filler_description(text: str) -> bool:
-    """True si la description est du REMPLISSAGE (une tournure bannie, quelle que
-    soit sa casse/ses accents) — donc à ne JAMAIS écrire (V2-35)."""
+    """True si la description est du REMPLISSAGE (tournure bannie littérale OU motif
+    générique « public + but creux »), quelle que soit la casse/les accents — donc à
+    ne JAMAIS écrire (V2-35, marqueurs v2 V2-37)."""
     norm = _strip_accents(text)
-    return any(m in norm for m in FILLER_MARKERS)
+    if any(m in norm for m in FILLER_MARKERS):
+        return True
+    return any(p.search(norm) for p in _FILLER_PATTERNS)
 
 
 _POI_PROMPT = """\
@@ -114,19 +134,26 @@ Une description n'est acceptable QUE si :
 
 TOURNURES BANNIES (et toute leur famille) — leur présence rend la description
 IRRECEVABLE, renvoie "" plutôt :
-- « à visiter à {city} », « site à visiter », « à découvrir » ;
-- « accessible aux vacanciers », « pour les vacanciers » ;
+- « à visiter », « site à visiter », « à découvrir » ;
+- « accessible aux vacanciers », « pour les vacanciers », « pour les visiteurs » ;
 - « intéressés par la culture locale » ;
+- « où les vacanciers/visiteurs peuvent … », « pouvant convenir aux vacanciers … »,
+  « une option de restauration » ;
 - « pour un repas sur place », « durant votre séjour », « lors de votre séjour ».
 
-Contraintes factuelles : n'invente ni localisation, ni distance, ni horaire, ni
-prix, ni note, ni anecdote ; ne cite pas d'autre ville que {city} sauf si elle
-figure dans le nom du POI.
+LOCALITÉ — RÈGLE ABSOLUE : n'affirme JAMAIS la commune/localité d'un lieu qui ne
+t'est pas fournie. Chaque POI peut porter un champ « localité : … » : ne cite une
+commune QUE si elle t'y est donnée (ou figure dans le nom du POI). SANS localité
+fournie, n'indique AUCUN lieu — ni « à {city} » (la commune du LOGEMENT, pas
+forcément celle du POI), ni aucune autre.
+
+Contraintes factuelles : n'invente ni distance, ni horaire, ni prix, ni note, ni
+anecdote.
 
 Réponds UNIQUEMENT avec un objet JSON valide, la valeur étant la description OU une
 chaîne vide : {{"<ref>": "description ou \\"\\"", ...}}
 
-Points d'intérêt (ref, nom, catégorie) :
+Points d'intérêt (ref, nom, catégorie[, localité]) :
 {poi_list}
 """
 
@@ -210,9 +237,14 @@ def describe_pois(pois: list[dict], city: str, country_code: str,
     """
     if not pois:
         return {}, {"units": 0, "cost_cts": 0}
-    poi_list = "\n".join(
-        f'- ref "{p["source_ref"]}" : {p["name"]} ({p["category"]})' for p in pois
-    )
+    # Localité RÉELLE du POI transmise quand connue (V2-37) : le prompt ne suppose
+    # PLUS la commune du logement (« restaurant à Ardon » pour un lieu de Vétroz).
+    lines = []
+    for p in pois:
+        loc = (p.get("locality") or "").strip()
+        loc_txt = f' — localité : {loc}' if loc else ""
+        lines.append(f'- ref "{p["source_ref"]}" : {p["name"]} ({p["category"]}){loc_txt}')
+    poi_list = "\n".join(lines)
     data, meta = _ask_json(
         client, _POI_PROMPT.format(city=city, country_code=country_code, poi_list=poi_list)
     )
@@ -398,9 +430,14 @@ SERVICE_HOURS_CATEGORIES = ("supermarket", "mall", "bakery", "laundry",
 # on ne complète que le lien officiel où le voyageur approfondira (l'horaire d'un
 # site/activité est trop variable, le téléphone rarement l'action principale).
 SERVICE_SITE_CATEGORIES = ("sight", "family_activity", "sport")
+# Téléphone + site SEULS — restauration (V2-37) : réintégrés dans la complétion (ils
+# avaient perdu tél/site en étant exclus du volet 2 pour la volatilité des horaires).
+# Les HORAIRES restent EXCLUS pour ces catégories (jamais complétés, trop volatils).
+SERVICE_TELSITE_CATEGORIES = ("restaurant", "bar", "cafe")
 # Catégories dont on complète au moins un champ (union, ordre stable).
 SERVICE_COMPLETE_CATEGORIES = tuple(dict.fromkeys(
-    SERVICE_PHONE_CATEGORIES + SERVICE_HOURS_CATEGORIES + SERVICE_SITE_CATEGORIES))
+    SERVICE_PHONE_CATEGORIES + SERVICE_HOURS_CATEGORIES + SERVICE_SITE_CATEGORIES
+    + SERVICE_TELSITE_CATEGORIES))
 # Champs complétables tout court (garde-fou : on n'écrit jamais ailleurs).
 _SERVICE_FIELDS = ("phone", "website", "opening_hours")
 # Mention accolée aux horaires (donnée périssable — précédent des notes de marché,
@@ -420,6 +457,8 @@ def service_fields(category: str) -> tuple[str, ...]:
         fields += ["opening_hours", "website"]
     if category in SERVICE_SITE_CATEGORIES:      # V2-35 : « en savoir plus » = site seul
         fields += ["website"]
+    if category in SERVICE_TELSITE_CATEGORIES:   # V2-37 : restauration = tél + site (jamais horaires)
+        fields += ["phone", "website"]
     return tuple(dict.fromkeys(fields))
 
 
