@@ -36,6 +36,60 @@ class _PlainClient:
         self.messages = _PlainMessages(payload_json)
 
 
+def _plain_msg(text, *, stop_reason="end_turn", inp=500, out=200):
+    return NS(content=[NS(type="text", text=text)],
+              usage=NS(input_tokens=inp, output_tokens=out),
+              stop_reason=stop_reason)
+
+
+class _QueueMessages:
+    """Bouchon renvoyant une réponse DIFFÉRENTE par appel (pour le retry)."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def create(self, *, model, max_tokens, messages, **kwargs):
+        self.calls += 1
+        return self._responses[min(self.calls - 1, len(self._responses) - 1)]
+
+
+class _QueueClient:
+    def __init__(self, *responses):
+        self.messages = _QueueMessages(responses)
+
+
+# ── V2-37 volet 1bis : robustesse de _ask_json (parité avec le chemin web) ────
+
+def test_ask_json_isolates_json_from_prose_and_fences():
+    cli = _QueueClient(_plain_msg('Voici le résultat :\n```json\n{"a": 1}\n```\nMerci.'))
+    data, meta = ce._ask_json(cli, "prompt")
+    assert data == {"a": 1}
+    assert len(meta["attempts"]) == 1 and meta["cost_cts"] > 0 and cli.messages.calls == 1
+
+
+def test_ask_json_retry_first_invalid_then_valid_two_costs():
+    cli = _QueueClient(_plain_msg("pas du JSON"), _plain_msg('{"a": 2}'))
+    data, meta = ce._ask_json(cli, "p")
+    assert data == {"a": 2}
+    assert len(meta["attempts"]) == 2 and cli.messages.calls == 2   # réponse RÉGÉNÉRÉE
+    assert meta["cost_cts"] == round(sum(a["cost_cts"] for a in meta["attempts"]), 4)
+
+
+def test_ask_json_two_invalid_raises_with_stop_reason_and_two_costs():
+    # Deux réponses VIDES tronquées (stop_reason=max_tokens) → diagnostic enfin lisible.
+    cli = _QueueClient(_plain_msg("", stop_reason="max_tokens"))
+    try:
+        ce._ask_json(cli, "p")
+        assert False, "aurait dû lever ClaudeJSONError"
+    except ce.ClaudeJSONError as e:
+        assert "max_tokens" in str(e) and e.stop_reason == "max_tokens"
+        assert len(e.attempts) == 2 and all(a["cost_cts"] >= 0 for a in e.attempts)
+    assert cli.messages.calls == 2
+    # Alias rétrocompatible : l'ancien nom pointe le nom neutre.
+    assert ce.WebSearchJSONError is ce.ClaudeJSONError
+
+
 # ── Pièce (a) : descriptions — interdiction du remplissage ───────────────────
 
 def test_describe_prompt_carries_the_bans_and_silence_rule():

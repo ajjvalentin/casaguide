@@ -202,21 +202,17 @@ def _cost_cts(model: str, usage) -> float:
     return round(usd * settings.usd_to_eur * 100, 4)
 
 
-def _ask_json(client: anthropic.Anthropic, prompt: str) -> tuple[dict, dict]:
-    """Appel Claude -> (données JSON, méta {tokens, cost_cts})."""
-    msg = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=settings.anthropic_max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-    text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    data = json.loads(text)  # lève ValueError si non-JSON -> step en échec, jamais de données corrompues
-    meta = {
-        "units": msg.usage.input_tokens + msg.usage.output_tokens,
-        "cost_cts": _cost_cts(settings.anthropic_model, msg.usage),
-    }
-    return data, meta
+def _ask_json(client: anthropic.Anthropic, prompt: str, *,
+              max_tokens: int | None = None) -> tuple[dict, dict]:
+    """Appel Claude SANS recherche web → (données JSON, méta {units, cost_cts,
+    attempts, stop_reason}). PARITÉ de robustesse avec le chemin web (V2-37 volet
+    1bis) via le motif commun `_json_retry` : isolation d'un JSON encadré de prose/
+    clôtures de code, **un retry** sur JSON invalide (réponse RÉGÉNÉRÉE), coût
+    comptabilisé par essai, `stop_reason` du dernier essai gravé dans l'erreur
+    (`ClaudeJSONError`) — une réponse vide se diagnostique enfin."""
+    mt = max_tokens or settings.anthropic_max_tokens
+    return _json_retry(lambda m: _one_plain_call(client, prompt, m),
+                       label="Claude", max_tokens=mt)
 
 
 def fetch_area_facts(city: str, country_code: str,
@@ -246,8 +242,8 @@ def describe_pois(pois: list[dict], city: str, country_code: str,
         lines.append(f'- ref "{p["source_ref"]}" : {p["name"]} ({p["category"]}){loc_txt}')
     poi_list = "\n".join(lines)
     data, meta = _ask_json(
-        client, _POI_PROMPT.format(city=city, country_code=country_code, poi_list=poi_list)
-    )
+        client, _POI_PROMPT.format(city=city, country_code=country_code, poi_list=poi_list),
+        max_tokens=settings.describe_max_tokens)  # lot de ~40 POI → sortie longue
     # Validation (V2-35) : une description VIDE est acceptée telle quelle (le POI
     # reste sans description — JAMAIS de repli vers du générique) ; une description
     # de REMPLISSAGE est traitée comme vide (garde-fou si le modèle désobéit au
@@ -284,18 +280,74 @@ def _parse_strict_json(text: str) -> dict:
         raise
 
 
-class WebSearchJSONError(ValueError):
-    """Réponse d'un appel web_search NON parsable en JSON, après retry (V2-07
-    volet 3bis). Sous-classe `ValueError` → les gardes best-effort existantes
-    (`except ValueError`/`Exception`) la rattrapent inchangées. Porte le coût de
-    CHAQUE essai (`attempts`) — l'argent est dépensé à la réponse, pas au succès,
-    donc l'appelant DOIT le comptabiliser malgré l'échec — et le `stop_reason` du
-    dernier essai (`max_tokens` = troncature : le plafond de sortie est en cause)."""
+class ClaudeJSONError(ValueError):
+    """Réponse Claude NON parsable en JSON, après retry — chemin web (V2-07 3bis)
+    OU sans web (V2-37 1bis). Sous-classe `ValueError` → les gardes best-effort
+    existantes (`except ValueError`/`Exception`) la rattrapent inchangées. Porte le
+    coût de CHAQUE essai (`attempts`) — l'argent est dépensé à la réponse, pas au
+    succès, donc l'appelant DOIT le comptabiliser malgré l'échec — et le `stop_reason`
+    du dernier essai (`max_tokens` = troncature ; `end_turn` mais texte vide = refus
+    ou bloc non-texte)."""
 
     def __init__(self, message: str, attempts: list[dict], stop_reason: str | None):
         super().__init__(message)
         self.attempts = attempts
         self.stop_reason = stop_reason
+
+
+# Rétrocompat : l'ancien nom (3bis) reste un alias du nom neutre (1bis).
+WebSearchJSONError = ClaudeJSONError
+
+
+def _json_retry(one_call, *, label: str, max_tokens: int) -> tuple[dict, dict]:
+    """MOTIF COMMUN de robustesse des réponses JSON de Claude (V2-07 3bis, étendu au
+    chemin sans web par V2-37 1bis — un seul motif pour les deux chemins).
+
+    `one_call(max_tokens) -> (texte, coût {units, cost_cts, web_searches}, stop_reason)`
+    est un appel logique (le web fait sa boucle `pause_turn`). On isole le JSON encadré
+    de prose/clôtures (`_parse_strict_json`), on **régénère UNE fois** la réponse sur
+    JSON invalide (jamais un re-parse ; borné par `web_search_max_attempts`), on
+    comptabilise le coût de CHAQUE essai (`meta['attempts']`), et l'échec final lève
+    `ClaudeJSONError` PORTANT les coûts + le `stop_reason` du dernier essai."""
+    attempts: list[dict] = []
+    last_stop: str | None = None
+    for attempt in range(1, settings.web_search_max_attempts + 1):
+        text, cost, stop_reason = one_call(max_tokens)
+        attempts.append(cost)
+        last_stop = stop_reason
+        try:
+            data = _parse_strict_json(text)
+        except ValueError:
+            if attempt < settings.web_search_max_attempts:
+                continue  # réponse RÉGÉNÉRÉE au tour suivant (jamais un re-parse)
+            raise ClaudeJSONError(
+                f"Réponse {label} non parsable après {attempt} essai(s) "
+                f"(stop_reason={stop_reason})", attempts=attempts,
+                stop_reason=last_stop)
+        meta = {
+            "units": sum(c["units"] for c in attempts),
+            "cost_cts": round(sum(c["cost_cts"] for c in attempts), 4),
+            "web_searches": sum(c.get("web_searches", 0) for c in attempts),
+            "attempts": attempts,
+            "stop_reason": last_stop,
+        }
+        return data, meta
+
+
+def _one_plain_call(client: anthropic.Anthropic, prompt: str,
+                    max_tokens: int) -> tuple[str, dict, str | None]:
+    """UN appel Claude sans outil → (texte, coût {units, cost_cts, web_searches:0},
+    stop_reason). Pendant sans-web de `_one_web_call`."""
+    msg = client.messages.create(
+        model=settings.anthropic_model, max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}])
+    usage = msg.usage
+    inp = getattr(usage, "input_tokens", 0) or 0
+    out = getattr(usage, "output_tokens", 0) or 0
+    cost = {"units": inp + out,
+            "cost_cts": _cost_cts(settings.anthropic_model, usage),
+            "web_searches": 0}
+    return (_extract_text(msg.content), cost, getattr(msg, "stop_reason", None))
 
 
 def _one_web_call(client: anthropic.Anthropic, prompt: str, tool: dict,
@@ -350,29 +402,8 @@ def _ask_web_search_json(client: anthropic.Anthropic, prompt: str, *,
                           "city": city},
     }
     mt = max_tokens or settings.anthropic_max_tokens
-    attempts: list[dict] = []
-    last_stop: str | None = None
-    for attempt in range(1, settings.web_search_max_attempts + 1):
-        text, cost, stop_reason = _one_web_call(client, prompt, tool, mt)
-        attempts.append(cost)
-        last_stop = stop_reason
-        try:
-            data = _parse_strict_json(text)
-        except ValueError:
-            if attempt < settings.web_search_max_attempts:
-                continue  # réponse RÉGÉNÉRÉE au tour suivant (jamais un re-parse)
-            raise WebSearchJSONError(
-                f"Réponse web_search non parsable après {attempt} essai(s) "
-                f"(stop_reason={stop_reason})", attempts=attempts,
-                stop_reason=stop_reason)
-        meta = {
-            "units": sum(c["units"] for c in attempts),
-            "cost_cts": round(sum(c["cost_cts"] for c in attempts), 4),
-            "web_searches": sum(c["web_searches"] for c in attempts),
-            "attempts": attempts,
-            "stop_reason": last_stop,
-        }
-        return data, meta
+    return _json_retry(lambda m: _one_web_call(client, prompt, tool, m),
+                       label="web_search", max_tokens=mt)
 
 
 def fetch_food_delivery(city: str, country_code: str,

@@ -104,9 +104,11 @@ class FakeMessages:
     # rejet sans écriture) et compte ses appels (test de mutualisation). Le bouchon
     # baby-sitting (V2-07 volet 2) renvoie par défaut un service crédible.
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
-                 service_completions=None, markets=None, markets_malformed=False):
+                 service_completions=None, markets=None, markets_malformed=False,
+                 describe_malformed=False):
         self.food_delivery_malformed = food_delivery_malformed
         self.markets_malformed = markets_malformed
+        self.describe_malformed = describe_malformed
         self.food_delivery_calls = 0
         self.market_calls = 0
         self.babysitter_services = (
@@ -159,20 +161,28 @@ class FakeMessages:
                 "noise_rules": {"summary": "Bruit limité la nuit.",
                                 "quiet_hours": "23h00-08h00"},
             }
-        else:  # prompt descriptions POI
+        else:  # prompt descriptions POI (chemin _ask_json, sans web)
+            if self.describe_malformed:               # V2-37 1bis : réponse vide tronquée
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="")],
+                    usage=SimpleNamespace(input_tokens=800, output_tokens=1),
+                    stop_reason="max_tokens")
             payload = {"node/333": "Restaurant de poissons face à la plage, "
                                    "apprécié pour ses arroces."}
         return SimpleNamespace(
             content=[SimpleNamespace(type="text", text=json.dumps(payload))],
             usage=SimpleNamespace(input_tokens=800, output_tokens=350),
+            stop_reason="end_turn",
         )
 
 
 class FakeAnthropic:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
-                 service_completions=None, markets=None, markets_malformed=False):
+                 service_completions=None, markets=None, markets_malformed=False,
+                 describe_malformed=False):
         self.messages = FakeMessages(food_delivery_malformed, babysitter_services,
-                                     service_completions, markets, markets_malformed)
+                                     service_completions, markets, markets_malformed,
+                                     describe_malformed)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -935,3 +945,34 @@ def test_food_delivery_malformed_rejected_without_write(property_id, http_client
             "SELECT count(*) c FROM api_costs WHERE job_id=%s AND operation='food_delivery'",
             (result["job_id"],)).fetchone()["c"]
         assert fd_costs == 2                                   # essai + retry, tous deux payés
+
+
+def test_describe_failure_is_best_effort_job_stays_done(property_id, http_client):
+    """V2-37 1bis : une réponse descriptions NON parsable ne tue plus le JOB (elle le
+    tuait — Ardon 16/08). L'étape est journalisée en échec (compteur + raison avec
+    stop_reason), le coût des DEUX essais est comptabilisé, les AUTRES étapes IA
+    (baby-sitting, marchés) s'exécutent, et le job finit 'done'. Un manque de
+    description n'est pas une corruption."""
+    result = pipeline.run(
+        property_id, use_claude=True, only_categories={"restaurant", "supermarket"},
+        http_client=http_client,
+        anthropic_client=FakeAnthropic(describe_malformed=True))
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        job = conn.execute("SELECT status, steps FROM enrichment_jobs WHERE id=%s",
+                           (result["job_id"],)).fetchone()
+        assert job["status"] == "done"                        # le job N'EST PAS tué
+        dp = job["steps"]["describe_pois"]
+        assert dp["ok"] is False and dp["described"] == 0     # échec journalisé + compteur
+        assert "max_tokens" in dp["error"]                    # raison (stop_reason gravé)
+        # Les autres étapes IA se sont exécutées malgré l'échec descriptions.
+        assert job["steps"]["babysitter"]["ok"] and job["steps"]["markets"]["ok"]
+        assert job["steps"]["claude"]["ok"]
+        # Coût des DEUX essais describe comptabilisé (l'argent est dépensé à la réponse).
+        n = conn.execute(
+            "SELECT count(*) c FROM api_costs WHERE job_id=%s AND operation='describe_pois'",
+            (result["job_id"],)).fetchone()["c"]
+        assert n == 2
+        # Le restaurant existe mais SANS description (un manque, pas une corruption).
+        resto = conn.execute("SELECT description_md FROM pois WHERE property_id=%s "
+                             "AND name='La Marejada'", (property_id,)).fetchone()
+        assert resto["description_md"] is None

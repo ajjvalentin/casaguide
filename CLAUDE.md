@@ -1060,6 +1060,28 @@ exposé, peer auth).
   mentionne max_tokens, retry 1er malformé+2e valide→2 coûts, succès=1 essai) et
   `test_pipeline.py` (double malformé marchés→0 écriture+2 coûts ; food_delivery malformé
   →2 coûts, area_fact non écrit).
+- **Parité de robustesse `_ask_json` + descriptions best-effort (V2-37 volet 1bis)** :
+  constat prod Ardon (16/08) — `describe_pois` → `_ask_json` → `JSONDecodeError: Expecting
+  value: char 0` → **job ENTIER en échec**. Deux trous comblés. (1) **Parité** : le motif
+  du 3bis est **factorisé** dans `_json_retry(one_call, *, label, max_tokens)` — un SEUL
+  motif pour les deux chemins ; `_ask_json` (via `_one_plain_call`) en hérite **exactement**
+  (isolation d'un JSON encadré de prose/fences par `_parse_strict_json`, **un retry**
+  régénéré sur JSON invalide, coût `api_costs` **par essai** même en échec, `stop_reason`
+  du dernier essai **gravé dans l'erreur** → une réponse vide se diagnostique enfin :
+  max_tokens ? refus ? bloc non-texte ?). L'exception est renommée **`ClaudeJSONError`**
+  (neutre ; `WebSearchJSONError` reste un **alias** rétrocompat). (2) **Descriptions
+  best-effort** : l'étape 4b passe sous **SAVEPOINT** comme 4c/4d — son échec est journalisé
+  (`steps.describe_pois` `ok:false` + `described:0` + `error`), le coût des essais
+  comptabilisé (`_record_failed_call_cost`, renommé — générique), et le job **continue**
+  (complétions, baby-sitting, marchés, save) et finit **`done`**. *Une description manquante
+  est un manque ; un job tué en est cent.* NB : `area_facts` (aussi `_ask_json`) **gagne la
+  robustesse du retry** mais reste dans le flux principal (non best-effort — foundational).
+  (3) **max_tokens descriptions** : un lot éditorial peut compter ~40 POI (5 catégories × 8)
+  × 25 mots ⇒ ~2 400 tokens de sortie > défaut 2000 → `describe_max_tokens=6000`
+  (`describe_pois` le passe). Couvert par `test_quality_prompts.py` (`_ask_json` : prose→parsé,
+  retry→2 coûts, double invalide→`ClaudeJSONError`+stop_reason+2 coûts, alias) et
+  `test_pipeline.py` (échec descriptions → job `done`, autres étapes exécutées, `steps` porte
+  l'échec motivé, restaurant sans description = manque pas corruption).
 - **Passe qualité des prompts — interdiction du REMPLISSAGE (V2-35)** : « n'invente
   jamais » **étendu au style** — le remplissage est une invention polie (constat 14/08,
   « La Marquesa » : « Site à visiter à Orihuela, accessible aux vacanciers intéressés

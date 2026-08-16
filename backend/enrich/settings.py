@@ -53,6 +53,10 @@ class Settings:
     # IA — API Claude
     anthropic_model: str = os.getenv("CASAGUIDE_MODEL", "claude-sonnet-4-6")
     anthropic_max_tokens: int = 2000
+    # Descriptions (V2-37 1bis) : plafond de SORTIE relevé — l'éditorial peut compter
+    # ~40 POI (5 catégories × max 8), chacun jusqu'à 25 mots ⇒ ~7 000 caractères ≈
+    # ~2 400 tokens de sortie, au-dessus du défaut 2000 (troncature possible).
+    describe_max_tokens: int = int(os.getenv("CASAGUIDE_DESCRIBE_MAX_TOKENS", "6000"))
     # Traduction du guide (M-09, §9) : modèle dédié, moins cher que Sonnet —
     # la qualité de Haiku est largement suffisante en traduction FR→EN/ES.
     translate_model: str = os.getenv("CASAGUIDE_TRANSLATE_MODEL",

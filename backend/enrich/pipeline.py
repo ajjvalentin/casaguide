@@ -48,13 +48,13 @@ def _progress(msg: str) -> None:
     log.info(msg)
 
 
-def _record_web_failure_cost(conn, property_id: str, job_id: str, operation: str,
+def _record_failed_call_cost(conn, property_id: str, job_id: str, operation: str,
                              exc: Exception) -> float:
-    """Comptabilise le coût des essais d'un appel web_search qui a ÉCHOUÉ au parsing
-    (V2-07 volet 3bis) : l'argent est dépensé à la réponse, pas au succès. À appeler
-    dans le `except` best-effort, APRÈS le rollback du SAVEPOINT (donc sur la
-    transaction principale : `conn.commit()` par l'appelant). Renvoie le coût total
-    comptabilisé (0 si l'exception ne porte pas de coût — panne réseau, etc.)."""
+    """Comptabilise le coût des essais d'un appel Claude qui a ÉCHOUÉ au parsing —
+    chemin web (V2-07 3bis) OU sans web (V2-37 1bis, descriptions) : l'argent est
+    dépensé à la réponse, pas au succès. À appeler dans le `except` best-effort,
+    APRÈS le rollback du SAVEPOINT (donc sur la transaction principale ; `conn.commit()`
+    par l'appelant). Renvoie le coût total (0 si l'exception ne porte pas de coût)."""
     attempts = getattr(exc, "attempts", None) or []
     db.record_costs(conn, property_id, job_id, "anthropic", operation, attempts)
     return round(sum(c["cost_cts"] for c in attempts), 4)
@@ -246,7 +246,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         log.warning("Livraison de repas (%s) non résolue : %s",
                                     prop["city"], fd_exc)
                         # Coût des essais PAYÉS malgré l'échec (volet 3bis).
-                        c = _record_web_failure_cost(conn, property_id, job_id,
+                        c = _record_failed_call_cost(conn, property_id, job_id,
                                                      "food_delivery", fd_exc)
                         summary["cost_cts"] += c
                         db.job_step(conn, job_id, "food_delivery",
@@ -256,27 +256,44 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         _progress(f"  ⚠ livraison de repas non résolue : "
                                   f"{overpass._short(str(fd_exc))}")
 
-                # 4b. Descriptions courtes des POI éditoriaux
+                # 4b. Descriptions courtes des POI éditoriaux — BEST-EFFORT (V2-37 1bis) :
+                # une réponse non parsable ne tue plus le JOB (elle le tuait — Ardon
+                # 16/08 : JSONDecodeError char 0 → job en échec). SAVEPOINT comme 4c/4d :
+                # l'échec est journalisé (compteur + raison), le coût des essais est
+                # comptabilisé, et le pipeline continue (complétions, marchés, save).
                 if all_editorial:
-                    descs, meta = claude_enrich.describe_pois(
-                        all_editorial, prop["city"], prop["country_code"], ai)
-                    for p in all_editorial:
-                        if p["source_ref"] in descs:
-                            p["description_md"] = descs[p["source_ref"]]
-                    # ré-upsert : seule la description change
-                    for code in {p["category"] for p in all_editorial}:
-                        db.upsert_pois(conn, property_id, code,
-                                       [p for p in all_editorial
-                                        if p["category"] == code])
-                    db.record_cost(conn, property_id, job_id, "anthropic",
-                                   "describe_pois", meta["units"], meta["cost_cts"])
-                    summary["cost_cts"] += meta["cost_cts"]
-                    db.job_step(conn, job_id, "describe_pois",
-                                {"ok": True, "described": len(descs),
-                                 "cost_cts": round(meta["cost_cts"], 2)})
-                    conn.commit()
-                    _progress(f"  ✓ descriptions : {len(descs)} POI — "
-                              f"{meta['cost_cts']:.2f} ct")
+                    try:
+                        with conn.transaction():
+                            descs, meta = claude_enrich.describe_pois(
+                                all_editorial, prop["city"], prop["country_code"], ai)
+                            for p in all_editorial:
+                                if p["source_ref"] in descs:
+                                    p["description_md"] = descs[p["source_ref"]]
+                            for code in {p["category"] for p in all_editorial}:
+                                db.upsert_pois(conn, property_id, code,
+                                               [p for p in all_editorial
+                                                if p["category"] == code])
+                            db.record_costs(conn, property_id, job_id, "anthropic",
+                                            "describe_pois", meta["attempts"])
+                            summary["cost_cts"] += meta["cost_cts"]
+                            db.job_step(conn, job_id, "describe_pois",
+                                        {"ok": True, "described": len(descs),
+                                         "cost_cts": round(meta["cost_cts"], 2)})
+                        _progress(f"  ✓ descriptions : {len(descs)} POI — "
+                                  f"{meta['cost_cts']:.2f} ct")
+                    except Exception as de_exc:  # noqa: BLE001 — best-effort
+                        log.warning("Descriptions (%s) non résolues : %s",
+                                    prop["city"], de_exc)
+                        c = _record_failed_call_cost(conn, property_id, job_id,
+                                                     "describe_pois", de_exc)
+                        summary["cost_cts"] += c
+                        db.job_step(conn, job_id, "describe_pois",
+                                    {"ok": False, "described": 0,
+                                     "error": overpass._short(str(de_exc)),
+                                     "cost_cts": round(c, 2)})
+                        conn.commit()
+                        _progress(f"  ⚠ descriptions non résolues : "
+                                  f"{overpass._short(str(de_exc))} ({c:.2f} ct)")
 
                 # 4c. Complétion des fiches de SERVICE (V2-07 volet 2) : tel / site /
                 # horaires par recherche web, AVEC PREUVE. Coût maîtrisé : UN appel
@@ -328,7 +345,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     except Exception as sc_exc:  # noqa: BLE001 — best-effort
                         log.warning("Complétion services (%s / %s) non résolue : %s",
                                     cat, prop["city"], sc_exc)
-                        c = _record_web_failure_cost(conn, property_id, job_id,
+                        c = _record_failed_call_cost(conn, property_id, job_id,
                                                      "service_complete", sc_exc)
                         summary["cost_cts"] += c
                         svc_cost += c
@@ -379,7 +396,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     except Exception as bs_exc:  # noqa: BLE001 — best-effort
                         log.warning("Baby-sitting (%s) non résolu : %s",
                                     prop["city"], bs_exc)
-                        c = _record_web_failure_cost(conn, property_id, job_id,
+                        c = _record_failed_call_cost(conn, property_id, job_id,
                                                      "babysitter", bs_exc)
                         summary["cost_cts"] += c
                         db.job_step(conn, job_id, "babysitter",
@@ -464,7 +481,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     log.warning("Marchés (%s) non résolus : %s", prop["city"], mk_exc)
                     # Appel(s) web PAYÉ(S) malgré l'échec de parsing (volet 3bis) : le
                     # coût est comptabilisé (zéro écriture de données pour autant).
-                    c = _record_web_failure_cost(conn, property_id, job_id,
+                    c = _record_failed_call_cost(conn, property_id, job_id,
                                                  "markets", mk_exc)
                     summary["cost_cts"] += c
                     db.job_step(conn, job_id, "markets",
@@ -610,8 +627,8 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
                 for code in {p["category"] for p in editorial}:
                     db.upsert_pois(conn, property_id, code,
                                    [p for p in editorial if p["category"] == code])
-                db.record_cost(conn, property_id, job_id, "anthropic",
-                               "describe_pois", meta["units"], meta["cost_cts"])
+                db.record_costs(conn, property_id, job_id, "anthropic",
+                                "describe_pois", meta["attempts"])
 
             db.job_step(conn, job_id, f"retry_{attempt}",
                         {"ok": not failed, "pois": got,
