@@ -58,8 +58,28 @@ def offered_langs(conn, prop: dict) -> list[str]:
 
 
 def stay_natural_lang(conn, prop: dict, booking: dict) -> str:
-    """Langue « naturelle » du lien de séjour : `guest_lang` si offerte par le
-    guide, sinon la langue source du logement (invariant 15)."""
+    """Langue « naturelle » du lien de séjour ET de l'email — **le point de décision
+    de la précédence de langue §3.5 (acté V2-36)**.
+
+    Trois branches, dans l'ordre :
+      1. `guest_lang` **renseignée et offerte** par le guide (publiée + registre,
+         invariant 15) → elle gagne **partout** : email envoyé dans cette langue, lien
+         `/b/` ouvert dans cette langue (côté page, `app.js initLang` lit
+         `data-guest-lang` et fige la fiche — la devinette `navigator.language` ne s'y
+         superpose plus). C'est la fiche qui fait foi.
+      2. `guest_lang` **vide** → repli **langue du logement** (`default_lang`) pour
+         l'email (comportement du 16/08, Tracy Taylor : sans langue, l'email partait —
+         et part toujours — en français ; désormais documenté et **compensé** par la
+         relance « langue non précisée », `care.select_lang_reminders`). Côté lien
+         `/b/` nu, la devinette M-09 reste active (le serveur ne fige rien).
+      3. `guest_lang` renseignée mais **non offerte** → repli langue du logement aussi
+         (on ne promet pas une langue que le guide ne sait pas générer, invariant 15) —
+         sans relance : le locataire A précisé une langue, l'écart n'est pas un oubli.
+
+    Orthogonal à tout cela : un **clic explicite** du visiteur sur le sélecteur de
+    langue de la page gagne et est retenu (`?lang=`, clé `casaguide:lang:b` — §3.5
+    amendement 2). L'envoi email n'entre pas en jeu à ce moment (la page est déjà chez
+    le locataire)."""
     gl = (booking.get("guest_lang") or "").lower()
     return gl if gl in offered_langs(conn, prop) else (prop.get("default_lang") or "fr")
 
@@ -126,6 +146,7 @@ class AutoSendReport:
     candidates: int = 0          # séjours dans la fenêtre inspectés
     sent: int = 0                # emails envoyés + tracés
     reminders: int = 0           # éligibles sans email (relance calendrier)
+    lang_reminders: int = 0      # relances « langue non précisée » NEUVES (V2-36)
     failures: list[str] = field(default_factory=list)  # booking_id en échec SMTP
     failure_labels: list[str] = field(default_factory=list)  # même échecs, lisibles
 
@@ -153,11 +174,34 @@ def run_auto_send(conn, mailer, *, base_url: str, today: _dt.date,
 
     `today` est toujours passé (jamais d'horloge implicite — testable)."""
     base = base_url.rstrip("/")
+    # Fenêtre de sélection élargie d'UN jour : la relance « langue non précisée »
+    # (V2-36 pièce 1) prévient la VEILLE de l'entrée dans la fenêtre d'envoi (arrivée =
+    # today + horizon + 1). `select_auto_sends` re-borne les envois à `horizon` (un
+    # séjour à today+horizon+1 est relancé mais jamais envoyé).
     rows = repo.list_auto_send_candidates(
         conn, today=today,
-        horizon_end=today + _dt.timedelta(days=care.AUTO_SEND_HORIZON_DAYS))
+        horizon_end=today + _dt.timedelta(days=care.AUTO_SEND_HORIZON_DAYS + 1))
     plan = care.select_auto_sends(rows, today=today)
     report = AutoSendReport(candidates=len(rows), reminders=len(plan.to_remind))
+
+    # ── Pièce 1 : relances « langue non précisée » AVANT la passe d'envoi. ──────
+    # Idempotence par le registre `guide_reminders` : une relance par séjour et par
+    # motif, jamais une par jour (un run silencieux si la relance a déjà été émise).
+    for r in care.select_lang_reminders(rows, today=today):
+        pid, bid = str(r["property_id"]), str(r["id"])
+        days = (r["starts_on"] - today).days
+        when = "demain" if days > care.AUTO_SEND_HORIZON_DAYS else "aujourd'hui"
+        if dry_run:
+            log.info("[dry-run] relance : langue non précisée · %s · envoi prévu %s.",
+                     booking_label(r), when)
+            report.lang_reminders += 1
+            continue
+        if repo.record_reminder(conn, property_id=pid, booking_id=bid,
+                                code="lang_missing"):
+            conn.commit()
+            report.lang_reminders += 1
+            log.info("· relance : langue non précisée · %s · envoi prévu %s.",
+                     booking_label(r), when)
 
     for r in plan.to_remind:
         log.info("· relance : %s — dans la fenêtre, email manquant.",
@@ -167,8 +211,12 @@ def run_auto_send(conn, mailer, *, base_url: str, today: _dt.date,
         pid = str(booking["property_id"])
         bid = str(booking["id"])
         recipient = care.effective_email(booking)   # garanti non nul par le moteur
+        # Cci propriétaire (V2-36 pièce 2) : l'email auto part aussi en copie cachée à
+        # l'adresse du compte → il sait que c'est parti et peut vérifier le contenu.
+        owner_bcc = booking.get("owner_email") or None
         if dry_run:
-            log.info("[dry-run] envoi : %s → %s", booking_label(booking), recipient)
+            log.info("[dry-run] envoi : %s → %s%s", booking_label(booking), recipient,
+                     " (Cci propriétaire)" if owner_bcc else "")
             report.sent += 1
             continue
         try:
@@ -180,7 +228,7 @@ def run_auto_send(conn, mailer, *, base_url: str, today: _dt.date,
             lang = stay_natural_lang(conn, prop, booking)
             email = build_stay_email(conn, prop, booking, token=token, base=base,
                                      lang=lang)
-            mailer.send(recipient, email)
+            mailer.send(recipient, email, bcc=owner_bcc)
         except Exception:  # noqa: BLE001 — best-effort : jamais bloquant (V2-16)
             conn.rollback()   # défait l'éventuel stay_token créé (regénéré demain)
             log.warning("Envoi automatique du guide échoué (%s) — non tracé, "
@@ -194,5 +242,6 @@ def run_auto_send(conn, mailer, *, base_url: str, today: _dt.date,
                                lang=lang, recipient=recipient, origin="auto")
         conn.commit()
         report.sent += 1
-        log.info("· envoyé : %s → %s (%s)", booking_label(booking), recipient, lang)
+        log.info("· envoyé : %s → %s (%s)%s", booking_label(booking), recipient, lang,
+                 " (Cci propriétaire)" if owner_bcc else "")
     return report

@@ -12,6 +12,12 @@ et **pas déjà envoyé** — une ligne `guide_sends` kind='stay' (manuelle OU a
 le verrou d'idempotence. Un séjour éligible SANS email n'est pas envoyé mais relancé
 côté calendrier (pastille `missing_info`, esprit §0.6) — jamais d'email de relance.
 
+Deux **filets** (V2-36) : (1) une relance « langue non précisée » AVANT la passe
+d'envoi (`care.select_lang_reminders`) prévient la veille de l'entrée dans la fenêtre
+— idempotente par le registre `guide_reminders`, jamais bloquante (le repli
+langue-du-logement demeure) ; (2) l'email auto part avec le **propriétaire en Cci**
+(email du compte) — preuve de service rendu.
+
 La trace `guide_sends` origin='auto' est écrite **APRÈS un envoi réussi** avec un
 `conn.commit()` explicite ; un échec SMTP est journalisé, non tracé (ré-essai au
 passage du lendemain) et n'arrête jamais la boucle (best-effort, leçon V2-16).
@@ -88,15 +94,16 @@ def main(argv: list[str] | None = None) -> int:
             report = guidesend.run_auto_send(conn, mailer, base_url=base_url,
                                              today=_dt.date.today(),
                                              dry_run=args.dry_run)
-        except psycopg.errors.UndefinedColumn:
-            log.error("✗ colonnes d'envoi automatique absentes : appliquer la "
-                      "migration 025 (deploy.sh) avant de lancer les envois.")
+        except (psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable):
+            log.error("✗ schéma d'envoi automatique incomplet : appliquer les "
+                      "migrations 025 et 031 (deploy.sh) avant de lancer les envois.")
             return 2
 
     log.info("Terminé%s : %d candidat(s) dans la fenêtre → %d envoyé(s), "
-             "%d relance(s) (email manquant), %d échec(s).",
+             "%d relance(s) (email manquant), %d relance(s) langue, %d échec(s).",
              " (dry-run)" if args.dry_run else "", report.candidates,
-             report.sent, report.reminders, len(report.failures))
+             report.sent, report.reminders, report.lang_reminders,
+             len(report.failures))
     if report.failures:
         # Rapport lisible par un humain (audit UX, principe 0.4) : jamais l'UUID.
         log.warning("Séjours en échec (ré-essai demain) : %s",

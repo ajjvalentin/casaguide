@@ -3946,15 +3946,25 @@ def test_send_templates_kind_aware(client):
 # d'idempotence ; un échec SMTP ne trace rien et n'arrête pas la boucle.
 
 class _SelectiveMailer:
-    """Mailer inspectable : échoue pour les destinataires de `fail_for`."""
+    """Mailer inspectable : échoue pour les destinataires de `fail_for`. Enregistre le
+    Cci (V2-36 pièce 2) aligné sur `sent`."""
     def __init__(self, fail_for=()):
         self.sent = []
+        self.bccs = []
         self.fail_for = set(fail_for)
 
-    def send(self, to, email):
+    def send(self, to, email, *, bcc=None):
         if to in self.fail_for:
             raise RuntimeError("SMTP down for " + to)
         self.sent.append((to, email))
+        self.bccs.append(bcc)
+
+    def bcc_of(self, to):
+        """Cci enregistré pour le premier envoi à `to` (None si aucun)."""
+        for (t, _e), b in zip(self.sent, self.bccs):
+            if t == to:
+                return b
+        return None
 
 
 def _auto_booking(client, headers, pid, **over):
@@ -4087,6 +4097,109 @@ def test_auto_send_dry_run_sends_nothing(client):
         n = conn.execute("SELECT count(*) AS n FROM guide_sends WHERE booking_id = %s",
                          (b["id"],)).fetchone()["n"]
     assert n == 0                                # dry-run ne trace jamais
+
+
+# ── V2-36 : filets de l'envoi automatique J-7 ───────────────────────────────
+
+def _stay_at(client, headers, pid, days_out, **over):
+    """Séjour arrivant à J+`days_out` (contrôle fin de la fenêtre)."""
+    body = {"starts_on": str(_date.today() + _td(days=days_out)),
+            "ends_on": str(_date.today() + _td(days=days_out + 5)),
+            "nature": "reservation"}
+    body.update(over)
+    r = client.post(f"/api/properties/{pid}/bookings", headers=headers, json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_auto_send_bcc_owner_on_automatic_email(client):
+    """Pièce 2 — l'envoi automatique met le PROPRIÉTAIRE en Cci (email du compte) :
+    preuve de service rendu. Le Cci est dans l'enveloppe SMTP, jamais dans le corps."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    _offer_langs(pid, ["fr", "en"])
+    rcpt = f"guest-{uuid.uuid4().hex[:8]}@ex.com"
+    _stay_at(client, owner["headers"], pid, 3, guest_email=rcpt, guest_lang="en")
+    m = _SelectiveMailer()
+    with _dbdict() as conn:
+        guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                today=_date.today())
+    assert rcpt in [to for to, _ in m.sent]
+    assert m.bcc_of(rcpt) == owner["email"]          # Cci = email du compte
+    email = next(e for to, e in m.sent if to == rcpt)
+    assert owner["email"] not in email.html          # jamais dans le corps
+
+
+def test_lang_reminder_at_j8_recorded_pastille_no_send_and_idempotent(client):
+    """Pièce 1 — un séjour à J+8 sans langue déclenche une relance « langue non
+    précisée » (journal + pastille calendrier), SANS envoi anticipé (hors fenêtre
+    d'envoi J-7) ; la relance est idempotente au run suivant (registre)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])
+    pid = prop["id"]
+    _offer_langs(pid, ["fr", "en"])
+    rcpt = f"lang-{uuid.uuid4().hex[:8]}@ex.com"
+    # J+8 : la VEILLE de l'entrée dans la fenêtre d'envoi, langue vide.
+    b = _stay_at(client, owner["headers"], pid, 8, guest_name="Tracy Taylor",
+                 guest_email=rcpt, guest_lang=None)
+
+    m = _SelectiveMailer()
+    with _dbdict() as conn:
+        rep = guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                      today=_date.today())
+    assert rep.lang_reminders >= 1
+    assert rcpt not in [to for to, _ in m.sent]      # J+8 : hors fenêtre → jamais envoyé
+    with _dbdict() as conn:
+        n = conn.execute(
+            "SELECT count(*) AS n FROM guide_reminders "
+            "WHERE booking_id = %s AND code = 'lang_missing'", (b["id"],)).fetchone()["n"]
+        gs = conn.execute("SELECT count(*) AS n FROM guide_sends WHERE booking_id = %s",
+                          (b["id"],)).fetchone()["n"]
+    assert n == 1 and gs == 0
+
+    # Pastille au calendrier (même grammaire que « email manquant »).
+    view = client.get(f"/api/properties/{pid}/calendar", headers=owner["headers"]).json()
+    row = next(x for x in view["bookings"] if x["id"] == b["id"])
+    assert "auto_send_lang_missing" in {mi["code"] for mi in row["missing_info"]}
+
+    # Run suivant le même jour : relance idempotente (registre) → toujours UNE ligne,
+    # jamais une par jour (la NEUVE-té est verrouillée par UNIQUE (booking_id, code)).
+    m2 = _SelectiveMailer()
+    with _dbdict() as conn:
+        guidesend.run_auto_send(conn, m2, base_url="https://holaguia.com",
+                                today=_date.today())
+    with _dbdict() as conn:
+        n2 = conn.execute(
+            "SELECT count(*) AS n FROM guide_reminders "
+            "WHERE booking_id = %s AND code = 'lang_missing'", (b["id"],)).fetchone()["n"]
+    assert n2 == 1
+
+
+def test_auto_send_lang_selection_both_branches(client):
+    """§3.5 acté — la langue de l'email : `guest_lang` renseignée & offerte gagne
+    (sa langue) ; `guest_lang` vide → repli langue du logement (le cas du 16/08)."""
+    owner = register(client)
+    prop = _publish_prop(client, owner["headers"])   # langue source fr
+    pid = prop["id"]
+    _offer_langs(pid, ["fr", "en"])
+    en_rcpt = f"en-{uuid.uuid4().hex[:8]}@ex.com"
+    fr_rcpt = f"empty-{uuid.uuid4().hex[:8]}@ex.com"
+    b_en = _stay_at(client, owner["headers"], pid, 3, guest_email=en_rcpt,
+                    guest_lang="en")
+    b_fr = _stay_at(client, owner["headers"], pid, 4, guest_email=fr_rcpt,
+                    guest_lang=None)               # langue vide → logement (fr)
+    m = _SelectiveMailer()
+    with _dbdict() as conn:
+        guidesend.run_auto_send(conn, m, base_url="https://holaguia.com",
+                                today=_date.today())
+    with _dbdict() as conn:
+        lang_en = conn.execute("SELECT lang FROM guide_sends WHERE booking_id = %s",
+                               (b_en["id"],)).fetchone()["lang"]
+        lang_fr = conn.execute("SELECT lang FROM guide_sends WHERE booking_id = %s",
+                               (b_fr["id"],)).fetchone()["lang"]
+    assert lang_en == "en"       # renseignée & offerte → sa langue
+    assert lang_fr == "fr"       # vide → langue du logement (repli §3.5)
 
 
 def test_auto_send_opt_out_skips_property(client):

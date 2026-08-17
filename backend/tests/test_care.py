@@ -489,6 +489,69 @@ def test_whatsapp_queue_legacy_contact_phone_counts():
     assert [b["id"] for b in plan.to_whatsapp] == ["b1"]
 
 
+# ── Relance « langue non précisée » : sélection PURE (V2-36 pièce 1) ──────────
+
+def test_lang_reminder_flags_empty_lang_at_pre_window_day():
+    """Arrivée à J+8 (la veille de l'entrée dans la fenêtre d'envoi) avec langue vide
+    → relancée. La fenêtre de relance est élargie d'UN jour par rapport à l'envoi."""
+    j8 = _cand(id="j8", starts_on=TODAY + dt.timedelta(days=8), guest_lang=None)
+    ids = [b["id"] for b in care.select_lang_reminders([j8], today=TODAY)]
+    assert ids == ["j8"]
+    # …mais ce même séjour n'est JAMAIS envoyé (hors fenêtre d'envoi J-7).
+    assert care.select_auto_sends([j8], today=TODAY).to_send == []
+
+
+def test_lang_reminder_silent_when_lang_present():
+    """Langue précisée (même vide de sens : une chaîne non vide) → aucune relance."""
+    assert care.select_lang_reminders([_cand(guest_lang="en")], today=TODAY) == []
+    assert care.select_lang_reminders([_cand(guest_lang="de")], today=TODAY) == []
+
+
+def test_lang_reminder_catchup_in_window_and_bounds():
+    """Rattrapage : un séjour déjà DANS la fenêtre, langue vide, est relancé aussi.
+    Bornes : J+9 (au-delà de la veille) et une arrivée passée sont hors relance."""
+    in_win = _cand(id="in", starts_on=TODAY + dt.timedelta(days=3), guest_lang=None)
+    j9 = _cand(id="j9", starts_on=TODAY + dt.timedelta(days=9), guest_lang=None)
+    past = _cand(id="past", starts_on=TODAY - dt.timedelta(days=1), guest_lang=None)
+    ids = {b["id"] for b in care.select_lang_reminders([in_win, j9, past], today=TODAY)}
+    assert ids == {"in"}
+
+
+def test_lang_reminder_respects_optout_unpublished_sent_and_natures():
+    """Mêmes garde-fous que l'envoi : opt-out, non publié, déjà envoyé et natures non
+    occupées n'entrent jamais dans la relance langue."""
+    drop = [
+        _cand(id="off", guest_lang=None, auto_send_guide=False),
+        _cand(id="draft", guest_lang=None, published=False),
+        _cand(id="sent", guest_lang=None, already_sent=True),
+        _cand(id="works", guest_lang=None, nature="works"),
+        _cand(id="canc", guest_lang=None, status="cancelled"),
+    ]
+    keep = _cand(id="ok", guest_lang=None)
+    ids = [b["id"] for b in care.select_lang_reminders([keep] + drop, today=TODAY)]
+    assert ids == ["ok"]
+
+
+def test_missing_info_lang_pastille_in_extended_window():
+    """La pastille `auto_send_lang_missing` apparaît (fenêtre élargie d'un jour, J+8
+    compris) quand la langue est vide et l'envoi auto activé ; jamais si une langue
+    est précisée, ni une fois le guide parti."""
+    b = _bk(starts_on=TODAY + dt.timedelta(days=8), guest_email="g@ex.com",
+            guest_lang=None)
+    codes = {m["code"] for m in
+             care.missing_info(b, {}, today=TODAY, auto_send_guide=True)}
+    assert "auto_send_lang_missing" in codes
+    # Langue précisée → pas de pastille.
+    b2 = dict(b); b2["guest_lang"] = "en"
+    codes2 = {m["code"] for m in
+              care.missing_info(b2, {}, today=TODAY, auto_send_guide=True)}
+    assert "auto_send_lang_missing" not in codes2
+    # Guide déjà parti → la relance s'éteint (comme « email manquant », §4).
+    codes3 = {m["code"] for m in care.missing_info(
+        b, {}, today=TODAY, auto_send_guide=True, guide_already_sent=True)}
+    assert "auto_send_lang_missing" not in codes3
+
+
 def test_missing_info_email_reminder_suppressed_once_guide_sent():
     """§4 — dès qu'une ligne guide_sends stay existe (tout origin), le motif
     « email manquant » s'éteint : le guide est arrivé, on ne harcèle pas pour le

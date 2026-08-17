@@ -552,6 +552,7 @@ psql -d casaguide -f db/migrations/027_help_searches.sql # journal des recherche
 psql -d casaguide -f db/migrations/028_guide_send_whatsapp_assisted.sql # origine d'envoi 'whatsapp_assisted' (J-7 assisté WhatsApp, V2-32 volet 1)
 psql -d casaguide -f db/migrations/029_poi_weekday.sql # jour du marché : pois.weekday + weekday_note (+ backfill des marchés préfixés) (V2-33 volet 1)
 psql -d casaguide -f db/migrations/030_poi_completion_meta.sql # provenance de la complétion auto des fiches de service (pois.completion_meta) (V2-07 volet 2)
+psql -d casaguide -f db/migrations/031_guide_reminders.sql # registre des relances du planificateur d'envoi (idempotence « une par séjour/motif ») (V2-36 pièce 1)
 
 # Backend
 cd backend
@@ -1734,6 +1735,48 @@ exposé, peer auth).
     `auto_send_email_missing` UNIQUEMENT si le logement a l'option active ET que le
     séjour éligible entre dans la fenêtre J-7 SANS email — pastille sobre, jamais un
     email de relance séparé.
+- Filets de l'envoi automatique J-7 (V2-36, migration 031) : premier envoi auto réel
+  (16/08, Tracy Taylor) : succès technique mais `guest_lang` **vide** → email parti en
+  **français** à une Britannique. Trois filets/règles.
+  - **Relance « langue non précisée » (pièce 1)** : `care.select_lang_reminders` (PURE,
+    même famille que `to_remind`) relance tout séjour éligible, non envoyé, à `guest_lang`
+    vide, sur une fenêtre **élargie d'UN jour** (`today ≤ starts_on ≤ today+8`) — le `+1`
+    prévient **la veille** de l'entrée dans la fenêtre d'envoi (arrivée = `today+8`,
+    relancée mais **jamais envoyée** : `select_auto_sends` re-borne à `today+7`) ; le
+    reste couvre le **rattrapage** (déjà dans la fenêtre). `run_auto_send` calcule les
+    relances **AVANT la passe d'envoi** en élargissant le fetch (`horizon+1`). **Jamais
+    bloquante** : le repli langue-du-logement demeure (un guide en français vaut mieux
+    que pas de guide). **Idempotence** par le **registre `guide_reminders`** (migration
+    031, `UNIQUE (booking_id, code)`) : `repo.record_reminder` = INSERT … ON CONFLICT DO
+    NOTHING RETURNING → une relance **par séjour et par motif**, **pas une par jour** (le
+    run reste silencieux si déjà émise ; `conn.commit()` après chaque relance neuve).
+    **Pastille calendrier** `auto_send_lang_missing` dans `care.missing_info` (même
+    grammaire que `auto_send_email_missing`, fenêtre `+1` aussi) — c'est un **état**
+    calculé au rendu (n'a **pas** besoin du registre : elle disparaît quand la langue est
+    complétée ou le guide parti). Le front la rend **génériquement** (`m.message`, aucun
+    code neuf côté JS). Compteur `AutoSendReport.lang_reminders` (relances **neuves**) au
+    bilan du run.
+  - **Cci propriétaire (pièce 2)** : l'envoi **automatique** met le propriétaire en Cci
+    (email du compte, `owner_email` joint dans `list_auto_send_candidates`) — preuve de
+    service rendu. Le `Mailer.send` gagne un kwarg **`bcc`** optionnel ; `_build_message`
+    pose l'en-tête `Bcc` que `smtplib.send_message` inclut dans l'enveloppe SMTP puis
+    **retire du corps transmis** (le locataire ne voit jamais la copie). **Périmètre :
+    auto seul** (l'envoi manuel, c'est le propriétaire qui clique). Les fakes de test
+    d'un mailer nourri par `run_auto_send` doivent accepter `send(self, to, email, *,
+    bcc=None)` (sinon `TypeError` — seuls `run_auto_send` passe `bcc`).
+  - **§3.5 ACTÉ (pièce 3)** — précédence de langue de l'email + lien `/b/`, **point de
+    décision unique `guidesend.stay_natural_lang`** : (1) `guest_lang` renseignée **et
+    offerte** gagne **partout** (email + `/b/` figé par `data-guest-lang`) ; (2)
+    `guest_lang` **vide** → **langue du logement** (`default_lang`) pour l'email
+    (comportement du 16/08, désormais **documenté et compensé** par la pièce 1), et `/b/`
+    nu à la devinette M-09 ; (3) renseignée mais **non offerte** → langue du logement
+    aussi (invariant 15), **sans** relance (l'écart n'est pas un oubli). Orthogonal : un
+    **clic explicite** du visiteur gagne et est retenu (`?lang=`, clé `casaguide:lang:b`,
+    §3.5 amendement 2). Couvert : `test_care.py` (`select_lang_reminders` bornes/natures/
+    opt-out + pastille `missing_info`), `test_api.py` (Cci dans l'enveloppe, relance J+8
+    tracée+pastille+non envoyée+idempotente, sélection de langue les **deux** branches),
+    `test_mailer.py` (en-tête Bcc + ConsoleMailer). Back-office/ops seul → **aucun bump
+    SW**.
 - Fenêtre « Envoyer le guide » & précédence de langue (V2-23c, volet 3) :
   - **Les tokens de séjour/vitrine se génèrent À LA DEMANDE, côté propriétaire,
     jamais côté public.** `repo.ensure_stay_token`/`ensure_showcase_token` utilisent

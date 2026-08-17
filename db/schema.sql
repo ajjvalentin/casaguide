@@ -296,6 +296,19 @@ CREATE TABLE guide_sends (
 CREATE INDEX idx_guide_sends_property ON guide_sends(property_id, sent_at DESC);
 CREATE INDEX idx_guide_sends_booking ON guide_sends(booking_id, sent_at DESC);
 
+-- Registre des relances du planificateur d'envoi (V2-36 pièce 1). Une relance part
+-- UNE FOIS par séjour et par motif (verrou UNIQUE (booking_id, code)) — jamais une
+-- par jour ; même modèle que guide_sends. La pastille calendrier reste, elle,
+-- calculée au rendu (care.missing_info) et n'a pas besoin de ce registre.
+CREATE TABLE guide_reminders (
+    id          UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    property_id UUID NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    booking_id  UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    code        TEXT NOT NULL,            -- motif de relance (ex. 'lang_missing')
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (booking_id, code)
+);
+
 -- ============================================================================
 -- 3. STRUCTURE DU GUIDE — sections pré-définies (§4)
 -- ============================================================================

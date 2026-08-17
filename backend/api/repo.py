@@ -1214,6 +1214,21 @@ def record_guide_send(conn, *, property_id: str, booking_id: str | None,
         (property_id, booking_id, kind, lang, recipient, origin)).fetchone()
 
 
+def record_reminder(conn, *, property_id: str, booking_id: str, code: str) -> bool:
+    """Journalise une relance du planificateur d'envoi (V2-36 pièce 1) de façon
+    IDEMPOTENTE : une par séjour et par motif (contrainte UNIQUE (booking_id, code)).
+    Renvoie True si la relance est NEUVE (à journaliser et à compter dans le bilan du
+    run), False si elle avait déjà été émise (« pas une relance par jour » — le run
+    reste alors silencieux pour ce séjour). Même modèle de verrou que `guide_sends`."""
+    row = conn.execute(
+        """INSERT INTO guide_reminders (property_id, booking_id, code)
+           VALUES (%s, %s, %s)
+           ON CONFLICT (booking_id, code) DO NOTHING
+           RETURNING id""",
+        (property_id, booking_id, code)).fetchone()
+    return row is not None
+
+
 def record_help_search(conn, *, owner_id: str, query: str,
                        results_count: int) -> None:
     """Journalise une recherche d'aide (V2-31 volet 3a). Best-effort côté API :
@@ -1235,10 +1250,11 @@ def list_auto_send_candidates(conn, *, today, horizon_end) -> list[dict]:
     Chaque ligne porte les colonnes de séjour PLUS le contexte du logement dont le
     moteur et la construction de l'email ont besoin : `auto_send_guide`, `published`
     (booléen), `property_name`, `default_lang`, `published_langs`, `cover_media_id`,
-    et `already_sent` (une ligne `guide_sends` kind='stay' existe déjà pour ce
-    séjour — le **registre est le verrou d'idempotence**). La surcharge de code de
-    boîte à clés n'est JAMAIS sélectionnée (absente de `_BOOKING_COLS`, invariant
-    V2-23c volet 2)."""
+    `owner_email` (adresse du compte propriétaire → **Cci** de l'envoi automatique,
+    V2-36 pièce 2), et `already_sent` (une ligne `guide_sends` kind='stay' existe
+    déjà pour ce séjour — le **registre est le verrou d'idempotence**). La surcharge
+    de code de boîte à clés n'est JAMAIS sélectionnée (absente de `_BOOKING_COLS`,
+    invariant V2-23c volet 2)."""
     cols = ", ".join(f"b.{c.strip()}" for c in _BOOKING_COLS.split(","))
     return conn.execute(
         f"""SELECT {cols},
@@ -1248,11 +1264,13 @@ def list_auto_send_candidates(conn, *, today, horizon_end) -> list[dict]:
                    p.default_lang,
                    p.published_langs,
                    p.cover_media_id,
+                   o.email                         AS owner_email,
                    EXISTS (SELECT 1 FROM guide_sends gs
                            WHERE gs.booking_id = b.id AND gs.kind = 'stay')
                                                    AS already_sent
               FROM bookings b
               JOIN properties p ON p.id = b.property_id
+              JOIN owners o     ON o.id = p.owner_id
              WHERE b.starts_on >= %s AND b.starts_on <= %s
              ORDER BY b.starts_on, b.id""",
         (today, horizon_end)).fetchall()

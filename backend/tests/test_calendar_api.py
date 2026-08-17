@@ -1154,8 +1154,9 @@ def _count_stay_sends(bid):
 
 class _CapMailer:
     """Mailer capturant les destinataires servis (aucun envoi réel)."""
-    def __init__(self): self.sent = []
-    def send(self, to, email): self.sent.append((to, email))
+    def __init__(self): self.sent = []; self.bccs = []
+    def send(self, to, email, *, bcc=None):
+        self.sent.append((to, email)); self.bccs.append(bcc)
 
 
 def _run_auto_send(today):

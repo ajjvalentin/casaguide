@@ -54,3 +54,18 @@ def test_console_mailer_records_without_sending():
     e = emails.reset_password_email("https://x/y", None)
     m.send("dest@example.com", e)
     assert m.sent == [("dest@example.com", e)]
+    assert m.bccs == [None]
+
+
+def test_bcc_goes_to_envelope_not_transmitted_body(monkeypatch):
+    """V2-36 pièce 2 — un `bcc` pose l'en-tête Bcc (destinataire d'enveloppe), et
+    `smtplib.send_message` le RETIRE du message transmis (le destinataire principal ne
+    voit jamais la copie cachée). On vérifie la surface : en-tête posé + ConsoleMailer
+    qui enregistre le Cci."""
+    e = emails.reset_password_email("https://x/y", None)
+    msg = _build_message("no-reply@holaguia.com", "guest@ex.com", e,
+                         bcc="owner@ex.com")
+    assert msg["Bcc"] == "owner@ex.com"
+    m = ConsoleMailer()
+    m.send("guest@ex.com", e, bcc="owner@ex.com")
+    assert m.sent == [("guest@ex.com", e)] and m.bccs == ["owner@ex.com"]

@@ -583,6 +583,52 @@ harcèle plus pour le canal. Back-office seul (aucun bump de service worker).
 *Hors périmètre : l'API WhatsApp Business (volet 2), tout envoi automatique par
 WhatsApp, notification push/digest au propriétaire (la pastille calendrier suffit).*
 
+### 9.6 Filets de l'envoi automatique (V2-36, migration 031)
+
+Premier envoi auto réel (16/08, Tracy Taylor) : succès technique complet, mais
+`guest_lang` **vide** → l'email est parti **en français** à une Britannique. Deux
+filets, plus une règle actée.
+
+**Pièce 1 — relance « langue non précisée ».** Avant la passe d'envoi, `run_auto_send`
+calcule (`care.select_lang_reminders`, PURE, même famille que la relance « email
+manquant ») les séjours éligibles, non envoyés, à **langue vide**, sur une **fenêtre
+élargie d'un jour** : `today ≤ starts_on ≤ today+8`. Le `+1` **prévient la veille** de
+l'entrée dans la fenêtre d'envoi (arrivée = `today+8` : relancée, **jamais envoyée** —
+l'envoi reste borné à `today+7`) ; le reste **rattrape** les séjours déjà dans la
+fenêtre. Elle ne **bloque jamais** l'envoi (le repli langue-du-logement demeure — un
+guide en français vaut mieux que pas de guide) : elle **prévient**, pour laisser le
+temps de compléter avant le passage de 9 h.
+
+- **Journal** : « relance : langue non précisée · *séjour X* · envoi prévu demain » ;
+  compteur au bilan du run (« N relance(s) langue »).
+- **Pastille calendrier** `auto_send_lang_missing` (`care.missing_info`, même grammaire
+  et même fenêtre `+1` que « email manquant ») — un **état** calculé au rendu, rendu
+  génériquement par le front (aucun code JS neuf) ; il disparaît quand la langue est
+  complétée ou le guide parti.
+- **Idempotence** : une relance **par séjour et par motif**, jamais une par jour. Le
+  **registre `guide_reminders`** (migration 031, `UNIQUE (booking_id, code)`) est le
+  verrou — même modèle que `guide_sends`. `repo.record_reminder` (INSERT … ON CONFLICT
+  DO NOTHING) renvoie True seulement pour une relance **neuve** (journalisée + comptée) ;
+  le run reste silencieux si elle a déjà été émise.
+
+**Pièce 2 — Cci propriétaire.** L'email **automatique** part avec le propriétaire en
+**Cci** (email de son compte, `owner_email` joint dans `list_auto_send_candidates`) :
+preuve de service rendu, il peut vérifier le contenu. Le `Mailer.send` porte un kwarg
+`bcc` optionnel ; l'en-tête `Bcc` entre dans l'**enveloppe SMTP** puis est **retiré du
+corps** par `smtplib.send_message` (le locataire ne voit jamais la copie). **Auto seul**
+— l'envoi manuel, c'est le propriétaire qui clique.
+
+**Pièce 3 — §3.5 acté** (point de décision unique `guidesend.stay_natural_lang`, cf.
+§8.3) : `guest_lang` renseignée & offerte gagne partout (email + `/b/`) ; **vide → langue
+du logement** pour l'email (le cas du 16/08, désormais compensé par la pièce 1) et `/b/`
+nu à la devinette M-09 ; renseignée mais non offerte → langue du logement aussi, **sans**
+relance (le locataire a précisé une langue, l'écart n'est pas un oubli).
+
+Back-office/ops seul (aucun bump de service worker). Juge de paix : un séjour de test à
+`today+8` sans langue → au passage de 9 h, le journal porte la relance et la pastille
+apparaît, **sans aucun envoi** pour ce séjour ; le prochain envoi auto réel atterrit en
+Cci dans la boîte du propriétaire.
+
 
 ## 10. Photo de couverture du logement (V2-30)
 

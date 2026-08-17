@@ -370,6 +370,20 @@ def missing_info(booking: dict, care_rules: dict, *,
             "message": (f"Séjour {_horizon_phrase(days)} — email manquant pour "
                         "l'envoi automatique du guide.")})
 
+    # Langue du locataire non précisée (V2-36 pièce 1) : même famille que ci-dessus,
+    # sur une fenêtre élargie d'UN jour (le `+1` prévient la veille de l'entrée dans la
+    # fenêtre d'envoi). Sans blocage : le guide partira dans la langue du logement (repli
+    # §3.5) — la pastille prévient pour qu'on puisse compléter avant le passage de 9 h.
+    if (auto_send_guide
+            and not guide_already_sent
+            and today <= booking["starts_on"] <= today + _dt.timedelta(days=AUTO_SEND_HORIZON_DAYS + 1)
+            and not (booking.get("guest_lang") or "").strip()):
+        days = (booking["starts_on"] - today).days
+        out.append({
+            "code": "auto_send_lang_missing",
+            "message": (f"Séjour {_horizon_phrase(days)} — langue du locataire non "
+                        "précisée : le guide partira dans la langue du logement.")})
+
     return out
 
 
@@ -543,6 +557,43 @@ def select_auto_sends(candidates: list[dict], *, today: _dt.date,
         else:
             plan.to_send.append(b)
     return plan
+
+
+def select_lang_reminders(candidates: list[dict], *, today: _dt.date,
+                          horizon_days: int = AUTO_SEND_HORIZON_DAYS) -> list[dict]:
+    """Séjours à relancer parce que la **langue du locataire n'est pas précisée**
+    (V2-36 pièce 1, fonction **pure**). Premier envoi auto réel (16/08, Tracy Taylor) :
+    succès technique mais `guest_lang` vide → email parti en français à une Britannique.
+
+    Même famille que `to_remind` (email manquant), sur `guest_lang` cette fois, MAIS
+    sur une fenêtre élargie d'UN jour : `today <= starts_on <= today + horizon + 1`.
+    Le `+1` prévient la **veille** de l'entrée dans la fenêtre d'envoi (arrivée =
+    `today + horizon + 1`), pour laisser le temps de compléter avant le passage de
+    9 h ; le reste de la plage couvre le **rattrapage** (un séjour déjà dans la
+    fenêtre, pas encore envoyé, langue vide — signalé aussi). Une arrivée exactement
+    à `today + horizon + 1` est relancée mais **jamais envoyée** (hors fenêtre d'envoi
+    `select_auto_sends`, `horizon`) : la relance prévient, elle ne déclenche rien.
+
+    L'envoi lui-même n'est **jamais bloqué** par ce signal (le repli langue-du-logement
+    demeure — un guide en français vaut mieux que pas de guide). Ne filtre PAS sur la
+    présence d'email : « tout séjour … avec `guest_lang` vide ». Critères de sélection
+    par ailleurs identiques à `select_auto_sends` (auto activé + publié, occupé, pas
+    déjà envoyé)."""
+    lead_end = today + _dt.timedelta(days=horizon_days + 1)
+    out: list[dict] = []
+    for b in candidates:
+        if not b.get("auto_send_guide") or not b.get("published"):
+            continue
+        if not _is_occupied(b):
+            continue
+        if b.get("already_sent"):
+            continue
+        if not (today <= b["starts_on"] <= lead_end):
+            continue
+        if (b.get("guest_lang") or "").strip():   # langue précisée → rien à relancer
+            continue
+        out.append(b)
+    return out
 
 
 # ── Fenêtre de rotation : signal & recommandation d'effectif (§1.1) ──────────

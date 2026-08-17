@@ -35,18 +35,28 @@ class Email:
 
 
 class Mailer(Protocol):
-    """Interface minimale — une seule méthode, testable et remplaçable."""
+    """Interface minimale — une seule méthode, testable et remplaçable.
 
-    def send(self, to: str, email: Email) -> None: ...
+    `bcc` (V2-36 pièce 2) : copie cachée facultative — l'envoi automatique du guide y
+    met le propriétaire (email de son compte) pour preuve de service rendu. Kwarg
+    optionnel : les appelants qui n'en ont pas besoin (emails owner) l'ignorent."""
+
+    def send(self, to: str, email: Email, *, bcc: str | None = None) -> None: ...
 
 
-def _build_message(from_addr: str, to: str, email: Email) -> EmailMessage:
-    """Construit le message MIME (UTF-8, texte + HTML). Partagé par les deux mailers."""
+def _build_message(from_addr: str, to: str, email: Email,
+                   *, bcc: str | None = None) -> EmailMessage:
+    """Construit le message MIME (UTF-8, texte + HTML). Partagé par les deux mailers.
+    Un `bcc` renseigné pose un en-tête `Bcc` : `smtplib.send_message` l'inclut dans
+    les destinataires de l'enveloppe SMTP mais le **retire** du message transmis (le
+    destinataire principal ne voit jamais la copie cachée)."""
     msg = EmailMessage()
     # Normalise l'expéditeur : accepte « Nom <a@b> » comme « a@b ».
     name, addr = parseaddr(from_addr)
     msg["From"] = formataddr((name, addr)) if name else addr
     msg["To"] = to
+    if bcc:
+        msg["Bcc"] = bcc
     msg["Subject"] = email.subject
     msg.set_content(email.text)
     msg.add_alternative(email.html, subtype="html")
@@ -65,13 +75,14 @@ class SmtpMailer:
         self._from = from_addr
         self._timeout = timeout
 
-    def send(self, to: str, email: Email) -> None:
-        msg = _build_message(self._from, to, email)
+    def send(self, to: str, email: Email, *, bcc: str | None = None) -> None:
+        msg = _build_message(self._from, to, email, bcc=bcc)
         # SSL direct (implicite) sur 465 — pas de STARTTLS.
         with smtplib.SMTP_SSL(self._host, self._port, timeout=self._timeout) as smtp:
             smtp.login(self._user, self._password)
-            smtp.send_message(msg)
-        log.info("Email « %s » envoyé à %s via %s", email.subject, to, self._host)
+            smtp.send_message(msg)   # inclut le Bcc dans l'enveloppe, le retire du corps
+        log.info("Email « %s » envoyé à %s%s via %s", email.subject, to,
+                 " (Cci propriétaire)" if bcc else "", self._host)
 
 
 class ConsoleMailer:
@@ -84,9 +95,11 @@ class ConsoleMailer:
     def __init__(self, *, from_addr: str = "") -> None:
         self._from = from_addr
         self.sent: list[tuple[str, Email]] = []  # inspectable dans les tests
+        self.bccs: list[str | None] = []         # Cci aligné sur `sent` (V2-36)
 
-    def send(self, to: str, email: Email) -> None:
+    def send(self, to: str, email: Email, *, bcc: str | None = None) -> None:
         self.sent.append((to, email))
-        log.info("[ConsoleMailer] email « %s » → %s (non envoyé, repli console)",
-                 email.subject, to)
+        self.bccs.append(bcc)
+        log.info("[ConsoleMailer] email « %s » → %s%s (non envoyé, repli console)",
+                 email.subject, to, " (Cci propriétaire)" if bcc else "")
         log.debug("[ConsoleMailer] corps texte :\n%s", email.text)
