@@ -963,9 +963,9 @@ def set_poi_status(conn, property_id: str, poi_id: str, status: str) -> dict | N
     ).fetchone()
 
 
-_POI_EDITABLE = ("name", "address", "phone", "website", "opening_hours",
-                 "cuisine", "weekday", "weekday_note", "description_md",
-                 "owner_comment")
+_POI_EDITABLE = ("category_code", "name", "address", "phone", "website",
+                 "opening_hours", "cuisine", "weekday", "weekday_note",
+                 "description_md", "owner_comment")
 
 
 def edit_poi(conn, property_id: str, poi_id: str, fields: dict) -> dict | None:

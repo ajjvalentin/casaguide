@@ -104,7 +104,13 @@ def set_poi_status(poi_id: str, payload: PoiStatusIn, conn: Conn, prop: OwnedPro
 
 @router.patch("/{poi_id}", dependencies=[Depends(require_write_access)])
 def edit_poi(poi_id: str, payload: PoiEditIn, conn: Conn, prop: OwnedProperty):
-    """Édite un POI (nom, description, commentaire…) et le passe en 'edited'."""
+    """Édite un POI (catégorie, nom, description, commentaire…) et le passe en
+    'edited'. La requalification de catégorie (V2-37 volet 2) est validée contre
+    poi_categories (422 si inconnue)."""
     _require_poi(conn, str(prop["id"]), poi_id)
+    if (payload.category_code is not None
+            and not repo.poi_category_exists(conn, payload.category_code)):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Catégorie inconnue : {payload.category_code}")
     return repo.edit_poi(conn, str(prop["id"]), poi_id,
                          payload.model_dump(exclude_unset=True))

@@ -422,6 +422,38 @@ def test_enrich_then_validate_pois(client):
                        headers=intruder["headers"]).status_code == 404
 
 
+def test_edit_poi_recategorises_and_rejects_unknown_category(client):
+    """V2-37 volet 2 : la modale Modifier requalifie la CATÉGORIE (un champ de plus) —
+    persistée, statut « Modifié » ; une catégorie inconnue → 422 (validée contre
+    poi_categories)."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    _enrich_and_wait(client, owner["headers"], pid)
+    suggested = client.get(f"/api/properties/{pid}/pois?status=suggested",
+                           headers=owner["headers"]).json()
+    resto = next(p for p in suggested if p["name"] == "La Marejada")
+    assert resto["category_code"] == "restaurant"
+
+    # Catégorie inconnue → 422 (jamais persistée).
+    bad = client.patch(f"/api/properties/{pid}/pois/{resto['id']}",
+                       headers=owner["headers"], json={"category_code": "licorne"})
+    assert bad.status_code == 422
+
+    # Requalification valide → statut « Modifié ».
+    ok = client.patch(f"/api/properties/{pid}/pois/{resto['id']}",
+                      headers=owner["headers"], json={"category_code": "cafe"})
+    assert ok.status_code == 200 and ok.json()["status"] == "edited"
+
+    # Persistance + effet automatique (V2-24) : le POI est désormais un café, et sa
+    # métadonnée de catégorie (nom, mode de trajet via join poi_categories) suit.
+    got = next(p for p in client.get(f"/api/properties/{pid}/pois",
+                                     headers=owner["headers"]).json()
+               if p["id"] == resto["id"])
+    assert got["category_code"] == "cafe" and got["status"] == "edited"
+    assert got["category_name"]["fr"] == "Café"          # la métadonnée suit la catégorie
+
+
 def test_enrich_quota_enforced(client):
     """Le plan gratuit autorise 1 enrichissement/mois (§5.2). Refus propre 402
     `quota_exceeded` au-delà (V2-05a)."""

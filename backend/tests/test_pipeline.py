@@ -434,6 +434,46 @@ def test_apply_completion_never_overwrites_and_guards_status(property_id):
         assert got2["phone"] is None                     # 'suggested' intact
 
 
+# ── V2-37 volet 2 : requalification de catégorie (non-réversion + périmètre) ──
+
+def test_edited_category_survives_reenrichment_and_enters_completion(property_id,
+                                                                     http_client):
+    """Invariant critique : une catégorie REQUALIFIÉE par le propriétaire n'est jamais
+    annulée par un ré-enrichissement (les POI edited sont hors upsert — WHERE
+    status='suggested'). Effet automatique constaté : la fiche requalifiée entre dans
+    le périmètre de complétion de sa NOUVELLE catégorie au prochain run."""
+    from api import repo as api_repo
+    from enrich import claude_enrich as ce
+
+    # 1er run : La Marejada arrive en 'suggested' restaurant.
+    pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        poi = conn.execute("SELECT id, category_code, status FROM pois "
+                           "WHERE property_id=%s AND name='La Marejada'",
+                           (property_id,)).fetchone()
+        assert poi["category_code"] == "restaurant" and poi["status"] == "suggested"
+        # Le propriétaire requalifie restaurant → bar (l'édition force 'edited').
+        api_repo.edit_poi(conn, property_id, str(poi["id"]), {"category_code": "bar"})
+        conn.commit()
+
+    # Ré-enrichissement Overpass : node/333 revient sous 'restaurant'.
+    pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        got = conn.execute("SELECT category_code, status FROM pois "
+                           "WHERE property_id=%s AND name='La Marejada'",
+                           (property_id,)).fetchone()
+        assert got["category_code"] == "bar"      # NON réverti par le re-run
+        assert got["status"] == "edited"          # choix propriétaire conservé
+        # Effet automatique (V2-37 vol 1 + 2) : la fiche 'bar' (edited) entre dans le
+        # périmètre tél/site de sa nouvelle catégorie au prochain run de complétion.
+        todo = db.pois_needing_completion(conn, property_id, "bar",
+                                          ce.service_fields("bar"), 30)
+        assert any(t["name"] == "La Marejada" for t in todo)
+
+
 # ── V2-35 : script ops de recensement des descriptions de remplissage ─────────
 
 def test_ops_list_filler_descriptions_is_read_only(property_id):

@@ -1,11 +1,13 @@
 <!doctype html>
-<!-- Harnais headless de l'écran de validation des lieux (back-office, V2-33).
+<!-- Harnais headless de l'écran de validation des lieux (back-office, V2-33/V2-37).
      Pilote le VRAI /frontend/js/views/pois.js avec un fetch simulé (aucun réseau)
-     et un stub Leaflet universel (Proxy chaînable, aucune tuile). On teste le
-     champ « Jour du marché » (V2-33) SUR L'ARBRE RENDU (querySelector, leçon
-     V2-18c) : visible seulement quand la catégorie est « Marché local », à la
-     création ET à la modification. Verdict dans #result, lu par pois.test.mjs.
-     Hors frontend/ (jamais servi publiquement). -->
+     et un stub Leaflet universel (Proxy chaînable, aucune tuile). On teste SUR
+     L'ARBRE RENDU (querySelector, leçon V2-18c) : (1) le champ « Jour du marché »
+     (V2-33) visible seulement quand la catégorie est « Marché local », à la
+     création ET à la modification ; (2) le sélecteur de catégorie de la modale
+     « Modifier » (V2-37 volet 2) présent + pré-rempli, qui pilote le champ « Jour
+     du marché » et dont la valeur part dans le PATCH. Verdict dans #result, lu par
+     pois.test.mjs. Hors frontend/ (jamais servi publiquement). -->
 <meta charset="utf-8">
 <title>pois-harness</title>
 <div id="app"></div>
@@ -117,36 +119,60 @@ try {
   qa(".modal-back button").find((b) => /Annuler/.test(b.textContent)).click();
   await wait(20);
 
-  // ── Modale « Modifier » d'un MARCHÉ : le champ est présent et pré-rempli ──────
+  // ── Modale « Modifier » d'un MARCHÉ : sélecteur de catégorie + jour pré-remplis ─
   const marketCard = qa(".poi-card").find((c) => /Mercadillo de Zoco/.test(c.textContent));
   chk(!!marketCard, "carte du marché « Mercadillo de Zoco » listée");
   qa("button", marketCard).find((b) => /Modifier/.test(b.textContent)).click();
   await wait(50);
+  const editCat = q(".modal-back select");   // le 1er select de la modale = catégorie (V2-37)
+  chk(!!editCat && editCat.value === "market",
+    "Modifier : sélecteur de catégorie présent et PRÉ-REMPLI (« market »)");
   const editMarket = q(".modal-back .market-day-field");
   chk(!!editMarket && visible(editMarket),
-    "modification d'un marché : champ « Jour du marché » présent");
+    "modification d'un marché : champ « Jour du marché » présent et visible");
   const daySel = q(".modal-back .market-day-field select");
   chk(daySel && daySel.value === "6", "jour pré-rempli à « 6 » (samedi) depuis la fiche");
   const noteInp = q(".modal-back .market-day-field input");
   chk(noteInp && noteInp.value === "matin", "précision pré-remplie (« matin »)");
-  // Enregistrer → PATCH porte weekday/weekday_note.
+  // Requalifier vers « supermarket » masque le champ « Jour du marché » (il réagit).
+  editCat.value = "supermarket";
+  editCat.dispatchEvent(new Event("change", { bubbles: true }));
+  await wait(20);
+  chk(!visible(q(".modal-back .market-day-field")),
+    "Modifier : requalifier hors « market » masque le champ « Jour du marché »");
+  // Reviens sur « market » et enregistre → PATCH porte category_code ET weekday.
+  editCat.value = "market";
+  editCat.dispatchEvent(new Event("change", { bubbles: true }));
+  await wait(20);
   daySel.value = "3";   // change en mercredi
   qa(".modal-back button").find((b) => /Enregistrer/.test(b.textContent)).click();
   await wait(60);
-  chk(patched.some((p) => p.id === "m1" && p.weekday === 3),
-    "PATCH d'édition porte weekday=3");
+  chk(patched.some((p) => p.id === "m1" && p.category_code === "market" && p.weekday === 3),
+    "PATCH d'édition porte category_code='market' ET weekday=3");
   qa(".modal-back").forEach((n) => n.remove());
   await wait(20);
 
-  // ── Modale « Modifier » d'un RESTAURANT : PAS de champ « Jour du marché » ─────
+  // ── Modale « Modifier » d'un RESTAURANT : catégorie pré-remplie, jour masqué ───
   const restoCard = qa(".poi-card").find((c) => /La Marejada/.test(c.textContent));
   qa("button", restoCard).find((b) => /Modifier/.test(b.textContent)).click();
   await wait(50);
-  chk(!q(".modal-back .market-day-field"),
-    "modification d'un restaurant : AUCUN champ « Jour du marché »");
-  // (mais le champ « Type de cuisine » y est bien — cohérence des champs catégoriels)
-  chk(qa(".modal-back label").some((l) => /Type de cuisine/.test(l.textContent)),
-    "restaurant : le champ « Type de cuisine » est là (repère de non-régression)");
+  const restoCat = q(".modal-back select");
+  chk(!!restoCat && restoCat.value === "restaurant",
+    "Modifier : catégorie d'un restaurant pré-remplie (« restaurant »)");
+  chk(!visible(q(".modal-back .market-day-field")),
+    "restaurant : champ « Jour du marché » présent dans l'arbre mais MASQUÉ (non-market)");
+  // Requalifier restaurant → café (catégorie de complétion) et enregistrer : le PATCH
+  // porte la nouvelle catégorie (le back valide + classe « Modifié », le mode de
+  // trajet et la complétion suivent au prochain run — constaté côté back).
+  restoCat.value = "supermarket";   // (une catégorie non-market présente dans la liste)
+  restoCat.dispatchEvent(new Event("change", { bubbles: true }));
+  await wait(20);
+  qa(".modal-back button").find((b) => /Enregistrer/.test(b.textContent)).click();
+  await wait(60);
+  chk(patched.some((p) => p.id === "r1" && p.category_code === "supermarket"),
+    "PATCH de requalification d'un restaurant porte la NOUVELLE category_code");
+  // (le champ « Type de cuisine » reste là — cohérence des champs catégoriels)
+  qa(".modal-back").forEach((n) => n.remove());
 } catch (e) {
   pass = false;
   log.push("✗ exception : " + (e && e.message ? e.message : e));

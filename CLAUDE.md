@@ -1407,6 +1407,31 @@ exposé, peer auth).
   triées par distance (coup de cœur en tête). `map_data` porte `weekday`/
   `weekday_note` pour l'alignement client. Toute modif de `guide/*` → **bumper
   `sw.js VERSION`** (ici v30 → v31).
+- Requalifier une catégorie depuis « Modifier » (V2-37 volet 2) : la modale
+  Modifier porte un **sélecteur de catégorie** (`frontend/js/views/pois.js`
+  `buildCategorySelect`, MÊME liste que la modale Ajouter — chargée via
+  `api.poiCategories`, **jamais en dur**, invariant 8), pré-rempli sur
+  `p.category_code` ; il **pilote** le champ « Jour du marché » (visible ⇔ catégorie
+  choisie = `market`, comme dans Ajouter). Côté back, `PoiEditIn.category_code` est
+  **validé contre `poi_categories`** (422 `Catégorie inconnue` sinon) et ajouté à
+  `_POI_EDITABLE` → l'édition classe le lieu « Modifié » (un champ de plus). **Effets
+  À CONSTATER, jamais recodés** : le **mode de trajet** suit la catégorie (join
+  `poi_categories`, V2-24) ; la tuile/section du guide suit **au prochain rendu** ;
+  une fiche requalifiée vers une catégorie de complétion (ex. sight → restaurant/bar)
+  **entre dans le périmètre tél/site au prochain run** (V2-37 vol 1). **Invariant
+  critique** : une catégorie **éditée** n'est **jamais** révertie par un
+  ré-enrichissement — les POI `edited`/`approved` sont hors upsert
+  (`WHERE pois.status='suggested'`), la clé de conflit `(property_id, source,
+  source_ref)` n'inclut pas la catégorie → node/333 revient en `restaurant` sous OSM
+  mais le POI reste `bar`/`edited`. En **quittant `market`**, `weekday`/`weekday_note`
+  restent **STOCKÉS mais inertes** (le front ne les envoie pas, `edit_poi` ignore les
+  champs absents ; seul le rendu `market` les affiche) — choix assumé, aucune
+  effacement. Back-office seul (aucun bump SW, aucune migration : colonne existante).
+  Couvert par `test_api.py::test_edit_poi_recategorises_and_rejects_unknown_category`
+  (422 + persistance + statut Modifié + métadonnée qui suit),
+  `test_pipeline.py::test_edited_category_survives_reenrichment_and_enters_completion`
+  (non-réversion + périmètre de complétion) et le harnais `pois-harness.html`
+  (sélecteur présent+pré-rempli, toggle du jour, PATCH porte `category_code`).
 - Horaires au rendu (V2-34) : la donnée `pois.opening_hours` **STOCKÉE ne bouge
   pas** ; **au rendu SSR** (`guide_page._render_opening_hours`, appelé par
   `_render_pois`), tout horaire s'affiche en **texte humain localisé** + une mention

@@ -323,53 +323,92 @@ export async function renderPois(view, pid, initialFilter) {
     renderFilters(); renderList();
   }
 
-  function openEdit(p) {
+  // ── Catégories du seed (partagées entre Ajouter et Modifier) ───────────────
+  // Jamais de liste en dur (invariant 8) : les catégories viennent de l'API
+  // (poi_categories). Chargées une seule fois, réutilisées par les deux modales.
+  let categoriesCache = null;
+  async function ensureCategories() {
+    if (!categoriesCache) categoriesCache = await api.poiCategories(pid);
+    return categoriesCache;
+  }
+  // Sélecteur de catégorie (optgroup par chapitre), pré-sélectionné sur `selected`.
+  function buildCategorySelect(selected) {
+    const sel = el("select", {});
+    const byChapter = new Map();
+    for (const c of categoriesCache) {
+      if (!byChapter.has(c.chapter)) byChapter.set(c.chapter, []);
+      byChapter.get(c.chapter).push(c);
+    }
+    for (const [ch, list] of byChapter) {
+      const og = el("optgroup", { label: chapterMeta(ch).name });
+      for (const c of list) og.append(el("option", { value: c.code }, t(c.name_i18n, c.code)));
+      sel.append(og);
+    }
+    if (selected) sel.value = selected;
+    return sel;
+  }
+
+  async function openEdit(p) {
+    // V2-37 volet 2 : requalifier une fiche EN DEUX CLICS (sélecteur + Enregistrer)
+    // là où une requalification imposait rejet + recréation manuelle complète.
+    try { await ensureCategories(); }
+    catch (err) { return toast(err.message || "Catégories indisponibles.", "err"); }
+
     const f = (label, name, value, type = "text") => {
       const control = type === "textarea" ? el("textarea", {}) : el("input", { type });
       if (value != null) control.value = value;
       return { control, node: el("div", { class: "field" }, el("label", {}, label), control) };
     };
+    // Sélecteur de catégorie (MÊME liste que la modale Ajouter), pré-rempli.
+    const catSel = buildCategorySelect(p.category_code);
+    const catField = el("div", { class: "field" }, el("label", {}, "Catégorie"), catSel);
     const name = f("Nom", "name", p.name);
     const phone = f("Téléphone", "phone", p.phone, "tel");
     const website = f("Site web", "website", p.website, "url");
-    // Type de cuisine (M-16) : pertinent pour les restaurants (récolté depuis OSM,
-    // éditable). Alimente le filtre par cuisine du guide voyageur.
-    const isResto = p.category_code === "restaurant";
-    const cuisine = isResto
-      ? f("Type de cuisine (ex. italien, tapas, poisson)", "cuisine", p.cuisine)
-      : null;
-    // Jour du marché (V2-33) : seulement pour la catégorie « Marché local ».
-    const isMarket = p.category_code === "market";
-    const marketDay = isMarket ? marketDayField(p.weekday, p.weekday_note) : null;
+    // Type de cuisine (M-16) : toujours présent (comme dans Ajouter) ; le guide ne
+    // l'exploite que pour les restaurants (filtre par cuisine).
+    const cuisine = f("Type de cuisine (restaurants)", "cuisine", p.cuisine);
+    // Jour du marché (V2-33) : construit TOUJOURS, visible seulement si la catégorie
+    // CHOISIE est « Marché local » (réagit au sélecteur, comme dans Ajouter).
+    const marketDay = marketDayField(p.weekday, p.weekday_note);
     const desc = f("Description", "description_md", p.description_md, "textarea");
     const fav = f("Coup de cœur (commentaire personnel)", "owner_comment", p.owner_comment, "textarea");
     const save = el("button", { class: "btn btn-primary" }, "Enregistrer");
     const modal = openModal({
       title: "Modifier le lieu", size: "lg",
       body: el("form", { onSubmit: (e) => e.preventDefault() },
-        name.node,
+        catField, name.node,
         el("div", { class: "grid-2" }, phone.node, website.node),
-        cuisine ? cuisine.node : null,
-        marketDay ? marketDay.node : null,
+        cuisine.node, marketDay.node,
         desc.node, fav.node,
         el("div", { class: "notice notice-info" }, icon("info", 18),
           el("div", {}, "Enregistrer classe ce lieu comme « Modifié » : il sera retenu dans le guide."))),
       footer: [el("button", { class: "btn btn-ghost", type: "button", onClick: () => modal.close() }, "Annuler"), save],
     });
+    // Le « Jour du marché » réagit au sélecteur (visible ⇔ catégorie « Marché local »).
+    const syncMarketDay = () => marketDay.setVisible(catSel.value === "market");
+    catSel.addEventListener("change", syncMarketDay);
+    syncMarketDay();
+
     save.addEventListener("click", async () => {
       save.disabled = true; save.textContent = "Enregistrement…";
       try {
         const body = {
+          category_code: catSel.value,
           name: name.control.value.trim(),
           phone: phone.control.value.trim() || null,
           website: website.control.value.trim() || null,
+          cuisine: cuisine.control.value.trim().toLowerCase() || null,
           description_md: desc.control.value.trim() || null,
           owner_comment: fav.control.value.trim() || null,
         };
-        if (cuisine) body.cuisine = cuisine.control.value.trim().toLowerCase() || null;
-        if (marketDay) Object.assign(body, marketDay.get());
+        // Jour du marché : envoyé SEULEMENT si la catégorie EST « Marché local ». En
+        // quittant market, weekday/weekday_note restent STOCKÉS mais inertes (non
+        // effacés — seul le rendu market les affiche) : on ne les envoie pas, et
+        // l'édition ne les touche pas (edit_poi ignore les champs absents).
+        if (catSel.value === "market") Object.assign(body, marketDay.get());
         const res = await api.editPoi(pid, p.id, body);
-        Object.assign(p, body, { status: res.status });
+        Object.assign(p, body, { status: res.status, category_code: catSel.value });
         modal.close();
         toast("Lieu modifié.", "ok");
         renderFilters(); renderList();
@@ -381,13 +420,10 @@ export async function renderPois(view, pid, initialFilter) {
   }
 
   // ── Ajout manuel d'un lieu (M-22) ──────────────────────────────────────────
-  let categoriesCache = null;
 
   async function openAddPlace() {
-    if (!categoriesCache) {
-      try { categoriesCache = await api.poiCategories(pid); }
-      catch (err) { return toast(err.message || "Catégories indisponibles.", "err"); }
-    }
+    try { await ensureCategories(); }
+    catch (err) { return toast(err.message || "Catégories indisponibles.", "err"); }
 
     const f = (label, value, type = "text") => {
       const control = type === "textarea" ? el("textarea", {}) : el("input", { type });
@@ -395,18 +431,8 @@ export async function renderPois(view, pid, initialFilter) {
       return { control, node: el("div", { class: "field" }, el("label", {}, label), control) };
     };
 
-    // Sélecteur de catégorie (optgroup par chapitre)
-    const catSel = el("select", {});
-    const byChapter = new Map();
-    for (const c of categoriesCache) {
-      if (!byChapter.has(c.chapter)) byChapter.set(c.chapter, []);
-      byChapter.get(c.chapter).push(c);
-    }
-    for (const [ch, list] of byChapter) {
-      const og = el("optgroup", { label: chapterMeta(ch).name });
-      for (const c of list) og.append(el("option", { value: c.code }, t(c.name_i18n, c.code)));
-      catSel.append(og);
-    }
+    // Sélecteur de catégorie (MÊME liste que la modale Modifier — helper partagé).
+    const catSel = buildCategorySelect(null);
     const catField = el("div", { class: "field" }, el("label", {}, "Catégorie"), catSel);
 
     const name = f("Nom du lieu");

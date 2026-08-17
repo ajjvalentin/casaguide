@@ -358,6 +358,9 @@ class SectionUpsertIn(BaseModel):
 
 class PoiEditIn(BaseModel):
     """Édition d'un POI suggéré → passe le POI en statut 'edited'."""
+    # Requalification de catégorie (V2-37 volet 2) : validée contre poi_categories
+    # (422 si inconnue) ; l'édition classe le lieu « Modifié » comme les autres champs.
+    category_code: str | None = None
     name: str | None = None
     address: str | None = None
     phone: str | None = None
