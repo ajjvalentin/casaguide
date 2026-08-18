@@ -1,0 +1,106 @@
+<!doctype html>
+<!-- Harnais headless du signal actif « traductions périmées » (V2-41, pièce b).
+     Pilote le VRAI /frontend/js/views/editor.js avec un fetch simulé : après une
+     sauvegarde de section, si le badge de traductions est périmé, un bandeau non
+     bloquant « Retraduire maintenant » apparaît ; l'action déclenche la traduction
+     existante, puis le bandeau disparaît et le badge repasse « à jour » — SANS
+     rechargement. On teste SUR L'ARBRE RENDU (querySelector), jamais via une
+     référence interne (leçon V2-18c). Verdict dans #result, lu par
+     editor-retranslate.test.mjs. Hors frontend/ (jamais servi publiquement). -->
+<meta charset="utf-8">
+<title>editor-retranslate-harness</title>
+<div id="app"></div>
+<div id="toasts"></div>
+<pre id="result">PENDING</pre>
+<script type="module">
+import { renderEditor } from "/frontend/js/views/editor.js";
+import { setOwner, setToken } from "/frontend/js/store.js";
+
+const PROP = {
+  id: "p1", name: "Villa Test", status: "published",
+  address_line1: "Calle 1", postal_code: "03189", city: "Orihuela",
+  guide_token: "gtok", default_lang: "fr",
+  lat: 38.0, lon: -0.7, geocode_accuracy: "rooftop",   // → aucun bandeau de position
+  journey: { current_step: 6, done_count: 5, total: 7, sent: false,
+    next_action: { route: "#/x", label: "Publier" }, steps: [] },
+};
+const SECTIONS = { sections: [
+  { code: "A_arrival", chapter: "A", sort_order: 1, icon: "plane", audience: "guest",
+    name_i18n: { fr: "Arrivée & départ" }, description_i18n: { fr: "" },
+    is_visible: true, completed: true, is_sensitive: false, ai_enrichable: false,
+    content: {}, body_md: "Arrivée dès 16h.", field_schema: {} },
+] };
+
+// L'état de traduction bascule : périmé tant que la traduction n'a pas été lancée,
+// « à jour » dès qu'un POST /translate est passé (le job simulé).
+let translated = false;
+let translateCalls = 0;
+const savePuts = [];
+
+window.fetch = async (path, opts = {}) => {
+  const p = String(path).split("?")[0];
+  const method = (opts.method || "GET").toUpperCase();
+  const json = (b) => new Response(JSON.stringify(b), { headers: { "Content-Type": "application/json" } });
+  if (p === "/api/properties/p1" && method === "GET") return json(PROP);
+  if (p === "/api/properties/p1/sections") return json(SECTIONS);
+  if (p === "/api/properties/p1/secrets") return json({});
+  if (p === "/api/properties/p1/media") return json([]);
+  if (p === "/api/properties/p1/translation-status") {
+    return json(translated
+      ? { total: 3, up_to_date: true, outdated: 0, langs: { es: { fresh: 3, stale: 0 } } }
+      : { total: 3, up_to_date: false, outdated: 2, langs: { es: { fresh: 1, stale: 2 } } });
+  }
+  if (/^\/api\/properties\/p1\/sections\/A_arrival$/.test(p) && method === "PUT") {
+    savePuts.push(JSON.parse(opts.body)); return json({ ok: true });
+  }
+  if (p === "/api/properties/p1/translate" && method === "POST") {
+    translateCalls += 1; translated = true;   // le job simulé met tout à jour
+    return json({ job_id: "j1", status: "accepted" });
+  }
+  throw new Error("fetch inattendu : " + method + " " + p);
+};
+setToken("t");
+
+const log = [];
+let pass = true;
+const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const q = (sel, root = document) => root.querySelector(sel);
+const qa = (sel, root = document) => [...root.querySelectorAll(sel)];
+const trLabel = () => { const b = qa("button").find((x) => q(".tr-label", x)); return b ? q(".tr-label", b).textContent : ""; };
+
+try {
+  setOwner({ staff_access: true, on_trial: false });
+  await renderEditor(document.getElementById("app"), "p1", undefined);
+  await wait(80);
+
+  // Au départ : badge périmé (« 2 à traduire »), AUCUN bandeau (pas encore sauvé).
+  chk(/à traduire/.test(trLabel()), "badge périmé au chargement (« 2 à traduire »)");
+  chk(!q(".tr-banner .notice"), "aucun bandeau tant qu'aucune sauvegarde n'a eu lieu");
+
+  // Sauvegarde de la section courante → le bandeau doit apparaître.
+  const saveBtn = qa(".section-panel button").find((b) => /Enregistrer/.test(b.textContent));
+  chk(!!saveBtn, "bouton « Enregistrer » de la section présent");
+  saveBtn.click();
+  await wait(250);   // PUT + refreshJourney + maybePromptRetranslate (fetch status)
+  chk(savePuts.length === 1, "la section a bien été enregistrée (PUT)");
+  const bannerNotice = q(".tr-banner .notice");
+  chk(!!bannerNotice, "après sauvegarde : bandeau « traductions périmées » affiché");
+  chk(/périmées/.test(bannerNotice ? bannerNotice.textContent : ""),
+    "le bandeau annonce des traductions périmées");
+  const retryBtn = bannerNotice && qa("button", bannerNotice).find((b) => /Retraduire maintenant/.test(b.textContent));
+  chk(!!retryBtn, "bandeau : bouton « Retraduire maintenant » présent");
+
+  // Action → traduction existante déclenchée, puis badge « à jour » + bandeau retiré,
+  // le tout SANS rechargement de page.
+  retryBtn.click();
+  await wait(1700);   // runTranslate : POST /translate + un sondage (~1,2 s) + ré-éval
+  chk(translateCalls === 1, "« Retraduire maintenant » déclenche l'action de traduction (POST /translate)");
+  chk(!q(".tr-banner .notice"), "à la fin : le bandeau a disparu (sans reload)");
+  chk(/à jour/.test(trLabel()), "à la fin : le badge repasse « Traductions à jour » (v=" + trLabel() + ")");
+} catch (e) {
+  pass = false;
+  log.push("✗ exception : " + (e && e.message ? e.message : e) + "\n" + (e && e.stack ? e.stack : ""));
+}
+document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>

@@ -86,6 +86,7 @@ export async function renderEditor(view, pid, context) {
   const headerRight = el("div", { class: "row" });
   let translationBtn = null;   // bouton « Traductions » (M-09), (re)créé au rendu
   const banner = el("div", {});
+  const trBanner = el("div", { class: "tr-banner" });   // signal actif « traductions périmées » (V2-41)
   const sidebar = el("nav", { class: "card chapters", style: { padding: "10px" } });
   const panel = el("section", { class: "card section-panel" });
   // En-tête adapté au contexte (V2-26b) : le cahier d'équipe est un autre produit.
@@ -102,7 +103,7 @@ export async function renderEditor(view, pid, context) {
         el("div", { class: "row", style: { gap: "12px", alignItems: "center", flexWrap: "wrap" } },
           statusBadge, progressSlot)),
       headerRight),
-    banner,
+    banner, trBanner,
     el("div", { class: "editor", style: { marginTop: "18px" } }, sidebar, panel));
   mount(view, page);
 
@@ -331,6 +332,10 @@ export async function renderEditor(view, pid, context) {
       renderSidebar();
       // Le fil peut avancer (wifi/accès posés, contenu ajouté) → recompute serveur.
       refreshJourney();
+      // Signal actif (V2-41) : le contenu a changé → une traduction peut être
+      // périmée. On re-consulte le badge et, le cas échéant, on invite à retraduire
+      // (un bandeau par sauvegarde, jamais de spam).
+      maybePromptRetranslate();
     } catch (err) {
       // Refus lié au plan (essai expiré, quota, cahier équipe réservé au Pro —
       // staff_locked) → encart d'upsell propre plutôt qu'un toast brut (V2-18b).
@@ -428,6 +433,36 @@ export async function renderEditor(view, pid, context) {
       refreshTranslationState();
       refreshIcons();
     }
+  }
+
+  // Signal actif « traductions périmées » (V2-41). Après une sauvegarde de section,
+  // on re-consulte le badge : si des traductions sont périmées, on affiche un bandeau
+  // non bloquant proposant de retraduire tout de suite. À la fin (ou si plus rien n'est
+  // périmé), le bandeau disparaît sans recharger la page ; sinon le badge « X à
+  // traduire » reste le rappel passif. Ne concerne que le guide voyageur publié.
+  async function maybePromptRetranslate() {
+    clear(trBanner);
+    if (isStaffCtx || property.status !== "published") return;
+    let st;
+    try { st = await api.translationStatus(pid); }
+    catch (_) { return; }   // non bloquant : l'échec du sondage ne gêne pas l'édition
+    if (!st || !st.outdated) return;   // rien de périmé → aucun bandeau
+    const retryBtn = el("button", { class: "btn btn-sm btn-primary" },
+      icon("languages", 16), "Retraduire maintenant");
+    retryBtn.addEventListener("click", async () => {
+      retryBtn.disabled = true; mount(retryBtn, icon("loader", 16), "Retraduction…");
+      refreshIcons();
+      await runTranslate();          // action de traduction existante (même que le bouton)
+      maybePromptRetranslate();      // ré-évalue : bandeau retiré si à jour, sinon reste
+    });
+    trBanner.append(el("div",
+      { class: "notice notice-warn", style: { marginTop: "14px", alignItems: "center" } },
+      icon("languages", 18),
+      el("div", { style: { flex: "1" } },
+        el("b", {}, "Ce contenu a changé — "),
+        "des traductions sont périmées."),
+      retryBtn));
+    refreshIcons();
   }
 
   // Lien du cahier d'équipe /s/{staff_token} (utilisé par le bloc de transmission).

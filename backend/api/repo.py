@@ -1494,40 +1494,56 @@ def guide_poi_translations(conn, property_id: str, lang: str) -> dict:
 def translation_status(conn, property_id: str, langs: list[str]) -> dict:
     """État des traductions pour le bouton « Mettre à jour les traductions » de
     l'éditeur : par langue, nombre d'éléments (sections + POI) à jour et périmés,
-    et total d'éléments porteurs de texte.
+    et total d'éléments porteurs de texte. **Lecture seule** : ne nettoie rien.
 
     « Périmé » agrège le manquant (jamais traduit) et le périmé (source modifiée) :
-    ce sont les éléments que la prochaine traduction (re)traitera."""
+    ce sont les éléments que la prochaine traduction (re)traitera.
+
+    **Parité stricte du prédicat (V2-41).** Les fraîches se comptent sur EXACTEMENT
+    le même prédicat que le total — le parent doit encore être un porteur de texte
+    (section guest à contenu, POI retenu à texte). Sans ce re-filtrage, une ligne
+    `*_translations` **orpheline** (le parent a perdu son texte à une purge, mais la
+    ligne fraîche subsiste) était comptée fraîche → le badge disait « à jour » en
+    masquant une vraie périmée (bug prouvé le 18/08 : 42 orphelines sur Ballarin).
+    Le plafond `min(fresh, total)` qui cachait l'écart est **supprimé** : avec le
+    prédicat aligné, `fresh ≤ total` par construction (PK `(parent, lang)` → au plus
+    une ligne par parent) ; si `fresh > total` survenait, ce serait un bug à VOIR."""
+    # `text_carrier` : prédicat commun total ⇄ fraîches (la seule source de vérité).
+    _SEC_HAS_TEXT = "(ps.body_md IS NOT NULL OR ps.content <> '{}'::jsonb)"
+    _POI_HAS_TEXT = "(p.description_md IS NOT NULL OR p.owner_comment IS NOT NULL)"
+
     # Éléments source porteurs de texte (sections guest avec contenu, POI retenus).
-    sec_ids = [str(r["section_id"]) for r in conn.execute(
-        """SELECT ps.id AS section_id FROM property_sections ps
-           JOIN section_templates t ON t.code = ps.template_code
-           WHERE ps.property_id = %s AND t.audience = 'guest'
-             AND (ps.body_md IS NOT NULL OR ps.content <> '{}'::jsonb)""",
-        (property_id,)).fetchall()]
-    poi_ids = [str(r["id"]) for r in conn.execute(
-        """SELECT id FROM pois WHERE property_id = %s
-             AND status IN ('approved', 'edited')
-             AND (description_md IS NOT NULL OR owner_comment IS NOT NULL)""",
-        (property_id,)).fetchall()]
-    total = len(sec_ids) + len(poi_ids)
+    sec_total = conn.execute(
+        f"""SELECT count(*) AS n FROM property_sections ps
+            JOIN section_templates t ON t.code = ps.template_code
+            WHERE ps.property_id = %s AND t.audience = 'guest' AND {_SEC_HAS_TEXT}""",
+        (property_id,)).fetchone()["n"]
+    poi_total = conn.execute(
+        f"""SELECT count(*) AS n FROM pois p WHERE p.property_id = %s
+              AND p.status IN ('approved', 'edited') AND {_POI_HAS_TEXT}""",
+        (property_id,)).fetchone()["n"]
+    total = sec_total + poi_total
 
     per_lang: dict[str, dict] = {}
     for lang in langs:
+        # Fraîches : MÊME jointure + MÊME prédicat de porteur de texte que le total,
+        # plus `is_stale = FALSE`. Une ligne dont le parent n'a plus de texte (orpheline)
+        # ne compte donc RIEN — ni au total, ni aux fraîches.
         fresh = conn.execute(
-            """SELECT count(*) AS n FROM section_translations st
-               JOIN property_sections ps ON ps.id = st.section_id
-               JOIN section_templates t ON t.code = ps.template_code
-               WHERE ps.property_id = %s AND st.lang = %s
-                 AND t.audience = 'guest' AND st.is_stale = FALSE""",
+            f"""SELECT count(*) AS n FROM section_translations st
+                JOIN property_sections ps ON ps.id = st.section_id
+                JOIN section_templates t ON t.code = ps.template_code
+                WHERE ps.property_id = %s AND st.lang = %s
+                  AND t.audience = 'guest' AND {_SEC_HAS_TEXT}
+                  AND st.is_stale = FALSE""",
             (property_id, lang)).fetchone()["n"]
         fresh += conn.execute(
-            """SELECT count(*) AS n FROM poi_translations pt
-               JOIN pois p ON p.id = pt.poi_id
-               WHERE p.property_id = %s AND pt.lang = %s
-                 AND p.status IN ('approved', 'edited') AND pt.is_stale = FALSE""",
+            f"""SELECT count(*) AS n FROM poi_translations pt
+                JOIN pois p ON p.id = pt.poi_id
+                WHERE p.property_id = %s AND pt.lang = %s
+                  AND p.status IN ('approved', 'edited') AND {_POI_HAS_TEXT}
+                  AND pt.is_stale = FALSE""",
             (property_id, lang)).fetchone()["n"]
-        fresh = min(fresh, total)
         per_lang[lang] = {"fresh": fresh, "stale": total - fresh}
     outdated = sum(v["stale"] for v in per_lang.values())
     return {"langs": per_lang, "total": total, "outdated": outdated,

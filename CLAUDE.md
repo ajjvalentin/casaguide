@@ -1352,6 +1352,27 @@ exposé, peer auth).
   Traducteur **injectable** (`translate.run(..., translator=)`) pour tester sans
   réseau. Le cahier `/s` (M-13) reste **en français** (hors périmètre). NB : les
   `area_facts` sont générés en français ; seuls leurs intitulés sont localisés.
+- Badge de traductions : le compte doit dire vrai (V2-41) : `repo.translation_status`
+  alimente le badge « Traductions à jour / X à traduire » et le signal actif de
+  l'éditeur. **Parité STRICTE du prédicat** : les **fraîches** se comptent sur
+  EXACTEMENT le même prédicat que le **total** — section **guest** + porteuse de texte
+  (`body_md` non nul OU `content <> '{}'`) ; POI **retenu** (`approved`/`edited`) +
+  porteur de texte (`description_md` OU `owner_comment`). Une ligne `*_translations`
+  **orpheline** (le parent a perdu son texte à une purge, mais la ligne fraîche
+  subsiste — 42 sur Ballarin le 18/08) ne doit compter **rien**. **Ne jamais** compter
+  les fraîches sans re-filtrer sur « le parent porte encore du texte » ni remettre le
+  plafond `min(fresh, total)` qui **masquait** l'écart (PK `(parent, lang)` → `fresh ≤
+  total` par construction avec le prédicat aligné ; si `fresh > total`, c'est un bug à
+  VOIR). La fonction est **en lecture seule** — aucun nettoyage dans le calcul ; le job
+  de traduction supprime les orphelines quand il passe (« texte retiré »). **Signal
+  actif (front)** : après une sauvegarde de section réussie, l'éditeur re-consulte le
+  statut (`editor.js maybePromptRetranslate`) et, si `outdated > 0`, affiche **un**
+  bandeau `.tr-banner .notice notice-warn` « Retraduire maintenant » (déclenche
+  `runTranslate`, l'action du bouton existant) ; à la fin le bandeau disparaît et le
+  badge repasse « à jour » **sans reload** ; ignoré, le badge périmé reste le rappel
+  passif. Back-office seul (aucun bump SW, aucune migration). Couvert par `test_api.py`
+  (orpheline fraîche ne masque plus une périmée — rouge sur l'ancien code ; orpheline
+  seule → total juste ; parité staff/POI rejeté) et `frontend-tests/editor-retranslate`.
 - Cahier équipe d'entretien (M-13) : sections `audience='staff'` (chapitre « S »
   du seed), servies sur `/s/{staff_token}` (`repo.staff_sections` / `staff_media`,
   rendu `guide_page.render_staff`). Ce cahier est **accessible même en brouillon**

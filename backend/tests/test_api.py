@@ -2006,6 +2006,92 @@ def test_translation_is_stale_and_retranslation_is_targeted(client):
     assert "[es] Nouvel horaire : arrivée dès 17h." in es_fresh
 
 
+# ── V2-41 : le badge de traductions dit vrai (parité stricte du prédicat) ─────
+
+def _dict_conn():
+    return psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row)
+
+
+def test_translation_status_orphan_fresh_row_never_masks_a_stale_element(client):
+    """LE CŒUR (V2-41) : une ligne de traduction FRAÎCHE ORPHELINE (son parent a perdu
+    son texte à une purge, mais la ligne subsiste) ne doit JAMAIS masquer un élément
+    réellement périmé. Avant le correctif, `translation_status` la comptait fraîche puis
+    plafonnait `fresh = min(fresh, total)` → « à jour » MENSONGER (rouge sur l'ancien
+    code, vert sur le neuf)."""
+    owner = register(client)
+    pid = make_property(client, owner["headers"])["id"]
+    with _dict_conn() as conn:
+        # Section guest À TEXTE, dont la traduction 'es' est PÉRIMÉE.
+        sid = conn.execute(
+            "INSERT INTO property_sections (property_id, template_code, content, body_md) "
+            "VALUES (%s, 'A_checkin', '{}'::jsonb, 'Arrivée dès 16h') RETURNING id",
+            (pid,)).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO section_translations (section_id, lang, body_md, is_stale) "
+            "VALUES (%s, 'es', '[es] Arrivée', TRUE)", (sid,))
+        # ORPHELINE : POI retenu SANS texte (description/coup de cœur NULL) mais avec
+        # une traduction 'es' encore FRAÎCHE (relique d'une purge de description).
+        poid = conn.execute(
+            "INSERT INTO pois (property_id, category_code, name, geom, source, status, "
+            "description_md, owner_comment) VALUES (%s, 'restaurant', 'Ex-resto', "
+            "ST_SetSRID(ST_MakePoint(-0.7,37.9),4326), 'owner', 'approved', NULL, NULL) "
+            "RETURNING id", (pid,)).fetchone()["id"]
+        conn.execute(
+            "INSERT INTO poi_translations (poi_id, lang, description_md, is_stale) "
+            "VALUES (%s, 'es', '[es] fantôme', FALSE)", (poid,))
+        conn.commit()
+        st = repo.translation_status(conn, pid, ["es"])
+    assert st["total"] == 1                 # seule la section à texte compte
+    assert st["up_to_date"] is False        # la périmée n'est PLUS masquée
+    assert st["outdated"] == 1
+    assert st["langs"]["es"] == {"fresh": 0, "stale": 1}
+
+
+def test_translation_status_lone_orphan_counts_nothing(client):
+    """Une orpheline SEULE (parent sans texte, ligne fraîche) ne compte NI au total, NI
+    aux fraîches, NI aux périmées — total juste, badge « aucun texte à traduire »."""
+    owner = register(client)
+    pid = make_property(client, owner["headers"])["id"]
+    with _dict_conn() as conn:
+        poid = conn.execute(
+            "INSERT INTO pois (property_id, category_code, name, geom, source, status, "
+            "description_md, owner_comment) VALUES (%s, 'restaurant', 'Ex', "
+            "ST_SetSRID(ST_MakePoint(-0.7,37.9),4326), 'owner', 'approved', NULL, NULL) "
+            "RETURNING id", (pid,)).fetchone()["id"]
+        conn.execute("INSERT INTO poi_translations (poi_id, lang, is_stale) "
+                     "VALUES (%s, 'es', FALSE)", (poid,))
+        conn.commit()
+        st = repo.translation_status(conn, pid, ["es"])
+    assert st["total"] == 0 and st["outdated"] == 0 and st["up_to_date"] is True
+    assert st["langs"]["es"] == {"fresh": 0, "stale": 0}
+
+
+def test_translation_status_predicate_parity_ignores_staff_and_rejected(client):
+    """Parité stricte total ⇄ fraîches : une section STAFF ou un POI REJETÉ, même avec
+    une ligne de traduction fraîche, ne comptent RIEN — ni au total, ni aux fraîches."""
+    owner = register(client)
+    pid = make_property(client, owner["headers"])["id"]
+    with _dict_conn() as conn:
+        # Section STAFF (audience='staff') à texte + traduction fraîche.
+        sid = conn.execute(
+            "INSERT INTO property_sections (property_id, template_code, body_md) "
+            "VALUES (%s, 'S_checklist', 'Check-list') RETURNING id", (pid,)).fetchone()["id"]
+        conn.execute("INSERT INTO section_translations (section_id, lang, is_stale) "
+                     "VALUES (%s, 'es', FALSE)", (sid,))
+        # POI REJETÉ à texte + traduction fraîche.
+        poid = conn.execute(
+            "INSERT INTO pois (property_id, category_code, name, geom, source, status, "
+            "description_md) VALUES (%s, 'restaurant', 'Rej', "
+            "ST_SetSRID(ST_MakePoint(-0.7,37.9),4326), 'owner', 'rejected', 'desc') "
+            "RETURNING id", (pid,)).fetchone()["id"]
+        conn.execute("INSERT INTO poi_translations (poi_id, lang, is_stale) "
+                     "VALUES (%s, 'es', FALSE)", (poid,))
+        conn.commit()
+        st = repo.translation_status(conn, pid, ["es"])
+    assert st["total"] == 0 and st["outdated"] == 0
+    assert st["langs"]["es"]["fresh"] == 0
+
+
 def test_translate_excluded_from_enrich_quota(client):
     """Traduire ne consomme pas le quota d'enrichissement (M-09). Plan solo
     (enrich_quota=3, langs=5 → traduction autorisée)."""
