@@ -92,13 +92,20 @@ def find_suspect_communes(conn, property_id: str | None = None) -> list[dict]:
     voit pas ce défaut (« restaurant à Ardon » pour un lieu de Vétroz) — c'est le seul
     moyen d'attraper l'existant. Heuristique prudente (l'humain tranche) : la ville du
     logement apparaît comme MOT dans la description, PAS dans le nom du POI, et la ville
-    de l'adresse en DIFFÈRE. LECTURE SEULE."""
+    de l'adresse en DIFFÈRE. LECTURE SEULE.
+
+    V2-38 : la commune du lieu vient de `pois.locality` quand elle existe (donnée
+    PROPRE, écrite par l'enrichissement/la saisie), avec repli sur le parsing d'adresse
+    pour l'existant non encore rempli — les faux positifs « rue prise pour commune »
+    (Calle Rossini, Route des Ecluses) disparaissent au fil du remplissage de `locality`."""
     rows = conn.execute(
-        """SELECT p.id AS poi_id, p.name AS poi_name, p.description_md, p.address,
+        """SELECT p.id AS poi_id, p.name AS poi_name, p.description_md,
+                  p.address, p.locality,
                   pr.id AS property_id, pr.name AS property_name, pr.city AS property_city
            FROM pois p JOIN properties pr ON pr.id = p.property_id
            WHERE p.description_md IS NOT NULL AND p.description_md <> ''
-             AND p.address IS NOT NULL AND p.address <> ''
+             AND ((p.address IS NOT NULL AND p.address <> '')
+                  OR (p.locality IS NOT NULL AND p.locality <> ''))
              AND (%(pid)s::uuid IS NULL OR pr.id = %(pid)s::uuid)
            ORDER BY pr.name, p.name""",
         {"pid": property_id},
@@ -106,7 +113,8 @@ def find_suspect_communes(conn, property_id: str | None = None) -> list[dict]:
     by_prop: dict[str, dict] = {}
     for r in rows:
         city = (r["property_city"] or "").strip()
-        addr_city = _address_locality(r["address"])
+        # Localité propre d'abord (V2-38), repli parsing d'adresse pour l'existant.
+        addr_city = (r["locality"] or "").strip() or _address_locality(r["address"])
         if not city or not addr_city or _norm(addr_city) == _norm(city):
             continue                                  # même commune (ou indécidable) → OK
         word = re.compile(rf"\b{re.escape(_norm(city))}\b")

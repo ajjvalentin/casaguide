@@ -62,13 +62,14 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
     for p in pois:
         conn.execute(
             """INSERT INTO pois (property_id, category_code, name, geom, address,
-                                 phone, website, opening_hours, cuisine, description_md,
+                                 locality, phone, website, opening_hours, cuisine,
+                                 description_md,
                                  dist_walk_m, walk_min, dist_drive_m, drive_min,
                                  source, source_ref, fetched_at, status)
                VALUES (%(pid)s, %(cat)s, %(name)s,
                        ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
-                       %(address)s, %(phone)s, %(website)s, %(opening_hours)s,
-                       %(cuisine)s, %(description_md)s,
+                       %(address)s, %(locality)s, %(phone)s, %(website)s,
+                       %(opening_hours)s, %(cuisine)s, %(description_md)s,
                        %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
                        %(source)s, %(source_ref)s, now(), 'suggested')
                ON CONFLICT (property_id, source, source_ref)
@@ -78,6 +79,9 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                    address = EXCLUDED.address, phone = EXCLUDED.phone,
                    website = EXCLUDED.website, opening_hours = EXCLUDED.opening_hours,
                    cuisine = COALESCE(EXCLUDED.cuisine, pois.cuisine),
+                   -- Localité (V2-38) : COMPLÈTE le NULL, jamais n'écrase (motif du volet 2 —
+                   -- une localité déjà posée, saisie ou obtenue, survit au ré-enrichissement).
+                   locality = COALESCE(EXCLUDED.locality, pois.locality),
                    description_md = COALESCE(EXCLUDED.description_md, pois.description_md),
                    dist_walk_m = EXCLUDED.dist_walk_m, walk_min = EXCLUDED.walk_min,
                    dist_drive_m = EXCLUDED.dist_drive_m, drive_min = EXCLUDED.drive_min,
@@ -86,7 +90,8 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
             {
                 "pid": property_id, "cat": category,
                 "name": p["name"], "lat": p["lat"], "lon": p["lon"],
-                "address": p.get("address"), "phone": p.get("phone"),
+                "address": p.get("address"), "locality": p.get("locality"),
+                "phone": p.get("phone"),
                 "website": p.get("website"), "opening_hours": p.get("opening_hours"),
                 "cuisine": p.get("cuisine"),
                 "description_md": p.get("description_md"),

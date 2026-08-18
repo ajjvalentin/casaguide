@@ -363,6 +363,9 @@ export async function renderPois(view, pid, initialFilter) {
     const catSel = buildCategorySelect(p.category_code);
     const catField = el("div", { class: "field" }, el("label", {}, "Catégorie"), catSel);
     const name = f("Nom", "name", p.name);
+    // Commune / localité (V2-38) : affichée sur la carte du guide quand elle diffère
+    // de la commune du logement. Optionnelle ; l'édition classe « Modifié ».
+    const locality = f("Commune / localité", "locality", p.locality);
     const phone = f("Téléphone", "phone", p.phone, "tel");
     const website = f("Site web", "website", p.website, "url");
     // Type de cuisine (M-16) : toujours présent (comme dans Ajouter) ; le guide ne
@@ -377,7 +380,7 @@ export async function renderPois(view, pid, initialFilter) {
     const modal = openModal({
       title: "Modifier le lieu", size: "lg",
       body: el("form", { onSubmit: (e) => e.preventDefault() },
-        catField, name.node,
+        catField, name.node, locality.node,
         el("div", { class: "grid-2" }, phone.node, website.node),
         cuisine.node, marketDay.node,
         desc.node, fav.node,
@@ -396,6 +399,7 @@ export async function renderPois(view, pid, initialFilter) {
         const body = {
           category_code: catSel.value,
           name: name.control.value.trim(),
+          locality: locality.control.value.trim() || null,
           phone: phone.control.value.trim() || null,
           website: website.control.value.trim() || null,
           cuisine: cuisine.control.value.trim().toLowerCase() || null,
@@ -437,6 +441,9 @@ export async function renderPois(view, pid, initialFilter) {
 
     const name = f("Nom du lieu");
     const address = f("Adresse");
+    // Commune / localité (V2-38) : pré-remplie depuis le géocodeur s'il connaît la
+    // ville ; affichée sur la carte du guide quand elle diffère de la commune du logement.
+    const locality = f("Commune / localité");
     const phone = f("Téléphone", null, "tel");
     const website = f("Site web", null, "url");
     const cuisine = f("Type de cuisine (restaurants)");
@@ -463,7 +470,7 @@ export async function renderPois(view, pid, initialFilter) {
         el("hr", { class: "soft" }),
         catField, name.node,
         el("div", { class: "grid-2" }, phone.node, website.node),
-        address.node, cuisine.node, marketDay.node, comment.node,
+        address.node, locality.node, cuisine.node, marketDay.node, comment.node,
         el("label", { class: "muted", style: { fontSize: "12.5px" } },
           "Position (faites glisser le marqueur ou cliquez sur la carte)"),
         mapEl2, coordLine),
@@ -491,6 +498,7 @@ export async function renderPois(view, pid, initialFilter) {
       if (c.category_code) { catSel.value = c.category_code; syncMarketDay(); }
       name.control.value = c.name || "";
       address.control.value = c.address || "";
+      locality.control.value = c.locality || "";   // V2-38 : ville devinée par Nominatim
       phone.control.value = c.phone || "";
       website.control.value = c.website || "";
       if (c.lat != null && c.lon != null) {
@@ -531,6 +539,7 @@ export async function renderPois(view, pid, initialFilter) {
           category_code: catSel.value, name: nm,
           lat, lon,
           address: address.control.value.trim() || null,
+          locality: locality.control.value.trim() || null,
           phone: phone.control.value.trim() || null,
           website: website.control.value.trim() || null,
           cuisine: cuisine.control.value.trim().toLowerCase() || null,

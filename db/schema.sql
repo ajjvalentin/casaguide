@@ -437,6 +437,7 @@ CREATE TABLE pois (
     name           TEXT NOT NULL,
     geom           GEOMETRY(Point, 4326) NOT NULL,
     address        TEXT,
+    locality       TEXT,                            -- commune / localité du lieu (addr:city), V2-38
     phone          TEXT,
     website        TEXT,
     opening_hours  TEXT,                           -- format OSM ou texte libre

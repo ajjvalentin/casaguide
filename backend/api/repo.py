@@ -780,7 +780,7 @@ _POI_SELECT = (
     "SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name, "
     "c.icon AS category_icon, c.map_color, c.travel_mode, "
     "p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon, "
-    "p.address, p.phone, p.website, p.opening_hours, p.cuisine, "
+    "p.address, p.locality, p.phone, p.website, p.opening_hours, p.cuisine, "
     "p.weekday, p.weekday_note, p.description_md, "
     "p.owner_comment, p.price_level, "
     "p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min, "
@@ -824,13 +824,13 @@ def create_manual_poi(conn, property_id: str, data: dict) -> dict | None:
     calculées sont passées dans `data` (dist_*_m / *_min)."""
     row = conn.execute(
         """INSERT INTO pois (property_id, category_code, name, geom, address,
-               phone, website, opening_hours, cuisine, weekday, weekday_note,
+               locality, phone, website, opening_hours, cuisine, weekday, weekday_note,
                description_md, owner_comment,
                dist_walk_m, walk_min, dist_drive_m, drive_min,
                source, status, fetched_at)
            VALUES (%(pid)s, %(category_code)s, %(name)s,
                ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
-               %(address)s, %(phone)s, %(website)s, %(opening_hours)s,
+               %(address)s, %(locality)s, %(phone)s, %(website)s, %(opening_hours)s,
                %(cuisine)s, %(weekday)s, %(weekday_note)s,
                %(description_md)s, %(owner_comment)s,
                %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
@@ -963,7 +963,7 @@ def set_poi_status(conn, property_id: str, poi_id: str, status: str) -> dict | N
     ).fetchone()
 
 
-_POI_EDITABLE = ("category_code", "name", "address", "phone", "website",
+_POI_EDITABLE = ("category_code", "name", "address", "locality", "phone", "website",
                  "opening_hours", "cuisine", "weekday", "weekday_note",
                  "description_md", "owner_comment")
 
@@ -1347,7 +1347,7 @@ def guide_pois(conn, property_id: str) -> list[dict]:
         """SELECT p.id, p.category_code, c.chapter, c.name_i18n AS category_name,
                   c.icon AS category_icon, c.map_color, c.travel_mode,
                   p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon,
-                  p.address, p.phone, p.website, p.opening_hours, p.cuisine,
+                  p.address, p.locality, p.phone, p.website, p.opening_hours, p.cuisine,
                   p.weekday, p.weekday_note,
                   p.description_md, p.owner_comment, p.price_level,
                   p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min,

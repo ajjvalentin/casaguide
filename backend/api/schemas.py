@@ -363,6 +363,9 @@ class PoiEditIn(BaseModel):
     category_code: str | None = None
     name: str | None = None
     address: str | None = None
+    # Commune / localité du lieu (V2-38) : affichée sur la carte du guide quand elle
+    # diffère de la commune du logement. L'édition classe « Modifié » comme tout champ.
+    locality: str | None = None
     phone: str | None = None
     website: str | None = None
     opening_hours: str | None = None
@@ -385,6 +388,7 @@ class PoiCandidateOut(BaseModel):
     quel : le propriétaire l'édite puis valide via POST /pois."""
     name: str
     address: str | None = None
+    locality: str | None = None   # commune devinée par Nominatim (pré-remplissage, V2-38)
     lat: float
     lon: float
     category_code: str
@@ -400,6 +404,7 @@ class PoiCreateIn(BaseModel):
     lat: float = Field(ge=-90, le=90)
     lon: float = Field(ge=-180, le=180)
     address: str | None = None
+    locality: str | None = None   # commune / localité du lieu (V2-38)
     phone: str | None = None
     website: str | None = None
     opening_hours: str | None = None

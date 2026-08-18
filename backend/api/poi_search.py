@@ -55,11 +55,18 @@ def _candidate(row: dict) -> dict:
     """Normalise un résultat Nominatim en candidat POID (nom, adresse, position,
     catégorie devinée, téléphone/site depuis extratags)."""
     extra = row.get("extratags") or {}
+    addr = row.get("address") or {}
     display = row.get("display_name") or ""
     name = row.get("name") or (display.split(",")[0].strip() if display else "")
+    # Commune / localité (V2-38) : Nominatim la porte déjà dans `address` (avec
+    # `addressdetails=1`). On pré-remplit le champ « Commune / localité » de l'ajout
+    # manuel — au premier des champs de granularité communale.
+    locality = (addr.get("city") or addr.get("town") or addr.get("village")
+                or addr.get("municipality") or None)
     return {
         "name": name,
         "address": display or None,
+        "locality": locality,
         "lat": float(row["lat"]),
         "lon": float(row["lon"]),
         "category_code": guess_category(row.get("class") or row.get("category"),

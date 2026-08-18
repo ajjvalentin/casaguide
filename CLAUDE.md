@@ -553,6 +553,7 @@ psql -d casaguide -f db/migrations/028_guide_send_whatsapp_assisted.sql # origin
 psql -d casaguide -f db/migrations/029_poi_weekday.sql # jour du marché : pois.weekday + weekday_note (+ backfill des marchés préfixés) (V2-33 volet 1)
 psql -d casaguide -f db/migrations/030_poi_completion_meta.sql # provenance de la complétion auto des fiches de service (pois.completion_meta) (V2-07 volet 2)
 psql -d casaguide -f db/migrations/031_guide_reminders.sql # registre des relances du planificateur d'envoi (idempotence « une par séjour/motif ») (V2-36 pièce 1)
+psql -d casaguide -f db/migrations/032_poi_locality.sql # commune/localité d'un POI (pois.locality, affichée sur la carte du guide) (V2-38 pièce 1)
 
 # Backend
 cd backend
@@ -1454,6 +1455,34 @@ exposé, peer auth).
   `test_pipeline.py::test_edited_category_survives_reenrichment_and_enters_completion`
   (non-réversion + périmètre de complétion) et le harnais `pois-harness.html`
   (sélecteur présent+pré-rempli, toggle du jour, PATCH porte `category_code`).
+- Commune / localité d'un POI (V2-38, migration 032) : `pois.locality` TEXT NULL —
+  le voyageur doit savoir si un lieu est au village ou à trois communes. Le pipeline
+  récoltait déjà `addr:city` (`overpass._element_to_poi`, champ `locality`) mais ne le
+  stockait pas ; désormais l'upsert d'enrichissement l'écrit en **COALESCE**
+  (`locality = COALESCE(EXCLUDED.locality, pois.locality)`, motif de `cuisine`) :
+  **compléter le NULL, jamais l'effacer** au re-run (une localité déjà posée survit) ;
+  et un POI **édité** est de toute façon hors upsert (invariant 1). Saisissable dans
+  Ajouter/Modifier (`PoiCreateIn`/`PoiEditIn` + `_POI_EDITABLE`, l'édition classe
+  « Modifié ») ; le géocodeur Nominatim **pré-remplit** (`poi_search._candidate` lit
+  `address.city|town|village|municipality`). **Affichage (pièce 2, RÈGLE ANTI-BRUIT
+  ASSUMÉE)** : la localité se rend sur la carte de lieu **SSR** (`_render_pois`, à côté
+  du nom, « · Vétroz », même ton muet que la mention d'horaires) **UNIQUEMENT si elle
+  DIFFÈRE de la commune du logement** (`_norm_locality` = casse+accents ignorés,
+  comparée à `prop["city"]`) — « Vétroz » sur une carte d'Ardon informe, « Ardon »
+  partout serait du bruit. Le nom propre est montré **tel quel** (i18n des noms de
+  communes hors périmètre). **SSR SEUL, style INLINE** (`color:var(--muted)`) → aucune
+  touche à `guide.css`, aucun map_data, donc **AUCUN bump SW** (les popups de carte ne
+  montrent pas la localité — choix documenté). **Recensement (pièce 3)** :
+  `ops/list_filler_descriptions.find_suspect_communes` s'appuie sur `pois.locality`
+  quand elle existe (donnée propre), **repli** sur le parsing d'adresse pour l'existant
+  → les faux positifs « rue prise pour commune » (Calle Rossini, Route des Ecluses)
+  disparaissent au fil du remplissage. Migration 032 idempotente (`ADD COLUMN IF NOT
+  EXISTS`, DEFAULT NULL, **aucun backfill** — remplissage progressif). Couvert par
+  `test_pipeline.py` (localité posée end-to-end + COALESCE jamais effacée + édition
+  survit au re-run + recensement préfère `locality`), `test_api.py` (create/edit portent
+  le champ + SSR différente affichée), `test_guide_page.py` (différente affichée,
+  identique masquée, absente rien) et `pois-harness.html` (champ présent/pré-rempli,
+  PATCH porte `locality`).
 - Horaires au rendu (V2-34) : la donnée `pois.opening_hours` **STOCKÉE ne bouge
   pas** ; **au rendu SSR** (`guide_page._render_opening_hours`, appelé par
   `_render_pois`), tout horaire s'affiche en **texte humain localisé** + une mention

@@ -50,6 +50,7 @@ OVERPASS_BY_CATEGORY = {
         {"type": "node", "id": 333, "lat": 37.9290, "lon": -0.7470,
          "tags": {"name": "La Marejada", "amenity": "restaurant",
                   "website": "https://lamarejada.example",
+                  "addr:city": "Torrevieja",   # V2-38 : commune voisine (≠ logement)
                   "cuisine": "Seafood;spanish"}},  # M-16 : multi-valué à normaliser
     ],
 }
@@ -474,6 +475,54 @@ def test_edited_category_survives_reenrichment_and_enters_completion(property_id
         assert any(t["name"] == "La Marejada" for t in todo)
 
 
+# ── V2-38 : localité (commune) d'un POI — stockage, COALESCE, non-réversion ──
+
+def test_locality_stored_by_enrichment_and_never_wiped(property_id, http_client):
+    """La localité (addr:city) est POSÉE par l'enrichissement (end-to-end) et n'est
+    JAMAIS effacée par un re-run où OSM ne la fournirait plus (COALESCE, motif du
+    volet 2 : compléter le NULL, jamais écraser)."""
+    from enrich import db as edb
+
+    pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        row = conn.execute("SELECT id, locality, source_ref FROM pois "
+                           "WHERE property_id=%s AND name='La Marejada'",
+                           (property_id,)).fetchone()
+        assert row["locality"] == "Torrevieja"        # posée end-to-end (addr:city)
+        # Re-upsert du MÊME POI suggéré sans localité (OSM ne la renvoie plus).
+        edb.upsert_pois(conn, property_id, "restaurant", [{
+            "name": "La Marejada", "lat": 37.929, "lon": -0.747,
+            "source": "osm", "source_ref": row["source_ref"], "locality": None}])
+        conn.commit()
+        kept = conn.execute("SELECT locality FROM pois WHERE id=%s",
+                            (row["id"],)).fetchone()["locality"]
+        assert kept == "Torrevieja"                   # COALESCE : jamais effacée
+
+
+def test_edited_locality_survives_reenrichment(property_id, http_client):
+    """Une localité SAISIE/CORRIGÉE par le propriétaire (statut 'edited') n'est jamais
+    révertie par un ré-enrichissement (edited hors upsert — motif du test catégorie)."""
+    from api import repo as api_repo
+
+    pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        poi = conn.execute("SELECT id FROM pois WHERE property_id=%s "
+                           "AND name='La Marejada'", (property_id,)).fetchone()
+        # Le propriétaire corrige la commune (Street View : c'est Vétroz, pas Ardon).
+        api_repo.edit_poi(conn, property_id, str(poi["id"]), {"locality": "Vétroz"})
+        conn.commit()
+
+    pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        got = conn.execute("SELECT locality, status FROM pois WHERE property_id=%s "
+                           "AND name='La Marejada'", (property_id,)).fetchone()
+        assert got["locality"] == "Vétroz"            # NON réverti par le re-run
+        assert got["status"] == "edited"
+
+
 # ── V2-35 : script ops de recensement des descriptions de remplissage ─────────
 
 def test_ops_list_filler_descriptions_is_read_only(property_id):
@@ -549,6 +598,43 @@ def test_ops_suspect_communes_flags_wrong_city_read_only(property_id):
         n = conn.execute("SELECT count(*) c FROM pois WHERE property_id=%s "
                          "AND description_md IS NOT NULL", (property_id,)).fetchone()["c"]
         assert n == 2
+
+
+def test_suspect_communes_prefers_locality_over_address_parsing(property_id):
+    """V2-38 pièce 3 : la commune vient de `pois.locality` quand elle existe (donnée
+    propre) — le faux positif « rue prise pour commune » (adresse sans virgule ni
+    chiffre) disparaît. Repli parsing d'adresse pour l'existant sans locality."""
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ops"))
+    mod = importlib.import_module("list_filler_descriptions")
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        # locality PROPRE = commune du logement → JAMAIS suspect, même si l'adresse
+        # ('Route des Ecluses', sans virgule ni chiffre) serait prise pour une ville.
+        conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom, address,
+                                 locality, description_md, source, source_ref, status)
+               VALUES (%s, 'restaurant', 'Le Central',
+                       ST_SetSRID(ST_MakePoint(-0.7, 37.9), 4326),
+                       'Route des Ecluses', 'Orihuela Costa',
+                       'Bistrot à Orihuela Costa, cuisine du marché.',
+                       'osm', 'loc1', 'approved')""", (property_id,))
+        # Sans locality, l'adresse ('5 Calle X, Torrevieja') fait foi (repli) → SUSPECT.
+        conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom, address,
+                                 description_md, source, source_ref, status)
+               VALUES (%s, 'restaurant', 'Le Régence',
+                       ST_SetSRID(ST_MakePoint(-0.7, 37.9), 4326),
+                       '5 Calle X, Torrevieja',
+                       'Restaurant à Orihuela Costa réputé.', 'osm', 'loc2', 'approved')""",
+            (property_id,))
+        conn.commit()
+        suspects = mod.find_suspect_communes(conn, property_id)
+        conn.commit()
+
+    flagged = {it["name"] for g in suspects for it in g["items"]}
+    assert "Le Régence" in flagged        # repli adresse → détecté
+    assert "Le Central" not in flagged    # locality propre = commune → jamais suspect
 
 
 # ── V2-07 volet 3 : marchés hebdomadaires (découverte + matérialisation) ──────

@@ -1,0 +1,12 @@
+-- V2-38 pièce 1 — commune / localité d'un POI.
+--
+-- Le voyageur doit savoir si un lieu est au village ou à trois communes (Ballarin vit
+-- entre Orihuela/Torrevieja/La Zenia ; Ardon entre Vétroz/Conthey/Sion). Le pipeline
+-- récolte déjà `addr:city` (overpass._element_to_poi, V2-37) mais ne le stockait pas
+-- (« en mémoire, non stockée ») : on lui donne une colonne, remplie à l'enrichissement
+-- (COALESCE — jamais écrasée) et saisissable au back-office. Affichée sur la carte de
+-- lieu du guide quand elle diffère de la commune du logement.
+--
+-- Idempotente (IF NOT EXISTS) ; DEFAULT NULL, aucun backfill : le remplissage est
+-- PROGRESSIF (au fil des ré-enrichissements et des saisies), l'existant reste NULL.
+ALTER TABLE pois ADD COLUMN IF NOT EXISTS locality TEXT;

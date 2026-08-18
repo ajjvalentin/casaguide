@@ -604,13 +604,32 @@ def _panel(html, key):
     return rest if nxt == -1 else rest[:nxt]
 
 
-def _poi(name, cat, ch, walk=5, comment=None, weekday=None, weekday_note=None):
+def _poi(name, cat, ch, walk=5, comment=None, weekday=None, weekday_note=None,
+         locality=None):
     return {"id": name, "name": name, "category_code": cat, "chapter": ch,
             "category_name": {"fr": cat}, "map_color": "#0E5A73",
             "lat": 37.9, "lon": -0.74, "walk_min": walk, "dist_walk_m": walk * 70,
             "drive_min": None, "owner_comment": comment, "description_md": None,
             "opening_hours": None, "phone": None, "website": None, "cuisine": None,
-            "weekday": weekday, "weekday_note": weekday_note}
+            "weekday": weekday, "weekday_note": weekday_note, "locality": locality}
+
+
+def test_poi_locality_shown_only_when_different_from_home_commune():
+    """V2-38 pièce 2 — la commune d'un lieu s'affiche discrètement (« · Vétroz »)
+    UNIQUEMENT quand elle diffère de la commune du logement (comparaison normalisée
+    casse/accents). Identique → masquée (bruit) ; absente → rien."""
+    pois = [
+        _poi("Caveau Régence", "restaurant", "F", locality="Vétroz"),      # ≠ → affichée
+        _poi("Café du Village", "restaurant", "F", locality="ardon"),      # = (casse) → masquée
+        _poi("Chez Sans-Ville", "restaurant", "F", locality=None),         # absente → rien
+    ]
+    html = guide_page.render_guide(_prop(city="Ardon"), [], pois, {}, "tok")
+    # Différente → rendue à côté du nom, avec le séparateur « · » et la classe dédiée.
+    assert 'class="poi-loc"' in html and "· Vétroz" in html
+    # Identique (à la casse près) → jamais affichée.
+    assert "· ardon" not in html and "· Ardon" not in html
+    # Un seul badge de localité au total (seule « Vétroz » diffère).
+    assert html.count('class="poi-loc"') == 1
 
 
 def test_three_tabs_present_and_labelled():

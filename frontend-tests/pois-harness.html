@@ -50,7 +50,7 @@ const POIS = [
     category_name: { fr: "Restaurants" }, map_color: "#EF6C00", status: "approved",
     lat: 38.2, lon: -0.5, weekday: null, weekday_note: null, cuisine: "seafood",
     description_md: null, owner_comment: null, phone: null, website: null,
-    address: null, walk_min: 5, dist_walk_m: 350, drive_min: null },
+    address: null, locality: "Torrevieja", walk_min: 5, dist_walk_m: 350, drive_min: null },
 ];
 
 const posted = [];
@@ -96,6 +96,8 @@ try {
   const catSel = q(".modal-back select");
   const mdField = q(".modal-back .market-day-field");
   chk(!!mdField, "le champ « Jour du marché » existe dans l'arbre rendu");
+  chk(qa(".modal-back label").some((l) => /Commune \/ localité/.test(l.textContent)),
+    "Ajouter : champ « Commune / localité » présent (V2-38)");
   chk(catSel && catSel.value === "restaurant", "catégorie par défaut = restaurant (pas market)");
   chk(!visible(mdField), "champ « Jour du marché » MASQUÉ quand la catégorie n'est pas « market »");
 
@@ -161,9 +163,15 @@ try {
     "Modifier : catégorie d'un restaurant pré-remplie (« restaurant »)");
   chk(!visible(q(".modal-back .market-day-field")),
     "restaurant : champ « Jour du marché » présent dans l'arbre mais MASQUÉ (non-market)");
-  // Requalifier restaurant → café (catégorie de complétion) et enregistrer : le PATCH
-  // porte la nouvelle catégorie (le back valide + classe « Modifié », le mode de
-  // trajet et la complétion suivent au prochain run — constaté côté back).
+  // Commune / localité (V2-38) : champ présent et PRÉ-REMPLI depuis la fiche.
+  const locInput = qa(".modal-back .field").map((fld) => {
+    const lbl = q("label", fld);
+    return lbl && /Commune \/ localité/.test(lbl.textContent) ? q("input,textarea", fld) : null;
+  }).find(Boolean);
+  chk(!!locInput && locInput.value === "Torrevieja",
+    "Modifier : champ « Commune / localité » présent et pré-rempli (« Torrevieja »)");
+  // Corriger la commune (Street View : c'est Vétroz) + requalifier, puis enregistrer.
+  if (locInput) locInput.value = "Vétroz";
   restoCat.value = "supermarket";   // (une catégorie non-market présente dans la liste)
   restoCat.dispatchEvent(new Event("change", { bubbles: true }));
   await wait(20);
@@ -171,6 +179,8 @@ try {
   await wait(60);
   chk(patched.some((p) => p.id === "r1" && p.category_code === "supermarket"),
     "PATCH de requalification d'un restaurant porte la NOUVELLE category_code");
+  chk(patched.some((p) => p.id === "r1" && p.locality === "Vétroz"),
+    "PATCH d'édition porte la commune corrigée (locality='Vétroz')");
   // (le champ « Type de cuisine » reste là — cohérence des champs catégoriels)
   qa(".modal-back").forEach((n) => n.remove());
 } catch (e) {

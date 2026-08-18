@@ -522,6 +522,8 @@ def test_poi_search_function_biases_and_guesses(client):
         return httpx.Response(200, json=[{
             "lat": "37.978", "lon": "-0.682", "class": "amenity", "type": "restaurant",
             "name": "El Meson de la Costa", "display_name": "El Meson…, Torrevieja",
+            "address": {"road": "Calle Mayor", "town": "Torrevieja",
+                        "state": "Alicante"},   # V2-38 : Nominatim porte la commune
             "extratags": {"contact:phone": "+34 966 11 22 33",
                           "website": "https://meson.example"}}])
 
@@ -533,6 +535,7 @@ def test_poi_search_function_biases_and_guesses(client):
     assert out[0]["category_code"] == "restaurant"
     assert out[0]["phone"] == "+34 966 11 22 33"
     assert out[0]["website"] == "https://meson.example"
+    assert out[0]["locality"] == "Torrevieja"             # commune pré-remplie (V2-38)
     # Mappage direct : class/type inconnu → repli 'sight'
     assert poi_search.guess_category("tourism", "artwork") == "sight"
     assert poi_search.guess_category("aeroway", "aerodrome") == "airport"
@@ -613,6 +616,36 @@ def test_create_and_edit_poi_carries_weekday(client):
                  json={"status": "published"})
     page = client.get(f"/g/{token}").text
     assert "market-badge" in page and "samedi" in page
+
+
+def test_create_and_edit_poi_carries_locality(client):
+    """V2-38 : la commune/localité est saisie à la création et modifiable à l'édition
+    (l'édition classe « Modifié ») ; elle est servie sur la carte du guide quand elle
+    diffère de la commune du logement."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])   # logement à « Orihuela Costa »
+    pid, token = prop["id"], prop["guide_token"]
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"lat": PROP_LAT, "lon": PROP_LON})
+    r = client.post(f"/api/properties/{pid}/pois", headers=owner["headers"], json={
+        "category_code": "restaurant", "name": "Caveau Régence",
+        "lat": 37.929, "lon": -0.747, "locality": "Torrevieja"})
+    assert r.status_code == 201, r.text
+    poi = r.json()
+    assert poi["locality"] == "Torrevieja"
+    # Édition : on corrige la commune → statut « Modifié ».
+    r2 = client.patch(f"/api/properties/{pid}/pois/{poi['id']}",
+                      headers=owner["headers"], json={"locality": "Vétroz"})
+    assert r2.status_code == 200 and r2.json()["status"] == "edited"
+    got = next(p for p in client.get(f"/api/properties/{pid}/pois",
+                                     headers=owner["headers"]).json()
+               if p["id"] == poi["id"])
+    assert got["locality"] == "Vétroz"
+    # Guide publié : la commune (≠ celle du logement) est rendue sur la carte du lieu.
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+    page = client.get(f"/g/{token}").text
+    assert "poi-loc" in page and "Vétroz" in page
 
 
 def test_migration_029_backfills_market_day_from_name(client):

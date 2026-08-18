@@ -600,6 +600,14 @@ def _fmt_dist(poi: dict, lang: str = "fr") -> tuple[str, str]:
     return "–", ""
 
 
+def _norm_locality(s: Any) -> str:
+    """Normalise une commune pour COMPARAISON (casse + accents ignorés) — « Vétroz »
+    et « vetroz » sont la même commune (V2-38). Ne sert qu'à décider de l'affichage,
+    jamais à réécrire la valeur montrée (le nom propre reste tel quel)."""
+    base = unicodedata.normalize("NFD", (s or "").strip().casefold())
+    return "".join(c for c in base if unicodedata.category(c) != "Mn")
+
+
 # ── Rendu des champs d'une section (selon field_schema) ──────────────────────
 
 def _render_fields(schema: dict, content: dict, lang: str = "fr",
@@ -964,7 +972,8 @@ def _itinerary_links(lat: Any, lon: Any, lang: str = "fr") -> str:
             f'<span class="nav-lbl">{_esc(_t(lang, "go_there"))}</span>{links}</div>')
 
 
-def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
+def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
+                 home_city: str = "") -> str:
     """Rend les POI d'un chapitre en blocs `.cat` (un par catégorie). `tab_hash`
     (V2-12 : « autour », « logement »…) préfixe l'`id` d'ancre de chaque bloc
     (`id="autour/{code}"`) → cible des tuiles de la grille de services et des
@@ -1007,6 +1016,19 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
             cuisine_attr = f' data-cuisine="{_esc(cuisine)}"' if is_resto else ""
             cuisine_tag = (f'<span class="cuisine-tag">{_esc(_cuisine_label(cuisine, lang))}</span>'
                            if is_resto and cuisine else "")
+            # Commune / localité (V2-38) : discrète, à côté du nom (« · Vétroz »), même
+            # séparateur/ton muet que la mention d'horaires. Anti-bruit ASSUMÉ : affichée
+            # UNIQUEMENT si elle DIFFÈRE de la commune du logement (comparaison normalisée
+            # casse/accents). « Vétroz » sur une carte d'Ardon informe ; « Ardon » partout
+            # serait du bruit. Le nom propre est montré tel quel (l'i18n des noms de
+            # communes est hors périmètre). Style INLINE → aucune touche à guide.css, donc
+            # aucun bump de service worker (SSR seul).
+            loc = (p.get("locality") or "").strip()
+            loc_html = ""
+            if loc and _norm_locality(loc) != _norm_locality(home_city):
+                loc_html = ('<span class="poi-loc" '
+                            'style="color:var(--muted);font-weight:400">'
+                            f' · {_esc(loc)}</span>')
             # Jour du marché (V2-33) : badge TRADUIT (Babel/CLDR) dans la langue du
             # guide + précision libre à côté. `data-weekday` porte le rang (1..7) →
             # le client (popups carte, app.js) rend le MÊME mot via Intl (aligné).
@@ -1031,7 +1053,7 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "") -> str:
             cards.append(
                 f'<div class="poi-card"{cuisine_attr} style="border-left-color:{color}">'
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
-                f'<div class="poi-body"><h4>{_esc(p["name"])}{cuisine_tag}</h4>{day_html}{comment}'
+                f'<div class="poi-body"><h4>{_esc(p["name"])}{loc_html}{cuisine_tag}</h4>{day_html}{comment}'
                 f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}{nav_html}</div></div>')
         n = len(lst)
         head = f'<h4 class="cat-title">{cat_name} · {n}</h4>'
@@ -1544,7 +1566,8 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
         chapter_card_pois = _chapter_card_pois(ch)
         if poi_tab == "around":
             around_card_pois.extend(chapter_card_pois)
-        pois_html = _render_pois(chapter_card_pois, lang, tab_hash=_TAB_HASH[poi_tab])
+        pois_html = _render_pois(chapter_card_pois, lang, tab_hash=_TAB_HASH[poi_tab],
+                                 home_city=prop.get("city") or "")
         for tab in _TAB_ORDER:
             inner = list(sec_by_tab.get(tab, []))
             if tab == poi_tab and pois_html:
