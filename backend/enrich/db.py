@@ -57,7 +57,25 @@ def save_geocode(conn, property_id: str, lat: float, lon: float,
 
 
 def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
-    """Insère/actualise les POI suggérés. Ne touche jamais aux POI déjà arbitrés."""
+    """Insère/actualise les POI suggérés. Ne touche JAMAIS le contenu d'une fiche
+    déjà arbitrée (invariant 1) — À UNE EXCEPTION, gravée et étroite (V2-38bis) : la
+    seule colonne `locality` est complétée quel que soit le statut.
+
+    **Pourquoi cette exception ne viole pas l'invariant 1.** Le guide n'affiche que
+    les fiches RETENUES (approved/edited) ; or l'upsert ne mettait à jour que les
+    `suggested`, si bien qu'AUCUNE localité (V2-38) n'atteignait jamais le guide
+    (re-run Ardon 18/08 : 0 localité affichée). `locality` est une **métadonnée**
+    (jamais du contenu rédigé), issue de la **même source OSM** (même `source_ref`) :
+    la compléter ne « réenrichit » pas la fiche, ça remplit un trou. La forme
+    `COALESCE(pois.locality, EXCLUDED.locality)` pour les fiches retenues **interdit
+    par construction tout écrasement** — une localité saisie ou éditée est conservée,
+    seul un NULL est comblé. **Tous les autres champs** (nom, description, téléphone,
+    catégorie, coup de cœur, distances, `fetched_at`…) restent STRICTEMENT hors
+    upsert pour une fiche retenue (self-assignment `= pois.x`).
+
+    Structure : plus de `WHERE pois.status = 'suggested'` global (il empêchait la
+    branche retenue) ; chaque champ est gardé par un `CASE` sur le statut — seule
+    `locality` a une branche « retenue » non triviale (fill-NULL-only)."""
     n = 0
     for p in pois:
         conn.execute(
@@ -75,18 +93,30 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                ON CONFLICT (property_id, source, source_ref)
                WHERE source_ref IS NOT NULL
                DO UPDATE SET
-                   name = EXCLUDED.name, geom = EXCLUDED.geom,
-                   address = EXCLUDED.address, phone = EXCLUDED.phone,
-                   website = EXCLUDED.website, opening_hours = EXCLUDED.opening_hours,
-                   cuisine = COALESCE(EXCLUDED.cuisine, pois.cuisine),
-                   -- Localité (V2-38) : COMPLÈTE le NULL, jamais n'écrase (motif du volet 2 —
-                   -- une localité déjà posée, saisie ou obtenue, survit au ré-enrichissement).
-                   locality = COALESCE(EXCLUDED.locality, pois.locality),
-                   description_md = COALESCE(EXCLUDED.description_md, pois.description_md),
-                   dist_walk_m = EXCLUDED.dist_walk_m, walk_min = EXCLUDED.walk_min,
-                   dist_drive_m = EXCLUDED.dist_drive_m, drive_min = EXCLUDED.drive_min,
-                   fetched_at = now()
-               WHERE pois.status = 'suggested'""",
+                   -- SEULE exception à l'invariant 1 (V2-38bis) : la localité est
+                   -- complétée quel que soit le statut. Fiche retenue → fill-NULL-only
+                   -- (COALESCE(pois.locality, …) : jamais d'écrasement) ; suggested →
+                   -- rafraîchie par OSM sans jamais s'effacer (COALESCE(EXCLUDED, …)).
+                   locality = CASE
+                       WHEN pois.status = 'suggested'
+                           THEN COALESCE(EXCLUDED.locality, pois.locality)
+                       ELSE COALESCE(pois.locality, EXCLUDED.locality)
+                   END,
+                   -- Tout le reste : rafraîchi UNIQUEMENT pour les suggested
+                   -- (invariant 1) ; self-assignment (no-op) pour approved/edited.
+                   name = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.name ELSE pois.name END,
+                   geom = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.geom ELSE pois.geom END,
+                   address = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.address ELSE pois.address END,
+                   phone = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.phone ELSE pois.phone END,
+                   website = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.website ELSE pois.website END,
+                   opening_hours = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.opening_hours ELSE pois.opening_hours END,
+                   cuisine = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.cuisine, pois.cuisine) ELSE pois.cuisine END,
+                   description_md = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.description_md, pois.description_md) ELSE pois.description_md END,
+                   dist_walk_m = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.dist_walk_m ELSE pois.dist_walk_m END,
+                   walk_min = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.walk_min ELSE pois.walk_min END,
+                   dist_drive_m = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.dist_drive_m ELSE pois.dist_drive_m END,
+                   drive_min = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.drive_min ELSE pois.drive_min END,
+                   fetched_at = CASE WHEN pois.status = 'suggested' THEN now() ELSE pois.fetched_at END""",
             {
                 "pid": property_id, "cat": category,
                 "name": p["name"], "lat": p["lat"], "lon": p["lon"],

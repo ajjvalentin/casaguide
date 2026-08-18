@@ -454,20 +454,31 @@ def test_edited_category_survives_reenrichment_and_enters_completion(property_id
                            "WHERE property_id=%s AND name='La Marejada'",
                            (property_id,)).fetchone()
         assert poi["category_code"] == "restaurant" and poi["status"] == "suggested"
-        # Le propriétaire requalifie restaurant → bar (l'édition force 'edited').
-        api_repo.edit_poi(conn, property_id, str(poi["id"]), {"category_code": "bar"})
+        # Le propriétaire requalifie restaurant → bar (l'édition force 'edited') et
+        # garnit la fiche : commune corrigée à la main, coup de cœur, description.
+        api_repo.edit_poi(conn, property_id, str(poi["id"]),
+                          {"category_code": "bar", "locality": "Vétroz",
+                           "owner_comment": "Notre apéro du soir",
+                           "description_md": "Terrasse au calme."})
         conn.commit()
 
-    # Ré-enrichissement Overpass : node/333 revient sous 'restaurant'.
+    # Ré-enrichissement Overpass : node/333 revient sous 'restaurant' (addr:city Torrevieja).
     pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
                  http_client=http_client, anthropic_client=FakeAnthropic())
 
     with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
-        got = conn.execute("SELECT category_code, status FROM pois "
+        got = conn.execute("SELECT category_code, status, locality, owner_comment, "
+                           "description_md FROM pois "
                            "WHERE property_id=%s AND name='La Marejada'",
                            (property_id,)).fetchone()
         assert got["category_code"] == "bar"      # NON réverti par le re-run
         assert got["status"] == "edited"          # choix propriétaire conservé
+        # V2-38bis : une localité SAISIE n'est JAMAIS écrasée (COALESCE l'interdit) —
+        # « Vétroz » survit malgré l'addr:city 'Torrevieja' du flux OSM.
+        assert got["locality"] == "Vétroz"
+        # Tout le reste du contenu propriétaire reste STRICTEMENT hors upsert.
+        assert got["owner_comment"] == "Notre apéro du soir"
+        assert got["description_md"] == "Terrasse au calme."
         # Effet automatique (V2-37 vol 1 + 2) : la fiche 'bar' (edited) entre dans le
         # périmètre tél/site de sa nouvelle catégorie au prochain run de complétion.
         todo = db.pois_needing_completion(conn, property_id, "bar",
@@ -476,6 +487,9 @@ def test_edited_category_survives_reenrichment_and_enters_completion(property_id
 
 
 # ── V2-38 : localité (commune) d'un POI — stockage, COALESCE, non-réversion ──
+# V2-38bis : la localité (et elle SEULE) traverse le statut — une fiche RETENUE la
+# gagne au re-run (sinon le guide, qui n'affiche que les retenues, resterait NULL à
+# jamais), mais tout le reste de son contenu demeure strictement hors upsert.
 
 def test_locality_stored_by_enrichment_and_never_wiped(property_id, http_client):
     """La localité (addr:city) est POSÉE par l'enrichissement (end-to-end) et n'est
@@ -521,6 +535,46 @@ def test_edited_locality_survives_reenrichment(property_id, http_client):
                            "AND name='La Marejada'", (property_id,)).fetchone()
         assert got["locality"] == "Vétroz"            # NON réverti par le re-run
         assert got["status"] == "edited"
+
+
+def test_retained_fiche_gains_null_locality_but_all_else_untouched(property_id,
+                                                                   http_client):
+    """V2-38bis (le CŒUR) : une fiche RETENUE (approved) à locality NULL — cas d'une
+    fiche arbitrée avant V2-38 — GAGNE sa commune au re-run (le guide n'affiche que les
+    retenues : sinon elle resterait NULL à jamais). MAIS tout son contenu propriétaire
+    reste STRICTEMENT hors upsert (invariant 1), y compris un champ (website) que OSM
+    fournit et qui serait écrasé sans le garde-fou."""
+    pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        poi = conn.execute("SELECT id FROM pois WHERE property_id=%s "
+                           "AND name='La Marejada'", (property_id,)).fetchone()
+        pid_poi = str(poi["id"])
+        # Fiche RETENUE + localité VIDÉE (comme une fiche approuvée avant V2-38) et
+        # garnie de contenu propriétaire — dont un website DIFFÉRENT de celui d'OSM.
+        conn.execute(
+            """UPDATE pois SET status='approved', locality=NULL,
+                   description_md='Cuisine de la mer, vue sur le port.',
+                   phone='+34 111 222 333', website='https://chez-nous.example',
+                   owner_comment='Notre cantine !' WHERE id=%s""", (pid_poi,))
+        conn.commit()
+
+    # Re-run : OSM renvoie La Marejada (addr:city Torrevieja, website lamarejada.example).
+    pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        got = conn.execute(
+            "SELECT status, locality, description_md, phone, website, owner_comment, "
+            "name, category_code FROM pois WHERE id=%s", (pid_poi,)).fetchone()
+    assert got["locality"] == "Torrevieja"          # NULL comblée depuis OSM — LE FIX
+    assert got["status"] == "approved"              # statut inchangé
+    # Tout le reste STRICTEMENT intact (le contenu d'une fiche retenue n'est jamais
+    # réenrichi) — website prouve la garde : sans elle, OSM l'écraserait.
+    assert got["website"] == "https://chez-nous.example"
+    assert got["description_md"] == "Cuisine de la mer, vue sur le port."
+    assert got["phone"] == "+34 111 222 333"
+    assert got["owner_comment"] == "Notre cantine !"
+    assert got["name"] == "La Marejada" and got["category_code"] == "restaurant"
 
 
 # ── V2-35 : script ops de recensement des descriptions de remplissage ─────────

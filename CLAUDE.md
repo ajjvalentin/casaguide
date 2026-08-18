@@ -157,7 +157,13 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
 ## Invariants à ne jamais casser (couverts par les tests)
 
 1. Un POI `approved` / `edited` / `rejected` par le propriétaire n'est
-   **jamais** écrasé par un ré-enrichissement.
+   **jamais** écrasé par un ré-enrichissement. **UNE exception nommée et étroite
+   (V2-38bis)** : la seule colonne de **métadonnée** `locality` est **complétée si
+   NULL** quel que soit le statut, depuis la **même source OSM** (même `source_ref`) —
+   `COALESCE(pois.locality, EXCLUDED.locality)` pour une fiche retenue interdit par
+   construction tout écrasement (une localité saisie/éditée survit) ; **aucun autre
+   champ** d'une fiche retenue n'est touché. Raison : le guide n'affiche que les fiches
+   retenues, qui resteraient `locality=NULL` à jamais sinon (`enrich/db.upsert_pois`).
 2. Relancer le pipeline est **idempotent** (aucun doublon de POI).
 3. Toute réponse IA est du **JSON strict validé** avant insertion ; sinon le
    job passe en `failed` sans rien corrompre.
@@ -1458,10 +1464,19 @@ exposé, peer auth).
 - Commune / localité d'un POI (V2-38, migration 032) : `pois.locality` TEXT NULL —
   le voyageur doit savoir si un lieu est au village ou à trois communes. Le pipeline
   récoltait déjà `addr:city` (`overpass._element_to_poi`, champ `locality`) mais ne le
-  stockait pas ; désormais l'upsert d'enrichissement l'écrit en **COALESCE**
-  (`locality = COALESCE(EXCLUDED.locality, pois.locality)`, motif de `cuisine`) :
-  **compléter le NULL, jamais l'effacer** au re-run (une localité déjà posée survit) ;
-  et un POI **édité** est de toute façon hors upsert (invariant 1). Saisissable dans
+  stockait pas ; désormais l'upsert d'enrichissement l'écrit en **COALESCE** :
+  **compléter le NULL, jamais l'effacer** au re-run (une localité déjà posée survit).
+  **V2-38bis — la localité traverse le statut (exception étroite à l'invariant 1)** :
+  le re-run Ardon (18/08) a prouvé que V2-38 rendait bien « · Vétroz » MAIS que zéro
+  localité n'atteignait le guide — l'upsert ne mettait à jour que les `suggested`, or
+  le guide n'affiche que les fiches **retenues** (approved/edited), restées `NULL` à
+  jamais. Correctif étroit : le `WHERE pois.status='suggested'` **global** disparaît,
+  chaque champ est gardé par un **`CASE` sur le statut** (`= pois.x` = no-op pour une
+  fiche retenue), et **seule `locality`** a une branche « retenue » non triviale —
+  `COALESCE(pois.locality, EXCLUDED.locality)` (fill-NULL-only, écrasement **impossible
+  par construction**). Suggested → inchangé (`COALESCE(EXCLUDED.locality, pois.locality)`,
+  OSM rafraîchit sans effacer). C'est une **métadonnée** (même `source_ref` OSM, aucun
+  contenu rédigé) : compléter un trou ≠ réenrichir. Saisissable dans
   Ajouter/Modifier (`PoiCreateIn`/`PoiEditIn` + `_POI_EDITABLE`, l'édition classe
   « Modifié ») ; le géocodeur Nominatim **pré-remplit** (`poi_search._candidate` lit
   `address.city|town|village|municipality`). **Affichage (pièce 2, RÈGLE ANTI-BRUIT
@@ -1479,10 +1494,13 @@ exposé, peer auth).
   disparaissent au fil du remplissage. Migration 032 idempotente (`ADD COLUMN IF NOT
   EXISTS`, DEFAULT NULL, **aucun backfill** — remplissage progressif). Couvert par
   `test_pipeline.py` (localité posée end-to-end + COALESCE jamais effacée + édition
-  survit au re-run + recensement préfère `locality`), `test_api.py` (create/edit portent
-  le champ + SSR différente affichée), `test_guide_page.py` (différente affichée,
-  identique masquée, absente rien) et `pois-harness.html` (champ présent/pré-rempli,
-  PATCH porte `locality`).
+  survit au re-run + recensement préfère `locality` ; **V2-38bis** : une fiche
+  **approved** à `locality` NULL la GAGNE au re-run, tout le reste — nom, description,
+  téléphone, **website qu'OSM fournit**, coup de cœur, catégorie, statut — intact ; une
+  localité éditée jamais écrasée), `test_api.py` (create/edit portent le champ + SSR
+  différente affichée), `test_guide_page.py` (différente affichée, identique masquée,
+  absente rien) et `pois-harness.html` (champ présent/pré-rempli, PATCH porte
+  `locality`).
 - Horaires au rendu (V2-34) : la donnée `pois.opening_hours` **STOCKÉE ne bouge
   pas** ; **au rendu SSR** (`guide_page._render_opening_hours`, appelé par
   `_render_pois`), tout horaire s'affiche en **texte humain localisé** + une mention
