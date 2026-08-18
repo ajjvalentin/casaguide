@@ -2260,6 +2260,13 @@
     "fr": "Mot de passe",
     "key": "ui.wifi_password"
   },
+  "ui.wifi_scan": {
+    "context": "Guide voyageur — libellé d'interface",
+    "en": "Scan to connect to the Wifi automatically.",
+    "es": "Escanea para conectarte automáticamente al Wifi.",
+    "fr": "Scannez pour vous connecter automatiquement au Wifi.",
+    "key": "ui.wifi_scan"
+  },
   "ui.wifi_title": {
     "context": "Guide voyageur — libellé d'interface",
     "en": "Wifi connection",

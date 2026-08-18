@@ -889,6 +889,27 @@ exposé, peer auth).
   AVANT d'avoir le wifi (scénario porte d'entrée). Le `no-store` HTTP reste pour les
   **caches partagés/proxies** (le SW est un cache privé, sur l'appareil du voyageur).
   Même régime sur le lien de séjour `/b/` (branche miroir de `/g/`, v28).
+- **i18n du bloc secrets rendu CÔTÉ CLIENT (V2-39)** : le bloc « Connexion Wifi »
+  (et « Boîte à clés ») est rendu par `frontend/guide/app.js` (`fillWifi`/`fillKeybox`/
+  `secretRow`), pas par le SSR — les secrets sont **chiffrés AES**, déchiffrés/affichés
+  à la demande côté client. Ses libellés (titre, réseau, mot de passe, scanner, code,
+  copier, retour de copie) parlaient donc **français dans les 7 langues** (constat guide
+  anglais 17/08), alors que le SSR autour était correct. Correctif au **précédent exact
+  `ui.search_*` (V2-33)** : le SSR sert les libellés dans la langue du guide via un
+  **blob JSON `data-secret-labels` sur le body** (`guide_page._secret_labels_json`,
+  clés `ui.wifi_title|wifi_network|wifi_password|wifi_scan|keybox_title|keybox_code|
+  copy|copied` — overlay nl/de/it/sq au régime existant, repli FR), et `app.js` les
+  **lit** (`SECRET_LABELS`/`sl(key, fallback)`) au lieu de les porter en dur. Seule
+  `ui.wifi_scan` était neuve (les autres servaient déjà les cartes d'exemple `/v/`) →
+  inventaire régénéré, `--check` vert. Les **replis FR** dans `sl(…, "Réseau")` sont
+  **assumés** (défense contre un rendu ancien en cache — exactement comme
+  `search.js d.searchPh || "…"`) : ils ne s'affichent jamais quand le SSR pose
+  l'attribut ; **jamais** de littéral FR en **position d'affichage** (test source). Le
+  **QR et les valeurs** (SSID/mot de passe/code) ne dépendent pas de l'i18n. `guide/*`
+  touché → **bump SW v34→v35**. Aucune migration. Couvert par `test_guide_page.py`
+  (`data-secret-labels` localisé en/fr + overlay de + repli FR) et le harnais headless
+  `guide-secrets` (guide anglais : bloc entièrement anglais, retour de copie « Copied ✓ »,
+  zéro FR au rendu ET dans la source) ; non-régression `guide-search` (secrets hors index).
 - Serveurs OSM publics : 1 req/s max, User-Agent obligatoire → en production,
   prévoir OSRM auto-hébergé et/ou un fournisseur géré.
 - **Overpass 406 — la cause était l'en-tête `Accept`, PAS l'User-Agent (OPS-4,

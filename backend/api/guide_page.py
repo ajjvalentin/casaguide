@@ -173,6 +173,7 @@ _UI: dict[str, dict[str, str]] = {
         "showcase_banner": "Aperçu du guide",
         "example_tag": "exemple", "wifi_title": "Connexion Wifi",
         "wifi_network": "Réseau", "wifi_password": "Mot de passe",
+        "wifi_scan": "Scannez pour vous connecter automatiquement au Wifi.",
         "keybox_title": "Boîte à clés", "keybox_code": "Code",
         "send_subject": "Votre guide — {property}",
         "send_hello": "Bonjour {name},", "send_hello_generic": "Bonjour,",
@@ -219,6 +220,7 @@ _UI: dict[str, dict[str, str]] = {
         "showcase_banner": "Guide preview",
         "example_tag": "example", "wifi_title": "Wifi connection",
         "wifi_network": "Network", "wifi_password": "Password",
+        "wifi_scan": "Scan to connect to the Wifi automatically.",
         "keybox_title": "Key box", "keybox_code": "Code",
         "send_subject": "Your guide — {property}",
         "send_hello": "Hello {name},", "send_hello_generic": "Hello,",
@@ -265,6 +267,7 @@ _UI: dict[str, dict[str, str]] = {
         "showcase_banner": "Vista previa de la guía",
         "example_tag": "ejemplo", "wifi_title": "Conexión Wifi",
         "wifi_network": "Red", "wifi_password": "Contraseña",
+        "wifi_scan": "Escanea para conectarte automáticamente al Wifi.",
         "keybox_title": "Caja de llaves", "keybox_code": "Código",
         "send_subject": "Tu guía — {property}",
         "send_hello": "Hola {name}:", "send_hello_generic": "Hola:",
@@ -358,6 +361,28 @@ def _t(lang: str, key: str) -> str:
     puis au français. Pour FR/EN/ES l'overlay est vide → rendu identique."""
     return (_i18n_mod.overlaid(_i18n_mod.ui_key(key))
             or _UI.get(lang, {}).get(key) or _UI["fr"][key])
+
+
+# Libellés du bloc secrets (wifi + boîte à clés) rendu CÔTÉ CLIENT (V2-39). Les
+# secrets sont chiffrés (AES) : app.js les déchiffre/affiche à la demande, donc ces
+# libellés ne peuvent pas être posés dans le HTML SSR autour. On les sert dans la
+# langue du guide via un blob JSON sur `<body>` (même régime i18n que le reste —
+# précédent `ui.search_*` de V2-33) ; app.js les LIT au lieu de porter des chaînes
+# en dur. Le QR et les valeurs (SSID/mot de passe) n'en dépendent pas.
+_SECRET_LABEL_KEYS = {
+    "wifiTitle": "wifi_title", "wifiNetwork": "wifi_network",
+    "wifiPassword": "wifi_password", "wifiScan": "wifi_scan",
+    "keyboxTitle": "keybox_title", "keyboxCode": "keybox_code",
+    "copy": "copy", "copied": "copied",
+}
+
+
+def _secret_labels_json(lang: str) -> str:
+    """Blob JSON des libellés du bloc secrets, dans `lang` (posé en `data-secret-
+    labels` sur le body, lu par `app.js`). Overlay des langues supplémentaires puis
+    repli FR, comme tout `_t`."""
+    return json.dumps({js: _t(lang, k) for js, k in _SECRET_LABEL_KEYS.items()},
+                      ensure_ascii=False, separators=(",", ":"))
 
 
 # ── Horaires : normalisation localisée au rendu (V2-34) ──────────────────────
@@ -1669,7 +1694,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}">
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}">
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">

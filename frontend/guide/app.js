@@ -534,6 +534,17 @@ function initLightbox() {
 }
 
 // ── Secrets : wifi + boîte à clés (mode 'link'), chargés à la demande ────────
+// Libellés servis par le SSR dans la LANGUE DU GUIDE (data-secret-labels, blob JSON
+// posé sur le body — V2-39). Le bloc secrets est rendu ICI (wifi chiffré AES,
+// déchiffré côté client), donc ses libellés ne peuvent pas venir du HTML SSR
+// autour : on les LIT au lieu de les porter en dur. Repli FR si l'attribut manque
+// (rendu ancien resté en cache SW), pour ne jamais afficher une clé nue.
+const SECRET_LABELS = (() => {
+  try { return JSON.parse(document.body.dataset.secretLabels || "{}"); }
+  catch (_) { return {}; }
+})();
+const sl = (key, fallback) => SECRET_LABELS[key] || fallback;
+
 async function initSecrets() {
   const slots = [...document.querySelectorAll(".secret-slot")];
   if (!slots.length) return;
@@ -568,18 +579,19 @@ function wifiCard(net, showLabel) {
   const ssid = net.ssid || "";
   const pass = net.pass || "";
   if (!ssid && !pass) return null;
-  const title = showLabel && net.label ? `📶 ${net.label}` : "📶 Connexion Wifi";
+  const title = showLabel && net.label ? `📶 ${net.label}` : `📶 ${sl("wifiTitle", "Connexion Wifi")}`;
   const card = el("div", { class: "secret-card" }, el("div", { class: "sc-title" }, title));
-  if (ssid) card.appendChild(secretRow("Réseau", ssid));
-  if (pass) card.appendChild(secretRow("Mot de passe", pass, { mono: true }));
+  if (ssid) card.appendChild(secretRow(sl("wifiNetwork", "Réseau"), ssid));
+  if (pass) card.appendChild(secretRow(sl("wifiPassword", "Mot de passe"), pass, { mono: true }));
 
   // QR de connexion automatique (norme WIFI:…), généré via le module mutualisé
   if (ssid && pass) {
-    const canvas = qrCanvas(wifiPayload(ssid, pass),
-      { label: `QR de connexion Wifi ${net.label || ""}`.trim() });
+    const qrLabel = `${sl("wifiTitle", "Connexion Wifi")}${net.label ? " — " + net.label : ""}`;
+    const canvas = qrCanvas(wifiPayload(ssid, pass), { label: qrLabel });
     if (canvas) {
       card.appendChild(el("div", { class: "qr-wrap" }, canvas,
-        el("div", { class: "qr-cap" }, "Scannez pour vous connecter automatiquement au Wifi.")));
+        el("div", { class: "qr-cap" },
+          sl("wifiScan", "Scannez pour vous connecter automatiquement au Wifi."))));
     }
   }
   return card;
@@ -587,20 +599,22 @@ function wifiCard(net, showLabel) {
 
 function fillKeybox(slot, sec) {
   if (!sec.keybox_code && !sec.keybox_notes) return;
-  const card = el("div", { class: "secret-card" }, el("div", { class: "sc-title" }, "🔑 Boîte à clés"));
-  if (sec.keybox_code) card.appendChild(secretRow("Code", sec.keybox_code, { mono: true }));
+  const card = el("div", { class: "secret-card" },
+    el("div", { class: "sc-title" }, `🔑 ${sl("keyboxTitle", "Boîte à clés")}`));
+  if (sec.keybox_code) card.appendChild(secretRow(sl("keyboxCode", "Code"), sec.keybox_code, { mono: true }));
   if (sec.keybox_notes) card.appendChild(el("p", { class: "sc-notes" }, sec.keybox_notes));
   slot.replaceChildren(card);
   slot.hidden = false;
 }
 
 function secretRow(label, value, { mono } = {}) {
-  const btn = el("button", { class: "copy-btn", type: "button" }, "Copier");
+  const copyLabel = sl("copy", "Copier");
+  const btn = el("button", { class: "copy-btn", type: "button" }, copyLabel);
   btn.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(value);
-      btn.textContent = "Copié ✓"; btn.classList.add("done");
-      setTimeout(() => { btn.textContent = "Copier"; btn.classList.remove("done"); }, 1600);
+      btn.textContent = sl("copied", "Copié ✓"); btn.classList.add("done");
+      setTimeout(() => { btn.textContent = copyLabel; btn.classList.remove("done"); }, 1600);
     } catch (_) { btn.textContent = "—"; }
   });
   return el("div", { class: "sc-row" },

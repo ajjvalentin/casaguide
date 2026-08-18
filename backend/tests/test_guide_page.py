@@ -6,6 +6,7 @@ de dictionnaires de test. Couvre M-17 (chaque area_fact à sa place) et M-14
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -627,6 +628,56 @@ def test_tab_labels_localised_es():
     html = guide_page.render_guide(_prop(), [_section("B_wifi", "B", {"fields": []})],
                                    [], {}, "tok", lang="es")
     assert "El alojamiento" in html and "Emergencias" in html and "A tu alrededor" in html
+
+
+# ── i18n du bloc secrets rendu côté client (V2-39) ───────────────────────────
+# Le bloc Wifi/boîte à clés est rendu par app.js (secrets chiffrés). Le SSR sert
+# ses libellés dans la langue du guide via `data-secret-labels` (blob JSON) — même
+# régime que ui.search_* (V2-33). On vérifie le CONTENU servi (le rendu client est
+# couvert par le harnais headless `guide-secrets`).
+
+def _secret_labels(html: str) -> dict:
+    """Extrait et parse le blob `data-secret-labels` du body (HTML-déséchappé)."""
+    import html as _html
+    m = re.search(r'data-secret-labels="([^"]*)"', html)
+    assert m, "attribut data-secret-labels absent du body"
+    return json.loads(_html.unescape(m.group(1)))
+
+
+def test_secret_labels_served_localised_en():
+    html = guide_page.render_guide(_prop(), [_section("B_wifi", "B", {"fields": []})],
+                                   [], {}, "tok", lang="en")
+    lbl = _secret_labels(html)
+    assert lbl["wifiTitle"] == "Wifi connection"
+    assert lbl["wifiNetwork"] == "Network"
+    assert lbl["wifiPassword"] == "Password"
+    assert lbl["wifiScan"] == "Scan to connect to the Wifi automatically."
+    assert lbl["keyboxTitle"] == "Key box" and lbl["keyboxCode"] == "Code"
+    assert lbl["copy"] == "Copy" and lbl["copied"] == "Copied ✓"
+
+
+def test_secret_labels_served_french_by_default():
+    lbl = _secret_labels(guide_page.render_guide(
+        _prop(), [_section("B_wifi", "B", {"fields": []})], [], {}, "tok"))
+    assert lbl["wifiTitle"] == "Connexion Wifi"
+    assert lbl["wifiNetwork"] == "Réseau" and lbl["wifiPassword"] == "Mot de passe"
+    assert lbl["wifiScan"] == "Scannez pour vous connecter automatiquement au Wifi."
+    assert lbl["keyboxTitle"] == "Boîte à clés" and lbl["keyboxCode"] == "Code"
+    assert lbl["copy"] == "Copier" and lbl["copied"] == "Copié ✓"
+
+
+def test_secret_labels_use_overlay_for_extra_language_with_fr_fallback():
+    """Langue publiée supplémentaire (de) : l'overlay sert ce qu'il connaît, le reste
+    retombe sur le FR (repli élégant, jamais de trou — comme tout `_t`)."""
+    overlay = {"ui.wifi_scan": "Scannen, um dich automatisch mit dem WLAN zu verbinden.",
+               "ui.wifi_network": "Netzwerk"}
+    html = guide_page.render_guide(_prop(), [_section("B_wifi", "B", {"fields": []})],
+                                   [], {}, "tok", lang="de", ui_overlay=overlay)
+    lbl = _secret_labels(html)
+    assert lbl["wifiScan"] == "Scannen, um dich automatisch mit dem WLAN zu verbinden."
+    assert lbl["wifiNetwork"] == "Netzwerk"
+    # Non traduit dans l'overlay → repli FR (jamais un allemand inventé).
+    assert lbl["wifiPassword"] == "Mot de passe" and lbl["copy"] == "Copier"
 
 
 def test_chapters_and_pois_distributed_across_the_three_tabs():
