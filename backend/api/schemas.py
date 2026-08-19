@@ -5,7 +5,7 @@ from datetime import date, datetime, time
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -352,6 +352,19 @@ class SectionUpsertIn(BaseModel):
     body_md: str | None = None
     is_visible: bool = True
     completed: bool = False
+    # Titre de rubrique personnalisé (V2-42) : texte simple, borné à 80 caractères,
+    # trimé ; vide/blanc → NULL (retour au nom du modèle). Absent (non fourni) → non
+    # modifié côté repo (None distingue « pas envoyé » de « vidé » au niveau API :
+    # le PUT renvoie toujours ce champ depuis l'éditeur, donc None = vidé ici).
+    title_override: str | None = Field(default=None, max_length=80)
+
+    @field_validator("title_override", mode="before")
+    @classmethod
+    def _clean_title(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
 
 # ── POI (validation par le propriétaire) ─────────────────────────────────────

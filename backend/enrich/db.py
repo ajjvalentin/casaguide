@@ -446,7 +446,8 @@ def translatable_sections(conn, property_id: str) -> list[dict]:
     """Sections voyageur instanciées d'un logement (avec leur field_schema et
     leur contenu source) candidates à la traduction."""
     return conn.execute(
-        """SELECT ps.id AS section_id, t.field_schema, ps.content, ps.body_md
+        """SELECT ps.id AS section_id, t.field_schema, ps.content, ps.body_md,
+                  ps.title_override
            FROM property_sections ps
            JOIN section_templates t ON t.code = ps.template_code
            WHERE ps.property_id = %s AND t.audience = 'guest'
@@ -480,16 +481,19 @@ def get_poi_translation(conn, poi_id: str, lang: str) -> dict | None:
 
 
 def upsert_section_translation(conn, section_id: str, lang: str,
-                               content: dict, body_md: str | None) -> None:
-    """Écrit une traduction de section (is_stale=FALSE : fraîche par définition)."""
+                               content: dict, body_md: str | None,
+                               title_override: str | None = None) -> None:
+    """Écrit une traduction de section (is_stale=FALSE : fraîche par définition).
+    `title_override` (V2-42) : titre de rubrique traduit, motif de `body_md`."""
     conn.execute(
         """INSERT INTO section_translations (section_id, lang, content, body_md,
-                                             is_stale, updated_at)
-           VALUES (%s, %s, %s, %s, FALSE, now())
+                                             title_override, is_stale, updated_at)
+           VALUES (%s, %s, %s, %s, %s, FALSE, now())
            ON CONFLICT (section_id, lang) DO UPDATE SET
                content = EXCLUDED.content, body_md = EXCLUDED.body_md,
+               title_override = EXCLUDED.title_override,
                is_stale = FALSE, updated_at = now()""",
-        (section_id, lang, json.dumps(content), body_md),
+        (section_id, lang, json.dumps(content), body_md, title_override),
     )
 
 

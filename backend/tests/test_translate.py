@@ -51,6 +51,15 @@ def test_collect_only_text_fields():
     assert set(texts) == {"f:intro", "f:note", "r:items:0:label", "body"}
     assert texts["f:intro"] == "Bienvenue chez nous"
     assert texts["body"] == "Corps **libre**"
+
+
+def test_collect_includes_title_override():
+    """V2-42 : le titre personnalisé voyage sous la référence dédiée `title` (motif
+    de `body`) ; vide/blanc → jamais collecté."""
+    texts = translate.collect_section_texts(SCHEMA, {}, None, "Piscine & barbecue")
+    assert texts == {"title": "Piscine & barbecue"}
+    assert "title" not in translate.collect_section_texts(SCHEMA, {}, None, "   ")
+    assert "title" not in translate.collect_section_texts(SCHEMA, {}, None, None)
     # Les valeurs structurées ne sont jamais collectées
     for ref in texts:
         assert "hour" not in ref and "site" not in ref and "tel" not in ref
@@ -59,8 +68,10 @@ def test_collect_only_text_fields():
 
 def test_apply_preserves_structured_and_falls_back():
     # Traduction partielle : intro traduit, note absente (repli source)
-    tr = {"f:intro": "Welcome", "r:items:0:label": "Towels", "body": "Free text"}
-    content2, body2 = translate.apply_section_texts(SCHEMA, CONTENT, "Corps", tr)
+    tr = {"f:intro": "Welcome", "r:items:0:label": "Towels", "body": "Free text",
+          "title": "Pool & barbecue"}
+    content2, body2, title2 = translate.apply_section_texts(SCHEMA, CONTENT, "Corps", tr)
+    assert title2 == "Pool & barbecue"             # titre traduit ressort (V2-42)
     assert content2["intro"] == "Welcome"          # traduit
     assert content2["note"] == "Clés dans la boîte"  # non traduit → source (repli)
     assert content2["hour"] == "16:00"             # structuré intact
@@ -74,8 +85,9 @@ def test_apply_preserves_structured_and_falls_back():
 
 
 def test_apply_without_body_translation_returns_none():
-    _c, body2 = translate.apply_section_texts(SCHEMA, CONTENT, "Corps", {"f:note": "X"})
+    _c, body2, title2 = translate.apply_section_texts(SCHEMA, CONTENT, "Corps", {"f:note": "X"})
     assert body2 is None                            # body non traduit → repli au rendu
+    assert title2 is None                           # titre non traduit → repli source au rendu
 
 
 def test_claude_translator_parses_and_costs():

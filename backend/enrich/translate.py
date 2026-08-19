@@ -44,12 +44,14 @@ TRANSLATABLE_TYPES = {"text", "textarea"}
 # ── Extraction / réinjection du texte traduisible d'une section ──────────────
 
 def collect_section_texts(schema: dict, content: dict,
-                          body_md: str | None) -> dict[str, str]:
+                          body_md: str | None,
+                          title_override: str | None = None) -> dict[str, str]:
     """Segments traduisibles d'une section, indexés par une référence stable.
 
     Références : `f:<key>` (champ simple), `r:<rkey>:<i>:<key>` (champ d'un item
-    de groupe répétable), `body` (texte libre). Seules les chaînes non vides des
-    champs `text`/`textarea` sont retenues."""
+    de groupe répétable), `body` (texte libre), `title` (titre de rubrique
+    personnalisé, V2-42 — motif de `body`). Seules les chaînes non vides des
+    champs `text`/`textarea` (et body/title) sont retenues."""
     out: dict[str, str] = {}
     content = content or {}
     for f in schema.get("fields", []):
@@ -69,14 +71,17 @@ def collect_section_texts(schema: dict, content: dict,
                     out[f"r:{rkey}:{i}:{k}"] = v
     if body_md and body_md.strip():
         out["body"] = body_md
+    if title_override and title_override.strip():
+        out["title"] = title_override
     return out
 
 
 def apply_section_texts(schema: dict, content: dict, body_md: str | None,
-                        tr: dict[str, str]) -> tuple[dict, str | None]:
-    """Reconstruit (content, body_md) traduits : copie de la source dont seuls les
-    segments présents dans `tr` sont remplacés. Les champs structurés et les
-    segments non traduits restent tels quels (repli élégant sur la source)."""
+                        tr: dict[str, str]) -> tuple[dict, str | None, str | None]:
+    """Reconstruit (content, body_md, title_override) traduits : copie de la source
+    dont seuls les segments présents dans `tr` sont remplacés. Les champs structurés
+    et les segments non traduits restent tels quels (repli élégant sur la source ;
+    un titre non traduit → `None`, le rendu retombe sur la source, V2-42)."""
     tcontent = copy.deepcopy(content or {})
     for f in schema.get("fields", []):
         ref = f"f:{f.get('key')}"
@@ -95,7 +100,8 @@ def apply_section_texts(schema: dict, content: dict, body_md: str | None,
                     if ref in tr:
                         item[k] = tr[ref]
     tbody = tr.get("body") if "body" in tr else None
-    return tcontent, tbody
+    ttitle = tr.get("title") if "title" in tr else None
+    return tcontent, tbody, ttitle
 
 
 # ── Traducteur Claude (JSON strict, coût comptabilisé) ───────────────────────
@@ -241,7 +247,7 @@ def _translate_lang(conn, property_id, job_id, lang, source_lang,
             continue  # à jour : rien à faire (ciblage)
         schema = sec.get("field_schema") or {}
         texts = collect_section_texts(schema, sec.get("content") or {},
-                                      sec.get("body_md"))
+                                      sec.get("body_md"), sec.get("title_override"))
         if not texts:
             if row is not None:
                 db.delete_section_translation(conn, sid, lang)  # texte retiré
@@ -283,10 +289,10 @@ def _translate_lang(conn, property_id, job_id, lang, source_lang,
         (sec_tr if kind == "section" else poi_tr)[oid][ref] = translated
 
     for sid, meta_sec in pending_sections.items():
-        content2, body2 = apply_section_texts(
+        content2, body2, title2 = apply_section_texts(
             meta_sec["schema"], meta_sec["content"], meta_sec["body_md"],
             sec_tr[sid])
-        db.upsert_section_translation(conn, sid, lang, content2, body2)
+        db.upsert_section_translation(conn, sid, lang, content2, body2, title2)
 
     for pid in pending_pois:
         tr = poi_tr[pid]

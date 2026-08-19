@@ -560,6 +560,7 @@ psql -d casaguide -f db/migrations/029_poi_weekday.sql # jour du marché : pois.
 psql -d casaguide -f db/migrations/030_poi_completion_meta.sql # provenance de la complétion auto des fiches de service (pois.completion_meta) (V2-07 volet 2)
 psql -d casaguide -f db/migrations/031_guide_reminders.sql # registre des relances du planificateur d'envoi (idempotence « une par séjour/motif ») (V2-36 pièce 1)
 psql -d casaguide -f db/migrations/032_poi_locality.sql # commune/localité d'un POI (pois.locality, affichée sur la carte du guide) (V2-38 pièce 1)
+psql -d casaguide -f db/migrations/033_section_title_override.sql # titre de rubrique personnalisable par logement (property_sections + section_translations.title_override) (V2-42)
 
 # Backend
 cd backend
@@ -1352,6 +1353,31 @@ exposé, peer auth).
   Traducteur **injectable** (`translate.run(..., translator=)`) pour tester sans
   réseau. Le cahier `/s` (M-13) reste **en français** (hors périmètre). NB : les
   `area_facts` sont générés en français ; seuls leurs intitulés sont localisés.
+- Titre de rubrique personnalisable (V2-42, migration 033) : `property_sections.
+  title_override` (source, langue du logement) + `section_translations.title_override`
+  (traduit). Le seed fige des titres qui promettent des équipements absents (B_pool =
+  « Jacuzzi / barbecue » alors que Ballarin n'a pas de jacuzzi) ; le propriétaire peut
+  renommer **n'importe quelle** rubrique. **UNE seule source de vérité au rendu** :
+  `guide_page._section_title(sec, lang)` (override → sinon `name_i18n` du seed) — TOUT
+  endroit qui montre un nom de section y passe (h3 SSR, tuiles de service ;
+  `editor.js sectionTitle` en est le miroir back-office : sommaire + en-tête). **Traduction**
+  : l'override entre dans `translate.collect_section_texts` sous la référence dédiée
+  `title` (motif de `body`), ressort par `apply_section_texts` (désormais un **3-uplet**
+  `(content, body, title)`), et s'écrit dans `section_translations.title_override` — il
+  voyage dans le pipeline existant, traduit au prochain job, **repli élégant sur la
+  source** tant que non traduit (comme le body : `guide_section_translations` ignore les
+  périmées → `_overlay_translations` laisse la source `title_override` sur la section).
+  Sauver un override marque les traductions périmées (`upsert_section` →
+  `mark_section_translations_stale`), donc le **bandeau V2-41 « Retraduire maintenant »
+  couvre le titre gratuitement**. Validation (schéma `SectionUpsertIn`) : trim, ≤ 80
+  caractères (422 sinon), blanc → NULL (retour au modèle). **Recherche du guide** : elle
+  **moissonne le DOM** (`search.js` lit le `h3`) → l'override renommé est indexé
+  automatiquement, l'ancien titre disparaît de l'index — **aucun changement client, aucun
+  bump SW** (SSR seul ; `editor.js` est le back-office, non précaché). Vide = comportement
+  actuel **au mot près** (rendu byte-identique). Couvert par `test_translate.py`
+  (collect/apply title), `test_api.py` (rendu FR + byte-identique, traduit EN + repli
+  source + périmé, validation) et `frontend-tests/editor-title` (champ + placeholder = nom
+  du modèle + PATCH + vidage → NULL + sommaire).
 - Badge de traductions : le compte doit dire vrai (V2-41) : `repo.translation_status`
   alimente le badge « Traductions à jour / X à traduire » et le signal actif de
   l'éditeur. **Parité STRICTE du prédicat** : les **fraîches** se comptent sur

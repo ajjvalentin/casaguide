@@ -128,6 +128,14 @@ export async function renderEditor(view, pid, context) {
   };
   document.addEventListener("keydown", window._casaSaveHandler);
 
+  // Titre AFFICHÉ d'une rubrique (V2-42) : le titre personnalisé du propriétaire
+  // (`title_override`) prime sur le nom du modèle — UNE source de vérité côté éditeur
+  // (miroir de guide_page._section_title côté rendu). Vide → nom du modèle. Fonction
+  // déclarée (hoistée) : utilisée par selectSection, appelé avant cette ligne au montage.
+  function sectionTitle(s) {
+    return ((s.title_override || "").trim()) || t(s.name_i18n, s.code);
+  }
+
   // Une entrée de section dans la barre latérale (mutualisée guest/staff).
   function sectionLink(s) {
     const done = filled(s);
@@ -138,7 +146,7 @@ export async function renderEditor(view, pid, context) {
       class: "sec-link" + (s.code === current ? " on" : ""),
       onClick: () => selectSection(s.code),
     },
-      el("span", { class: s.is_visible ? "" : "dim" }, t(s.name_i18n, s.code)),
+      el("span", { class: s.is_visible ? "" : "dim" }, sectionTitle(s)),
       ESSENTIAL_CODES.has(s.code) ? el("span", { class: "badge badge-essential" }, "Essentiel") : null,
       s.is_sensitive ? icon("lock", 12) : null,
       icon("circle-check", 15, done));
@@ -264,6 +272,20 @@ export async function renderEditor(view, pid, context) {
 
     const form = buildSectionForm(sec, { secrets, propertyId: pid });
 
+    // Titre de la rubrique personnalisable (V2-42) : champ optionnel en tête. Le
+    // placeholder = nom du modèle (l'invitation dit le repli) ; vide = retour au
+    // modèle. Sauvé avec la section → save marque les traductions périmées (V2-41).
+    // Réservé au guide voyageur (le cahier /s reste en français, hors périmètre).
+    const modelName = t(sec.name_i18n, sec.code);
+    const titleInput = el("input", { type: "text", maxlength: "80",
+      placeholder: modelName });
+    titleInput.value = sec.title_override || "";
+    const titleField = isStaff(sec) ? null : el("div", { class: "field sp-title" },
+      el("label", {}, "Titre de la rubrique"),
+      titleInput,
+      el("div", { class: "help" },
+        `Laissez vide pour « ${modelName} » (le nom par défaut).`));
+
     const visibleSwitch = el("input", { type: "checkbox" });
     visibleSwitch.checked = sec.is_visible;
     const saveBtn = el("button", { class: "btn btn-primary" }, icon("save", 17), "Enregistrer");
@@ -276,12 +298,13 @@ export async function renderEditor(view, pid, context) {
     mount(panel,
       el("div", { class: "sp-head" },
         el("span", { class: "chap-dot", style: { background: meta.color, width: "30px", height: "30px" } }, icon(sec.icon || meta.icon, 17)),
-        el("div", {}, el("h2", {}, t(sec.name_i18n, sec.code)),
+        el("div", {}, el("h2", {}, sectionTitle(sec)),
           el("div", { class: "row", style: { gap: "8px", marginTop: "4px" } },
             sec.is_sensitive ? el("span", { class: "badge badge-secret" }, icon("lock", 12), "Sensible") : null,
             sec.ai_enrichable ? el("span", { class: "badge badge-ai" }, icon("sparkles", 12), "Pré-remplissable IA") : null))),
       el("p", { class: "sp-desc" }, t(sec.description_i18n, "")),
       secretUnavailable,
+      titleField,
       form.node,
       buildMediaPanel({ propertyId: pid, sectionCode: sec.code }).node,
       el("div", { class: "sp-toolbar" },
@@ -297,22 +320,25 @@ export async function renderEditor(view, pid, context) {
         el("span", { class: "savehint" }, el("kbd", {}, navigator.platform.includes("Mac") ? "⌘S" : "Ctrl+S")),
         saveBtn));
 
-    saveBtn.addEventListener("click", () => saveCurrent({ visibleSwitch, form, saveBtn }));
-    panel._ctx = { visibleSwitch, form, saveBtn };
+    saveBtn.addEventListener("click", () => saveCurrent({ visibleSwitch, form, saveBtn, titleInput }));
+    panel._ctx = { visibleSwitch, form, saveBtn, titleInput };
     renderSidebar();
   }
 
   async function saveCurrent(ctx = panel._ctx) {
     if (!ctx) return;
-    const { visibleSwitch, form, saveBtn } = ctx;
+    const { visibleSwitch, form, saveBtn, titleInput } = ctx;
     const sec = byCode.get(current);
     const { content, body_md, hasSecrets, secretsPatch } = form.collect();
+    // Titre personnalisé (V2-42) : trimé ; vide → null (retour au nom du modèle).
+    const titleOverride = titleInput ? (titleInput.value.trim() || null) : null;
     saveBtn.disabled = true; saveBtn.textContent = "Enregistrement…";
     try {
       await api.putSection(pid, current, {
         // `completed` (colonne conservée, non destructif) : on renvoie sa valeur
         // existante inchangée — la bascule a disparu, la donnée n'est plus pilotée.
         content, body_md, is_visible: visibleSwitch.checked, completed: sec.completed,
+        title_override: titleOverride,
       });
       if (hasSecrets && secretsAvailable) {
         Object.assign(secrets, secretsPatch);
@@ -328,6 +354,7 @@ export async function renderEditor(view, pid, context) {
       // Mise à jour de l'état local
       sec.content = content; sec.body_md = body_md;
       sec.is_visible = visibleSwitch.checked;
+      sec.title_override = titleOverride;   // V2-42 : sommaire/en-tête suivent au re-rendu
       if (!(hasSecrets && !secretsAvailable)) toast("Section enregistrée.", "ok");
       renderSidebar();
       // Le fil peut avancer (wifi/accès posés, contenu ajouté) → recompute serveur.

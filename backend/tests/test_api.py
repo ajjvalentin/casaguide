@@ -2092,6 +2092,89 @@ def test_translation_status_predicate_parity_ignores_staff_and_rejected(client):
     assert st["langs"]["es"]["fresh"] == 0
 
 
+# ── V2-42 : titre de rubrique personnalisable par logement ───────────────────
+
+def _put_pool(client, headers, pid, title):
+    r = client.put(f"/api/properties/{pid}/sections/B_pool", headers=headers,
+                   json={"content": {}, "body_md": "Barbecue au fond du jardin.",
+                         "is_visible": True, "completed": True,
+                         "title_override": title})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_section_title_override_fr_render_and_empty_is_byte_identical(client):
+    """V2-42 : le titre personnalisé remplace le nom du modèle au rendu FR (le mot
+    « jacuzzi » du modèle disparaît) ; vidé → rendu BYTE-IDENTIQUE à aujourd'hui."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    secs = client.get(f"/api/properties/{pid}/sections",
+                      headers=owner["headers"]).json()["sections"]
+    model = next(s for s in secs if s["code"] == "B_pool")["name_i18n"]["fr"]
+    assert "jacuzzi" in model.lower()          # le CONSTAT : le modèle promet un jacuzzi
+
+    _put_pool(client, owner["headers"], pid, None)   # sans override
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})
+    page_model = client.get(f"/g/{token}").text
+    assert f"<h3>{model}</h3>" in page_model    # titre du modèle rendu (aujourd'hui)
+
+    # Avec override → le titre du modèle DISPARAÎT (name_i18n ignoré), jacuzzi parti.
+    _put_pool(client, owner["headers"], pid, "Piscine & barbecue")
+    page_over = client.get(f"/g/{token}").text
+    assert "<h3>Piscine &amp; barbecue</h3>" in page_over
+    assert model not in page_over and "jacuzzi" not in page_over.lower()
+
+    # Vidage (chaîne blanche → NULL) → rendu byte-identique au cas sans override.
+    _put_pool(client, owner["headers"], pid, "   ")
+    assert client.get(f"/g/{token}").text == page_model
+
+
+def test_section_title_override_translated_repli_and_marks_stale(client):
+    """V2-42 : l'override voyage dans le pipeline de traduction (guide EN porte
+    l'override TRADUIT) ; l'éditer périme la traduction (marquage V2-41) et le guide
+    EN retombe alors sur la SOURCE (repli élégant, jamais un titre traduit périmé)."""
+    owner = register(client)
+    set_owner_plan(owner["email"], "pro")   # multilingue autorisé (V2-05a)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _put_pool(client, owner["headers"], pid, "Piscine & barbecue")
+    client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                 json={"status": "published"})   # publier → traduit (FakeTranslator)
+
+    en = client.get(f"/g/{token}?lang=en").text
+    assert "<h3>[en] Piscine &amp; barbecue</h3>" in en   # override TRADUIT rendu
+    assert "jacuzzi" not in en.lower() and "Hot tub" not in en   # nom du modèle EN ignoré
+
+    # Éditer l'override → ses traductions deviennent périmées (le marquage existant
+    # l'attrape : c'est ce que le bandeau V2-41 « Retraduire maintenant » proposera).
+    _put_pool(client, owner["headers"], pid, "Piscine et grill")
+    st = client.get(f"/api/properties/{pid}/translation-status",
+                    headers=owner["headers"]).json()
+    assert st["outdated"] > 0
+
+    # Avant re-traduction, le guide EN retombe sur la SOURCE (jamais la trad périmée).
+    en2 = client.get(f"/g/{token}?lang=en").text
+    assert "<h3>Piscine et grill</h3>" in en2
+    assert "[en] Piscine &amp; barbecue" not in en2
+
+
+def test_section_title_override_validation_trims_and_bounds(client):
+    """Validation (V2-42) : trim ; blanc → NULL ; > 80 caractères → 422."""
+    owner = register(client)
+    prop = make_property(client, owner["headers"])
+    pid = prop["id"]
+    got = _put_pool(client, owner["headers"], pid, "  Piscine & barbecue  ")
+    assert got["title_override"] == "Piscine & barbecue"     # trimé
+    assert _put_pool(client, owner["headers"], pid, "")["title_override"] is None
+    too_long = "x" * 81
+    r = client.put(f"/api/properties/{pid}/sections/B_pool", headers=owner["headers"],
+                   json={"content": {}, "body_md": "x", "is_visible": True,
+                         "completed": True, "title_override": too_long})
+    assert r.status_code == 422
+
+
 def test_translate_excluded_from_enrich_quota(client):
     """Traduire ne consomme pas le quota d'enrichissement (M-09). Plan solo
     (enrich_quota=3, langs=5 → traduction autorisée)."""

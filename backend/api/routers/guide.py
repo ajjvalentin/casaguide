@@ -201,6 +201,11 @@ def _overlay_translations(conn, pid: str, lang: str, sections: list[dict],
                 s["content"] = tr["content"]
             if tr["body_md"]:
                 s["body_md"] = tr["body_md"]
+            # Titre personnalisé traduit (V2-42) : remplace la source si présent ;
+            # sinon la source `title_override` (déjà sur `s`) tient — repli élégant
+            # (comme le body : jamais un trou, jamais un titre traduit périmé).
+            if tr.get("title_override"):
+                s["title_override"] = tr["title_override"]
     poi_tr = repo.guide_poi_translations(conn, pid, lang)
     for p in pois:
         tr = poi_tr.get(str(p["id"]))

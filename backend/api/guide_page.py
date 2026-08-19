@@ -520,6 +520,20 @@ def _seed_label(lang: str, key: str, i18n: Any, fallback: str = "") -> str:
     return _i18n_mod.overlaid(key) or _i18n(i18n, lang, fallback)
 
 
+def _section_title(sec: dict, lang: str) -> str:
+    """Titre AFFICHÉ d'une section (V2-42), UNE seule source de vérité — tout endroit
+    qui montre le nom d'une rubrique passe par ici (aucune divergence). Le titre
+    personnalisé du propriétaire (`title_override`) prime sur le nom du modèle : il est
+    déjà résolu en langue par `_overlay_translations` (traduit si dispo, sinon la
+    source — repli élégant). Vide → nom du modèle du seed (`name_i18n`), au mot près."""
+    override = (sec.get("title_override") or "").strip()
+    if override:
+        return override
+    code = sec.get("code", "")
+    return _seed_label(lang, _i18n_mod.section_name_key(code),
+                       sec.get("name_i18n"), code)
+
+
 def _i18n(i18n: Any, lang: str = "fr", fallback: str = "") -> str:
     """Valeur localisée d'un libellé i18n (dict {fr,en,es…} ou chaîne).
     Repli : `lang` → fr → en → es → `fallback` (jamais de trou, §9)."""
@@ -865,8 +879,7 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
     schema = sec.get("field_schema") or {}
     content = sec.get("content") or {}
     _sc = sec.get("code", "")
-    title = _esc(_seed_label(lang, _i18n_mod.section_name_key(_sc),
-                             sec.get("name_i18n"), _sc))
+    title = _esc(_section_title(sec, lang))
     parts: list[str] = [f"<h3>{title}</h3>"]
 
     # Section d'arrivée (déclare airport/train_station) : bandeau de navigation
@@ -1121,8 +1134,7 @@ def _service_fact_tiles(sections: list[dict], area_facts: dict,
             if not render or not render(area_facts.get(ft) or {}, lang):
                 continue  # fait absent/vide → pas de tuile (miroir de l'encart)
             code = s.get("code") or ""
-            name = _esc(_seed_label(lang, _i18n_mod.section_name_key(code),
-                                    s.get("name_i18n"), code))
+            name = _esc(_section_title(s, lang))   # V2-42 : la tuile suit le titre affiché
             icon = category_icon_svg(ft, s.get("icon"))
             count = len((area_facts.get(ft) or {}).get("platforms") or [])
             color = _esc(_CHAPTER_COLORS.get(s.get("chapter", ""), "#0E5A73"))

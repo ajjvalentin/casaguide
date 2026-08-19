@@ -327,4 +327,5 @@ def upsert_section(template_code: str, payload: SectionUpsertIn, conn: Conn,
     return repo.upsert_section(
         conn, str(prop["id"]), template_code,
         content=payload.content, body_md=payload.body_md,
-        is_visible=payload.is_visible, completed=payload.completed)
+        is_visible=payload.is_visible, completed=payload.completed,
+        title_override=payload.title_override)

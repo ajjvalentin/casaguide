@@ -341,6 +341,7 @@ CREATE TABLE property_sections (
     custom_title  TEXT,                            -- pour les sections personnalisées
     sort_order    INT NOT NULL DEFAULT 0,
     is_visible    BOOLEAN NOT NULL DEFAULT TRUE,   -- masquer une section non pertinente
+    title_override TEXT,                           -- titre de rubrique personnalisé (V2-42) ; NULL = nom du modèle
     -- Contenu dans la langue source du logement :
     content       JSONB NOT NULL DEFAULT '{}',     -- champs structurés (selon field_schema)
     body_md       TEXT,                            -- texte libre (Markdown)
@@ -384,6 +385,7 @@ CREATE TABLE section_translations (
     lang        TEXT NOT NULL,                     -- 'en', 'es', 'de', 'nl'…
     content     JSONB NOT NULL DEFAULT '{}',
     body_md     TEXT,
+    title_override TEXT,                            -- titre de rubrique traduit (V2-42) ; NULL = repli source
     is_stale    BOOLEAN NOT NULL DEFAULT FALSE,    -- source modifiée depuis la traduction
     reviewed_by_owner BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),

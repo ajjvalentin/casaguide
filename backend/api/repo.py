@@ -590,7 +590,7 @@ def list_sections_with_templates(conn, property_id: str) -> list[dict]:
                   t.description_i18n, t.field_schema, t.ai_enrichable, t.is_sensitive,
                   t.audience,
                   ps.id AS section_id, ps.content, ps.body_md, ps.is_visible,
-                  ps.completed
+                  ps.completed, ps.title_override
            FROM section_templates t
            LEFT JOIN property_sections ps
              ON ps.template_code = t.code AND ps.property_id = %s
@@ -601,18 +601,20 @@ def list_sections_with_templates(conn, property_id: str) -> list[dict]:
 
 def upsert_section(conn, property_id: str, template_code: str, *,
                    content: dict, body_md: str | None, is_visible: bool,
-                   completed: bool) -> dict:
+                   completed: bool, title_override: str | None = None) -> dict:
     row = conn.execute(
         """INSERT INTO property_sections (property_id, template_code, content,
-                                          body_md, is_visible, completed, updated_at)
-           VALUES (%s, %s, %s, %s, %s, %s, now())
+                                          body_md, is_visible, completed,
+                                          title_override, updated_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, now())
            ON CONFLICT (property_id, template_code) DO UPDATE SET
                content = EXCLUDED.content, body_md = EXCLUDED.body_md,
                is_visible = EXCLUDED.is_visible, completed = EXCLUDED.completed,
+               title_override = EXCLUDED.title_override,
                updated_at = now()
-           RETURNING id, template_code, is_visible, completed""",
+           RETURNING id, template_code, is_visible, completed, title_override""",
         (property_id, template_code, json.dumps(content), body_md, is_visible,
-         completed),
+         completed, title_override),
     ).fetchone()
     # Le contenu source a changé → ses traductions deviennent périmées (M-09).
     # La re-traduction (à la publication ou via le bouton) ne retraitera que
@@ -1328,7 +1330,7 @@ def guide_sections(conn, property_id: str) -> list[dict]:
     return conn.execute(
         """SELECT t.code, t.chapter, t.sort_order, t.icon, t.name_i18n,
                   t.field_schema, t.is_sensitive, ps.content, ps.body_md,
-                  (ps.id IS NULL) AS virtual
+                  ps.title_override, (ps.id IS NULL) AS virtual
            FROM section_templates t
            LEFT JOIN property_sections ps
              ON ps.template_code = t.code AND ps.property_id = %s
@@ -1463,7 +1465,7 @@ def guide_section_translations(conn, property_id: str, lang: str) -> dict:
     alors sur le français (repli élégant, jamais d'info traduite obsolète, §9).
     La re-traduction (publication / bouton) les rafraîchit."""
     rows = conn.execute(
-        """SELECT t.code, st.content, st.body_md
+        """SELECT t.code, st.content, st.body_md, st.title_override
            FROM section_translations st
            JOIN property_sections ps ON ps.id = st.section_id
            JOIN section_templates t ON t.code = ps.template_code
@@ -1471,7 +1473,8 @@ def guide_section_translations(conn, property_id: str, lang: str) -> dict:
              AND st.is_stale = FALSE""",
         (property_id, lang),
     ).fetchall()
-    return {r["code"]: {"content": r["content"], "body_md": r["body_md"]}
+    return {r["code"]: {"content": r["content"], "body_md": r["body_md"],
+                        "title_override": r["title_override"]}
             for r in rows}
 
 
