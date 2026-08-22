@@ -26,7 +26,7 @@ from typing import Callable
 import anthropic
 import httpx
 
-from . import claude_enrich, db, distance, geocode, overpass
+from . import claude_enrich, db, dedup, distance, geocode, overpass
 from .settings import settings
 
 log = logging.getLogger("casaguide.pipeline")
@@ -102,7 +102,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
     """
     summary: dict = {"pois": 0, "categories": {}, "area_facts": False,
                      "cost_cts": 0.0, "services_completed": 0, "babysitters": 0,
-                     "markets_created": 0}
+                     "markets_created": 0, "duplicates_merged": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -165,6 +165,15 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     continue
                 for p in pois:
                     p["category"] = code
+                # ── Dédoublonnage à la suggestion (V2-40) ────────────────────
+                # OSM porte le même lieu en plusieurs éléments (Alicante « (ALC) »
+                # + « Miguel Hernández », gare bilingue…). On dédoublonne le lot
+                # (le mieux renseigné survit) PUIS on retire ce qui double une fiche
+                # déjà arbitrée — jamais un successeur légitime (sentinelle XiaoWu).
+                pois, in_batch = dedup.deduplicate(pois)
+                existing = db.existing_pois_for_dedup(conn, property_id, code)
+                pois, vs_existing = dedup.filter_against_existing(pois, existing)
+                summary["duplicates_merged"] += in_batch + vs_existing
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
                 n = db.upsert_pois(conn, property_id, code, pois)
@@ -179,10 +188,13 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             db.job_step(conn, job_id, "overpass",
                         {"ok": not failed_categories or summary["pois"] > 0,
                          "pois": summary["pois"],
+                         "duplicates_merged": summary["duplicates_merged"],
                          "failed": failed_categories})
             db.job_step(conn, job_id, "distances", {"ok": True})
             conn.commit()
             _progress(f"  ✓ Overpass : {summary['pois']} POI"
+                      + (f", {summary['duplicates_merged']} doublon(s) fusionné(s)"
+                         if summary["duplicates_merged"] else "")
                       + (f" — {len(failed_categories)} catégorie(s) en échec : "
                          + ", ".join(sorted(failed_categories))
                          if failed_categories else " — 0 échec"))
@@ -501,6 +513,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             conn.commit()
             _progress(
                 f"✔ job {job_id} terminé — {summary['pois']} POI suggérés, "
+                f"{summary['duplicates_merged']} doublon(s) fusionné(s), "
                 f"{summary['services_completed']} fiche(s) complétée(s), "
                 f"{summary['babysitters']} baby-sitting créé(s), "
                 f"{summary['markets_created']} marché(s) créé(s), "
@@ -572,6 +585,7 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
     `retry_{attempt}`. N'altère PAS le statut du job (il reste 'done') ni les POI
     arbitrés. Retourne le dict des catégories encore en échec."""
     got = 0
+    merged_dups = 0
     resolved: list[str] = []
     with db.connect() as conn:
         prop = db.load_property(conn, property_id)
@@ -601,6 +615,11 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
                     continue
                 for p in pois:
                     p["category"] = code
+                # Dédoublonnage à la suggestion (V2-40), comme le run initial.
+                pois, in_batch = dedup.deduplicate(pois)
+                existing = db.existing_pois_for_dedup(conn, property_id, code)
+                pois, vs_existing = dedup.filter_against_existing(pois, existing)
+                merged_dups += in_batch + vs_existing
                 if code in settings.describe_categories:
                     editorial.extend(pois)
                 got += db.upsert_pois(conn, property_id, code, pois)
@@ -632,6 +651,7 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
 
             db.job_step(conn, job_id, f"retry_{attempt}",
                         {"ok": not failed, "pois": got,
+                         "duplicates_merged": merged_dups,
                          "resolved": resolved, "failed": failed})
             conn.commit()
             return failed
@@ -661,6 +681,7 @@ def main() -> None:
     # de service, créations baby-sitting, coût total, et échecs éventuels EN CLAIR.
     print(f"\n=== Job {result['job_id']} terminé ===", flush=True)
     print(f"  POI suggérés          : {result['pois']}")
+    print(f"  Doublons fusionnés    : {result.get('duplicates_merged', 0)}")
     for cat, n in sorted(result["categories"].items()):
         print(f"    {cat:<18} {n}")
     print(f"  Fiches complétées     : {result.get('services_completed', 0)}")

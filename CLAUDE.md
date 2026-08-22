@@ -1244,6 +1244,37 @@ exposé, peer auth).
   rayon (`_RADIUS_BUCKETS`) en ~5 requêtes au lieu de ~25, puis re-filtre chaque
   catégorie à son rayon exact du seed. Un échec de palier marque toutes ses
   catégories `failed` (ré-enrichissables) sans casser le guide.
+- Dédoublonnage à la suggestion (V2-40, `enrich/dedup.py`) : OSM porte souvent le
+  MÊME lieu en plusieurs éléments (Alicante « (ALC) » + « Miguel Hernández » = deux
+  points de géométrie ; gare castillan+valencien ; aéroport « (RMU) » co-localisé).
+  Le dédoublonnage historique ne voyait que `source_ref` ; le trigramme des marchés
+  (volet 3) est ici **généralisé**. Passe **PURE** intercalée dans `pipeline.run`
+  (et `_retry_failed`) **entre la moisson+distances et l'upsert**, **par catégorie**
+  (des catégories ≠ à 10 m ne fusionnent JAMAIS — garde `category` dans `_same_place`).
+  `deduplicate` : deux candidats doublons si **noms proches** (Dice trigrammes ≥
+  `NAME_SIM_THRESHOLD`=0,70, sur le nom normalisé **OU** sans parenthèses — attrape
+  « (ALC) » vs « Miguel Hernández » par leur préfixe ; précédent Aguamarina : deux
+  agences distinctes gardent des bases différentes → jamais fusionnées) **OU**
+  distance ≤ `DUP_DIST_M`=150 m ; le **survivant** est le mieux renseigné (`_score` :
+  tél/site/horaires/cuisine/locality) → à égalité **temps de trajet le plus court**
+  (le point le plus juste, cas 52 vs 72) → nom le plus court. **Calibrage mesuré**
+  (variantes du même lieu ≈ 0,77–0,88 ; lieux distincts ≤ 0,56 ; suffixe de zone de
+  deux agences ≈ 0,36 → 0,70 tranche avec marge). `filter_against_existing` : un
+  candidat qui double une fiche déjà **arbitrée** (`existing_pois_for_dedup` :
+  approved/edited/rejected) est retiré — **retenue** sur nom OU distance, **rejetée
+  sur le NOM SEULEMENT** (jamais la distance). **Sentinelle Bon Bon→XiaoWu** : un
+  successeur légitime à la même adresse qu'une fiche rejetée (nom DIFFÉRENT) **VIT** —
+  la proximité seule ne condamne pas. **Garde source_ref** : la MÊME fiche
+  re-moissonnée (`source_ref` identique) n'est JAMAIS retirée — elle passe par
+  l'upsert idempotent, respectueux du statut (c'est lui qui complète une localité
+  NULL d'une fiche retenue, **V2-38bis**) ; on ne retire QUE les doublons sous un
+  **autre** `source_ref`. Les fiches arbitrées ne sont jamais modifiées ni fusionnées
+  (le ménage du passé reste au propriétaire). Journal « N doublon(s) fusionné(s) »
+  (`summary["duplicates_merged"]`, progression, résumé CLI, `steps.overpass`). **enrich/
+  seul, aucune migration, aucun bump SW.** Couvert par `test_dedup.py` (les 3 cas
+  réels, Aguamarina, candidat vs retenu, XiaoWu-sentinelle, variante rejetée,
+  catégories ≠ à 10 m, survivant scoré, garde source_ref) et `test_pipeline.py`
+  (deux Alicante moissonnés → 1 POI, le plus proche survit, compteur au journal).
 - Fiabilisation de la moisson (M-18) :
   - **Ré-essai différé** : `pipeline.run_with_retries` (branché dans
     `deps._default_runner`) exécute le pipeline puis, si des catégories ont

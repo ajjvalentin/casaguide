@@ -863,6 +863,57 @@ def _no_mirrors():
     return orig
 
 
+def test_dedup_merges_duplicate_airports_at_suggestion(property_id):
+    """V2-40 bout-en-bout : OSM porte l'aéroport d'Alicante en DEUX éléments
+    (« (ALC) » loin + « Miguel Hernández » proche) → UN SEUL POI suggéré (le plus
+    proche survit, cas 52 vs 72), et le résumé + le journal comptent le doublon
+    fusionné. Plus jamais deux Alicante à approuver."""
+    orig = _no_mirrors()
+    orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    miguel = {"type": "node", "id": 1001, "lat": 38.05, "lon": -0.66,   # proche
+              "tags": {"name": "Aeropuerto de Alicante-Elche Miguel Hernández",
+                       "aeroway": "aerodrome", "iata": "ALC"}}
+    alc = {"type": "node", "id": 1002, "lat": 38.50, "lon": -0.55,      # loin
+           "tags": {"name": "Aeropuerto de Alicante-Elche (ALC)",
+                    "aeroway": "aerodrome", "iata": "ALC"}}
+
+    def handler(request):
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=NOMINATIM)
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            if '"aeroway"="aerodrome"' in body:
+                return httpx.Response(200, json={"elements": [miguel, alc]})
+            return httpx.Response(200, json={"elements": []})
+        if "/table/v1/" in url:
+            return httpx.Response(200, json=_osrm_payload(url))
+        return httpx.Response(404)
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=False,
+                                   only_categories={"airport"},
+                                   http_client=client,
+                                   anthropic_client=FakeAnthropic())
+    finally:
+        settings.overpass_mirrors = orig
+        settings.overpass_backoff_s = orig_backoff
+
+    assert summary["duplicates_merged"] >= 1               # compté dans le résumé
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rows = conn.execute(
+            "SELECT name, drive_min FROM pois WHERE property_id=%s "
+            "AND category_code='airport'", (property_id,)).fetchall()
+        job = conn.execute(
+            "SELECT steps FROM enrichment_jobs WHERE property_id=%s "
+            "ORDER BY started_at DESC LIMIT 1", (property_id,)).fetchone()
+    assert len(rows) == 1                                  # un seul aéroport (fusionné)
+    assert "Miguel" in rows[0]["name"]                     # le plus proche a survécu
+    assert job["steps"]["overpass"]["duplicates_merged"] >= 1   # journal de la passe
+
+
 def test_bucket_timeout_airport_is_longer():
     """Le palier aéroport (100 km) utilise le timeout dédié plus long (M-18)."""
     assert overpass._bucket_timeout(100000) == settings.overpass_timeout_far_s

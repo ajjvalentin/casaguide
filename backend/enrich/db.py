@@ -310,6 +310,23 @@ def insert_service_poi(conn, property_id: str, category: str, name: str,
     return cur.rowcount
 
 
+def existing_pois_for_dedup(conn, property_id: str, category: str) -> list[dict]:
+    """POI déjà ARBITRÉS (approved/edited/rejected) d'une catégorie, pour le
+    dédoublonnage à la suggestion (V2-40). Les `suggested` sont exclus : ils
+    n'existent pas encore, ou seront ré-upsertés à l'identique par `source_ref`.
+    Position en lat/lon + statut (la règle diffère selon retenue/rejetée) + le
+    `source_ref` (le dédoublonnage ne retire QUE les doublons sous un AUTRE
+    source_ref : la MÊME fiche re-moissonnée passe par l'upsert, idempotent et
+    respectueux du statut — invariant 1, V2-38bis pour la localité)."""
+    return conn.execute(
+        """SELECT name, ST_Y(geom) AS lat, ST_X(geom) AS lon, status, source_ref
+           FROM pois
+           WHERE property_id = %s AND category_code = %s
+             AND status IN ('approved', 'edited', 'rejected')""",
+        (property_id, category),
+    ).fetchall()
+
+
 def existing_market_pois(conn, property_id: str) -> list[dict]:
     """POI `market` du logement — TOUS statuts (V2-07 volet 3, déduplication) :
     un marché déjà présent (`edited` du propriétaire) n'est jamais recréé, un
