@@ -594,6 +594,10 @@ couvrant la zone, services d'hôtel/conciergerie ouverts au public. Vérifie cha
 par recherche web.
 
 RÈGLES STRICTES :
+- LOCAL D'ABORD : privilégie les agences et services de PROXIMITÉ (ceux basés dans
+  ou près de {city}) aux grandes plateformes nationales. ORDONNE ta liste du plus
+  LOCAL au plus national. Ne renvoie AU PLUS que 3 services — les plus pertinents
+  pour un vacancier sur place, jamais un annuaire de plateformes.
 - PREUVE OU RIEN : ne retiens un service QUE si une page en ligne le confirme
   (site officiel de préférence). Fournis un TÉLÉPHONE quand tu l'as (l'action est
   d'appeler) et l'URL de preuve.
@@ -643,7 +647,10 @@ def fetch_babysitters(city: str, country_code: str,
                 entry[f] = v
         entry["verified_on"] = (s.get("verified_on") or "").strip() or today
         out.append(entry)
-    return out, meta
+    # Plafond « local d'abord » (V2-44) : le prompt ordonne du plus local au plus
+    # national → on garde les premiers. Empêche l'annuaire de plateformes nationales
+    # (6 sorties au benchmark Op de Boerderie) de noyer les vraies agences de zone.
+    return out[:settings.babysitter_max_results], meta
 
 
 # ── Marchés hebdomadaires par zone : découverte CLAUDE + web (V2-07 volet 3) ──

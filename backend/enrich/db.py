@@ -38,8 +38,10 @@ def load_property(conn, property_id: str) -> dict:
 
 
 def load_categories(conn) -> list[dict]:
+    # `max_radius_m` (V2-44) : rayon maximal de complétion en rural. NULL = pas
+    # d'escalade (l'appelant retombe sur `default_radius_m`).
     return conn.execute(
-        "SELECT code, default_radius_m FROM poi_categories ORDER BY code"
+        "SELECT code, default_radius_m, max_radius_m FROM poi_categories ORDER BY code"
     ).fetchall()
 
 

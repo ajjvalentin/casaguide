@@ -947,10 +947,13 @@ def test_retry_recovers_airport_and_replays_only_missing(property_id):
     assert result["retries"] == 1 and not result["failed_categories"]
     assert sleeps == [0]                       # une attente avant le seul retry M-18
     # Aéroport : `max_attempts` requêtes au 1er run (toutes en échec, backoff interne)
-    # + 1 au retry M-18 (succès) ; supermarché 1 SEULE fois (le retry ne rejoue que
-    # les catégories manquantes).
+    # + 1 au retry M-18 (succès). L'aéroport a max_radius_m = default → jamais d'escalade
+    # V2-44 (pas de 2e passe). Le retry ne rejoue que les catégories manquantes.
     assert flaky.airport_queries == settings.overpass_max_attempts + 1
-    assert flaky.supermarket_queries == 1
+    # Supermarché : le 1er run le trouve mais SOUS le minimum (2 < MIN_RESULTS) → escalade
+    # V2-44 au rayon max (passe 2) → 2 requêtes au 1er run ; JAMAIS rejoué au retry (il
+    # n'était pas en échec). 2, pas 1.
+    assert flaky.supermarket_queries == 2
 
     with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
         cats = {r["category_code"] for r in conn.execute(
@@ -1207,3 +1210,95 @@ def test_describe_failure_is_best_effort_job_stays_done(property_id, http_client
         resto = conn.execute("SELECT description_md FROM pois WHERE property_id=%s "
                              "AND name='La Marejada'", (property_id,)).fetchone()
         assert resto["description_md"] is None
+
+
+# ── V2-44 : aéroports civils, capés aux 3 plus proches en temps de trajet ─────
+
+def test_airport_capped_to_three_nearest_civil(property_id):
+    """5 aéroports CIVILS (avec IATA) + 1 base militaire → la base est exclue et on
+    ne garde que les 3 civils les plus proches EN TEMPS DE TRAJET (benchmark : 7
+    aéroports dont Ostende à 132 min)."""
+    orig = _no_mirrors()
+    orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+
+    def apt(id_, name, dlat, **extra):
+        return {"type": "node", "id": id_, "lat": PROP_LAT + dlat, "lon": PROP_LON,
+                "tags": {"name": name, "aeroway": "aerodrome", **extra}}
+
+    # Croissants en distance (≈ 10, 20, 30, 40, 50 km). La base est plus PROCHE (5 km)
+    # mais militaire → exclue quand même.
+    civils = [apt(1, "Alpha", 0.090, iata="AAA"), apt(2, "Bravo", 0.180, iata="BBB"),
+              apt(3, "Charlie", 0.270, iata="CCC"), apt(4, "Delta", 0.360, iata="DDD"),
+              apt(5, "Echo", 0.450, iata="EEE")]
+    military = apt(6, "Vliegbasis Woensdrecht", 0.050, military="airfield")
+    els = civils + [military]
+
+    def handler(request):
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=NOMINATIM)
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            return httpx.Response(200, json={
+                "elements": els if '"aeroway"="aerodrome"' in body else []})
+        if "/table/v1/" in url:
+            return httpx.Response(200, json=_osrm_payload(url))
+        return httpx.Response(404)
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=False,
+                                   only_categories={"airport"}, http_client=client,
+                                   anthropic_client=FakeAnthropic())
+    finally:
+        settings.overpass_mirrors = orig
+        settings.overpass_backoff_s = orig_backoff
+
+    assert summary["pois"] == 3
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        names = [r["name"] for r in conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s AND category_code='airport' "
+            "ORDER BY drive_min", (property_id,)).fetchall()]
+    # Militaire exclu ; les 3 civils les plus proches seulement.
+    assert names == ["Alpha", "Bravo", "Charlie"]
+
+
+# ── V2-44 : catégories sans résultat signalées (résumé + steps) ──────────────
+
+def test_empty_categories_reported_in_steps_and_summary(property_id):
+    """Une catégorie où l'on ne trouve RIEN (pas une erreur) est nommée dans le résumé
+    du run ET dans enrichment_jobs.steps.overpass.empty."""
+    orig = _no_mirrors()
+    orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+
+    def handler(request):
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=NOMINATIM)
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            els = (OVERPASS_BY_CATEGORY["supermarket"]
+                   if '"shop"="supermarket"' in body else [])   # laverie & plage vides
+            return httpx.Response(200, json={"elements": els})
+        if "/table/v1/" in url:
+            return httpx.Response(200, json=_osrm_payload(url))
+        return httpx.Response(404)
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(
+                property_id, use_claude=False,
+                only_categories={"supermarket", "laundry", "beach"},
+                http_client=client, anthropic_client=FakeAnthropic())
+    finally:
+        settings.overpass_mirrors = orig
+        settings.overpass_backoff_s = orig_backoff
+
+    assert set(summary["empty_categories"]) == {"laundry", "beach"}
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        job = conn.execute("SELECT steps FROM enrichment_jobs WHERE property_id=%s "
+                           "ORDER BY started_at DESC LIMIT 1", (property_id,)).fetchone()
+    assert set(job["steps"]["overpass"]["empty"]) == {"laundry", "beach"}
+    assert job["steps"]["overpass"]["failed"] == {}    # vide ≠ échec

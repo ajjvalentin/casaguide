@@ -42,52 +42,58 @@ ON CONFLICT (id) DO UPDATE SET
 
 -- ============================================================================
 -- 2. CATÉGORIES DE POI (§4, §6)
---    default_radius_m = rayon de recherche Overpass adapté à chaque catégorie
+--    default_radius_m = rayon de recherche Overpass PRÉFÉRÉ, adapté à chaque catégorie
+--    max_radius_m     = rayon MAXIMAL de complétion en rural (V2-44) : au-delà de la
+--                       préférence, on complète avec les plus proches jusqu'à un
+--                       minimum garanti (MIN_RESULTS). NULL = pas d'escalade (rayon
+--                       fixe : parking, arrêt de bus, hôpital déjà large, aéroport
+--                       capé aux plus proches, catégories Claude hors Overpass).
 --    icon = nom d’icône Lucide ; map_color = couleur du chapitre sur la carte
 -- ============================================================================
 
-INSERT INTO poi_categories (code, chapter, name_i18n, icon, map_color, default_radius_m) VALUES
+INSERT INTO poi_categories (code, chapter, name_i18n, icon, map_color, default_radius_m, max_radius_m) VALUES
 -- A — Arrivée
-('parking',        'A', '{"fr":"Parking","en":"Parking","es":"Aparcamiento"}',                              'circle-parking',  '#546E7A', 1000),
+('parking',        'A', '{"fr":"Parking","en":"Parking","es":"Aparcamiento"}',                              'circle-parking',  '#546E7A', 1000,  NULL),
 -- C — Vie pratique
-('supermarket',    'C', '{"fr":"Supermarché","en":"Supermarket","es":"Supermercado"}',                      'shopping-cart',   '#2E7D32', 3000),
-('market',         'C', '{"fr":"Marché local","en":"Local market","es":"Mercado local"}',                   'store',           '#2E7D32', 8000),
-('bakery',         'C', '{"fr":"Boulangerie","en":"Bakery","es":"Panadería"}',                              'croissant',       '#2E7D32', 2000),
-('atm',            'C', '{"fr":"Distributeur","en":"ATM","es":"Cajero"}',                                   'banknote',        '#2E7D32', 2000),
-('post_office',    'C', '{"fr":"Poste","en":"Post office","es":"Correos"}',                                 'mail',            '#2E7D32', 5000),
-('mall',           'C', '{"fr":"Centre commercial","en":"Shopping mall","es":"Centro comercial"}',          'shopping-bag',    '#2E7D32', 15000),
-('laundry',        'C', '{"fr":"Laverie","en":"Laundry","es":"Lavandería"}',                                'shirt',           '#2E7D32', 5000),
+('supermarket',    'C', '{"fr":"Supermarché","en":"Supermarket","es":"Supermercado"}',                      'shopping-cart',   '#2E7D32', 3000,  25000),
+('market',         'C', '{"fr":"Marché local","en":"Local market","es":"Mercado local"}',                   'store',           '#2E7D32', 8000,  25000),
+('bakery',         'C', '{"fr":"Boulangerie","en":"Bakery","es":"Panadería"}',                              'croissant',       '#2E7D32', 2000,  25000),
+('atm',            'C', '{"fr":"Distributeur","en":"ATM","es":"Cajero"}',                                   'banknote',        '#2E7D32', 2000,  25000),
+('post_office',    'C', '{"fr":"Poste","en":"Post office","es":"Correos"}',                                 'mail',            '#2E7D32', 5000,  25000),
+('mall',           'C', '{"fr":"Centre commercial","en":"Shopping mall","es":"Centro comercial"}',          'shopping-bag',    '#2E7D32', 15000, 25000),
+('laundry',        'C', '{"fr":"Laverie","en":"Laundry","es":"Lavandería"}',                                'shirt',           '#2E7D32', 5000,  25000),
 -- D — Urgences & santé
-('hospital',       'D', '{"fr":"Hôpital","en":"Hospital","es":"Hospital"}',                                 'cross',           '#C62828', 25000),
-('pharmacy',       'D', '{"fr":"Pharmacie","en":"Pharmacy","es":"Farmacia"}',                               'pill',            '#C62828', 3000),
-('doctor',         'D', '{"fr":"Médecin / dentiste","en":"Doctor / dentist","es":"Médico / dentista"}',     'stethoscope',     '#C62828', 5000),
-('police',         'D', '{"fr":"Police","en":"Police","es":"Policía"}',                                     'shield',          '#C62828', 10000),
-('veterinary',     'D', '{"fr":"Vétérinaire","en":"Veterinary","es":"Veterinario"}',                        'paw-print',       '#C62828', 10000),
+('hospital',       'D', '{"fr":"Hôpital","en":"Hospital","es":"Hospital"}',                                 'cross',           '#C62828', 25000, NULL),
+('pharmacy',       'D', '{"fr":"Pharmacie","en":"Pharmacy","es":"Farmacia"}',                               'pill',            '#C62828', 3000,  25000),
+('doctor',         'D', '{"fr":"Médecin / dentiste","en":"Doctor / dentist","es":"Médico / dentista"}',     'stethoscope',     '#C62828', 5000,  25000),
+('police',         'D', '{"fr":"Police","en":"Police","es":"Policía"}',                                     'shield',          '#C62828', 10000, 25000),
+('veterinary',     'D', '{"fr":"Vétérinaire","en":"Veterinary","es":"Veterinario"}',                        'paw-print',       '#C62828', 10000, 25000),
 -- E — Services
-('taxi',           'E', '{"fr":"Taxi / VTC","en":"Taxi / ride-hailing","es":"Taxi / VTC"}',                 'car-taxi-front',  '#6A1B9A', 10000),
-('babysitter',     'E', '{"fr":"Baby-sitting","en":"Babysitting","es":"Canguro"}',                          'baby',            '#6A1B9A', 15000),
-('food_delivery',  'E', '{"fr":"Livraison de repas","en":"Food delivery","es":"Comida a domicilio"}',       'bike',            '#6A1B9A', 10000),
-('rental',         'E', '{"fr":"Location (vélo, voiture…)","en":"Rentals (bike, car…)","es":"Alquiler (bici, coche…)"}', 'key-round', '#6A1B9A', 10000),
+('taxi',           'E', '{"fr":"Taxi / VTC","en":"Taxi / ride-hailing","es":"Taxi / VTC"}',                 'car-taxi-front',  '#6A1B9A', 10000, 25000),
+('babysitter',     'E', '{"fr":"Baby-sitting","en":"Babysitting","es":"Canguro"}',                          'baby',            '#6A1B9A', 15000, NULL),
+('food_delivery',  'E', '{"fr":"Livraison de repas","en":"Food delivery","es":"Comida a domicilio"}',       'bike',            '#6A1B9A', 10000, NULL),
+('rental',         'E', '{"fr":"Location (vélo, voiture…)","en":"Rentals (bike, car…)","es":"Alquiler (bici, coche…)"}', 'key-round', '#6A1B9A', 10000, 25000),
 -- F — Restaurants & sorties
-('restaurant',     'F', '{"fr":"Restaurant","en":"Restaurant","es":"Restaurante"}',                         'utensils',        '#EF6C00', 3000),
-('bar',            'F', '{"fr":"Bar","en":"Bar","es":"Bar"}',                                               'martini',         '#EF6C00', 3000),
-('cafe',           'F', '{"fr":"Café","en":"Café","es":"Cafetería"}',                                       'coffee',          '#EF6C00', 2000),
+('restaurant',     'F', '{"fr":"Restaurant","en":"Restaurant","es":"Restaurante"}',                         'utensils',        '#EF6C00', 3000,  25000),
+('bar',            'F', '{"fr":"Bar","en":"Bar","es":"Bar"}',                                               'martini',         '#EF6C00', 3000,  25000),
+('cafe',           'F', '{"fr":"Café","en":"Café","es":"Cafetería"}',                                       'coffee',          '#EF6C00', 2000,  25000),
 -- G — Activités & tourisme
-('beach',          'G', '{"fr":"Plage","en":"Beach","es":"Playa"}',                                         'waves',           '#0277BD', 10000),
-('sight',          'G', '{"fr":"Site touristique","en":"Sight","es":"Lugar de interés"}',                   'landmark',        '#0277BD', 20000),
-('family_activity','G', '{"fr":"Activité famille","en":"Family activity","es":"Actividad familiar"}',       'ferris-wheel',    '#0277BD', 15000),
-('sport',          'G', '{"fr":"Sport & loisirs","en":"Sports & leisure","es":"Deporte y ocio"}',           'dumbbell',        '#0277BD', 10000),
+('beach',          'G', '{"fr":"Plage","en":"Beach","es":"Playa"}',                                         'waves',           '#0277BD', 10000, 25000),
+('sight',          'G', '{"fr":"Site touristique","en":"Sight","es":"Lugar de interés"}',                   'landmark',        '#0277BD', 20000, 25000),
+('family_activity','G', '{"fr":"Activité famille","en":"Family activity","es":"Actividad familiar"}',       'ferris-wheel',    '#0277BD', 15000, 25000),
+('sport',          'G', '{"fr":"Sport & loisirs","en":"Sports & leisure","es":"Deporte y ocio"}',           'dumbbell',        '#0277BD', 10000, 25000),
 -- H — Transports
-('bus_stop',       'H', '{"fr":"Arrêt de bus","en":"Bus stop","es":"Parada de bus"}',                       'bus',             '#00695C', 1000),
-('bus_station',    'H', '{"fr":"Gare routière","en":"Bus station","es":"Estación de autobuses"}',           'bus-front',       '#00695C', 20000),
-('train_station',  'H', '{"fr":"Gare","en":"Train station","es":"Estación de tren"}',                       'train-front',     '#00695C', 15000),
-('airport',        'H', '{"fr":"Aéroport","en":"Airport","es":"Aeropuerto"}',                               'plane',           '#00695C', 100000),
+('bus_stop',       'H', '{"fr":"Arrêt de bus","en":"Bus stop","es":"Parada de bus"}',                       'bus',             '#00695C', 1000,  NULL),
+('bus_station',    'H', '{"fr":"Gare routière","en":"Bus station","es":"Estación de autobuses"}',           'bus-front',       '#00695C', 20000, 25000),
+('train_station',  'H', '{"fr":"Gare","en":"Train station","es":"Estación de tren"}',                       'train-front',     '#00695C', 15000, 25000),
+('airport',        'H', '{"fr":"Aéroport","en":"Airport","es":"Aeropuerto"}',                               'plane',           '#00695C', 100000, NULL),
 -- M-30 : carburant & recharge (voiture de location) — rayon court, chapitre Transports
-('fuel',            'H', '{"fr":"Station-service","en":"Petrol station","es":"Gasolinera"}',                 'fuel',            '#00695C', 10000),
-('charging_station','H', '{"fr":"Borne de recharge","en":"EV charging","es":"Punto de recarga"}',           'plug-zap',        '#00695C', 10000)
+('fuel',            'H', '{"fr":"Station-service","en":"Petrol station","es":"Gasolinera"}',                 'fuel',            '#00695C', 10000, 25000),
+('charging_station','H', '{"fr":"Borne de recharge","en":"EV charging","es":"Punto de recarga"}',           'plug-zap',        '#00695C', 10000, 25000)
 ON CONFLICT (code) DO UPDATE SET
   chapter = EXCLUDED.chapter, name_i18n = EXCLUDED.name_i18n, icon = EXCLUDED.icon,
-  map_color = EXCLUDED.map_color, default_radius_m = EXCLUDED.default_radius_m;
+  map_color = EXCLUDED.map_color, default_radius_m = EXCLUDED.default_radius_m,
+  max_radius_m = EXCLUDED.max_radius_m;
 
 -- Mode de trajet préféré par catégorie (V2-24). Idempotent : réappliqué à chaque
 -- seed (l'INSERT ci-dessus ne touche pas travel_mode). 'driving' = toujours en

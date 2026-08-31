@@ -23,18 +23,25 @@ LAT, LON = 37.9280, -0.7482
 # ── 1a. Filtre aéroports : publics/IATA seulement ────────────────────────────
 
 def test_airport_keeps_public_excludes_military_and_aeroclub():
-    aerodrome = ("aeroway", "aerodrome")
-    # Aéroport international avec code IATA -> gardé
-    assert overpass.category_matches("airport", {aerodrome[0]: aerodrome[1],
-                                                 "iata": "ALC", "name": "Alicante"})
-    # Type public explicite -> gardé
+    # V2-44 : proxy « civil commercial » = présence d'un code IATA ; toute marque
+    # militaire exclut d'emblée. Aéroport avec IATA -> gardé.
     assert overpass.category_matches("airport", {"aeroway": "aerodrome",
-                                                 "aerodrome:type": "regional"})
-    # Base militaire (San Javier) -> exclue (ni IATA ni type public)
+                                                 "iata": "ALC", "name": "Alicante"})
+    # Aérodrome régional SANS IATA -> exclu (aéroclub, altiport : pas de trafic
+    # commercial de vacances).
+    assert not overpass.category_matches("airport", {"aeroway": "aerodrome",
+                                                     "aerodrome:type": "regional"})
+    # Base militaire (San Javier) -> exclue même AVEC un IATA d'usage mixte.
     assert not overpass.category_matches("airport", {"aeroway": "aerodrome",
                                                      "military": "airfield",
+                                                     "iata": "XXX",
                                                      "name": "Base Aérea de San Javier"})
-    # Aéroclub (Mar Menor) -> exclu
+    # aerodrome:type=military -> exclu (Woensdrecht, Gilze-Rijen du benchmark)
+    assert not overpass.category_matches("airport", {"aeroway": "aerodrome",
+                                                     "aerodrome:type": "military",
+                                                     "iata": "XXX",
+                                                     "name": "Vliegbasis Woensdrecht"})
+    # Aéroclub (Mar Menor) -> exclu (pas d'IATA)
     assert not overpass.category_matches("airport", {"aeroway": "aerodrome",
                                                      "aerodrome:type": "airfield",
                                                      "name": "Aeroclub Mar Menor"})
@@ -123,12 +130,14 @@ def test_fetch_grouped_single_request_per_radius_bucket():
     cats = [{"code": "supermarket", "default_radius_m": 3000},
             {"code": "restaurant", "default_radius_m": 3000},
             {"code": "bar", "default_radius_m": 3000}]
-    results, failures = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
     client.close()
 
-    # Une seule requête Overpass pour les trois catégories
+    # Une seule requête Overpass pour les trois catégories : les catégories du test ne
+    # fournissent PAS de `max_radius_m` → max = préférence, aucune escalade (V2-44).
     assert len(calls) == 1
     assert failures == {}
+    assert stats["generic_dropped"] == 0
     # Re-ventilation correcte par tags, POI incohérent (office) exclu
     assert {p["name"] for p in results["supermarket"]} == {"Mercadona"}
     assert {p["name"] for p in results["restaurant"]} == {"La Marejada"}
@@ -198,3 +207,144 @@ def test_element_to_poi_carries_cuisine():
     el2 = {"type": "node", "id": 43, "lat": LAT, "lon": LON,
            "tags": {"name": "Bar Central", "amenity": "bar"}}
     assert overpass._element_to_poi(el2, LAT, LON)["cuisine"] is None
+
+
+# ── V2-44 : rayons adaptatifs (ruralité) ─────────────────────────────────────
+
+def _sm(name: str, dlat: float) -> dict:
+    """Supermarché à `dlat` degrés de latitude au nord du logement (id stable)."""
+    return {"type": "node", "id": 900000 + int(dlat * 1e5), "lat": LAT + dlat,
+            "lon": LON, "tags": {"name": name, "shop": "supermarket"}}
+
+
+def _one_selector_handler(elements: list[dict], selector: str, calls: list):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        body = urllib.parse.unquote_plus(request.read().decode())
+        return httpx.Response(200, json={"elements": elements if selector in body else []})
+    return handler
+
+
+def test_adaptive_radius_fills_min_results_in_rural_zone():
+    """Rien dans le rayon de PRÉFÉRENCE (3 km), 5 lieux dans le rayon MAX (25 km) →
+    MIN_RESULTS (3) retenus, les plus proches, avec leurs VRAIES distances."""
+    settings.politeness_delay_s = 0
+    els = [_sm("S8", 0.0719), _sm("S10", 0.0898), _sm("S12", 0.1078),
+           _sm("S15", 0.1347), _sm("S20", 0.1797)]     # ~8,10,12,15,20 km (tous > 3 km)
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler(els, '"shop"="supermarket"', calls)))
+    cats = [{"code": "supermarket", "default_radius_m": 3000, "max_radius_m": 25000}]
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    got = results["supermarket"]
+    assert [p["name"] for p in got] == ["S8", "S10", "S12"]   # les 3 plus proches
+    assert all(p["crow_m"] > 3000 for p in got)               # aucun dans la préférence
+    assert got[0]["crow_m"] < got[1]["crow_m"] < got[2]["crow_m"]
+    assert len(calls) == 2 and failures == {}    # préférence (vide) PUIS escalade
+
+
+def test_adaptive_radius_byte_identical_in_dense_zone():
+    """5 lieux DANS le rayon de préférence : la préférence est pleine → ZÉRO escalade,
+    sortie inchangée par rapport à l'historique (une seule requête)."""
+    settings.politeness_delay_s = 0
+    els = [_sm("D05", 0.0045), _sm("D10", 0.0090), _sm("D15", 0.0135),
+           _sm("D20", 0.0180), _sm("D25", 0.0225)]      # ~0,5 à 2,5 km (tous < 3 km)
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler(els, '"shop"="supermarket"', calls)))
+    cats = [{"code": "supermarket", "default_radius_m": 3000, "max_radius_m": 25000}]
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    assert [p["name"] for p in results["supermarket"]] == \
+        ["D05", "D10", "D15", "D20", "D25"]
+    assert len(calls) == 1                        # préférence pleine → pas de 2e passe
+
+
+def test_no_max_radius_means_no_escalation():
+    """`max_radius_m` NULL (= default, ex. parking/aéroport) → jamais de 2e passe même
+    sous le minimum."""
+    settings.politeness_delay_s = 0
+    els = [_sm("Loin", 0.05)]                      # 1 seul lieu, > préférence
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler(els, '"shop"="supermarket"', calls)))
+    # max_radius_m absent → pas d'escalade ; le lieu hors préférence n'est pas retenu.
+    cats = [{"code": "supermarket", "default_radius_m": 3000}]
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    assert results["supermarket"] == [] and len(calls) == 1
+
+
+# ── V2-44 : filtre des noms génériques ───────────────────────────────────────
+
+def test_is_generic_name_multilingual_and_keeps_proper_names():
+    for n in ["Speeltuin", "SPEELWEIDE", "Speeltuintje", "Trampoline", "Ballenbad",
+              "Aire de jeux", "aire de jeu", "Parque infantil", "Área de juegos",
+              "Spielplatz", "Playground", "Parco giochi"]:
+        assert overpass.is_generic_name(n), n
+    # Un nom PROPRE qui contient un mot générique est CONSERVÉ.
+    for n in ["Trampoline Park Zeeland", "Speeltuin De Boomhut",
+              "Parque Warner Madrid", "Café De Speeltuin"]:
+        assert not overpass.is_generic_name(n), n
+    assert not overpass.is_generic_name(None)
+    assert not overpass.is_generic_name("")
+
+
+def test_fetch_grouped_drops_generic_named_and_counts():
+    settings.politeness_delay_s = 0
+    els = [
+        {"type": "node", "id": 1, "lat": LAT + 0.001, "lon": LON,
+         "tags": {"name": "Speeltuin", "leisure": "playground"}},          # générique
+        {"type": "node", "id": 2, "lat": LAT + 0.0011, "lon": LON,
+         "tags": {"name": "Trampoline Park Zeeland", "leisure": "playground"}},  # propre
+    ]
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler(els, '"leisure"="playground"', calls)))
+    cats = [{"code": "family_activity", "default_radius_m": 15000,
+             "max_radius_m": 15000}]
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    assert [p["name"] for p in results["family_activity"]] == ["Trampoline Park Zeeland"]
+    assert stats["generic_dropped"] == 1
+
+
+# ── V2-44 : pertinence gare (tram-musée exclu) ───────────────────────────────
+
+def test_train_station_excludes_heritage_tram_museum():
+    # Vraie gare -> gardée
+    assert overpass.category_matches("train_station",
+                                     {"railway": "station", "name": "Goes"})
+    # Tram-musée / ligne préservée -> exclu (cas « Middelplaat Haven (RTM) » du benchmark)
+    assert not overpass.category_matches("train_station",
+                                         {"railway": "station", "usage": "tourism",
+                                          "name": "Middelplaat Haven (RTM)"})
+    assert not overpass.category_matches("train_station",
+                                         {"railway": "station", "tourism": "attraction",
+                                          "name": "Museumtram"})
+    assert not overpass.category_matches("train_station",
+                                         {"railway": "station",
+                                          "railway:preserved": "yes",
+                                          "name": "Stoomtrein"})
+
+
+# ── V2-44 : catégories sans résultat signalées ───────────────────────────────
+
+def test_fetch_grouped_reports_empty_categories():
+    settings.politeness_delay_s = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = urllib.parse.unquote_plus(request.read().decode())
+        els = ([{"type": "node", "id": 1, "lat": LAT + 0.001, "lon": LON,
+                 "tags": {"name": "Jumbo", "shop": "supermarket"}}]
+               if '"shop"="supermarket"' in body else [])
+        return httpx.Response(200, json={"elements": els})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    cats = [{"code": "supermarket", "default_radius_m": 3000, "max_radius_m": 3000},
+            {"code": "laundry", "default_radius_m": 5000, "max_radius_m": 5000}]
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    assert results["supermarket"] and not results["laundry"]
+    assert stats["empty"] == ["laundry"] and failures == {}

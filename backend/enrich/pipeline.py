@@ -60,6 +60,18 @@ def _record_failed_call_cost(conn, property_id: str, job_id: str, operation: str
     return round(sum(c["cost_cts"] for c in attempts), 4)
 
 
+def _cap_by_travel(code: str, pois: list[dict]) -> list[dict]:
+    """Cape certaines catégories (aéroport, V2-44) aux N plus proches EN TEMPS DE
+    TRAJET, une fois les distances calculées — un aéroport de vacances utile est l'un
+    des rares hubs les plus proches, pas les 8 aérodromes du rayon (benchmark : 7
+    aéroports, Ostende à 132 min). `dedup._travel` = temps de trajet du candidat
+    (repli distance à vol d'oiseau)."""
+    cap = overpass.NEAREST_BY_TRAVEL.get(code)
+    if cap and len(pois) > cap:
+        return sorted(pois, key=dedup._travel)[:cap]
+    return pois
+
+
 def _resolve_market_position(market: dict, prop: dict,
                              http_client: httpx.Client | None
                              ) -> tuple[float | None, float | None]:
@@ -147,7 +159,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             wanted = [c for c in categories
                       if (not only_categories or c["code"] in only_categories)
                       and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
-            grouped, failed_categories = overpass.fetch_grouped(
+            grouped, failed_categories, harvest = overpass.fetch_grouped(
                 wanted, origin[0], origin[1], client=http_client)
 
             all_editorial: list[dict] = []
@@ -174,6 +186,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 existing = db.existing_pois_for_dedup(conn, property_id, code)
                 pois, vs_existing = dedup.filter_against_existing(pois, existing)
                 summary["duplicates_merged"] += in_batch + vs_existing
+                # V2-44 : aéroport capé aux 3 plus proches en temps de trajet.
+                pois = _cap_by_travel(code, pois)
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
                 n = db.upsert_pois(conn, property_id, code, pois)
@@ -185,19 +199,30 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                              "pois": summary["pois"], "failed": failed_categories})
                 conn.commit()
             summary["failed_categories"] = failed_categories
+            # V2-44 : catégories SANS résultat (rien trouvé, mais pas une erreur) et
+            # éléments rejetés pour nom générique (« Speeltuin », « Aire de jeux »…).
+            empty_categories = list(harvest.get("empty") or [])
+            summary["empty_categories"] = empty_categories
+            summary["generic_dropped"] = harvest.get("generic_dropped", 0)
             db.job_step(conn, job_id, "overpass",
                         {"ok": not failed_categories or summary["pois"] > 0,
                          "pois": summary["pois"],
                          "duplicates_merged": summary["duplicates_merged"],
+                         "empty": empty_categories,
+                         "generic_dropped": summary["generic_dropped"],
                          "failed": failed_categories})
             db.job_step(conn, job_id, "distances", {"ok": True})
             conn.commit()
             _progress(f"  ✓ Overpass : {summary['pois']} POI"
                       + (f", {summary['duplicates_merged']} doublon(s) fusionné(s)"
                          if summary["duplicates_merged"] else "")
+                      + (f", {summary['generic_dropped']} sans-nom écarté(s)"
+                         if summary["generic_dropped"] else "")
                       + (f" — {len(failed_categories)} catégorie(s) en échec : "
                          + ", ".join(sorted(failed_categories))
-                         if failed_categories else " — 0 échec"))
+                         if failed_categories else " — 0 échec")
+                      + (f" ; sans résultat : " + ", ".join(sorted(empty_categories))
+                         if empty_categories else ""))
 
             # ── 4. Enrichissement Claude ────────────────────────────────────
             if use_claude:
@@ -599,7 +624,7 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
             all_cats = db.load_categories(conn)
             wanted = [c for c in all_cats if c["code"] in categories
                       and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
-            grouped, failed = overpass.fetch_grouped(
+            grouped, failed, _harvest = overpass.fetch_grouped(
                 wanted, origin[0], origin[1], client=http_client)
 
             editorial: list[dict] = []
@@ -620,6 +645,7 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
                 existing = db.existing_pois_for_dedup(conn, property_id, code)
                 pois, vs_existing = dedup.filter_against_existing(pois, existing)
                 merged_dups += in_batch + vs_existing
+                pois = _cap_by_travel(code, pois)   # V2-44 : aéroport → 3 plus proches
                 if code in settings.describe_categories:
                     editorial.extend(pois)
                 got += db.upsert_pois(conn, property_id, code, pois)
@@ -687,6 +713,8 @@ def main() -> None:
     print(f"  Fiches complétées     : {result.get('services_completed', 0)}")
     print(f"  Baby-sitting créés    : {result.get('babysitters', 0)}")
     print(f"  Marchés créés         : {result.get('markets_created', 0)}")
+    if result.get("generic_dropped"):
+        print(f"  Sans-nom écartés      : {result['generic_dropped']}")
     print(f"  Coût IA               : {result['cost_cts']:.2f} ct")
     failed = result.get("failed_categories") or {}
     if failed:
@@ -695,6 +723,11 @@ def main() -> None:
             print(f"    {cat:<18} {msg}")
     else:
         print("  Catégories en échec   : 0")
+    # V2-44 : catégories sans AUCUN résultat (rien à signaler comme erreur, mais bon
+    # à savoir — plage, laverie… absentes du rayon).
+    empty = result.get("empty_categories") or []
+    if empty:
+        print(f"  Catégories sans résultat : " + ", ".join(sorted(empty)))
     sys.stdout.flush()
 
 

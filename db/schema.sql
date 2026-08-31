@@ -426,7 +426,10 @@ CREATE TABLE poi_categories (
     name_i18n  JSONB NOT NULL,
     icon       TEXT,
     map_color  TEXT,
-    default_radius_m INT NOT NULL,   -- rayon de recherche par défaut (pharmacie 2000, hôpital 25000…)
+    default_radius_m INT NOT NULL,   -- rayon de recherche PRÉFÉRÉ (pharmacie 2000, hôpital 25000…)
+    max_radius_m INT,                -- rayon MAXIMAL de complétion en rural (V2-44) : au-delà de la
+                                     -- préférence, on complète avec les plus proches jusqu'à MIN_RESULTS.
+                                     -- NULL = pas d'escalade (rayon fixe : parking, arrêt de bus, aéroport)
     travel_mode TEXT                 -- mode de trajet préféré (V2-24) : 'driving' (toujours voiture, ex. station-service),
                                      -- 'walking' (à pied si raisonnable, ex. plage), NULL = auto selon distance
       CHECK (travel_mode IN ('driving', 'walking'))

@@ -167,3 +167,23 @@ def test_ssr_renders_neutral_names_with_proof_links():
 def test_ssr_empty_or_no_platforms_renders_nothing():
     assert guide_page._fact_food_delivery({}, "fr") == ""
     assert guide_page._fact_food_delivery({"platforms": [], "note": "x"}, "fr") == ""
+
+
+# ── V2-44 : plafond « local d'abord » du baby-sitting (règle V2-07 qui a glissé) ─
+
+def test_babysitters_capped_to_three_local_first():
+    """6 plateformes sorties au benchmark Op de Boerderie → on n'en garde que 3
+    (le prompt les ordonne du plus local au plus national ; on tronque en tête)."""
+    services = [{"name": f"Service {i}", "phone": f"+31 000 00{i}",
+                 "source_url": "https://x.example", "verified_on": "2026-08-31"}
+                for i in range(1, 7)]                # 6 services
+    cli = Fake(_web_msg(json.dumps({"services": services})))
+    out, meta = ce.fetch_babysitters("Noordgouwe", "NL", cli, today="2026-08-31")
+    assert [s["name"] for s in out] == ["Service 1", "Service 2", "Service 3"]
+
+
+def test_babysitter_prompt_orders_local_first():
+    cli = Fake(_web_msg(json.dumps({"services": []})))
+    ce.fetch_babysitters("Noordgouwe", "NL", cli, today="2026-08-31")
+    prompt = cli.messages.prompts[0]
+    assert "LOCAL D'ABORD" in prompt and "3" in prompt

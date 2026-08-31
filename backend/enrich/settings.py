@@ -45,6 +45,11 @@ class Settings:
     overpass_backoff_s: float = float(os.getenv("CASAGUIDE_OVERPASS_BACKOFF", "2.0"))
     politeness_delay_s: float = float(os.getenv("CASAGUIDE_DELAY", "1.0"))
     max_pois_per_category: int = int(os.getenv("CASAGUIDE_MAX_POIS", "8"))
+    # Collecte adaptée à la ruralité (V2-44) : minimum de lieux garanti par
+    # catégorie. Si le rayon de PRÉFÉRENCE (default_radius_m) n'en trouve pas
+    # autant, on complète avec les plus proches jusqu'au rayon MAXIMAL
+    # (max_radius_m). En zone dense, la préférence est déjà pleine → aucune escalade.
+    min_results_per_category: int = int(os.getenv("CASAGUIDE_MIN_RESULTS", "3"))
 
     # Distances — OSRM (profils séparés voiture / piéton)
     osrm_drive_url: str = os.getenv("OSRM_DRIVE_URL", "https://router.project-osrm.org")
@@ -98,6 +103,11 @@ class Settings:
         os.getenv("CASAGUIDE_BABYSITTER_MAX_AGE_DAYS", "90"))
     babysitter_max_searches: int = int(
         os.getenv("CASAGUIDE_BABYSITTER_MAX_SEARCHES", "5"))
+    # Plafond de plateformes/agences de baby-sitting RETENUES (V2-44) : la règle
+    # V2-07 « local d'abord » avait glissé (6 plateformes nationales au benchmark).
+    # On garde les 3 premières (le prompt les ordonne du plus local au plus national).
+    babysitter_max_results: int = int(
+        os.getenv("CASAGUIDE_BABYSITTER_MAX_RESULTS", "3"))
     # Marchés hebdomadaires (V2-07 volet 3) : découverte MUTUALISÉE par (pays,
     # commune), cache area_facts (fenêtre comme le volet 1) + plafond de recherches.
     market_max_age_days: int = int(

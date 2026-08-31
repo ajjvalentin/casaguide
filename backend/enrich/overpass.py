@@ -15,6 +15,14 @@ une seule requête Overpass par palier (union de sélecteurs, résultats
 re-ventilés par catégorie via leurs tags), puis re-filtre chaque catégorie à
 son rayon exact du seed. On passe ainsi d'environ 25 requêtes à ~5.
 
+Collecte adaptée à la ruralité (V2-44) : `default_radius_m` est le rayon de
+PRÉFÉRENCE. Une passe 1 interroge à ce rayon (comportement historique) ; si une
+catégorie n'atteint pas MIN_RESULTS et qu'elle a un `max_radius_m` plus large, une
+passe 2 CIBLÉE escalade jusqu'au rayon maximal et complète avec les plus proches
+au-delà de la préférence. En zone dense, la préférence est déjà pleine → aucune
+escalade (sortie identique). Les requêtes lourdes ne partent donc que là où la
+donnée est rare : coût nul en dense (cas courant), borné en rural.
+
 Deux catégories n'ont pas de tags OSM fiables et sont traitées par l'étape
 Claude (recherche web) : food_delivery, babysitter.
 """
@@ -22,7 +30,9 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
+import unicodedata
 
 import httpx
 
@@ -115,6 +125,48 @@ _DISQUALIFYING_TAGS: list[tuple[str, str]] = [
     ("shop", "estate_agent"),   # agence immobilière (constatée taggée marketplace)
 ]
 
+# Catégories capées aux N plus proches EN TEMPS DE TRAJET (V2-44), après calcul des
+# distances (dans le pipeline). Un aéroport de vacances utile est l'un des rares
+# hubs les plus proches — pas les 8 aérodromes du rayon (benchmark : 7 aéroports,
+# dont Ostende à 132 min). NULL/absent = pas de cap dédié (plafond général de 8).
+NEAREST_BY_TRAVEL: dict[str, int] = {"airport": 3}
+
+# Noms GÉNÉRIQUES de type (V2-44) : un élément dont le nom N'EST QU'un mot de type
+# (« Speeltuin », « Aire de jeux », « Trampoline ») n'a pas de nom propre → aucune
+# valeur dans le guide (benchmark Op de Boerderie : « Speelweide », « Ballenbad »…).
+# Liste multilingue, comparée NORMALISÉE (casse/accents) sur le nom ENTIER : « Trampoline
+# Park Zeeland » (nom propre) n'y figure pas et est CONSERVÉ.
+_GENERIC_NAMES: frozenset[str] = frozenset({
+    # anglais
+    "playground", "play area", "play ground", "sports field", "sports ground",
+    # néerlandais
+    "speeltuin", "speeltuintje", "speelweide", "speelplaats", "speelplek",
+    "trampoline", "ballenbad", "glijbaan", "zandbak",
+    # français
+    "aire de jeux", "aire de jeu", "jeux pour enfants", "terrain de jeux",
+    # espagnol
+    "parque infantil", "zona de juegos", "area de juegos", "columpios",
+    # allemand
+    "spielplatz", "spielwiese", "bolzplatz", "trampolin",
+    # italien
+    "parco giochi", "area giochi",
+})
+
+
+def _norm_generic(name: str | None) -> str:
+    """Nom normalisé pour le test générique : sans accents, minuscule, ponctuation →
+    espace, espaces compactés (mêmes règles que dedup._norm)."""
+    s = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
+    s = re.sub(r"[^a-z0-9\s]", " ", s.lower())
+    return " ".join(s.split())
+
+
+def is_generic_name(name: str | None) -> bool:
+    """Vrai si le nom n'est QU'UN nom générique de type (V2-44). Comparaison sur le
+    nom ENTIER normalisé → un nom propre qui CONTIENT un mot générique (« Trampoline
+    Park Zeeland ») n'est jamais rejeté."""
+    return _norm_generic(name) in _GENERIC_NAMES
+
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
     """Distance à vol d'oiseau en mètres (utile pour trier et pour le fallback)."""
@@ -128,12 +180,17 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
 # ── Contrôle de cohérence catégorie / tags (M-01) ────────────────────────────
 
 def _is_public_airport(tags: dict) -> bool:
-    """Vrai pour un aérodrome ouvert au public (IATA ou type international/
-    régional/public). Exclut bases militaires et aéroclubs (ni IATA, ni type
-    public)."""
-    if tags.get("iata"):
-        return True
-    return tags.get("aerodrome:type") in {"international", "regional", "public"}
+    """Vrai pour un aéroport CIVIL COMMERCIAL (V2-44, resserré). Proxy retenu :
+    présence d'un tag `iata` (code commercial). On EXCLUT d'abord tout signe
+    MILITAIRE (`military=*`, `aerodrome:type=military`, `landuse=military`) — une
+    base à usage mixte peut porter un IATA mais n'a rien à faire dans un guide de
+    vacances. Un aérodrome sans IATA (aéroclub, altiport, base) est écarté. Motif :
+    benchmark Op de Boerderie (7 aéroports dont 2 bases militaires, Ostende à 132 min)."""
+    if (tags.get("military")
+            or tags.get("aerodrome:type") == "military"
+            or tags.get("landuse") == "military"):
+        return False
+    return bool(tags.get("iata"))
 
 
 def _is_disqualified(category: str, tags: dict) -> bool:
@@ -149,6 +206,15 @@ def _is_disqualified(category: str, tags: dict) -> bool:
         return True
     # Un vrai marché hebdomadaire n'a pas de tag `shop` (minimarket, commerce…).
     if category == "market" and "shop" in tags:
+        return True
+    # Gare de TOURISME / PATRIMOINE (tram-musée, ligne préservée) : pas une gare de
+    # transport réelle (V2-44 — cas « Middelplaat Haven (RTM) » du benchmark, tram
+    # historique taggé railway=station).
+    if category == "train_station" and (
+            tags.get("usage") == "tourism"
+            or tags.get("railway:historic")
+            or tags.get("railway:preserved") == "yes"
+            or tags.get("tourism") in {"attraction", "museum"}):
         return True
     return False
 
@@ -304,16 +370,38 @@ def _norm_cuisine(raw: str | None) -> str | None:
     return first
 
 
-def _finalize(pois: list[dict], limit: int) -> list[dict]:
-    """Dédoublonne (même nom à < 100 m), trie par distance, plafonne, et retire
-    les tags internes. Retourne des copies propres."""
+def _dedup_sort(pois: list[dict]) -> list[dict]:
+    """Dédoublonne (même nom à < 100 m) et trie par distance. Ne plafonne PAS et ne
+    retire PAS les tags — base commune de `_finalize` et `_select_adaptive`."""
     seen: dict[str, dict] = {}
     for p in sorted(pois, key=lambda p: p["crow_m"]):
         key = p["name"].lower()
         if key not in seen or p["crow_m"] < seen[key]["crow_m"] - 100:
             seen.setdefault(key, p)
-    out = sorted(seen.values(), key=lambda p: p["crow_m"])[:limit]
-    return [{k: v for k, v in p.items() if k != "_tags"} for p in out]
+    return sorted(seen.values(), key=lambda p: p["crow_m"])
+
+
+def _strip_tags(pois: list[dict]) -> list[dict]:
+    """Retire les tags internes (`_tags`) — copies propres prêtes pour l'upsert."""
+    return [{k: v for k, v in p.items() if k != "_tags"} for p in pois]
+
+
+def _finalize(pois: list[dict], limit: int) -> list[dict]:
+    """Dédoublonne, trie par distance, plafonne, retire les tags internes."""
+    return _strip_tags(_dedup_sort(pois)[:limit])
+
+
+def _select_adaptive(matched: list[dict], preferred_m: int,
+                     min_results: int, limit: int) -> list[dict]:
+    """Sélection ADAPTÉE à la ruralité (V2-44). `matched` = POI déjà bornés au rayon
+    MAXIMAL. On garde tout ce qui est dans le rayon de PRÉFÉRENCE ; si c'est moins que
+    `min_results`, on complète avec les plus proches au-delà jusqu'à `min_results`.
+    Plafond `limit` inchangé. En zone dense (préférence pleine), renvoie exactement le
+    rayon de préférence → sortie identique à l'historique."""
+    clean = _dedup_sort(matched)                       # trié par distance, dédoublonné
+    within = [p for p in clean if p["crow_m"] <= preferred_m]
+    chosen = within if len(within) >= min_results else clean[:min_results]
+    return _strip_tags(chosen[:limit])
 
 
 def _bucket_radius(radius_m: int) -> int:
@@ -340,7 +428,9 @@ def fetch_category(category: str, lat: float, lon: float, radius_m: int,
         query = _build_query(CATEGORY_SELECTORS[category], lat, lon, radius_m)
         elements = _post_overpass(client, query)
         parsed = (_element_to_poi(el, lat, lon) for el in elements)
-        matched = [p for p in parsed if p and category_matches(category, p["_tags"])]
+        matched = [p for p in parsed
+                   if p and not is_generic_name(p["name"])  # V2-44 : noms génériques
+                   and category_matches(category, p["_tags"])]
         return _finalize(matched, settings.max_pois_per_category)
     finally:
         if own_client:
@@ -348,65 +438,116 @@ def fetch_category(category: str, lat: float, lon: float, radius_m: int,
         time.sleep(settings.politeness_delay_s)  # politesse envers les serveurs publics
 
 
+def _run_buckets(client: httpx.Client, codes: list[str],
+                 query_radius: dict[str, int], lat: float, lon: float,
+                 ) -> tuple[dict[str, list[dict]], dict[str, str], int]:
+    """Interroge Overpass pour `codes`, groupés par palier de rayon selon
+    `query_radius[code]` (une requête par palier, union de sélecteurs). Renvoie
+    (`{code: [POI matched, crow ≤ query_radius[code]]}`, `{code: msg}` des paliers en
+    échec, n_generic) — n_generic = nb d'éléments REJETÉS à la moisson pour nom
+    générique (V2-44). Les POI ne sont NI dédoublonnés NI plafonnés (l'appelant finalise)."""
+    buckets: dict[int, list[str]] = {}
+    for code in codes:
+        buckets.setdefault(_bucket_radius(query_radius[code]), []).append(code)
+
+    matched: dict[str, list[dict]] = {code: [] for code in codes}
+    failures: dict[str, str] = {}
+    generic_dropped = 0
+    for bucket, bcodes in buckets.items():
+        selectors: list[str] = []
+        for code in bcodes:
+            for sel in CATEGORY_SELECTORS[code]:
+                if sel not in selectors:
+                    selectors.append(sel)
+        # M-18 : un palier lointain (≥ 50 km, aéroport) reçoit un timeout dédié plus long.
+        timeout_s = _bucket_timeout(bucket)
+        query = _build_query(selectors, lat, lon, bucket, timeout_s=timeout_s)
+        try:
+            elements = _post_overpass(client, query, timeout_s=timeout_s)
+        except Exception as exc:  # tout le palier échoue -> catégories tracées
+            # `str(OverpassError)` est déjà court ; le corps complet a été logué par
+            # `_post_overpass`. Troncature PROPRE (jamais un mot coupé à cru) pour `steps`.
+            msg = _short(f"{type(exc).__name__}: {exc}")
+            log.warning("Palier %s m (%s) en échec : %s", bucket, ",".join(bcodes), msg)
+            for code in bcodes:
+                failures[code] = msg
+            continue
+        finally:
+            time.sleep(settings.politeness_delay_s)  # politesse entre requêtes
+
+        parsed: list[dict] = []
+        for el in elements:
+            p = _element_to_poi(el, lat, lon)
+            if p is None:
+                continue
+            if is_generic_name(p["name"]):   # V2-44 : nom générique de type -> rejeté
+                generic_dropped += 1
+                continue
+            parsed.append(p)
+        for code in bcodes:
+            matched[code] = [
+                p for p in parsed
+                if category_matches(code, p["_tags"])
+                and p["crow_m"] <= query_radius[code]  # re-filtrage au rayon exact
+            ]
+    return matched, failures, generic_dropped
+
+
 def fetch_grouped(categories: list[dict], lat: float, lon: float,
                   client: httpx.Client | None = None,
-                  ) -> tuple[dict[str, list[dict]], dict[str, str]]:
-    """Récupère les POI de plusieurs catégories en groupant les requêtes par
-    palier de rayon (une requête Overpass par palier).
+                  ) -> tuple[dict[str, list[dict]], dict[str, str], dict]:
+    """Récupère les POI de plusieurs catégories, ADAPTÉ à la ruralité (V2-44).
 
-    `categories` : itérable de dicts {code, default_radius_m}. Retourne
-    (`{code: [pois]}`, `{code: message}` pour les paliers en échec). Les
+    Deux passes AU PLUS, groupées par palier de rayon (une requête Overpass par palier) :
+      1. au rayon de PRÉFÉRENCE (`default_radius_m`) — comportement historique ; en
+         zone dense la préférence est déjà pleine et c'est terminé.
+      2. ESCALADE au rayon MAXIMAL (`max_radius_m`), UNIQUEMENT pour les catégories qui
+         n'ont pas atteint MIN_RESULTS et dont max > préférence — regroupées (~1 requête
+         de plus). Les requêtes LOURDES (grand rayon) ne partent donc que là où la donnée
+         est rare : coût nul en zone dense (cas courant), borné en rural.
+
+    `categories` : dicts {code, default_radius_m, max_radius_m?}. Retourne
+    (`{code: [pois]}`, `{code: message}` des paliers en échec, `stats`) où
+    stats = {"generic_dropped": n, "empty": [codes sans résultat, hors échec]}. Les
     catégories Claude-only et inconnues sont ignorées.
     """
-    radius_of: dict[str, int] = {}
-    buckets: dict[int, list[str]] = {}
+    pref_of: dict[str, int] = {}
+    max_of: dict[str, int] = {}
     for cat in categories:
         code = cat["code"]
         if code in CLAUDE_ONLY_CATEGORIES or code not in CATEGORY_TAGS:
             continue
-        radius_of[code] = cat["default_radius_m"]
-        buckets.setdefault(_bucket_radius(cat["default_radius_m"]), []).append(code)
+        pref_of[code] = cat["default_radius_m"]
+        max_of[code] = cat.get("max_radius_m") or cat["default_radius_m"]
+    codes = list(pref_of)
 
     results: dict[str, list[dict]] = {}
-    failures: dict[str, str] = {}
     own_client = client is None
     client = client or httpx.Client(timeout=settings.overpass_timeout_s + 5)
     try:
-        for bucket, codes in buckets.items():
-            selectors: list[str] = []
-            for code in codes:
-                for sel in CATEGORY_SELECTORS[code]:
-                    if sel not in selectors:
-                        selectors.append(sel)
-            # M-18 : le palier aéroport (100 km) est une requête à part, avec un
-            # timeout dédié plus long (elle est déjà isolée par son propre palier).
-            timeout_s = _bucket_timeout(bucket)
-            query = _build_query(selectors, lat, lon, bucket, timeout_s=timeout_s)
-            try:
-                elements = _post_overpass(client, query, timeout_s=timeout_s)
-            except Exception as exc:  # tout le palier échoue -> catégories tracées
-                # `str(OverpassError)` est déjà court et lisible ; le corps complet a
-                # été logué par `_post_overpass`. Troncature PROPRE (jamais un mot
-                # coupé à cru comme « For more informatio ») pour `steps`.
-                msg = _short(f"{type(exc).__name__}: {exc}")
-                log.warning("Palier %s m (%s) en échec : %s",
-                            bucket, ",".join(codes), msg)
-                for code in codes:
-                    failures[code] = msg
-                continue
-            finally:
-                time.sleep(settings.politeness_delay_s)  # politesse entre requêtes
+        # ── Passe 1 : rayon de PRÉFÉRENCE (historique) ──────────────────────
+        m1, failures, generic = _run_buckets(client, codes, pref_of, lat, lon)
+        for code in codes:
+            results[code] = _finalize(m1.get(code, []), settings.max_pois_per_category)
 
-            parsed = [p for el in elements if (p := _element_to_poi(el, lat, lon))]
-            for code in codes:
-                matched = [
-                    p for p in parsed
-                    if category_matches(code, p["_tags"])
-                    and p["crow_m"] <= radius_of[code]  # re-filtrage au rayon exact
-                ]
-                results[code] = _finalize(matched, settings.max_pois_per_category)
+        # ── Passe 2 : ESCALADE ciblée (rural) ───────────────────────────────
+        deficient = [c for c in codes
+                     if c not in failures
+                     and max_of[c] > pref_of[c]
+                     and len(results[c]) < settings.min_results_per_category]
+        if deficient:
+            m2, f2, g2 = _run_buckets(client, deficient, max_of, lat, lon)
+            generic += g2
+            for code in deficient:
+                if code in f2:
+                    continue  # escalade en échec : on garde le résultat de la passe 1
+                results[code] = _select_adaptive(
+                    m2.get(code, []), pref_of[code],
+                    settings.min_results_per_category, settings.max_pois_per_category)
+
         _dedup_health_categories(results)
-        return results, failures
+        empty = [c for c in codes if not results.get(c) and c not in failures]
+        return results, failures, {"generic_dropped": generic, "empty": empty}
     finally:
         if own_client:
             client.close()
