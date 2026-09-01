@@ -23,6 +23,39 @@ cd "$APP_DIR"
 log() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Synchronise les unités systemd d'ops/ vers /etc/systemd/system (OPS-3 : watchdog,
+# + backup/send-guides/sync-calendars/trial-reminders). Idempotent (ne copie que ce
+# qui diffère) et JAMAIS bloquant : sans sudo non-interactif (sudoers restreint), on
+# affiche les commandes à lancer une fois à la main plutôt que d'échouer le déploiement.
+sync_systemd_units() {
+  local unit_dir="/etc/systemd/system" changed=() f base
+  for f in "$APP_DIR"/ops/*.service "$APP_DIR"/ops/*.timer; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f")"
+    cmp -s "$f" "$unit_dir/$base" 2>/dev/null || changed+=("$base")
+  done
+  if [ "${#changed[@]}" -eq 0 ]; then
+    log "unités systemd déjà à jour"; return 0
+  fi
+  if sudo -n true 2>/dev/null; then
+    log "sync unités systemd : ${changed[*]}"
+    for base in "${changed[@]}"; do
+      sudo -n cp "$APP_DIR/ops/$base" "$unit_dir/$base"
+    done
+    sudo -n systemctl daemon-reload
+    for f in "$APP_DIR"/ops/*.timer; do
+      [ -e "$f" ] || continue
+      sudo -n systemctl enable --now "$(basename "$f")" >/dev/null 2>&1 || true
+    done
+    log "unités systemd installées + timers activés"
+  else
+    printf '\033[1;33m➤ Unités systemd à (ré)installer — droits sudo requis, à faire UNE fois :\n' >&2
+    printf '    sudo cp %s/ops/*.service %s/ops/*.timer %s/\n' "$APP_DIR" "$APP_DIR" "$unit_dir" >&2
+    printf '    sudo systemctl daemon-reload\n' >&2
+    printf '    sudo systemctl enable --now casaguide-watchdog.timer\033[0m\n' >&2
+  fi
+}
+
 # 1. Récupérer le code
 log "git pull (origin/$BRANCH)"
 git fetch --quiet origin "$BRANCH"
@@ -99,5 +132,10 @@ for path in /health /docs /; do
   [ "$code" = "200" ] && printf '  %s → %s\n' "$path" "$code" \
                        || die "$path → $code (attendu 200)"
 done
+
+# 7. Unités systemd (OPS-3 : watchdog + timers existants). Après le healthcheck pour
+#    ne jamais retarder le retour en service ; non bloquant (guide si pas de sudo).
+log "unités systemd (watchdog + timers)"
+sync_systemd_units
 
 log "déploiement OK — version $SHA"

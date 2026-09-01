@@ -4666,3 +4666,33 @@ def test_no_cover_keeps_first_photo_behavior(client):
     page = client.get(f"/g/{token}").text
     assert f"/g/{token}/media/{photo['id']}" in page   # 1re photo pilote l'og
     assert f"/g/{token}/og-image.png" not in page
+
+
+# ── OPS-3 : /health, sonde profonde et bon marché ────────────────────────────
+
+def test_health_ok_reports_version_and_timestamp(client):
+    """Base OK → 200 avec status ok + version déployée + horodatage UTC."""
+    r = client.get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body.get("version")                 # SHA des assets (au moins 'dev')
+    assert "T" in body.get("time", "")         # ISO 8601 (horodatage)
+
+
+def test_health_503_when_database_unreachable(client, monkeypatch):
+    """Base KO (connexion injectée en échec) → 503 avec la cause en clair (jamais le
+    DSN), tout en portant version + horodatage."""
+    from api import main as api_main
+
+    def _boom():
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(api_main.enrich_db, "connect", _boom)
+    r = client.get("/health")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "error"
+    assert "database" in body["reason"]        # cause en clair
+    assert "connection refused" not in body["reason"]  # jamais le détail brut/DSN
+    assert body.get("version") and "T" in body.get("time", "")

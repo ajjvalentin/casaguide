@@ -1,0 +1,24 @@
+# Watchdog local Holaguia — supervision & auto-guérison (OPS-3)
+# Déclenché par casaguide-watchdog.timer (chaque minute). Sonde /health par Caddy,
+# redémarre le service gelé (casaguide, ou caddy si Caddy est muet), alerte André.
+#
+# ROOT VOULU : le watchdog doit pouvoir `systemctl restart casaguide` ET `caddy` —
+# il tourne donc en root (pas User=casaguide), comme il sied à un superviseur.
+#
+# Installé automatiquement par deploy.sh (sync_units). Installation manuelle :
+#   sudo cp /opt/casaguide/ops/casaguide-watchdog.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-watchdog.timer
+#   (vérifier : systemctl list-timers | grep watchdog ; test manuel en root :
+#    /opt/casaguide/.venv/bin/python /opt/casaguide/ops/watchdog.py)
+[Unit]
+Description=Watchdog local Holaguia (sonde /health, auto-guérison)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# EnvironmentFile facultatif : le script charge aussi backend/.env lui-même (OPS-1)
+# — il y lit CASAGUIDE_OPS_EMAIL et la config SMTP pour l'alerte.
+EnvironmentFile=-/opt/casaguide/backend/.env
+WorkingDirectory=/opt/casaguide/backend
+ExecStart=/opt/casaguide/.venv/bin/python /opt/casaguide/ops/watchdog.py

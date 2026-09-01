@@ -343,3 +343,32 @@ def guide_showcase_email(*, property_name: str, url: str, image_url: str,
     return Email(subject=subject, text=text, html=_shell(
         _et(lang, "showcase_title"), body_html,
         footer=_html.escape(_et(lang, "footer")), hero_url=image_url))
+
+
+def watchdog_restart_email(reason: str, when_utc: str) -> Email:
+    """Alerte d'exploitation (OPS-3) envoyée au propriétaire de la plateforme après un
+    redémarrage automatique par le watchdog local. La panne se lit dans la boîte, pas
+    dans les journaux. `reason` = message humain déjà formé (« 3 échecs consécutifs
+    /health (503 base) → casaguide redémarré ») ; `when_utc` = horodatage lisible."""
+    subject = f"{_BRAND} — redémarrage automatique du serveur"
+    text = (
+        "Bonjour,\n\n"
+        f"{_BRAND} s'est relancé seul à {when_utc} :\n"
+        f"  {reason}\n\n"
+        "Le site est reparti automatiquement (watchdog). Si tu reçois plusieurs de "
+        "ces messages rapprochés, jette un œil au serveur (journalctl -u casaguide, "
+        "ou -u casaguide-watchdog).\n\n"
+        f"— Supervision {_BRAND}"
+    )
+    body_html = (
+        '<p style="margin:0 0 12px;">Bonjour,</p>'
+        f'<p style="margin:0 0 12px;">{_html.escape(_BRAND)} s\'est relancé seul à '
+        f'<strong>{_html.escape(when_utc)}</strong> :</p>'
+        f'<p style="margin:0 0 16px;padding:12px 14px;background:{_SAND};'
+        f'border-radius:8px;font-size:14px;color:{_INK};">{_html.escape(reason)}</p>'
+        f'<p style="margin:0;font-size:14px;color:{_MUTED};">Le site est reparti '
+        "automatiquement (watchdog). Plusieurs alertes rapprochées → inspecter le "
+        "serveur (<code>journalctl -u casaguide-watchdog</code>).</p>"
+    )
+    return Email(subject=subject, text=text, html=_shell(
+        "Redémarrage automatique du serveur", body_html))

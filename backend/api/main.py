@@ -4,18 +4,19 @@ Lancement : uvicorn api.main:app --reload  (depuis backend/, CASAGUIDE_DB défin
 """
 from __future__ import annotations
 
+import datetime as _dt
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from enrich import db as enrich_db
 
 from . import repo
-from .assets import RevalidatingStaticFiles, versioned
+from .assets import RevalidatingStaticFiles, asset_version, versioned
 from .config import missing_production_config, settings
 from .routers import (auth, billing, calendars, enrich, guide, help, languages,
                       media, pois, properties, send, share)
@@ -104,7 +105,29 @@ app.include_router(help.router)
 
 @app.get("/health", tags=["meta"])
 def health():
-    return {"status": "ok"}
+    """Sonde profonde et bon marché (OPS-3). Publique, sans authentification,
+    appelable chaque minute sans coût (quelques ms) :
+
+      * `SELECT 1` sur la base — l'échec renvoie **503** avec la cause EN CLAIR
+        (mais jamais le DSN ni un secret : seul le type d'erreur) ;
+      * la **version déployée** (SHA des assets) et un **horodatage UTC**, pour que
+        le watchdog local ET la supervision tierce voient de l'extérieur que le
+        serveur dit vrai (et quelle version tourne).
+
+    Le mot-clé « ok » du champ `status` est ce que la supervision externe
+    (UptimeRobot, cf. docs/ops.md) attend dans le corps — ne pas le renommer."""
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    version = asset_version()
+    try:
+        with enrich_db.connect() as conn:
+            conn.execute("SELECT 1")
+    except Exception as exc:  # noqa: BLE001 — base injoignable → 503, cause en clair
+        log.error("healthcheck : base injoignable (%s)", exc.__class__.__name__)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "reason": f"database: {exc.__class__.__name__}",
+                     "version": version, "time": now})
+    return {"status": "ok", "version": version, "time": now}
 
 
 # ── Back-office propriétaire (SPA statique, M-03/M-04/M-05) ───────────────────

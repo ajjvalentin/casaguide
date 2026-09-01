@@ -1,0 +1,16 @@
+# Déclencheur du watchdog local Holaguia — CHAQUE MINUTE (OPS-3).
+#
+# Le watchdog est bon marché (une requête /health, quelques ms) : le sonder chaque
+# minute donne une détection en ≤ 3-4 min (3 échecs consécutifs → redémarrage).
+# AccuracySec resserré pour que le tick parte bien à la minute (pas de regroupement).
+[Unit]
+Description=Watchdog local Holaguia (chaque minute)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

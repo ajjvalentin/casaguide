@@ -62,6 +62,10 @@ class ApiSettings:
     smtp_password: str | None = os.getenv("CASAGUIDE_SMTP_PASSWORD") or None
     smtp_from: str = os.getenv("CASAGUIDE_SMTP_FROM",
                                "Holaguia <no-reply@holaguia.com>")
+    # Destinataire des alertes d'exploitation (OPS-3) : le propriétaire de la
+    # plateforme (André). Le watchdog local lui écrit après un redémarrage auto
+    # (« Holaguia s'est relancé seul… »). Absent → l'alerte est seulement journalisée.
+    ops_alert_email: str | None = os.getenv("CASAGUIDE_OPS_EMAIL") or None
     # Durée de validité des jetons d'auth (réinitialisation, vérification), minutes
     auth_token_ttl_min: int = int(os.getenv("CASAGUIDE_AUTH_TOKEN_TTL_MIN", "60"))
     # Cadence minimale entre deux demandes « mot de passe oublié » par email (secondes)
