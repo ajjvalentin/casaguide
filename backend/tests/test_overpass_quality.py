@@ -281,7 +281,9 @@ def test_no_max_radius_means_no_escalation():
 def test_is_generic_name_multilingual_and_keeps_proper_names():
     for n in ["Speeltuin", "SPEELWEIDE", "Speeltuintje", "Trampoline", "Ballenbad",
               "Aire de jeux", "aire de jeu", "Parque infantil", "Área de juegos",
-              "Spielplatz", "Playground", "Parco giochi"]:
+              "Spielplatz", "Playground", "Parco giochi",
+              # laveries génériques (V2-44 volet 2)
+              "Wasserette", "Was", "Laundrette", "Laverie", "Lavandería"]:
         assert overpass.is_generic_name(n), n
     # Un nom PROPRE qui contient un mot générique est CONSERVÉ.
     for n in ["Trampoline Park Zeeland", "Speeltuin De Boomhut",

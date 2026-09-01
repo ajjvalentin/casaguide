@@ -653,6 +653,84 @@ def fetch_babysitters(city: str, country_code: str,
     return out[:settings.babysitter_max_results], meta
 
 
+# ── Location : DÉCOUVERTE de loueurs par Claude + recherche web (V2-44 volet 2) ─
+#
+# Cas d'or (31/08) : le loueur du village — Kassteele Tweewielers, Kloosterweg 44,
+# 4 min du logement — est ABSENT d'OSM, donc introuvable par toute requête de tags,
+# alors qu'une seule recherche web (« fietsverhuur Noordgouwe ») le trouve. Même
+# famille que le baby-sitting (`_ask_web_search_json`, robustesses V2-37), mais chaque
+# loueur est GÉOCODÉ par son adresse (position réelle) et FUSIONNÉ avec l'OSM (V2-40) :
+# un loueur trouvé par les deux ne fait qu'une fiche, le mieux renseigné gagne.
+
+_RENTAL_PROMPT = """\
+Tu cherches des LOUEURS de proximité pour des vacanciers séjournant à {city}
+({country_code}) : location de VÉLOS en PRIORITÉ, mais aussi bateaux, skis ou
+voitures si la zone s'y prête. Cherche dans la LANGUE LOCALE du pays et choisis
+tes termes (ex. aux Pays-Bas « fietsverhuur {city} », en France « location de
+vélos {city} », en Espagne « alquiler de bicicletas {city} »). Vérifie chaque
+loueur par recherche web.
+
+RÈGLES STRICTES :
+- PROXIMITÉ D'ABORD : privilégie les loueurs DANS ou tout près de {city}. Ordonne
+  du plus proche au plus éloigné ; au plus 5.
+- PREUVE OU RIEN : ne retiens un loueur QUE si tu peux vérifier en ligne son NOM,
+  son ADRESSE POSTALE COMPLÈTE (rue + numéro + commune — indispensable pour le
+  situer sur la carte) ET un TÉLÉPHONE OU un SITE. Fournis l'URL de preuve.
+- N'invente JAMAIS. Une liste VIDE est un résultat parfaitement valide.
+- Reste sobre : nom, adresse complète, téléphone si vérifié, site, la preuve.
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
+{{
+  "rentals": [
+    {{"name": "...", "address": "rue et numéro, commune", "phone": "...",
+      "website": "...", "source_url": "https://...", "verified_on": "{today}"}}
+  ]
+}}
+"""
+
+
+def fetch_rentals(city: str, country_code: str,
+                  client: anthropic.Anthropic,
+                  today: str | None = None) -> tuple[list[dict], dict]:
+    """Loueurs de proximité (vélos d'abord) vérifiés par recherche web (V2-44 volet 2).
+    Retourne (liste de {name, address, phone?, website?, source_url, verified_on}, méta
+    coût). **PREUVE OU RIEN** : une entrée sans nom, sans adresse complète, sans preuve,
+    ou sans téléphone NI site est ÉCARTÉE (l'adresse est requise — le pipeline la
+    géocode). **Une liste vide est un résultat valide.** Réponse malformée → ValueError
+    (aucune écriture) — robustesses V2-37 héritées de `_ask_web_search_json`."""
+    today = today or _dt.date.today().isoformat()
+    data, meta = _ask_web_search_json(
+        client, _RENTAL_PROMPT.format(city=city, country_code=country_code,
+                                      today=today),
+        city=city, country_code=country_code,
+        max_searches=settings.rental_web_max_searches)
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    rentals = data.get("rentals")
+    if not isinstance(rentals, list):
+        raise ValueError("Réponse IA invalide : 'rentals' doit être une liste.")
+    out: list[dict] = []
+    for r in rentals:
+        if not isinstance(r, dict):
+            continue
+        def _s(key: str) -> str:
+            v = r.get(key)
+            return v.strip() if isinstance(v, str) else ""
+        name, address = _s("name"), _s("address")
+        source_url, phone, website = _s("source_url"), _s("phone"), _s("website")
+        # Preuve ou rien : nom + adresse complète (géocodable) + (tél OU site) + preuve.
+        if not (name and address and source_url and (phone or website)):
+            continue
+        entry: dict = {"name": name, "address": address, "source_url": source_url,
+                       "verified_on": _s("verified_on") or today}
+        if phone:
+            entry["phone"] = phone
+        if website:
+            entry["website"] = website
+        out.append(entry)
+    return out, meta
+
+
 # ── Marchés hebdomadaires par zone : découverte CLAUDE + web (V2-07 volet 3) ──
 #
 # Découverte MUTUALISÉE par (pays, commune), mise en cache area_facts sous

@@ -106,12 +106,15 @@ class FakeMessages:
     # baby-sitting (V2-07 volet 2) renvoie par défaut un service crédible.
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
-                 describe_malformed=False):
+                 describe_malformed=False, rentals=None):
         self.food_delivery_malformed = food_delivery_malformed
         self.markets_malformed = markets_malformed
         self.describe_malformed = describe_malformed
         self.food_delivery_calls = 0
         self.market_calls = 0
+        self.rental_calls = 0
+        self.rentals_malformed = rentals == "malformed"   # V2-44 volet 2 : JSON malformé
+        self.rentals = [] if self.rentals_malformed else (rentals or [])
         self.babysitter_services = (
             [{"name": "Canguros Costa", "phone": "+34 966 000 111",
               "website": "https://canguroscosta.example",
@@ -132,6 +135,12 @@ class FakeMessages:
         if "BABY-SITTING" in prompt:  # création baby-sitting (V2-07 volet 2)
             assert tools and tools[0]["type"] == "web_search_20250305"
             return _web_reply(json.dumps({"services": self.babysitter_services}))
+        if "LOUEURS" in prompt:  # découverte web des loueurs (V2-44 volet 2)
+            self.rental_calls += 1
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            if self.rentals_malformed:            # JSON tronqué/malformé (robustesse V2-37)
+                return _web_reply("désolé, réponse tronquée…")
+            return _web_reply(json.dumps({"rentals": self.rentals}))
         if "MARCHÉS HEBDOMADAIRES" in prompt:  # découverte marchés (V2-07 volet 3)
             self.market_calls += 1
             assert tools and tools[0]["type"] == "web_search_20250305"
@@ -180,10 +189,10 @@ class FakeMessages:
 class FakeAnthropic:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
-                 describe_malformed=False):
+                 describe_malformed=False, rentals=None):
         self.messages = FakeMessages(food_delivery_malformed, babysitter_services,
                                      service_completions, markets, markets_malformed,
-                                     describe_malformed)
+                                     describe_malformed, rentals)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -1302,3 +1311,213 @@ def test_empty_categories_reported_in_steps_and_summary(property_id):
                            "ORDER BY started_at DESC LIMIT 1", (property_id,)).fetchone()
     assert set(job["steps"]["overpass"]["empty"]) == {"laundry", "beach"}
     assert job["steps"]["overpass"]["failed"] == {}    # vide ≠ échec
+
+
+# ── V2-44 volet 2 : location par découverte web avec preuve ──────────────────
+
+_KASSTEELE = {"name": "Kassteele Tweewielers", "address": "Kloosterweg 44, Noordgouwe",
+              "phone": "+31 111 22 33", "website": "https://kassteele.nl",
+              "source_url": "https://kassteele.nl/verhuur", "verified_on": "2026-08-31"}
+_RENTER_DLAT = 0.0135   # ~1,5 km au nord du logement
+
+
+def _rental_handler(*, renter_coords, osm_rental=None, renter_key="Kloosterweg"):
+    """MockTransport : nominatim renvoie les coords du logement, sauf pour l'adresse du
+    loueur (clé) → coords du loueur avec addressdetails (locality). Overpass renvoie
+    `osm_rental` (défaut : aucun loueur OSM). OSRM = payload standard."""
+    def handler(request):
+        url = str(request.url)
+        if "nominatim" in url:
+            dec = urllib.parse.unquote_plus(url)
+            if "Orihuela" in dec or "Calle Ejemplo" in dec:   # requête du LOGEMENT
+                return httpx.Response(200, json=NOMINATIM)
+            for key, (lat, lon, addr) in renter_coords.items():   # requête d'un LOUEUR
+                if key in dec:
+                    return httpx.Response(200, json=[{
+                        "lat": str(lat), "lon": str(lon), "type": "house",
+                        "class": "building", "display_name": key, "address": addr}])
+            return httpx.Response(200, json=[])   # loueur non géocodable → écarté
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            els = (osm_rental or []) if ('"amenity"="bicycle_rental"' in body
+                                         or '"amenity"="car_rental"' in body) else []
+            return httpx.Response(200, json={"elements": els})
+        if "/table/v1/" in url:
+            return httpx.Response(200, json=_osrm_payload(url))
+        return httpx.Response(404)
+    return handler
+
+
+def test_web_rental_discovered_geocoded_and_suggested(property_id):
+    """Cas d'or Kassteele : un loueur ABSENT d'OSM est trouvé par le web, géocodé par
+    son adresse (~1,5 km), et proposé avec TOUS ses champs, sa source 'web', sa preuve
+    et sa localité (V2-38)."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    rlat, rlon = PROP_LAT + _RENTER_DLAT, PROP_LON
+    handler = _rental_handler(renter_coords={
+        "Kloosterweg": (rlat, rlon, {"village": "Noordgouwe",
+                                     "municipality": "Schouwen-Duiveland"})})
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=True,
+                                   only_categories={"rental"}, http_client=client,
+                                   anthropic_client=FakeAnthropic(rentals=[_KASSTEELE]))
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+
+    assert summary["rental_web_kept"] == 1
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        r = conn.execute(
+            "SELECT name, source, status, phone, website, address, locality, walk_min,"
+            " drive_min, completion_meta, ST_Y(geom) lat, ST_X(geom) lon "
+            "FROM pois WHERE property_id=%s AND category_code='rental'",
+            (property_id,)).fetchone()
+        step = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                            (summary["job_id"],)).fetchone()["steps"]["rental_web"]
+    assert r["name"] == "Kassteele Tweewielers" and r["source"] == "web"
+    assert r["status"] == "suggested" and r["phone"] and r["website"]
+    assert r["address"] == "Kloosterweg 44, Noordgouwe"
+    assert r["locality"] == "Noordgouwe"                 # V2-38 depuis le géocodage
+    assert r["completion_meta"]["_web"]["source_url"].startswith("http")
+    assert r["walk_min"] and r["drive_min"]              # distances OSRM calculées
+    assert r["lat"] == pytest.approx(rlat) and r["lon"] == pytest.approx(rlon)
+    assert 1000 < overpass.haversine_m(PROP_LAT, PROP_LON, r["lat"], r["lon"]) < 2000
+    assert step["ok"] and step["kept"] == 1 and step["skipped_geocode"] == 0
+
+
+def test_web_rental_discarded_when_address_not_geocodable(property_id):
+    """Adresse non géocodable → loueur ÉCARTÉ (jamais de POI sans position), journalisé."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    ghost = {**_KASSTEELE, "name": "Loueur Fantôme", "address": "Rue Introuvable 99"}
+    handler = _rental_handler(renter_coords={})   # aucune adresse ne matche → []
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=True,
+                                   only_categories={"rental"}, http_client=client,
+                                   anthropic_client=FakeAnthropic(rentals=[ghost]))
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+    assert summary["rental_web_kept"] == 0
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        n = conn.execute("SELECT count(*) c FROM pois WHERE property_id=%s "
+                        "AND category_code='rental'", (property_id,)).fetchone()["c"]
+        step = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                            (summary["job_id"],)).fetchone()["steps"]["rental_web"]
+    assert n == 0 and step["kept"] == 0 and step["skipped_geocode"] == 1
+
+
+def test_osm_and_web_rental_merge_web_wins(property_id):
+    """Doublon OSM/web du même loueur → UNE fiche (V2-40) : le web (tél+site) gagne
+    sur l'OSM (nom seul)."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    rlat, rlon = PROP_LAT + _RENTER_DLAT, PROP_LON
+    osm_el = {"type": "node", "id": 700, "lat": rlat, "lon": rlon,
+              "tags": {"name": "Kassteele Tweewielers", "amenity": "bicycle_rental"}}
+    handler = _rental_handler(
+        renter_coords={"Kloosterweg": (rlat, rlon, {"village": "Noordgouwe"})},
+        osm_rental=[osm_el])
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=True,
+                                   only_categories={"rental"}, http_client=client,
+                                   anthropic_client=FakeAnthropic(rentals=[_KASSTEELE]))
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rows = conn.execute(
+            "SELECT name, source, phone, website FROM pois WHERE property_id=%s "
+            "AND category_code='rental'", (property_id,)).fetchall()
+    assert len(rows) == 1                              # une seule fiche (fusion V2-40)
+    assert rows[0]["source"] == "web"                  # le mieux renseigné a gagné
+    assert rows[0]["phone"] and rows[0]["website"]
+    assert summary["duplicates_merged"] >= 1
+
+
+def test_web_rentals_capped_to_three_nearest(property_id):
+    """5 loueurs web → seuls les 3 plus proches sont retenus (plafond)."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    # Noms DISTINCTS (sinon la passe V2-40 les fusionnerait par similarité de nom) et
+    # distances croissantes ; les 3 plus proches doivent survivre au plafond.
+    labels = ["Fietsen Anna", "Bike Bob", "Cycles Carla", "Boten Dirk", "Ski Eva"]
+    renters = [{**_KASSTEELE, "name": labels[i - 1], "address": f"Straat {i}, Dorp",
+                "website": f"https://l{i}.nl", "source_url": f"https://l{i}.nl"}
+               for i in range(1, 6)]
+    coords = {f"Straat {i},": (PROP_LAT + 0.01 * i, PROP_LON, {"village": "Dorp"})
+              for i in range(1, 6)}
+    handler = _rental_handler(renter_coords=coords)
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=True,
+                                   only_categories={"rental"}, http_client=client,
+                                   anthropic_client=FakeAnthropic(rentals=renters))
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+    assert summary["rental_web_kept"] == 3
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        names = {r["name"] for r in conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s AND category_code='rental'",
+            (property_id,)).fetchall()}
+    assert names == {"Fietsen Anna", "Bike Bob", "Cycles Carla"}   # les 3 plus proches
+
+
+def test_web_rental_never_touches_arbitrated(property_id):
+    """Une fiche loueur ARBITRÉE (approved) n'est jamais touchée par la découverte web
+    (V2-40 filter_against_existing)."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    rlat, rlon = PROP_LAT + _RENTER_DLAT, PROP_LON
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom, source,
+                   source_ref, status, phone)
+               VALUES (%s,'rental','Kassteele Tweewielers',
+                   ST_SetSRID(ST_MakePoint(%s,%s),4326),'owner','owner:1','approved',
+                   '+31 999')""", (property_id, rlon, rlat))
+        conn.commit()
+    handler = _rental_handler(
+        renter_coords={"Kloosterweg": (rlat, rlon, {"village": "Noordgouwe"})})
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            pipeline.run(property_id, use_claude=True, only_categories={"rental"},
+                         http_client=client,
+                         anthropic_client=FakeAnthropic(rentals=[_KASSTEELE]))
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rows = conn.execute(
+            "SELECT name, source, status, phone FROM pois WHERE property_id=%s "
+            "AND category_code='rental'", (property_id,)).fetchall()
+    assert len(rows) == 1                       # le web n'a pas re-proposé l'arbitrée
+    assert rows[0]["status"] == "approved" and rows[0]["source"] == "owner"
+    assert rows[0]["phone"] == "+31 999"        # non écrasée (invariant 1)
+
+
+def test_web_rental_malformed_is_best_effort_and_costs_per_attempt(property_id):
+    """JSON loueurs malformé → best-effort : aucune fiche, job 'done', et le coût des
+    DEUX essais (régénération V2-37) comptabilisé (« coût compté par essai »)."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    handler = _rental_handler(renter_coords={})
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=True,
+                                   only_categories={"rental"}, http_client=client,
+                                   anthropic_client=FakeAnthropic(rentals="malformed"))
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+    assert summary["rental_web_kept"] == 0
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        job = conn.execute("SELECT status, steps FROM enrichment_jobs WHERE id=%s",
+                           (summary["job_id"],)).fetchone()
+        n = conn.execute("SELECT count(*) c FROM pois WHERE property_id=%s "
+                        "AND category_code='rental'", (property_id,)).fetchone()["c"]
+        costs = conn.execute(
+            "SELECT count(*) c FROM api_costs WHERE job_id=%s AND operation='rental_web'",
+            (summary["job_id"],)).fetchone()["c"]
+    assert job["status"] == "done"                       # best-effort, pas tué
+    assert job["steps"]["rental_web"]["ok"] is False
+    assert n == 0 and costs == 2                          # essai + retry, tous deux payés

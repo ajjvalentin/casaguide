@@ -72,6 +72,80 @@ def _cap_by_travel(code: str, pois: list[dict]) -> list[dict]:
     return pois
 
 
+def _discover_web_rentals(conn, prop: dict, origin: tuple, ai, job_id: str,
+                          http_client: httpx.Client | None, summary: dict) -> list[dict]:
+    """Découverte web des LOUEURS (V2-44 volet 2), prêts à fusionner avec l'OSM.
+
+    Chaque loueur (vérifié avec preuve) est GÉOCODÉ par son adresse (l'adresse existe
+    même quand le lieu est absent d'OSM) → position réelle + distances OSRM. Échec de
+    géocodage → écarté + journalisé (jamais de POI sans position). Plafond aux N plus
+    proches. `source='web'`, preuve en `completion_meta`, localité issue du géocodage
+    (V2-38). Best-effort : tout échec est journalisé, le coût des essais comptabilisé,
+    et renvoie []. Cadence propre par logement (mémoire via api_costs, comme le
+    baby-sitting : un vide n'est pas re-cherché à chaque run)."""
+    property_id = prop["id"]
+    if db.recent_operation(conn, property_id, "rental_web",
+                           settings.rental_web_max_age_days):
+        return []
+    today = _dt.date.today().isoformat()
+    try:
+        renters, meta = claude_enrich.fetch_rentals(
+            prop["city"], prop["country_code"], ai, today=today)
+    except Exception as exc:  # noqa: BLE001 — best-effort (web/parse)
+        log.warning("Loueurs (web) non résolus (%s) : %s", prop["city"], exc)
+        c = _record_failed_call_cost(conn, property_id, job_id, "rental_web", exc)
+        summary["cost_cts"] += c
+        db.job_step(conn, job_id, "rental_web",
+                    {"ok": False, "error": overpass._short(str(exc)),
+                     "cost_cts": round(c, 2)})
+        conn.commit()
+        _progress(f"  ⚠ loueurs (web) non résolus : {overpass._short(str(exc))}")
+        return []
+    db.record_costs(conn, property_id, job_id, "anthropic", "rental_web",
+                    meta["attempts"])
+    summary["cost_cts"] += meta["cost_cts"]
+    # Géocodage par adresse → position ; échec → écarté journalisé.
+    geocoded: list[dict] = []
+    skipped_geo = 0
+    for r in renters:
+        try:
+            geo = geocode.geocode(address=r["address"],
+                                  country_code=prop["country_code"], client=http_client)
+        except geocode.GeocodeError:
+            skipped_geo += 1
+            log.warning("Loueur web « %s » sauté : adresse non géocodable (%s)",
+                        r["name"], r["address"])
+            continue
+        geocoded.append({
+            "name": r["name"], "lat": geo["lat"], "lon": geo["lon"],
+            "address": r["address"], "category": "rental", "source": "web",
+            "phone": r.get("phone"), "website": r.get("website"),
+            "locality": geo.get("locality"),   # V2-38 : commune du géocodage
+            "source_ref": "web:rental:" + _slug(r["name"]),
+            "crow_m": overpass.haversine_m(origin[0], origin[1], geo["lat"], geo["lon"]),
+            "completion_meta": {"_web": {"source_url": r.get("source_url"),
+                                         "verified_on": r.get("verified_on")}},
+        })
+    # Plafond : les N loueurs web les plus proches.
+    geocoded.sort(key=lambda p: p["crow_m"])
+    kept = geocoded[:settings.rental_web_max_results]
+    if kept:
+        try:
+            distance.compute_distances(origin, kept, client=http_client)
+        except Exception as exc:  # noqa: BLE001 — les distances ne bloquent pas
+            log.warning("Distances loueurs web non calculées : %s", exc)
+    summary["rental_web_kept"] = len(kept)
+    db.job_step(conn, job_id, "rental_web",
+                {"ok": True, "discovered": len(renters), "kept": len(kept),
+                 "skipped_geocode": skipped_geo,
+                 "cost_cts": round(meta["cost_cts"], 2)})
+    conn.commit()
+    _progress(f"  ✓ loueurs (web) : {len(kept)} retenu(s) / {len(renters)} trouvé(s)"
+              + (f", {skipped_geo} sans position" if skipped_geo else "")
+              + f" — {meta['cost_cts']:.2f} ct")
+    return kept
+
+
 def _resolve_market_position(market: dict, prop: dict,
                              http_client: httpx.Client | None
                              ) -> tuple[float | None, float | None]:
@@ -114,7 +188,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
     """
     summary: dict = {"pois": 0, "categories": {}, "area_facts": False,
                      "cost_cts": 0.0, "services_completed": 0, "babysitters": 0,
-                     "markets_created": 0, "duplicates_merged": 0}
+                     "markets_created": 0, "duplicates_merged": 0,
+                     "rental_web_kept": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -152,6 +227,15 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             conn.commit()  # progression visible en temps réel
             origin = (prop["lat"], prop["lon"])
 
+            # Client Claude créé TÔT : la découverte web des loueurs (V2-44 volet 2)
+            # en a besoin DANS la boucle de catégories (fusion avant la passe V2-40),
+            # bien avant l'étape 4. Sans use_claude il reste None. Fermé dans le
+            # `finally` (owns_ai) — un client PASSÉ n'est jamais fermé par le pipeline.
+            if use_claude:
+                ai = anthropic_client or anthropic.Anthropic(
+                    api_key=os.environ["ANTHROPIC_API_KEY"])
+                owns_ai = anthropic_client is None
+
             # ── 2 + 3. POI Overpass puis distances ─────────────────────────
             # Overpass : une requête par palier de rayon (union de sélecteurs),
             # résultats re-ventilés par catégorie via leurs tags (perf, M-01).
@@ -166,28 +250,47 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             for cat in wanted:
                 code = cat["code"]
                 pois = grouped.get(code) or []
+                if pois:
+                    try:
+                        distance.compute_distances(origin, pois, client=http_client)
+                    except Exception as exc:
+                        # Un échec de distances ne doit pas faire perdre la catégorie :
+                        # on la trace (ré-enrichissable) ; on garde une éventuelle
+                        # découverte web (loueurs) qui a, elle, ses distances.
+                        failed_categories[code] = f"{type(exc).__name__}: {exc}"[:120]
+                        pois = []
+                    for p in pois:
+                        p["category"] = code
+                # ── V2-44 volet 2 : découverte web des LOUEURS ────────────────
+                # Le loueur du village (Kassteele) est ABSENT d'OSM → introuvable
+                # par les tags. Une recherche web (avec preuve) le trouve, on le
+                # géocode et on le fusionne AVEC l'OSM avant la passe V2-40 (un
+                # loueur trouvé des deux côtés ne fait qu'une fiche, le web — qui
+                # apporte tél+site — gagne souvent).
+                if code == "rental" and use_claude and ai is not None:
+                    pois = pois + _discover_web_rentals(
+                        conn, prop, origin, ai, job_id, http_client, summary)
                 if not pois:
                     continue
-                try:
-                    distance.compute_distances(origin, pois, client=http_client)
-                except Exception as exc:
-                    # Un échec de distances ne doit pas faire perdre la catégorie :
-                    # on la trace et on continue (ré-enrichissable plus tard).
-                    failed_categories[code] = f"{type(exc).__name__}: {exc}"[:120]
-                    continue
-                for p in pois:
-                    p["category"] = code
                 # ── Dédoublonnage à la suggestion (V2-40) ────────────────────
                 # OSM porte le même lieu en plusieurs éléments (Alicante « (ALC) »
-                # + « Miguel Hernández », gare bilingue…). On dédoublonne le lot
-                # (le mieux renseigné survit) PUIS on retire ce qui double une fiche
-                # déjà arbitrée — jamais un successeur légitime (sentinelle XiaoWu).
+                # + « Miguel Hernández », gare bilingue…) — et un loueur peut venir
+                # d'OSM ET du web. On dédoublonne le lot (le mieux renseigné survit)
+                # PUIS on retire ce qui double une fiche déjà arbitrée — jamais un
+                # successeur légitime (sentinelle XiaoWu).
                 pois, in_batch = dedup.deduplicate(pois)
                 existing = db.existing_pois_for_dedup(conn, property_id, code)
                 pois, vs_existing = dedup.filter_against_existing(pois, existing)
                 summary["duplicates_merged"] += in_batch + vs_existing
                 # V2-44 : aéroport capé aux 3 plus proches en temps de trajet.
                 pois = _cap_by_travel(code, pois)
+                # V2-44 volet 2 : rental a DEUX sources (OSM + web) → réconcilie avec
+                # les fiches suggested d'un AUTRE source_ref pour ne jamais laisser un
+                # doublon inter-run quand le gagnant OSM/web bascule.
+                if code == "rental":
+                    existing_sugg = db.existing_suggested_pois(conn, property_id, code)
+                    pois, stale_ids = dedup.reconcile_suggested(pois, existing_sugg)
+                    db.delete_pois(conn, stale_ids)
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
                 n = db.upsert_pois(conn, property_id, code, pois)
@@ -201,7 +304,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             summary["failed_categories"] = failed_categories
             # V2-44 : catégories SANS résultat (rien trouvé, mais pas une erreur) et
             # éléments rejetés pour nom générique (« Speeltuin », « Aire de jeux »…).
-            empty_categories = list(harvest.get("empty") or [])
+            # Une catégorie qui a fini avec des POI (ex. rental garni par le web) n'est
+            # PAS vide, même si l'OSM n'a rien donné.
+            empty_categories = [c for c in (harvest.get("empty") or [])
+                                if c not in summary["categories"]]
             summary["empty_categories"] = empty_categories
             summary["generic_dropped"] = harvest.get("generic_dropped", 0)
             db.job_step(conn, job_id, "overpass",
@@ -225,11 +331,9 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                          if empty_categories else ""))
 
             # ── 4. Enrichissement Claude ────────────────────────────────────
+            # Le client `ai` est déjà créé plus haut (la découverte web des loueurs
+            # en avait besoin dans la boucle) ; ici on l'utilise seulement.
             if use_claude:
-                ai = anthropic_client or anthropic.Anthropic(
-                    api_key=os.environ["ANTHROPIC_API_KEY"])
-                owns_ai = anthropic_client is None
-
                 # 4a. Données locales mutualisées (pays + commune)
                 if not db.area_facts_fresh(conn, prop["country_code"], prop["city"]):
                     facts, meta = claude_enrich.fetch_area_facts(
@@ -713,6 +817,7 @@ def main() -> None:
     print(f"  Fiches complétées     : {result.get('services_completed', 0)}")
     print(f"  Baby-sitting créés    : {result.get('babysitters', 0)}")
     print(f"  Marchés créés         : {result.get('markets_created', 0)}")
+    print(f"  Loueurs (web) retenus : {result.get('rental_web_kept', 0)}")
     if result.get("generic_dropped"):
         print(f"  Sans-nom écartés      : {result['generic_dropped']}")
     print(f"  Coût IA               : {result['cost_cts']:.2f} ct")

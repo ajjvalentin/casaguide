@@ -108,6 +108,18 @@ class Settings:
     # On garde les 3 premières (le prompt les ordonne du plus local au plus national).
     babysitter_max_results: int = int(
         os.getenv("CASAGUIDE_BABYSITTER_MAX_RESULTS", "3"))
+    # Location par découverte web (V2-44 volet 2) : loueurs (vélos d'abord, puis
+    # bateaux/ski/voitures) INTROUVABLES par les tags OSM (cas Kassteele Tweewielers,
+    # absent d'OSM) mais trouvés par une recherche web avec preuve — même famille que
+    # le baby-sitting, mais GÉOCODÉS par adresse (position réelle, distances OSRM) et
+    # FUSIONNÉS avec l'OSM (V2-40). Cadence propre par logement, plafond de recherches,
+    # plafond de loueurs retenus (les plus proches).
+    rental_web_max_age_days: int = int(
+        os.getenv("CASAGUIDE_RENTAL_WEB_MAX_AGE_DAYS", "90"))
+    rental_web_max_searches: int = int(
+        os.getenv("CASAGUIDE_RENTAL_WEB_MAX_SEARCHES", "5"))
+    rental_web_max_results: int = int(
+        os.getenv("CASAGUIDE_RENTAL_WEB_MAX_RESULTS", "3"))
     # Marchés hebdomadaires (V2-07 volet 3) : découverte MUTUALISÉE par (pays,
     # commune), cache area_facts (fenêtre comme le volet 1) + plafond de recherches.
     market_max_age_days: int = int(

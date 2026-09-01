@@ -163,3 +163,43 @@ def test_survivor_carries_the_best_field_score():
     assert merged == 1 and len(survivors) == 1
     assert survivors[0] is rich                            # le mieux renseigné survit
     assert dedup._score(rich) == 3 and dedup._score(poor) == 0
+
+
+# ── V2-44 volet 2 : réconciliation OSM/web (pas de doublon inter-run) ─────────
+
+def _existing(id_, name, source, ref, lat=38.0, lon=-0.7, **f):
+    return {"id": id_, "name": name, "lat": lat, "lon": lon,
+            "source": source, "source_ref": ref, **f}
+
+
+def test_reconcile_web_wins_deletes_stale_osm():
+    web = _c("Kassteele", category="rental", source="web",
+             source_ref="web:rental:kassteele", phone="1", website="x", locality="N")
+    existing = [_existing("osm-1", "Kassteele", "osm", "node/9")]   # pauvre
+    survivors, to_delete = dedup.reconcile_suggested([web], existing)
+    assert survivors == [web] and to_delete == ["osm-1"]   # transfert OSM→web
+
+
+def test_reconcile_existing_web_is_sticky_against_osm():
+    osm = _c("Kassteele", category="rental", source="osm", source_ref="node/9")
+    existing = [_existing("web-1", "Kassteele", "web", "web:rental:kassteele",
+                          phone="1", website="x", locality="N")]   # riche
+    survivors, to_delete = dedup.reconcile_suggested([osm], existing)
+    # le web existant (plus riche) est STICKY : l'OSM est retiré, rien n'est supprimé.
+    assert survivors == [] and to_delete == []
+
+
+def test_reconcile_same_source_ref_is_refreshed_not_deleted():
+    web = _c("Kassteele", category="rental", source="web",
+             source_ref="web:rental:kassteele", phone="1", website="x")
+    existing = [_existing("web-1", "Kassteele", "web", "web:rental:kassteele", phone="1")]
+    survivors, to_delete = dedup.reconcile_suggested([web], existing)
+    assert survivors == [web] and to_delete == []   # upsert idempotent
+
+
+def test_reconcile_untouched_place_is_never_deleted():
+    web = _c("Autre loueur", lat=38.2, lon=-0.5, category="rental", source="web",
+             source_ref="web:rental:autre", phone="1", website="x")
+    existing = [_existing("osm-1", "Kassteele", "osm", "node/9")]   # autre lieu
+    survivors, to_delete = dedup.reconcile_suggested([web], existing)
+    assert survivors == [web] and to_delete == []   # place non concernée → intacte

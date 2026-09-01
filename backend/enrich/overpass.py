@@ -150,6 +150,8 @@ _GENERIC_NAMES: frozenset[str] = frozenset({
     "spielplatz", "spielwiese", "bolzplatz", "trampolin",
     # italien
     "parco giochi", "area giochi",
+    # laveries génériques (V2-44 volet 2 : le benchmark en a laissé passer deux)
+    "wasserette", "was", "laundrette", "laverie", "lavanderia", "wasserij",
 })
 
 

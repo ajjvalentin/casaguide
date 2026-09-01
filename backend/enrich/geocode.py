@@ -41,15 +41,26 @@ def _strip_house_number(street: str) -> str:
 
 
 def _search(params: dict, country_code: str, client: httpx.Client) -> dict | None:
+    # addressdetails=1 : Nominatim renvoie la ventilation d'adresse (ville/commune) —
+    # sert à remplir `locality` (V2-38, servie sur la carte du guide). Sans coût
+    # supplémentaire pour les appels existants (le champ est simplement présent).
     resp = client.get(
         settings.nominatim_url,
         params={**params, "countrycodes": country_code.lower(),
-                "format": "jsonv2", "limit": 1, "addressdetails": 0},
+                "format": "jsonv2", "limit": 1, "addressdetails": 1},
         headers={"User-Agent": settings.user_agent},
     )
     resp.raise_for_status()
     results = resp.json()
     return results[0] if results else None
+
+
+def _locality_of(r: dict) -> str | None:
+    """Commune/localité d'un résultat Nominatim (addressdetails) — même ordre de
+    préférence que le proxy de recherche de POI (`poi_search._candidate`)."""
+    addr = r.get("address") or {}
+    return (addr.get("city") or addr.get("town") or addr.get("village")
+            or addr.get("municipality") or None)
 
 
 def geocode(address: str | None = None, country_code: str = "ES",
@@ -91,6 +102,7 @@ def geocode(address: str | None = None, country_code: str = "ES",
                 "lon": float(r["lon"]),
                 "accuracy": accuracy,
                 "display_name": r.get("display_name", ""),
+                "locality": _locality_of(r),   # V2-38 : commune, servie sur la carte
                 "source": "nominatim",
             }
 

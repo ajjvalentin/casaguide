@@ -83,13 +83,13 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
         conn.execute(
             """INSERT INTO pois (property_id, category_code, name, geom, address,
                                  locality, phone, website, opening_hours, cuisine,
-                                 description_md,
+                                 description_md, completion_meta,
                                  dist_walk_m, walk_min, dist_drive_m, drive_min,
                                  source, source_ref, fetched_at, status)
                VALUES (%(pid)s, %(cat)s, %(name)s,
                        ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
                        %(address)s, %(locality)s, %(phone)s, %(website)s,
-                       %(opening_hours)s, %(cuisine)s, %(description_md)s,
+                       %(opening_hours)s, %(cuisine)s, %(description_md)s, %(meta)s,
                        %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
                        %(source)s, %(source_ref)s, now(), 'suggested')
                ON CONFLICT (property_id, source, source_ref)
@@ -114,6 +114,9 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                    opening_hours = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.opening_hours ELSE pois.opening_hours END,
                    cuisine = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.cuisine, pois.cuisine) ELSE pois.cuisine END,
                    description_md = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.description_md, pois.description_md) ELSE pois.description_md END,
+                   -- Preuve de découverte web (V2-44 volet 2) : complétée sans jamais
+                   -- s'effacer (COALESCE) pour un suggested ; intouchée si arbitré.
+                   completion_meta = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.completion_meta, pois.completion_meta) ELSE pois.completion_meta END,
                    dist_walk_m = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.dist_walk_m ELSE pois.dist_walk_m END,
                    walk_min = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.walk_min ELSE pois.walk_min END,
                    dist_drive_m = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.dist_drive_m ELSE pois.dist_drive_m END,
@@ -129,6 +132,8 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                 "description_md": p.get("description_md"),
                 "dist_walk_m": p.get("dist_walk_m"), "walk_min": p.get("walk_min"),
                 "dist_drive_m": p.get("dist_drive_m"), "drive_min": p.get("drive_min"),
+                "meta": json.dumps(p["completion_meta"]) if p.get("completion_meta")
+                        else None,
                 "source": p["source"], "source_ref": p["source_ref"],
             },
         )
@@ -327,6 +332,31 @@ def existing_pois_for_dedup(conn, property_id: str, category: str) -> list[dict]
              AND status IN ('approved', 'edited', 'rejected')""",
         (property_id, category),
     ).fetchall()
+
+
+def existing_suggested_pois(conn, property_id: str, category: str) -> list[dict]:
+    """POI encore SUGGESTED d'une catégorie, avec assez de champs pour comparer leur
+    « renseignement » (V2-44 volet 2, réconciliation OSM/web). Sert à éviter un DOUBLON
+    INTER-RUN : quand la fusion OSM/web fait basculer le source_ref gagnant d'un run à
+    l'autre, une même place pourrait laisser deux fiches suggested sous des source_ref
+    différents. On ne renvoie QUE du suggested (jamais l'arbitré — invariant 1)."""
+    return conn.execute(
+        """SELECT id, name, ST_Y(geom) AS lat, ST_X(geom) AS lon, source, source_ref,
+                  phone, website, opening_hours, cuisine, locality, walk_min, drive_min
+           FROM pois
+           WHERE property_id = %s AND category_code = %s AND status = 'suggested'""",
+        (property_id, category),
+    ).fetchall()
+
+
+def delete_pois(conn, ids: list[str]) -> int:
+    """Supprime des POI par id (V2-44 volet 2 : fiches suggested rendues obsolètes par
+    la réconciliation OSM/web). Ne supprime QUE ce que l'appelant a filtré (jamais de
+    fiche arbitrée). Retourne le nombre supprimé."""
+    if not ids:
+        return 0
+    cur = conn.execute("DELETE FROM pois WHERE id = ANY(%s)", (list(ids),))
+    return cur.rowcount
 
 
 def existing_market_pois(conn, property_id: str) -> list[dict]:

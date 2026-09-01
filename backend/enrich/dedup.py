@@ -148,6 +148,37 @@ def deduplicate(candidates: list[dict]) -> tuple[list[dict], int]:
     return survivors, merged
 
 
+def reconcile_suggested(survivors: list[dict],
+                        existing_suggested: list[dict]
+                        ) -> tuple[list[dict], list[str]]:
+    """Réconcilie les survivants d'un run (fusion OSM+web V2-44 volet 2) avec les fiches
+    SUGGESTED déjà en base d'un AUTRE source_ref, pour qu'une même place ne laisse jamais
+    DEUX fiches suggested (doublon inter-run quand le source_ref gagnant bascule).
+
+    Renvoie `(survivants_à_upserter, ids_à_supprimer)`. Pour chaque fiche existante `e` :
+      * même source_ref qu'un survivant → ignorée (l'upsert idempotent la rafraîchit) ;
+      * même LIEU (nom/distance) qu'un survivant `s` sous un AUTRE source_ref → on
+        garde le MIEUX RENSEIGNÉ (`_better`) : si `s` gagne, `e` part (id à supprimer,
+        transfert OSM→web) ; sinon `e` est STICKY et `s` est retiré des survivants (le
+        web cadencé peut ne pas re-tourner : ne pas laisser l'OSM reprendre la place) ;
+      * lieu non concerné ce run → laissée telle quelle (jamais supprimée sur un simple
+        « pas retrouvé »). Ne touche QUE du suggested (l'appelant l'a garanti)."""
+    survivors = list(survivors)
+    to_delete: list[str] = []
+    survivor_refs = {s.get("source_ref") for s in survivors}
+    for e in existing_suggested:
+        if e.get("source_ref") in survivor_refs:
+            continue  # même fiche : rafraîchie par l'upsert idempotent
+        idx = next((i for i, s in enumerate(survivors) if _same_place(e, s)), None)
+        if idx is None:
+            continue  # place non concernée ce run → fiche existante laissée intacte
+        if _better(survivors[idx], e) is survivors[idx]:
+            to_delete.append(e["id"])        # le survivant gagne → l'ancienne fiche part
+        else:
+            survivors.pop(idx)               # l'existante est meilleure/sticky → on la garde
+    return survivors, to_delete
+
+
 def filter_against_existing(candidates: list[dict],
                             existing: list[dict]) -> tuple[list[dict], int]:
     """Retire les candidats qui doublent une fiche déjà ARBITRÉE de la même catégorie.

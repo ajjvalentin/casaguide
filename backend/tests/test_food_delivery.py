@@ -187,3 +187,43 @@ def test_babysitter_prompt_orders_local_first():
     ce.fetch_babysitters("Noordgouwe", "NL", cli, today="2026-08-31")
     prompt = cli.messages.prompts[0]
     assert "LOCAL D'ABORD" in prompt and "3" in prompt
+
+
+# ── V2-44 volet 2 : découverte web des loueurs (preuve ou rien) ──────────────
+
+def test_rentals_require_name_address_proof_and_contact():
+    payload = {"rentals": [
+        {"name": "Kassteele Tweewielers", "address": "Kloosterweg 44, Noordgouwe",
+         "phone": "+31 111 22 33", "website": "https://kassteele.nl",
+         "source_url": "https://kassteele.nl", "verified_on": "2026-08-31"},
+        {"name": "Sans adresse", "phone": "+31 000", "source_url": "https://x"},
+        {"name": "Sans preuve", "address": "Rue X 1, Ville", "phone": "+31 1"},
+        {"name": "Sans contact", "address": "Rue Y 2, Ville", "source_url": "https://y"},
+        {"address": "Rue Z 3, Ville", "phone": "+31 3", "source_url": "https://z"},
+    ]}
+    cli = Fake(_web_msg(json.dumps(payload)))
+    out, meta = ce.fetch_rentals("Noordgouwe", "NL", cli, today="2026-08-31")
+    assert [r["name"] for r in out] == ["Kassteele Tweewielers"]   # seul le complet
+    assert out[0]["address"] == "Kloosterweg 44, Noordgouwe"
+    assert out[0]["source_url"].startswith("https://") and out[0]["phone"]
+
+
+def test_rentals_empty_is_valid_and_prompt_uses_local_language():
+    cli = Fake(_web_msg(json.dumps({"rentals": []})))
+    out, _ = ce.fetch_rentals("Noordgouwe", "NL", cli, today="2026-08-31")
+    assert out == []                                    # vide = résultat valide
+    prompt = cli.messages.prompts[0]
+    assert "fietsverhuur" in prompt and "LANGUE LOCALE" in prompt
+    assert "PREUVE OU RIEN" in prompt and "ADRESSE POSTALE COMPLÈTE" in prompt
+    tool = cli.messages.tools[0][0]
+    assert tool["type"] == "web_search_20250305"
+    assert tool["user_location"]["city"] == "Noordgouwe"
+
+
+def test_rentals_malformed_raises_without_write():
+    cli = Fake(_web_msg("désolé, indisponible"), _web_msg("encore indisponible"))
+    try:
+        ce.fetch_rentals("Noordgouwe", "NL", cli, today="2026-08-31")
+        assert False, "attendu : ValueError"
+    except ValueError:
+        pass
