@@ -33,6 +33,7 @@ import math
 import re
 import time
 import unicodedata
+from dataclasses import dataclass
 
 import httpx
 
@@ -130,6 +131,98 @@ _DISQUALIFYING_TAGS: list[tuple[str, str]] = [
 # hubs les plus proches — pas les 8 aérodromes du rayon (benchmark : 7 aéroports,
 # dont Ostende à 132 min). NULL/absent = pas de cap dédié (plafond général de 8).
 NEAREST_BY_TRAVEL: dict[str, int] = {"airport": 3}
+
+
+# ── V2-44 volet 3 : minimum de résultats ET plafond de pertinence PAR catégorie ──
+#
+# Le volet 1 escaladait le rayon jusqu'à MIN_RESULTS=3, UNIFORME. Or trois
+# commissariats à 30-32 min (benchmark Op de Boerderie) valent moins que le seul
+# poste à 4 km : le quota uniforme fabrique des résultats lointains et trompeurs dans
+# les catégories naturellement clairsemées. On règle DEUX curseurs par catégorie :
+#   - `min_results`         : combien de lieux viser avant d'arrêter l'escalade ;
+#   - `hard_cap_drive_min`  : temps de route au-delà duquel un résultat AMENÉ PAR
+#     L'ESCALADE (hors rayon de préférence) n'est PAS retenu pour combler le quota —
+#     mieux vaut une catégorie honnête, voire vide (signalée, volet 1), que remplie
+#     de lieux inutiles. Un lieu DANS le rayon de préférence est toujours gardé.
+#
+# Le cap ne s'applique qu'à l'escalade (« pour satisfaire le quota ») : il exige le
+# `drive_min` (OSRM), donc il est posé dans le PIPELINE après le calcul des distances
+# (`apply_drive_cap`), tandis que `min_results` gouverne l'escalade dans `fetch_grouped`.
+#
+# Plafonds par chapitre (justif. scribe) : 20 min pour le quotidien (C, D hors
+# hôpital, F=restauration, E listé, arrêt de bus) ; 45 min pour hôpital/aéroport/gare
+# (hubs d'arrivée, trajet accepté) ; aucun pour G (excursions légitimes). Une
+# catégorie ABSENTE de la table retombe sur le comportement du volet 1
+# (`settings.min_results_per_category`, aucun cap) — voir `target_for`.
+@dataclass(frozen=True)
+class CategoryTarget:
+    min_results: int
+    hard_cap_drive_min: int | None = None
+
+
+CATEGORY_TARGETS: dict[str, CategoryTarget] = {
+    # Minimum 1 — « le plus proche suffit »
+    "police":          CategoryTarget(1, 20),
+    "hospital":        CategoryTarget(1, 45),
+    "post_office":     CategoryTarget(1, 20),
+    "train_station":   CategoryTarget(1, 45),
+    "airport":         CategoryTarget(1, 45),
+    "veterinary":      CategoryTarget(1, 20),
+    # Minimum 2
+    "pharmacy":        CategoryTarget(2, 20),
+    "doctor":          CategoryTarget(2, 20),
+    "atm":             CategoryTarget(2, 20),
+    "bakery":          CategoryTarget(2, 20),
+    "market":          CategoryTarget(2, 20),
+    "mall":            CategoryTarget(2, 20),
+    "laundry":         CategoryTarget(2, 20),
+    "taxi":            CategoryTarget(2, 20),
+    "bus_stop":        CategoryTarget(2, 20),
+    # Minimum 3
+    "supermarket":     CategoryTarget(3, 20),
+    "beach":           CategoryTarget(3, None),   # G : excursions, pas de plafond
+    "sight":           CategoryTarget(3, None),
+    "family_activity": CategoryTarget(3, None),
+    "sport":           CategoryTarget(3, None),
+    "bar":             CategoryTarget(3, 20),
+    "cafe":            CategoryTarget(3, 20),
+    "rental":          CategoryTarget(3, 20),
+    # Minimum 5
+    "restaurant":      CategoryTarget(5, 20),
+}
+
+
+def target_for(code: str) -> CategoryTarget:
+    """Cible (min_results + plafond) d'une catégorie. REPLI (catégorie absente de la
+    table, ex. bus_station/parking/fuel, ou catégorie ajoutée plus tard) : comportement
+    volet 1 — `settings.min_results_per_category` et AUCUN plafond, pour ne rien casser."""
+    t = CATEGORY_TARGETS.get(code)
+    if t is not None:
+        return t
+    return CategoryTarget(settings.min_results_per_category, None)
+
+
+def apply_drive_cap(pois: list[dict], preferred_m: int,
+                    hard_cap_drive_min: int | None) -> tuple[list[dict], int]:
+    """Retire les POI amenés PAR L'ESCALADE (crow au-delà du rayon de préférence) dont
+    le temps de route dépasse le plafond de pertinence (V2-44 volet 3). Renvoie
+    `(gardés, n_retirés)`. Les POI DANS le rayon de préférence sont toujours gardés (ils
+    sont réellement proches) ; sans plafond (None) ou sans `drive_min`/`crow_m` connu →
+    inchangé. En zone dense (tout dans la préférence), ne retire jamais rien."""
+    if not hard_cap_drive_min:
+        return pois, 0
+    kept: list[dict] = []
+    dropped = 0
+    for p in pois:
+        crow = p.get("crow_m")
+        drive = p.get("drive_min")
+        beyond_preferred = crow is not None and crow > preferred_m
+        if beyond_preferred and drive is not None and drive > hard_cap_drive_min:
+            dropped += 1
+        else:
+            kept.append(p)
+    return kept, dropped
+
 
 # Noms GÉNÉRIQUES de type (V2-44) : un élément dont le nom N'EST QU'un mot de type
 # (« Speeltuin », « Aire de jeux », « Trampoline ») n'a pas de nom propre → aucune
@@ -532,11 +625,11 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
         for code in codes:
             results[code] = _finalize(m1.get(code, []), settings.max_pois_per_category)
 
-        # ── Passe 2 : ESCALADE ciblée (rural) ───────────────────────────────
+        # ── Passe 2 : ESCALADE ciblée (rural), MIN_RESULTS par catégorie (V2-44 v3) ─
         deficient = [c for c in codes
                      if c not in failures
                      and max_of[c] > pref_of[c]
-                     and len(results[c]) < settings.min_results_per_category]
+                     and len(results[c]) < target_for(c).min_results]
         if deficient:
             m2, f2, g2 = _run_buckets(client, deficient, max_of, lat, lon)
             generic += g2
@@ -545,7 +638,7 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
                     continue  # escalade en échec : on garde le résultat de la passe 1
                 results[code] = _select_adaptive(
                     m2.get(code, []), pref_of[code],
-                    settings.min_results_per_category, settings.max_pois_per_category)
+                    target_for(code).min_results, settings.max_pois_per_category)
 
         _dedup_health_categories(results)
         empty = [c for c in codes if not results.get(c) and c not in failures]

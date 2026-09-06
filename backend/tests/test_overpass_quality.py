@@ -350,3 +350,75 @@ def test_fetch_grouped_reports_empty_categories():
     client.close()
     assert results["supermarket"] and not results["laundry"]
     assert stats["empty"] == ["laundry"] and failures == {}
+
+
+# ── V2-44 volet 3 : minimums par catégorie + plafond de pertinence ───────────
+
+def test_target_for_known_values_and_fallback():
+    assert overpass.target_for("police") == overpass.CategoryTarget(1, 20)
+    assert overpass.target_for("restaurant") == overpass.CategoryTarget(5, 20)
+    assert overpass.target_for("hospital") == overpass.CategoryTarget(1, 45)
+    assert overpass.target_for("beach").hard_cap_drive_min is None      # G : pas de plafond
+    # Catégorie ABSENTE de la table → repli comportement volet 1 (min global, aucun cap).
+    fb = overpass.target_for("bus_station")
+    assert fb == overpass.CategoryTarget(settings.min_results_per_category, None)
+    assert overpass.target_for("categorie_inexistante") == \
+        overpass.CategoryTarget(settings.min_results_per_category, None)
+
+
+def test_apply_drive_cap_drops_far_escalation_keeps_near():
+    pref = 10000
+    within = {"name": "Proche", "crow_m": 4000, "drive_min": 6}     # dans la préférence
+    far_ok = {"name": "Escalade OK", "crow_m": 15000, "drive_min": 18}  # au-delà, sous le cap
+    far_no = {"name": "Escalade loin", "crow_m": 22000, "drive_min": 31}  # au-delà, hors cap
+    kept, dropped = overpass.apply_drive_cap([within, far_ok, far_no], pref, 20)
+    assert [p["name"] for p in kept] == ["Proche", "Escalade OK"]
+    assert dropped == 1
+
+
+def test_apply_drive_cap_keeps_within_preferred_even_if_slow():
+    # Un lieu DANS le rayon de préférence est toujours gardé (réellement proche),
+    # même si sa route dépasse le plafond — le plafond ne vise QUE l'escalade.
+    pref = 10000
+    slow_near = {"name": "Proche lent", "crow_m": 8000, "drive_min": 25}
+    kept, dropped = overpass.apply_drive_cap([slow_near], pref, 20)
+    assert kept == [slow_near] and dropped == 0
+
+
+def test_apply_drive_cap_no_cap_or_unknown_drive_unchanged():
+    pois = [{"name": "X", "crow_m": 30000, "drive_min": 40}]
+    assert overpass.apply_drive_cap(pois, 10000, None) == (pois, 0)     # pas de plafond
+    nodrive = [{"name": "Y", "crow_m": 30000}]                          # drive inconnu
+    assert overpass.apply_drive_cap(nodrive, 10000, 20) == (nodrive, 0)
+
+
+def test_fetch_grouped_min_one_stops_escalation_when_one_found():
+    """police a min_results=1 : un seul résultat DANS la préférence suffit → aucune
+    escalade (une seule requête), le quota uniforme (3) ne fabrique plus de lointains."""
+    settings.politeness_delay_s = 0
+    near = {"type": "node", "id": 1, "lat": LAT + 0.01, "lon": LON,     # ~1,1 km
+            "tags": {"name": "Politie Zierikzee", "amenity": "police"}}
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler([near], '"amenity"="police"', calls)))
+    cats = [{"code": "police", "default_radius_m": 10000, "max_radius_m": 25000}]
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    assert [p["name"] for p in results["police"]] == ["Politie Zierikzee"]
+    assert len(calls) == 1          # min_results=1 atteint → pas de 2e passe
+
+
+def test_fetch_grouped_fallback_category_still_escalates_to_three():
+    """Une catégorie absente de la table (repli min 3) garde le comportement volet 1 :
+    sous 3, elle escalade."""
+    settings.politeness_delay_s = 0
+    el = {"type": "node", "id": 1, "lat": LAT + 0.20, "lon": LON,       # ~22 km (hors pref)
+          "tags": {"name": "Busstation", "amenity": "bus_station"}}
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler([el], '"amenity"="bus_station"', calls)))
+    cats = [{"code": "bus_station", "default_radius_m": 20000, "max_radius_m": 40000}]
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    assert len(calls) == 2          # 1 < 3 (repli) → escalade
+    assert overpass.target_for("bus_station").min_results == 3

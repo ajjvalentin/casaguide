@@ -189,7 +189,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
     summary: dict = {"pois": 0, "categories": {}, "area_facts": False,
                      "cost_cts": 0.0, "services_completed": 0, "babysitters": 0,
                      "markets_created": 0, "duplicates_merged": 0,
-                     "rental_web_kept": 0}
+                     "rental_web_kept": 0, "hard_cap_dropped": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -247,6 +247,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 wanted, origin[0], origin[1], client=http_client)
 
             all_editorial: list[dict] = []
+            capped_empty: set[str] = set()   # V2-44 v3 : vidées par le plafond de pertinence
             for cat in wanted:
                 code = cat["code"]
                 pois = grouped.get(code) or []
@@ -270,6 +271,20 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 if code == "rental" and use_claude and ai is not None:
                     pois = pois + _discover_web_rentals(
                         conn, prop, origin, ai, job_id, http_client, summary)
+                # ── V2-44 volet 3 : plafond de PERTINENCE ────────────────────
+                # Retire les résultats amenés par l'escalade (hors rayon de préférence)
+                # trop LOIN EN ROUTE pour combler le quota — un commissariat à 30 min
+                # quand le quota vise le plus proche (le drive_min vient d'être calculé).
+                # Mieux vaut une catégorie honnête (voire vide, signalée) que remplie de
+                # lieux inutiles.
+                if pois:
+                    tgt = overpass.target_for(code)
+                    pois, capped = overpass.apply_drive_cap(
+                        pois, cat["default_radius_m"], tgt.hard_cap_drive_min)
+                    if capped:
+                        summary["hard_cap_dropped"] += capped
+                        if not pois:            # la catégorie devient vide PAR le cap
+                            capped_empty.add(code)
                 if not pois:
                     continue
                 # ── Dédoublonnage à la suggestion (V2-40) ────────────────────
@@ -302,12 +317,13 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                              "pois": summary["pois"], "failed": failed_categories})
                 conn.commit()
             summary["failed_categories"] = failed_categories
-            # V2-44 : catégories SANS résultat (rien trouvé, mais pas une erreur) et
-            # éléments rejetés pour nom générique (« Speeltuin », « Aire de jeux »…).
-            # Une catégorie qui a fini avec des POI (ex. rental garni par le web) n'est
-            # PAS vide, même si l'OSM n'a rien donné.
-            empty_categories = [c for c in (harvest.get("empty") or [])
-                                if c not in summary["categories"]]
+            # V2-44 : catégories SANS résultat (rien trouvé, mais pas une erreur) —
+            # celles vides à la moisson (volet 1) ET celles VIDÉES par le plafond de
+            # pertinence (volet 3). Une catégorie qui a fini avec des POI (ex. rental
+            # garni par le web) n'est PAS vide, même si l'OSM n'a rien donné.
+            empty_categories = sorted(
+                (set(harvest.get("empty") or []) | capped_empty)
+                - set(summary["categories"]))
             summary["empty_categories"] = empty_categories
             summary["generic_dropped"] = harvest.get("generic_dropped", 0)
             db.job_step(conn, job_id, "overpass",
@@ -316,6 +332,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                          "duplicates_merged": summary["duplicates_merged"],
                          "empty": empty_categories,
                          "generic_dropped": summary["generic_dropped"],
+                         "hard_cap_dropped": summary["hard_cap_dropped"],
                          "failed": failed_categories})
             db.job_step(conn, job_id, "distances", {"ok": True})
             conn.commit()
@@ -324,6 +341,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                          if summary["duplicates_merged"] else "")
                       + (f", {summary['generic_dropped']} sans-nom écarté(s)"
                          if summary["generic_dropped"] else "")
+                      + (f", {summary['hard_cap_dropped']} hors plafond de route"
+                         if summary["hard_cap_dropped"] else "")
                       + (f" — {len(failed_categories)} catégorie(s) en échec : "
                          + ", ".join(sorted(failed_categories))
                          if failed_categories else " — 0 échec")
@@ -744,6 +763,12 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
                     continue
                 for p in pois:
                     p["category"] = code
+                # V2-44 volet 3 : plafond de pertinence (comme le run initial).
+                pois, _capped = overpass.apply_drive_cap(
+                    pois, cat["default_radius_m"],
+                    overpass.target_for(code).hard_cap_drive_min)
+                if not pois:
+                    continue
                 # Dédoublonnage à la suggestion (V2-40), comme le run initial.
                 pois, in_batch = dedup.deduplicate(pois)
                 existing = db.existing_pois_for_dedup(conn, property_id, code)
@@ -820,6 +845,8 @@ def main() -> None:
     print(f"  Loueurs (web) retenus : {result.get('rental_web_kept', 0)}")
     if result.get("generic_dropped"):
         print(f"  Sans-nom écartés      : {result['generic_dropped']}")
+    if result.get("hard_cap_dropped"):
+        print(f"  Hors plafond de route : {result['hard_cap_dropped']}")
     print(f"  Coût IA               : {result['cost_cts']:.2f} ct")
     failed = result.get("failed_categories") or {}
     if failed:

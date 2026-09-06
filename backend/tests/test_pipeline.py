@@ -1521,3 +1521,100 @@ def test_web_rental_malformed_is_best_effort_and_costs_per_attempt(property_id):
     assert job["status"] == "done"                       # best-effort, pas tué
     assert job["steps"]["rental_web"]["ok"] is False
     assert n == 0 and costs == 2                          # essai + retry, tous deux payés
+
+
+# ── V2-44 volet 3 : minimums par catégorie + plafond de pertinence ───────────
+
+def _police_handler(elements, osrm_drive_s):
+    """MockTransport : nominatim (logement) + overpass (police = `elements`) + OSRM
+    renvoyant `osrm_drive_s` secondes par destination (pour piloter drive_min)."""
+    def handler(request):
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=NOMINATIM)
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            els = elements if '"amenity"="police"' in body else []
+            return httpx.Response(200, json={"elements": els})
+        if "/table/v1/" in url:
+            coords = url.split("/table/v1/", 1)[1].split("/", 1)[1].split("?")[0]
+            n = coords.count(";")
+            return httpx.Response(200, json={
+                "code": "Ok", "durations": [[0.0] + [float(osrm_drive_s)] * n],
+                "distances": [[0.0] + [22000.0] * n]})
+        return httpx.Response(404)
+    return handler
+
+
+def test_drive_cap_drops_far_escalated_result(property_id):
+    """Aucun commissariat dans le rayon de préférence ; le seul (à ~22 km / 31 min)
+    est amené par l'escalade mais retiré par le plafond (20 min) → catégorie vide
+    signalée, plutôt qu'un résultat lointain et trompeur."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    far = {"type": "node", "id": 1, "lat": PROP_LAT + 0.20, "lon": PROP_LON,  # ~22 km
+           "tags": {"name": "Politie Lointaine", "amenity": "police"}}
+    handler = _police_handler([far], osrm_drive_s=1860)   # 31 min de route
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=False,
+                                   only_categories={"police"}, http_client=client,
+                                   anthropic_client=FakeAnthropic())
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+    assert summary["hard_cap_dropped"] >= 1
+    assert "police" in summary["empty_categories"]          # vidée par le plafond, signalée
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        n = conn.execute("SELECT count(*) c FROM pois WHERE property_id=%s "
+                        "AND category_code='police'", (property_id,)).fetchone()["c"]
+        step = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                            (summary["job_id"],)).fetchone()["steps"]["overpass"]
+    assert n == 0
+    assert step["hard_cap_dropped"] >= 1 and "police" in step["empty"]
+
+
+def test_near_police_within_cap_is_kept(property_id):
+    """Un commissariat proche (~4 km / 6 min, DANS la préférence) est retenu :
+    le plafond ne vise que l'escalade."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    near = {"type": "node", "id": 1, "lat": PROP_LAT + 0.036, "lon": PROP_LON,  # ~4 km
+            "tags": {"name": "Politie Zierikzee", "amenity": "police"}}
+    handler = _police_handler([near], osrm_drive_s=360)     # 6 min
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=False,
+                                   only_categories={"police"}, http_client=client,
+                                   anthropic_client=FakeAnthropic())
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+    assert summary["hard_cap_dropped"] == 0
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        names = [r["name"] for r in conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s AND category_code='police'",
+            (property_id,)).fetchall()]
+    assert names == ["Politie Zierikzee"]
+
+
+def test_min_one_suppresses_far_police_when_near_exists(property_id):
+    """Recette : quand un commissariat existe à moins de 10 km, la catégorie police
+    (min_results=1) ne propose PLUS de candidat lointain — le lointain n'est même pas
+    moissonné (pas d'escalade)."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    near = {"type": "node", "id": 1, "lat": PROP_LAT + 0.036, "lon": PROP_LON,  # ~4 km
+            "tags": {"name": "Politie Proche", "amenity": "police"}}
+    far = {"type": "node", "id": 2, "lat": PROP_LAT + 0.20, "lon": PROP_LON,    # ~22 km
+           "tags": {"name": "Politie Lointaine", "amenity": "police"}}
+    handler = _police_handler([near, far], osrm_drive_s=360)
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            pipeline.run(property_id, use_claude=False, only_categories={"police"},
+                         http_client=client, anthropic_client=FakeAnthropic())
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        names = {r["name"] for r in conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s AND category_code='police'",
+            (property_id,)).fetchall()}
+    assert names == {"Politie Proche"}          # le lointain n'est pas proposé
