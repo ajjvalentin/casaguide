@@ -206,3 +206,83 @@ def test_run_benchmark_is_read_only(tmp_path, monkeypatch):
         with psycopg.connect(settings.db_dsn) as conn:
             conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
             conn.commit()
+
+
+# ── V2-48b : correctifs révélés par l'exécution réelle (VPS, duckdb 1.5.5) ────
+
+import pytest  # noqa: E402
+
+
+def test_resolve_release_validates_format_and_autodetects():
+    # Valide → passe tel quel.
+    assert SB.resolve_release("2026-08-19.0", detector=lambda: "X") == "2026-08-19.0"
+    # Format invalide (ancien défaut « AAAA-MM ») → erreur explicite montrant le format.
+    with pytest.raises(ValueError) as ei:
+        SB.resolve_release("2026-08", detector=lambda: "X")
+    assert "AAAA-MM-JJ.N" in str(ei.value) and "2026-08-19.0" in str(ei.value)
+    # Absente → détection injectée.
+    assert SB.resolve_release(None, detector=lambda: "2026-08-19.0") == "2026-08-19.0"
+
+
+def test_latest_overture_release_picks_max_valid():
+    class _FakeCon:
+        def execute(self, sql):
+            self._rows = [
+                (f"{SB._OVERTURE_S3}/2026-07-16.1/",),
+                (f"{SB._OVERTURE_S3}/2026-08-19.0/",),
+                (f"{SB._OVERTURE_S3}/latest/",),        # non conforme → ignoré
+            ]
+            return self
+        def fetchall(self):
+            return self._rows
+        def close(self):
+            pass
+    assert SB.latest_overture_release(connect=_FakeCon) == "2026-08-19.0"
+
+
+# ── Exécution RÉELLE de la requête contre DuckDB (leçon V2-48b : suite verte ≠
+#    script exécutable ; la recette inclut une invocation réelle) ──────────────
+
+duckdb = pytest.importorskip("duckdb")
+
+
+def _write_parquet(tmp_path, geom_sql: str) -> str:
+    """Écrit un parquet façon Overture (names/categories struct, phones/websites list,
+    bbox struct) avec la géométrie produite par `geom_sql`. Renvoie le chemin."""
+    pq = str(tmp_path / "places.parquet")
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    con.execute(f"""
+      COPY (SELECT {{'primary': 'Catedral de Murcia'}} AS names,
+                   {{'primary': 'attractions_and_activities.landmark'}} AS categories,
+                   {geom_sql} AS geometry,
+                   ['+34 1'] AS phones, ['http://x'] AS websites,
+                   {{'xmin': -1.128, 'ymin': 37.984, 'xmax': -1.128, 'ymax': 37.984}} AS bbox)
+      TO '{pq}' (FORMAT PARQUET)""")
+    con.close()
+    return pq
+
+
+def _query(pq: str):
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    try:
+        return SB._query_places(con, "x", (-1.2, 37.9, -1.0, 38.1), source=pq)
+    finally:
+        con.close()
+
+
+def test_query_places_native_geometry_real_duckdb(tmp_path):
+    """geometry NATIVE (duckdb-spatial récent) → ST_X/ST_Y(geometry) direct (le défaut
+    corrigé). Round-trip réel contre DuckDB, pas un mock."""
+    rows = _query(_write_parquet(tmp_path, "ST_Point(-1.128, 37.984)"))
+    assert rows == [("Catedral de Murcia", 37.984, -1.128,
+                     "attractions_and_activities.landmark", "+34 1", "http://x")]
+
+
+def test_query_places_wkb_fallback_real_duckdb(tmp_path):
+    """geometry en WKB BLOB (vieux duckdb-spatial) → ST_X(geometry) natif échoue, repli
+    ST_GeomFromWKB(geometry). Round-trip réel : le repli renvoie bien la ligne."""
+    rows = _query(_write_parquet(tmp_path, "ST_AsWKB(ST_Point(-1.128, 37.984))"))
+    assert rows == [("Catedral de Murcia", 37.984, -1.128,
+                     "attractions_and_activities.landmark", "+34 1", "http://x")]

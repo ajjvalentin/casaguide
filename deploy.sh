@@ -74,16 +74,22 @@ if [ ! -d "$VENV" ]; then
   log "création du venv"
   python3 -m venv "$VENV"
 fi
+#    Le stamp couvre backend/requirements.txt ET ops/requirements.txt (V2-48b :
+#    duckdb, dépendance ops-only, doit survivre au rebuild du venv — installé à la
+#    main sur le VPS, il était perdu au rebuild suivant). Un changement de l'un OU
+#    l'autre re-déclenche l'install des deux.
 STAMP="$VENV/.requirements.sha1"
-req_hash="$(sha1sum "$BACKEND/requirements.txt" | awk '{print $1}')"
+OPS_REQ="$APP_DIR/ops/requirements.txt"
+req_hash="$(cat "$BACKEND/requirements.txt" "$OPS_REQ" 2>/dev/null | sha1sum | awk '{print $1}')"
 installed_hash="$(cat "$STAMP" 2>/dev/null || true)"
 if [ "$installed_hash" != "$req_hash" ]; then
-  log "pip install -r requirements.txt (venv non aligné : ${installed_hash:-aucun} → $req_hash)"
+  log "pip install (backend + ops) (venv non aligné : ${installed_hash:-aucun} → $req_hash)"
   "$VENV/bin/pip" install --quiet --upgrade pip
   "$VENV/bin/pip" install --quiet -r "$BACKEND/requirements.txt"
+  [ -f "$OPS_REQ" ] && "$VENV/bin/pip" install --quiet -r "$OPS_REQ"
   printf '%s\n' "$req_hash" > "$STAMP"   # stamp uniquement après un pip réussi (set -e)
 else
-  log "requirements déjà installé ($req_hash) — pip ignoré"
+  log "requirements déjà installés ($req_hash) — pip ignoré"
 fi
 
 # 3. Migrations SQL (idempotentes, IF NOT EXISTS) + seed (idempotent)

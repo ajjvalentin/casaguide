@@ -38,9 +38,12 @@ la décision, pas le volume brut.
 Usage (sur le serveur, dans le venv de l'app) :
 
     /opt/casaguide/.venv/bin/python /opt/casaguide/ops/source_benchmark.py
-    …/source_benchmark.py --release 2026-08 --dry-run   # plan, aucun fetch réseau
+    …/source_benchmark.py --release 2026-08-19.0        # release Overture explicite
+    …/source_benchmark.py --dry-run                     # plan, aucun fetch réseau
 
-Requiert `duckdb` pour le fetch réel (`pip install duckdb`). Charge `backend/.env` (OPS-1).
+La release Overture par défaut est DÉTECTÉE sur S3 (format réel AAAA-MM-JJ.N, ex.
+2026-08-19.0 — jamais « AAAA-MM »). Requiert `duckdb` (installé par deploy.sh via
+ops/requirements.txt). Charge `backend/.env` (OPS-1).
 """
 from __future__ import annotations
 
@@ -51,6 +54,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -286,6 +290,95 @@ def _bbox(lat: float, lon: float, radius_m: int) -> tuple[float, float, float, f
     return (lon - dlon, lat - dlat, lon + dlon, lat + dlat)
 
 
+# Format RÉEL d'une release Overture sur S3 : AAAA-MM-JJ.N (ex. 2026-08-19.0) — PAS
+# « AAAA-MM » (V2-48b : l'ancien défaut ne matchait aucun chemin S3).
+_RELEASE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.\d+$")
+_OVERTURE_S3 = "s3://overturemaps-us-west-2/release"
+
+
+def _duckdb_connect():
+    """Connexion DuckDB prête pour Overture (httpfs + spatial, S3 anonyme us-west-2).
+    Message explicite si `duckdb` manque (installé par deploy.sh via ops/requirements.txt)."""
+    try:
+        import duckdb  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "duckdb requis pour le fetch Overture réel — `pip install duckdb` (ou "
+            "deploy.sh l'installe désormais via ops/requirements.txt)." ) from exc
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial;")
+    con.execute("SET s3_region='us-west-2';")
+    return con
+
+
+def latest_overture_release(connect: Callable = _duckdb_connect) -> str:
+    """Dernière release Overture disponible sur S3 (glob DuckDB anonyme). Renvoie
+    « AAAA-MM-JJ.N ». `connect` injectable pour les tests."""
+    con = connect()
+    try:
+        rows = con.execute(f"SELECT file FROM glob('{_OVERTURE_S3}/*')").fetchall()
+    finally:
+        con.close()
+    releases = []
+    for (f,) in rows:
+        seg = str(f).rstrip("/").rsplit("/", 1)[-1]
+        if _RELEASE_RE.match(seg):
+            releases.append(seg)
+    if not releases:
+        raise RuntimeError("Aucune release Overture détectée sur S3.")
+    return sorted(releases)[-1]
+
+
+def resolve_release(release: str | None,
+                    detector: Callable[[], str] = latest_overture_release) -> str:
+    """Valide/résout la release. Une valeur explicite DOIT respecter « AAAA-MM-JJ.N »
+    (message d'erreur montrant le format sinon) ; absente → détection de la dernière."""
+    if release:
+        if _RELEASE_RE.match(release):
+            return release
+        raise ValueError(
+            f"--release invalide : {release!r}. Format attendu AAAA-MM-JJ.N "
+            f"(ex. 2026-08-19.0). Omettez --release pour détecter automatiquement la "
+            f"dernière release disponible sur S3.")
+    return detector()
+
+
+def _places_sql(release: str, geom_expr: str, bbox: tuple,
+                source: str | None = None) -> str:
+    """Requête Overture `places` pour une expression de géométrie donnée (V2-48b :
+    `geometry` natif d'abord, repli `ST_GeomFromWKB(geometry)` pour les vieux
+    duckdb-spatial). `source` (chemin `read_parquet`) surchargeable pour les tests
+    (parquet local au lieu du chemin S3 de la release)."""
+    minlon, minlat, maxlon, maxlat = bbox
+    src = source or f"{_OVERTURE_S3}/{release}/theme=places/type=place/*"
+    return f"""
+        SELECT names.primary AS name,
+               ST_Y({geom_expr}) AS lat, ST_X({geom_expr}) AS lon,
+               categories.primary AS category,
+               phones[1] AS phone, websites[1] AS website
+        FROM read_parquet('{src}', filename=true, hive_partitioning=1)
+        WHERE bbox.xmin BETWEEN {minlon} AND {maxlon}
+          AND bbox.ymin BETWEEN {minlat} AND {maxlat}
+        """
+
+
+def _query_places(con, release: str, bbox: tuple,
+                  source: str | None = None) -> list[tuple]:
+    """Exécute la requête `places` en essayant la géométrie NATIVE (duckdb-spatial
+    récent expose `geometry` en GEOMETRY) puis, en repli, le WKB (`ST_GeomFromWKB`).
+    V2-48b : `ST_GeomFromWKB(geometry)` échouait sur duckdb 1.5.5 (geometry natif)."""
+    errors = []
+    for geom_expr in ("geometry", "ST_GeomFromWKB(geometry)"):
+        try:
+            return con.execute(_places_sql(release, geom_expr, bbox, source)).fetchall()
+        except Exception as exc:  # noqa: BLE001 — incompat de type geometry → repli
+            errors.append(f"{geom_expr}: {type(exc).__name__}")
+            log.info("· géométrie « %s » incompatible (%s) — repli…",
+                     geom_expr, type(exc).__name__)
+    raise RuntimeError("Lecture de la géométrie Overture impossible (natif ET WKB) : "
+                       + " ; ".join(errors))
+
+
 def fetch_overture_duckdb(lat: float, lon: float, radius_m: int,
                           release: str) -> list[dict]:
     """Extraction BBOX du thème `places` d'Overture via DuckDB (httpfs+spatial), pushdown
@@ -295,29 +388,11 @@ def fetch_overture_duckdb(lat: float, lon: float, radius_m: int,
     if free_mb < MIN_FREE_DISK_MB:
         raise RuntimeError(f"Espace disque insuffisant ({free_mb:.0f} Mo < "
                            f"{MIN_FREE_DISK_MB} Mo) — extraction refusée.")
+    con = _duckdb_connect()
     try:
-        import duckdb  # noqa: PLC0415
-    except ImportError as exc:
-        raise RuntimeError("duckdb requis pour le fetch Overture réel "
-                           "(`pip install duckdb`).") from exc
-    minlon, minlat, maxlon, maxlat = _bbox(lat, lon, radius_m)
-    path = (f"s3://overturemaps-us-west-2/release/{release}/theme=places/type=place/*")
-    con = duckdb.connect()
-    con.execute("INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial;")
-    con.execute("SET s3_region='us-west-2';")
-    rows = con.execute(
-        f"""
-        SELECT names.primary AS name,
-               ST_Y(ST_GeomFromWKB(geometry)) AS lat,
-               ST_X(ST_GeomFromWKB(geometry)) AS lon,
-               categories.primary AS category,
-               (SELECT phones[1]) AS phone,
-               (SELECT websites[1]) AS website
-        FROM read_parquet('{path}', filename=true, hive_partitioning=1)
-        WHERE bbox.xmin BETWEEN {minlon} AND {maxlon}
-          AND bbox.ymin BETWEEN {minlat} AND {maxlat}
-        """).fetchall()
-    con.close()
+        rows = _query_places(con, release, _bbox(lat, lon, radius_m))
+    finally:
+        con.close()
     out: list[dict] = []
     for name, plat, plon, category, phone, website in rows:
         out.append({"name": name, "lat": plat, "lon": plon, "category": category,
@@ -520,8 +595,9 @@ def main(argv: list[str] | None = None) -> int:
                     "lecture seule).")
     parser.add_argument("--dsn", default=None)
     parser.add_argument("--env-file", default=None)
-    parser.add_argument("--release", default="2026-08",
-                        help="release mensuelle Overture (YYYY-MM[.N]).")
+    parser.add_argument("--release", default=None,
+                        help="release Overture AAAA-MM-JJ.N (ex. 2026-08-19.0). À défaut, "
+                             "la dernière disponible est détectée sur S3.")
     parser.add_argument("--out", default=None, help="répertoire de sortie (défaut : ops/).")
     parser.add_argument("--dry-run", action="store_true",
                         help="résout les terrains et affiche le plan, AUCUN fetch réseau.")
@@ -545,8 +621,17 @@ def main(argv: list[str] | None = None) -> int:
                 log.info("· %s → %s", terrain["key"], where)
             log.info("· DRY-RUN : aucun fetch Overture, aucun fichier écrit.")
             return 0
+        try:
+            release = resolve_release(args.release)
+        except ValueError as exc:      # format explicite invalide
+            log.error("✗ %s", exc)
+            return 3
+        except RuntimeError as exc:    # détection impossible (réseau/duckdb)
+            log.error("✗ détection de la release Overture impossible : %s", exc)
+            return 4
+        log.info("· release Overture : %s", release)
         out_dir = Path(args.out) if args.out else _HERE
-        path = run_benchmark(conn, fetch_overture_duckdb, release=args.release,
+        path = run_benchmark(conn, fetch_overture_duckdb, release=release,
                              out_dir=out_dir)
     log.info("✔ rapport → %s", path)
     return 0

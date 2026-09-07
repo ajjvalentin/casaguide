@@ -1,0 +1,8 @@
+# Dépendances des SCRIPTS ops/ — installées dans le venv de l'app par deploy.sh,
+# DISTINCTES de backend/requirements.txt (l'API ne les importe jamais ; les scripts
+# ops/ les chargent paresseusement). Pérennise ce que le prochain rebuild du venv
+# devrait sinon perdre (leçon V2-48b : duckdb installé à la main sur le VPS était
+# perdu au rebuild).
+#
+# duckdb : fetch Overture (httpfs + spatial, pushdown bbox S3) pour source_benchmark.py.
+duckdb>=1.4
