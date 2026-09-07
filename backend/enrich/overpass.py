@@ -411,56 +411,101 @@ def _is_crypto_atm(tags: dict) -> bool:
                 or _CRYPTO_ATM_RE.search(tags.get("operator") or ""))
 
 
-def _network_key(p: dict) -> tuple[str, str] | None:
-    """Clé de RÉSEAU d'un POI (V2-47) : `network`/`operator`, sinon préfixe de nom avant
-    « : » (« MUyBICI: Estación 5 » → « MUyBICI »). Renvoie (clé normalisée, libellé) ou
-    None si aucun signal de réseau."""
+# Mots GÉNÉRIQUES d'un système en réseau (V2-50) : ignorés comme clé de groupement (ils
+# ne distinguent pas un système d'un autre — « estación », « servicio », « alquiler »…).
+_NETWORK_STOP = frozenset({
+    "estacion", "estacions", "station", "stations", "servicio", "servei", "public",
+    "publico", "publica", "parada", "point", "punto", "sistema", "system", "ute",
+    "bici", "bicis", "bike", "bikes", "bicicleta", "bicicletas", "rental", "alquiler",
+    "lloguer", "location", "rent", "coche", "coches", "cars", "electrico", "electrica",
+    "municipal", "aparcamiento", "sarl",
+})
+
+
+def _distinctive_tokens(p: dict) -> set[str]:
+    """Tokens DISTINCTIFS (≥ 4 lettres, non génériques, non numériques) du nom/opérateur —
+    servent à rapprocher un même système écrit différemment (V2-50 : « MUyBICI: * » et
+    « UTE MuyBici servicio público… » partagent « muybici »)."""
+    toks: set[str] = set()
+    t = p.get("_tags", {})
+    for src in (t.get("network"), t.get("operator"), p.get("name")):
+        for tok in _norm_name(src).split():
+            if len(tok) >= 4 and not tok.isdigit() and tok not in _NETWORK_STOP:
+                toks.add(tok)
+    return toks
+
+
+def _group_keys(p: dict) -> set[str]:
+    """Clés candidates de groupement RÉSEAU d'un POI (V2-50, généralisé) : préfixe avant
+    « : » (V2-47), opérateur/réseau entier, ET tokens distinctifs (tête de nom comprise,
+    « BiciCampus * »). Un POI peut porter plusieurs clés ; le regroupement est glouton."""
+    keys = set(_distinctive_tokens(p))
     t = p.get("_tags", {})
     op = (t.get("network") or t.get("operator") or "").strip()
     if op:
-        return _norm_name(op), op
+        keys.add(_norm_name(op).replace(" ", ""))
     name = p.get("name") or ""
     if ":" in name:
-        prefix = name.split(":", 1)[0].strip()
-        if len(prefix) >= 2:
-            return _norm_name(prefix), prefix
-    return None
+        pre = _norm_name(name.split(":", 1)[0]).replace(" ", "")
+        if len(pre) >= 3:
+            keys.add(pre)
+    return keys
+
+
+def _group_label(members: list[dict]) -> str:
+    """Libellé propre d'un groupe réseau (V2-50) : dérivé du membre au nom le plus COURT
+    (souvent le nom de système le plus net) — opérateur, sinon préfixe avant « : », sinon
+    premier token du nom."""
+    src = min(members, key=lambda p: len(p.get("name") or "~" * 99))
+    t = src.get("_tags", {})
+    op = (t.get("network") or t.get("operator") or "").strip()
+    if op:
+        return op
+    name = (src.get("name") or "").strip()
+    if ":" in name:
+        return name.split(":", 1)[0].strip()
+    return name.split()[0] if name.split() else name
 
 
 def _dedup_by_operator(pois: list[dict]) -> tuple[list[dict], int]:
-    """Réduit les systèmes en réseau (V2-47) : ≥ `_NETWORK_DEDUP_MIN` POI partageant la
-    même clé de réseau → on ne garde que le PLUS PROCHE, renommé « X (station la plus
-    proche) ». Renvoie (liste réduite, n_retirés). Ordre stable."""
-    groups: dict[str, list[dict]] = {}
-    for p in pois:
-        key = _network_key(p)
-        if key is not None:
-            groups.setdefault(key[0], []).append(p)
-    # Clés à réduire → on retient le plus proche, renommé.
-    collapse: dict[str, dict] = {}
-    for k, members in groups.items():
+    """Réduit les systèmes en réseau (V2-47, GÉNÉRALISÉ V2-50) : ≥ `_NETWORK_DEDUP_MIN`
+    POI partageant une clé de groupement (préfixe « : », opérateur, OU token distinctif de
+    tête) → on ne garde que le PLUS PROCHE, renommé « X (station la plus proche) ».
+    Regroupement GLOUTON (le plus grand groupe d'abord ; chaque POI assigné une fois) →
+    « BiciCampus * » et « MUyBICI: * »/« UTE MuyBici… » sont enfin réduits. Ordre stable."""
+    key_members: dict[str, list[int]] = {}
+    for i, p in enumerate(pois):
+        for k in _group_keys(p):
+            key_members.setdefault(k, []).append(i)
+    # Clés candidates à réduire, les plus grosses d'abord (assignation gloutonne).
+    candidates = sorted((k for k, m in key_members.items() if len(m) >= _NETWORK_DEDUP_MIN),
+                        key=lambda k: -len(key_members[k]))
+    assigned: dict[int, str] = {}
+    for k in candidates:
+        members = [i for i in key_members[k] if i not in assigned]
         if len(members) >= _NETWORK_DEDUP_MIN:
-            nearest = min(members, key=lambda p: p["crow_m"])
-            label = _network_key(nearest)[1]
-            keep = dict(nearest)
-            keep["name"] = f"{label} (station la plus proche)"
-            collapse[k] = keep
-    if not collapse:
+            for i in members:
+                assigned[i] = k
+    if not assigned:
         return pois, 0
+    groups: dict[str, list[int]] = {}
+    for i, k in assigned.items():
+        groups.setdefault(k, []).append(i)
+    survivor: dict[str, int] = {
+        k: min(idxs, key=lambda i: pois[i]["crow_m"]) for k, idxs in groups.items()}
+    labels = {k: _group_label([pois[i] for i in idxs]) for k, idxs in groups.items()}
     out: list[dict] = []
-    emitted: set[str] = set()
     dropped = 0
-    for p in pois:
-        key = _network_key(p)
-        k = key[0] if key else None
-        if k in collapse:
-            if k not in emitted:          # émettre le survivant une seule fois, à sa place
-                out.append(collapse[k])
-                emitted.add(k)
-            else:
-                dropped += 1
-        else:
+    for i, p in enumerate(pois):
+        k = assigned.get(i)
+        if k is None:
             out.append(p)
+        elif survivor[k] == i:
+            keep = dict(p)
+            keep["name"] = f"{labels[k]} (station la plus proche)"
+            out.append(keep)
+        else:
+            dropped += 1
     return out, dropped
 
 

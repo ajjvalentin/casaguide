@@ -106,7 +106,8 @@ class FakeMessages:
     # baby-sitting (V2-07 volet 2) renvoie par défaut un service crédible.
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
-                 describe_malformed=False, rentals=None):
+                 describe_malformed=False, rentals=None, service_qualifications=None):
+        self._service_qualifications = service_qualifications
         self.food_delivery_malformed = food_delivery_malformed
         self.markets_malformed = markets_malformed
         self.describe_malformed = describe_malformed
@@ -122,6 +123,7 @@ class FakeMessages:
               "verified_on": "2026-08-11"}]
             if babysitter_services is None else babysitter_services)
         self.service_completions = service_completions or {}
+        self.service_qualifications = self._service_qualifications   # V2-50 (places JSON)
         # V2-07 volet 3 : un marché crédible AVEC coordonnées (pas de géocodage).
         self.markets = ([{"name": "Mercadillo de La Zenia", "weekday": 6,
                           "hours": "8h00–14h00", "character": "fruits, vêtements",
@@ -141,6 +143,9 @@ class FakeMessages:
             if self.rentals_malformed:            # JSON tronqué/malformé (robustesse V2-37)
                 return _web_reply("désolé, réponse tronquée…")
             return _web_reply(json.dumps({"rentals": self.rentals}))
+        if "QUALIFIES des lieux" in prompt:   # règles de service (V2-50)
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            return _web_reply(json.dumps({"places": self.service_qualifications or []}))
         if "MARCHÉS HEBDOMADAIRES" in prompt:  # découverte marchés (V2-07 volet 3)
             self.market_calls += 1
             assert tools and tools[0]["type"] == "web_search_20250305"
@@ -189,10 +194,11 @@ class FakeMessages:
 class FakeAnthropic:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
-                 describe_malformed=False, rentals=None):
+                 describe_malformed=False, rentals=None, service_qualifications=None):
         self.messages = FakeMessages(food_delivery_malformed, babysitter_services,
                                      service_completions, markets, markets_malformed,
-                                     describe_malformed, rentals)
+                                     describe_malformed, rentals,
+                                     service_qualifications=service_qualifications)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -1727,3 +1733,67 @@ def test_v247_reductions_end_to_end(property_id):
     assert "Banco Santander" in atms and "BitBase" in atms
     assert rentals == ["MUyBICI (station la plus proche)"]   # une seule station (fusionnée)
     assert step["network_dropped"] >= 3
+
+
+# ── V2-50 : règles de service — contactabilité + qualification (bout-en-bout) ─
+
+def test_v250_service_rules_qualify_and_drop(property_id):
+    """Un loueur qualifié par le web (Gregorio → « fourgonnettes/camions ») est GARDÉ et
+    qualifié ; un loueur sans contact ni sous-type est RETIRÉ ; un loueur déjà contactable
+    reste. Non-régression : la boulangerie (hors périmètre service) n'est jamais touchée."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    # Espacés > 150 m pour ne pas déclencher la fusion V2-40 (on teste ici les règles
+    # de service, pas la dédup de proximité).
+    rentals = [
+        {"type": "node", "id": 40, "lat": PROP_LAT + 0.001, "lon": PROP_LON,
+         "tags": {"name": "Alquiler Furgonetas Gregorio", "amenity": "car_rental",
+                  "phone": "968 850 081"}},          # contactable, à qualifier
+        {"type": "node", "id": 41, "lat": PROP_LAT + 0.006, "lon": PROP_LON,
+         "tags": {"name": "Loueur Fantôme", "amenity": "car_rental"}},   # rien → retiré
+    ]
+    bakery = [{"type": "node", "id": 50, "lat": PROP_LAT + 0.001, "lon": PROP_LON,
+               "tags": {"name": "Boulangerie Sans Tel", "shop": "bakery"}}]  # hors périmètre
+
+    def handler(request):
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=NOMINATIM)
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            els = []
+            if '"amenity"="car_rental"' in body or '"amenity"="bicycle_rental"' in body:
+                els += rentals
+            if '"shop"="bakery"' in body:
+                els += bakery
+            return httpx.Response(200, json={"elements": els})
+        if "/table/v1/" in url:
+            return httpx.Response(200, json=_osrm_payload(url))
+        return httpx.Response(404)
+
+    qual = [{"name": "Alquiler Furgonetas Gregorio", "phone": "968 850 081",
+             "subtype": "fourgonnettes et camions", "source_url": "https://greg.example"}]
+    fake = FakeAnthropic(rentals=[], service_qualifications=qual)
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=True,
+                                   only_categories={"rental", "bakery"},
+                                   http_client=client, anthropic_client=fake)
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+
+    assert summary["service_dropped"] >= 1 and summary["service_qualified"] >= 1
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rentals_db = {r["name"]: r for r in conn.execute(
+            "SELECT name, description_md, completion_meta FROM pois WHERE property_id=%s "
+            "AND category_code='rental'", (property_id,)).fetchall()}
+        bakery_db = [r["name"] for r in conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s AND category_code='bakery'",
+            (property_id,)).fetchall()]
+    assert "Alquiler Furgonetas Gregorio" in rentals_db      # qualifié → gardé
+    assert "Loueur Fantôme" not in rentals_db                # non contactable ni qualifiable
+    greg = rentals_db["Alquiler Furgonetas Gregorio"]
+    assert greg["description_md"] == "fourgonnettes et camions"   # sous-type dans la fiche
+    assert greg["completion_meta"]["_qualification"]["subtype"] == "fourgonnettes et camions"
+    # Non-régression : la boulangerie (commerce de passage) n'est jamais retirée.
+    assert bakery_db == ["Boulangerie Sans Tel"]

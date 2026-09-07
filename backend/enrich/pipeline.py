@@ -72,6 +72,40 @@ def _cap_by_travel(code: str, pois: list[dict]) -> list[dict]:
     return pois
 
 
+def _apply_service_rules_step(conn, code: str, pois: list[dict], prop: dict, ai,
+                              job_id: str, summary: dict, today: str) -> list[dict]:
+    """Règles de service (V2-50) sur une catégorie de SERVICE : cherche par web le
+    contact + le sous-type des POI, complète les champs MANQUANTS, puis RETIRE tout
+    service à la fois non contactable ET non qualifiable. Best-effort : si le web échoue,
+    on GARDE les POI tels quels (jamais de retrait faute de web) et le coût est
+    comptabilisé. Renvoie la liste filtrée."""
+    if code not in settings.service_rule_categories or not pois or ai is None:
+        return pois
+    property_id = prop["id"]
+    label = db.category_label_fr(conn, code)
+    try:
+        with conn.transaction():
+            qual, meta = claude_enrich.qualify_services(
+                code, label, pois, prop["city"], prop["country_code"], ai, today=today)
+            db.record_costs(conn, property_id, job_id, "anthropic",
+                            "service_rules", meta["attempts"])
+            summary["cost_cts"] += meta["cost_cts"]
+    except Exception as exc:  # noqa: BLE001 — best-effort : jamais de retrait faute de web
+        log.warning("Règles de service (%s / %s) non résolues : %s",
+                    code, prop["city"], exc)
+        c = _record_failed_call_cost(conn, property_id, job_id, "service_rules", exc)
+        summary["cost_cts"] += c
+        conn.commit()
+        return pois
+    kept, dropped, qualified = claude_enrich.apply_service_rules(pois, qual)
+    summary["service_dropped"] += len(dropped)
+    summary["service_qualified"] += qualified
+    if dropped:
+        _progress(f"  ✓ règles service {code} : {qualified} qualifié(s), "
+                  f"{len(dropped)} sans contact ni offre retiré(s)")
+    return kept
+
+
 def _discover_web_rentals(conn, prop: dict, origin: tuple, ai, job_id: str,
                           http_client: httpx.Client | None, summary: dict) -> list[dict]:
     """Découverte web des LOUEURS (V2-44 volet 2), prêts à fusionner avec l'OSM.
@@ -190,7 +224,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                      "cost_cts": 0.0, "services_completed": 0, "babysitters": 0,
                      "markets_created": 0, "duplicates_merged": 0,
                      "rental_web_kept": 0, "hard_cap_dropped": 0,
-                     "network_dropped": 0}
+                     "network_dropped": 0, "service_dropped": 0,
+                     "service_qualified": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -320,6 +355,16 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     existing_sugg = db.existing_suggested_pois(conn, property_id, code)
                     pois, stale_ids = dedup.reconcile_suggested(pois, existing_sugg)
                     db.delete_pois(conn, stale_ids)
+                # ── V2-50 : contactabilité + qualification des SERVICES ──────
+                # Un loueur/taxi/laverie sans tél NI site NI sous-type est du bruit —
+                # mais on cherche son contact/offre sur le web AVANT de le retirer (le cas
+                # Gregorio : « loue fourgonnettes/camions »). Best-effort.
+                if use_claude and code in settings.service_rule_categories:
+                    pois = _apply_service_rules_step(
+                        conn, code, pois, prop, ai, job_id, summary,
+                        _dt.date.today().isoformat())
+                    if not pois:
+                        continue
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
                 n = db.upsert_pois(conn, property_id, code, pois)

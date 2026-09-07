@@ -227,3 +227,56 @@ def test_rentals_malformed_raises_without_write():
         assert False, "attendu : ValueError"
     except ValueError:
         pass
+
+
+# ── V2-50 : règles de service (contactabilité + qualification) ───────────────
+
+def test_apply_service_rules_fills_qualifies_and_drops():
+    pois = [
+        {"name": "Alquiler Furgonetas Gregorio", "phone": "968 850 081"},   # contactable
+        {"name": "Bicis Sol", "phone": "", "website": ""},                   # à compléter
+        {"name": "Loueur fantôme", "phone": "", "website": ""},              # rien → retiré
+    ]
+    qual = {
+        ce._norm_service_name("Alquiler Furgonetas Gregorio"):
+            {"subtype": "fourgonnettes et camions", "source_url": "https://greg.example"},
+        ce._norm_service_name("Bicis Sol"):
+            {"website": "https://bicissol.example", "subtype": "vélos électriques",
+             "source_url": "https://bicissol.example"},
+        # « Loueur fantôme » absent → ni contact ni sous-type.
+    }
+    kept, dropped, qualified = ce.apply_service_rules(pois, qual)
+    names = [p["name"] for p in kept]
+    assert "Alquiler Furgonetas Gregorio" in names and "Bicis Sol" in names
+    assert [p["name"] for p in dropped] == ["Loueur fantôme"]   # non contactable ET non qualifiable
+    assert qualified == 2
+    greg = next(p for p in kept if "Gregorio" in p["name"])
+    assert greg["completion_meta"]["_qualification"]["subtype"] == "fourgonnettes et camions"
+    assert greg["description_md"] == "fourgonnettes et camions"   # surfacé dans la fiche
+    bici = next(p for p in kept if p["name"] == "Bicis Sol")
+    assert bici["website"] == "https://bicissol.example"          # contact complété
+
+
+def test_apply_service_rules_never_overwrites_existing_contact():
+    pois = [{"name": "Taxi Central", "phone": "111", "website": ""}]
+    qual = {ce._norm_service_name("Taxi Central"): {"phone": "999",
+            "website": "https://taxi.example"}}
+    kept, dropped, _ = ce.apply_service_rules(pois, qual)
+    assert kept[0]["phone"] == "111"                        # jamais écrasé
+    assert kept[0]["website"] == "https://taxi.example"     # complété (était vide)
+    assert dropped == []
+
+
+def test_qualify_services_parses_and_requires_proof_for_subtype():
+    payload = {"places": [
+        {"name": "Gregorio", "phone": "968 850 081", "subtype": "fourgonnettes",
+         "source_url": "https://greg.example"},
+        {"name": "SansPreuve", "subtype": "vélos"},              # subtype sans URL → écarté
+    ]}
+    cli = Fake(_web_msg(json.dumps(payload)))
+    out, meta = ce.qualify_services("rental", "Location", [{"name": "Gregorio"},
+                                    {"name": "SansPreuve"}], "Murcia", "ES", cli)
+    g = out[ce._norm_service_name("Gregorio")]
+    assert g["subtype"] == "fourgonnettes" and g["phone"]
+    sp = out[ce._norm_service_name("SansPreuve")]
+    assert "subtype" not in sp                               # preuve ou rien

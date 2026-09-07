@@ -120,6 +120,15 @@ class Settings:
         os.getenv("CASAGUIDE_RENTAL_WEB_MAX_SEARCHES", "5"))
     rental_web_max_results: int = int(
         os.getenv("CASAGUIDE_RENTAL_WEB_MAX_RESULTS", "3"))
+    # Règles de service (V2-50) : catégories dont un POI sans téléphone NI site NI
+    # sous-type identifiable est du bruit (on tente le web AVANT de retirer). Le commerce
+    # de passage et l'infrastructure sont HORS liste (leur position EST leur contact).
+    # Ces catégories sont MOISSONNÉES par Overpass (babysitter/food_delivery sont créés
+    # ailleurs avec leur propre contact). Configurable.
+    service_rule_categories: tuple = tuple(
+        c.strip() for c in os.getenv(
+            "CASAGUIDE_SERVICE_RULE_CATEGORIES", "rental,taxi,laundry").split(",")
+        if c.strip())
     # Marchés hebdomadaires (V2-07 volet 3) : découverte MUTUALISÉE par (pays,
     # commune), cache area_facts (fenêtre comme le volet 1) + plafond de recherches.
     market_max_age_days: int = int(

@@ -653,6 +653,111 @@ def fetch_babysitters(city: str, country_code: str,
     return out[:settings.babysitter_max_results], meta
 
 
+# ── Services : CONTACTABILITÉ + QUALIFICATION par recherche web (V2-50) ────────
+#
+# Deux règles d'arbitrage (André 07/09), catégories de SERVICE : un loueur/taxi/laverie
+# est UTILE par ce qu'on peut FAIRE avec (l'appeler, le contacter) et par CE QU'IL OFFRE
+# (fourgonnettes ? vélos électriques ?). Un service sans téléphone NI site NI sous-type
+# identifiable est du bruit ; mais avant de le retirer, on cherche son contact/offre sur
+# le web (pattern V2-44 volet 2, qui a trouvé les contacts de SOBIKES). Le COMMERCE de
+# passage (boulangerie, bar…) et l'INFRASTRUCTURE (arrêts, plages, bornes) sont hors
+# périmètre : leur position EST leur contact.
+
+_QUALIFY_PROMPT = """\
+Pour un guide de vacances à {city} ({country_code}), tu QUALIFIES des lieux de
+SERVICE de catégorie « {label} ». Pour CHACUN des lieux listés, cherche sur le web :
+- son TÉLÉPHONE et/ou son SITE officiel (contactabilité) ;
+- son SOUS-TYPE d'offre PRÉCIS — ce qu'il loue/propose vraiment, en 1 à 5 mots
+  (ex. « fourgonnettes et camions », « vélos électriques », « taxi 24h »).
+PREUVE OU RIEN : ne renseigne un champ QUE si une page en ligne le confirme (fournis
+l'URL). Si rien de fiable pour un lieu, renvoie-le avec des champs vides. N'invente jamais.
+
+LIEUX À QUALIFIER :
+{poi_list}
+
+Réponds UNIQUEMENT par un objet JSON valide, sans markdown :
+{{"places": [{{"name": "...", "phone": "...", "website": "...", "subtype": "...",
+   "source_url": "https://..."}}]}}
+"""
+
+
+def qualify_services(category: str, label: str, pois: list[dict], city: str,
+                     country_code: str, client: anthropic.Anthropic,
+                     today: str | None = None) -> tuple[dict, dict]:
+    """Cherche par recherche web le CONTACT (tél/site) et le SOUS-TYPE d'offre de lieux de
+    SERVICE (V2-50). Retourne ({nom_normalisé: {phone?, website?, subtype?, source_url?}},
+    méta coût). PREUVE OU RIEN : un `subtype` sans `source_url` est écarté. Réponse
+    malformée → ValueError (robustesses V2-37 héritées de `_ask_web_search_json`)."""
+    today = today or _dt.date.today().isoformat()
+    poi_list = "\n".join(f'- {p["name"]}' for p in pois)
+    data, meta = _ask_web_search_json(
+        client, _QUALIFY_PROMPT.format(city=city, country_code=country_code,
+                                       label=label, poi_list=poi_list),
+        city=city, country_code=country_code,
+        max_searches=settings.service_complete_max_searches)
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    places = data.get("places")
+    if not isinstance(places, list):
+        raise ValueError("Réponse IA invalide : 'places' doit être une liste.")
+    out: dict[str, dict] = {}
+    for pl in places:
+        if not isinstance(pl, dict):
+            continue
+        name = (pl.get("name") or "").strip()
+        if not name:
+            continue
+        def _s(k: str) -> str:
+            v = pl.get(k)
+            return v.strip() if isinstance(v, str) else ""
+        entry: dict = {}
+        for f in ("phone", "website", "source_url"):
+            if _s(f):
+                entry[f] = _s(f)
+        # PREUVE OU RIEN : le sous-type n'est retenu qu'avec une source.
+        if _s("subtype") and entry.get("source_url"):
+            entry["subtype"] = _s("subtype")
+        out[_norm_service_name(name)] = entry
+    return out, meta
+
+
+def _norm_service_name(s: str | None) -> str:
+    """Nom normalisé (accents/casse/ponctuation) pour apparier le web à la moisson."""
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
+    return " ".join(re.sub(r"[^a-z0-9\s]", " ", s.lower()).split())
+
+
+def apply_service_rules(pois: list[dict],
+                        qualification: dict) -> tuple[list[dict], list[dict], int]:
+    """Applique les règles de service (V2-50) à une catégorie, PUR. Pour chaque POI :
+    complète tél/site MANQUANTS depuis le web (jamais d'écrasement), pose le sous-type
+    (`completion_meta._qualification` + `description_md` pour l'affichage), PUIS RETIRE
+    tout service à la fois NON contactable ET NON qualifiable. Renvoie (gardés, retirés,
+    n_qualifiés)."""
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    qualified = 0
+    for p in pois:
+        r = qualification.get(_norm_service_name(p.get("name")), {})
+        if r.get("phone") and not (p.get("phone") or "").strip():
+            p["phone"] = r["phone"]
+        if r.get("website") and not (p.get("website") or "").strip():
+            p["website"] = r["website"]
+        subtype = r.get("subtype")
+        if subtype:
+            meta = dict(p.get("completion_meta") or {})
+            meta["_qualification"] = {"subtype": subtype,
+                                      "source_url": r.get("source_url")}
+            p["completion_meta"] = meta
+            if not (p.get("description_md") or "").strip():
+                p["description_md"] = subtype     # surfacé dans la fiche
+            qualified += 1
+        contactable = bool((p.get("phone") or "").strip()
+                           or (p.get("website") or "").strip())
+        (kept if (contactable or subtype) else dropped).append(p)
+    return kept, dropped, qualified
+
+
 # ── Location : DÉCOUVERTE de loueurs par Claude + recherche web (V2-44 volet 2) ─
 #
 # Cas d'or (31/08) : le loueur du village — Kassteele Tweewielers, Kloosterweg 44,

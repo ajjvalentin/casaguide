@@ -537,3 +537,44 @@ def test_fetch_grouped_reports_network_dropped():
     client.close()
     assert stats["network_dropped"] == 3
     assert [p["name"] for p in results["rental"]] == ["MUyBICI (station la plus proche)"]
+
+
+# ── V2-50 : dédup opérateur GÉNÉRALISÉE (tokens de tête + inter-chaînes) ──────
+
+def test_operator_dedup_groups_common_head_token():
+    # « BiciCampus * » ×3 sans « : » ni operator → groupés par le token de tête (V2-47
+    # les laissait passer). Le plus proche survit.
+    stations = [_poi("BiciCampus Reina Sofía", lat=LAT + 0.001,
+                     tags={"amenity": "bicycle_rental"}),
+                _poi("BiciCampus Facultad", lat=LAT + 0.002,
+                     tags={"amenity": "bicycle_rental"}),
+                _poi("BiciCampus Aulario", lat=LAT + 0.003,
+                     tags={"amenity": "bicycle_rental"})]
+    reduced, dropped = overpass._reduce_category("rental", stations)
+    assert dropped == 2 and len(reduced) == 1
+    assert reduced[0]["name"] == "BiciCampus (station la plus proche)"
+
+
+def test_operator_dedup_reconciles_cross_chain_same_system():
+    # « MUyBICI: * » et « UTE MuyBici servicio público… » = le MÊME système écrit
+    # différemment → réconciliés par le token distinctif « muybici » (survivaient en
+    # double au run V2-47). Le libellé vient du nom le plus court (le plus net).
+    mixed = [_poi("MUyBICI: Estación 5", lat=LAT + 0.002,
+                  tags={"amenity": "bicycle_rental"}),
+             _poi("MUyBICI: Estación 9", lat=LAT + 0.003,
+                  tags={"amenity": "bicycle_rental"}),
+             _poi("UTE MuyBici servicio público de bicicleta", lat=LAT + 0.001,
+                  tags={"amenity": "bicycle_rental"})]
+    reduced, dropped = overpass._reduce_category("rental", mixed)
+    assert dropped == 2 and len(reduced) == 1
+    assert reduced[0]["name"] == "MUyBICI (station la plus proche)"
+
+
+def test_operator_dedup_spares_distinct_agencies_sharing_generic_words():
+    # 3 agences DISTINCTES ne partageant que des mots génériques (« alquiler », « coches »)
+    # ne sont PAS fusionnées (tokens génériques ignorés).
+    ag = [_poi("Alquiler de Coches Sol", lat=LAT + 0.001, tags={"amenity": "car_rental"}),
+          _poi("Alquiler de Coches Luna", lat=LAT + 0.002, tags={"amenity": "car_rental"}),
+          _poi("Alquiler de Coches Mar", lat=LAT + 0.003, tags={"amenity": "car_rental"})]
+    reduced, dropped = overpass._reduce_category("rental", ag)
+    assert dropped == 0 and len(reduced) == 3
