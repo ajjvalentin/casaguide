@@ -331,3 +331,100 @@ def test_retry_bounded_then_defaults_if_still_missing():
     complete, defaulted = J.finalize_verdicts(pois, verdicts)
     assert calls["n"] == 2                        # une seule passe de retry (pas de boucle)
     assert defaulted == ["b"] and complete["b"] == J.DEFAULT_VERDICT
+
+
+# ── V2-49 : dump des verdicts par logement (système propose, humain dispose) ──
+
+def test_render_verdict_dump_removals_first_and_by_category():
+    prop = {"name": "TEST-V47", "city": "Murcia", "country_code": "ES"}
+    pois = [
+        {"id": "1", "name": "Clínica sans nom", "category_code": "doctor",
+         "status": "suggested"},
+        {"id": "2", "name": "Gare lointaine", "category_code": "train_station",
+         "status": "suggested"},
+        {"id": "3", "name": "Mercadona", "category_code": "supermarket",
+         "status": "approved"},
+        {"id": "4", "name": "Sitly", "category_code": "babysitter",
+         "status": "suggested"},
+    ]
+    verdicts = {
+        "1": J.Verdict("reject", 0.72, "clinique sans nom propre"),
+        "2": J.Verdict("reject", 0.65, "gare surnuméraire lointaine"),
+        "3": J.Verdict("keep", 0.95, "supermarché de proximité"),
+        "4": J.Verdict("keep", 0.60, "plateforme de garde"),
+    }
+    md, n_removals = J.render_verdict_dump(prop, "PID", pois, verdicts, 3.2,
+                                           "claude-sonnet-4-6", "2026-09-10 10:00")
+    assert n_removals == 2
+    # Les retraits sont EN TÊTE (liste de travail), avant les maintiens.
+    i_removals = md.index("## Retraits proposés")
+    i_keeps = md.index("## Maintiens par catégorie")
+    assert i_removals < i_keeps
+    assert "Clínica sans nom" in md and "Gare lointaine" in md
+    # Le statut actuel figure en contexte (jamais montré au juge, mais utile à l'humain).
+    assert "suggested" in md
+    # Maintiens groupés par catégorie.
+    assert "### supermarket" in md and "Mercadona" in md
+    assert "PROPOSE" in md and "DISPOSE" in md
+
+
+def test_estimate_parc_cost():
+    props = [{"id": "a", "name": "A", "n_pois": 30},
+             {"id": "b", "name": "B", "n_pois": 5}]
+    est = J.estimate_parc_cost(props, batch_size=15)
+    assert est["n_props"] == 2 and est["n_pois"] == 35
+    assert est["n_calls"] == 2 + 1                 # ceil(30/15)=2, ceil(5/15)=1
+    assert est["est_ct"] == round(35 * J._EST_CT_PER_POI, 1)
+
+
+def test_run_dump_read_only_judges_all_statuses(monkeypatch):
+    import re as _re
+    import uuid as _uuid
+    oid, pid = str(_uuid.uuid4()), str(_uuid.uuid4())
+    specimens = [("Mercadona", "supermarket", "approved"),
+                 ("Clínica sans nom", "doctor", "suggested"),   # suggested INCLUS
+                 ("Bar Sol", "bar", "suggested")]
+    ids: dict[str, str] = {}
+    with psycopg.connect(settings.db_dsn, row_factory=dict_row) as conn:
+        conn.execute("INSERT INTO owners (id, email, full_name) VALUES (%s,%s,'T')",
+                     (oid, f"{oid}@test.local"))
+        conn.execute(
+            """INSERT INTO properties (id, owner_id, name, address_line1, city,
+                   country_code, geom) VALUES (%s,%s,'TEST-V47','X','Murcia','ES',
+                   ST_SetSRID(ST_MakePoint(-1.13,37.98),4326))""", (pid, oid))
+        for name, cat, status in specimens:
+            r = conn.execute(
+                """INSERT INTO pois (property_id, category_code, name, geom, source, status)
+                   VALUES (%s,%s,%s,ST_SetSRID(ST_MakePoint(-1.13,37.98),4326),'osm',%s)
+                   RETURNING id::text AS id""", (pid, cat, name, status)).fetchone()
+            ids[name] = r["id"]
+        conn.commit()
+
+        def ask(prompt):
+            pids = _re.findall(r'id "([^"]+)"', prompt)
+            out = []
+            for i in pids:
+                remove = i == ids["Clínica sans nom"]   # le juge propose de retirer la clinique
+                out.append({"id": i, "verdict": "reject" if remove else "keep",
+                            "confidence": 0.7, "reason": "test"})
+            return ({"verdicts": out}, {"attempts": [{"units": 10, "cost_cts": 0.3}]})
+
+        try:
+            before = {r["id"]: r["status"] for r in conn.execute(
+                "SELECT id::text AS id, status FROM pois WHERE property_id=%s", (pid,))}
+            report, cost, n_pois, n_rem = J.run_dump(
+                conn, pid, ask, model="m", batch_size=15, when="2026-09-10 10:00")
+            after = {r["id"]: r["status"] for r in conn.execute(
+                "SELECT id::text AS id, status FROM pois WHERE property_id=%s", (pid,))}
+            # Lecture seule : aucun statut de POI modifié (suggested inclus jugé, pas touché).
+            assert after == before
+            assert n_pois == 3 and n_rem == 1
+            assert "Clínica sans nom" in report and "Retraits proposés (1)" in report
+            # api_costs écrit sous l'operation dédiée au dump.
+            c = conn.execute(
+                "SELECT count(*) c FROM api_costs WHERE property_id=%s AND operation=%s",
+                (pid, J.OPERATION_DUMP)).fetchone()["c"]
+            assert c == 1 and round(cost, 2) == 0.30
+        finally:
+            conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
+            conn.commit()

@@ -53,7 +53,11 @@ log = logging.getLogger("casaguide.poi_judge")
 RETAINED = ("approved", "edited")   # André a RETENU (le guide n'affiche que ceux-là)
 REJECTED = "rejected"
 OPERATION = "poi_judge_benchmark"
+OPERATION_DUMP = "poi_verdict_dump"  # V2-49 : dump des verdicts (industrialisation du tri)
 _JUDGE_MAX_TOKENS = 4000            # sortie JSON d'un lot de verdicts
+# Estimation de coût (V2-49) : mesure V2-45 ≈ 15 ct pour ~90 POI ≈ 0,17 ct/POI ; on arrondit
+# PRUDEMMENT à la hausse pour le devis avant une passe parc (le coût réel est comptabilisé).
+_EST_CT_PER_POI = 0.20
 
 
 def _default_dsn() -> str:
@@ -78,6 +82,35 @@ def load_arbitrated_pois(conn, property_id: str) -> list[dict]:
            FROM pois
            WHERE property_id = %s AND status IN ('approved', 'edited', 'rejected')
            ORDER BY category_code, name""", (property_id,)).fetchall()
+
+
+def load_all_pois(conn, property_id: str) -> list[dict]:
+    """TOUS les POI d'un logement, quel que soit le statut — `suggested` INCLUS (V2-49 :
+    le dump propose des verdicts sur le flux entier, pas seulement l'arbitré). Le `status`
+    est chargé pour le RAPPORT (contexte de l'humain) mais reste invisible du juge."""
+    return conn.execute(
+        """SELECT id::text AS id, name, category_code, address, locality,
+                  walk_min, drive_min, source, description_md, status
+           FROM pois WHERE property_id = %s
+           ORDER BY category_code, name""", (property_id,)).fetchall()
+
+
+def list_properties_with_pois(conn) -> list[dict]:
+    """Logements ayant au moins un POI (V2-49 mode parc), avec leur volume."""
+    return conn.execute(
+        """SELECT p.id::text AS id, p.name, count(po.id) AS n_pois
+           FROM properties p JOIN pois po ON po.property_id = p.id
+           GROUP BY p.id, p.name ORDER BY p.name""").fetchall()
+
+
+def estimate_parc_cost(properties: list[dict], batch_size: int) -> dict:
+    """Devis AVANT lancement d'une passe parc (V2-49) : nb de logements, de POI, d'appels
+    LLM (lots) et coût ESTIMÉ (le coût réel est comptabilisé dans api_costs à l'exécution)."""
+    n_pois = sum(p["n_pois"] for p in properties)
+    n_calls = sum((p["n_pois"] + batch_size - 1) // batch_size
+                  for p in properties if p["n_pois"])
+    return {"n_props": len(properties), "n_pois": n_pois, "n_calls": n_calls,
+            "est_ct": round(n_pois * _EST_CT_PER_POI, 1)}
 
 
 # ── Prompt du juge (le STATUT n'y figure JAMAIS) ─────────────────────────────
@@ -494,23 +527,120 @@ def run_benchmark(conn, property_id: str, ask: Callable[[str], tuple[dict, dict]
     return report, cost_cts, metrics
 
 
+# ── Dump des verdicts par logement (V2-49 : le système PROPOSE, l'humain DISPOSE) ─
+
+def render_verdict_dump(prop: dict, property_id: str, pois: list[dict],
+                        verdicts: dict, cost_cts: float, model: str,
+                        when: str) -> tuple[str, int]:
+    """Markdown de travail : les RETRAITS proposés EN TÊTE (liste de travail de l'humain),
+    puis les maintiens par catégorie. Le `status` actuel est affiché comme CONTEXTE (jamais
+    montré au juge). Renvoie (markdown, nb de retraits). PUR."""
+    from itertools import groupby
+    removals = [p for p in pois if verdicts[p["id"]].verdict == "reject"]
+    keeps = [p for p in pois if verdicts[p["id"]].verdict == "keep"]
+    removals.sort(key=lambda p: (p["category_code"], -verdicts[p["id"]].confidence))
+    keeps.sort(key=lambda p: (p["category_code"], p["name"] or ""))
+
+    L: list[str] = []
+    L.append(f"# Verdicts proposés — {prop.get('name') or property_id}")
+    L.append("")
+    L.append(f"- `{property_id}` — {prop.get('city') or '?'} "
+             f"({prop.get('country_code') or '?'}) · modèle `{model}` · {when}")
+    L.append(f"- {len(pois)} POI jugés · **{len(removals)} retrait(s) proposé(s)** · "
+             f"coût {cost_cts:.2f} ct")
+    L.append("- *Le système PROPOSE, l'humain DISPOSE : ci-dessous la liste de travail "
+             "(retraits proposés), puis les maintiens par catégorie.*")
+    L.append("")
+    L.append(f"## Retraits proposés ({len(removals)}) — liste de travail")
+    if not removals:
+        L.append("*Aucun retrait proposé.*")
+    else:
+        L.append("| Lieu | Catégorie | Conf. | Statut actuel | Motif du juge |")
+        L.append("|---|---|--:|---|---|")
+        for p in removals:
+            v = verdicts[p["id"]]
+            reason = (v.reason or "").replace("|", "/")
+            L.append(f"| {p['name']} | {p['category_code']} | {v.confidence:.2f} | "
+                     f"{p.get('status') or '?'} | {reason} |")
+    L.append("")
+    L.append(f"## Maintiens par catégorie ({len(keeps)})")
+    L.append("")
+    for cat, grp in groupby(keeps, key=lambda p: p["category_code"]):
+        members = list(grp)
+        L.append(f"### {cat} ({len(members)})")
+        for p in members:
+            v = verdicts[p["id"]]
+            tail = f" · {v.reason}" if v.reason else ""
+            L.append(f"- {p['name']} — keep ({v.confidence:.2f}){tail}")
+        L.append("")
+    return "\n".join(L), len(removals)
+
+
+def run_dump(conn, property_id: str, ask: Callable[[str], tuple[dict, dict]], *,
+             model: str, batch_size: int = 15,
+             when: str | None = None) -> tuple[str, float, int, int]:
+    """Juge TOUS les POI d'un logement (suggested inclus) et rend le dump de verdicts.
+    Renvoie (markdown, coût_cts, nb_pois, nb_retraits). Lecture seule hors api_costs
+    (operation 'poi_verdict_dump'). Aucun POI modifié."""
+    prop = load_property(conn, property_id)
+    if prop is None:
+        raise LookupError(f"Logement introuvable : {property_id}")
+    pois = load_all_pois(conn, property_id)
+    if not pois:
+        raise LookupError(f"Aucun POI pour {property_id}")
+    verdicts, attempts = judge_pois(prop, pois, ask, batch_size=batch_size)
+    verdicts, _defaulted = finalize_verdicts(pois, verdicts)
+    import enrich.db as edb  # noqa: PLC0415
+    edb.record_costs(conn, property_id, None, "anthropic", OPERATION_DUMP, attempts)
+    conn.commit()
+    cost_cts = round(sum(a.get("cost_cts", 0.0) for a in attempts), 4)
+    when = when or _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    report, n_removals = render_verdict_dump(prop, property_id, pois, verdicts,
+                                             cost_cts, model, when)
+    return report, cost_cts, len(pois), n_removals
+
+
+def _build_ask():
+    """Client Claude réel + fonction `ask` (chemin JSON robuste de l'enrichissement).
+    Renvoie (ask, client, model). Le client est à fermer par l'appelant."""
+    import anthropic  # noqa: PLC0415
+    from enrich import claude_enrich  # noqa: PLC0415
+    from enrich.settings import settings  # noqa: PLC0415
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    def ask(prompt: str) -> tuple[dict, dict]:
+        return claude_enrich._ask_json(client, prompt, max_tokens=_JUDGE_MAX_TOKENS)
+    return ask, client, settings.anthropic_model
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Benchmark juge IA du flux POI contre le triage humain (V2-45 v1, "
-                    "lecture seule hors api_costs).")
-    parser.add_argument("--property-id", required=True)
+        description="Juge IA du flux POI : benchmark (défaut) OU dump des verdicts "
+                    "(--dump-verdicts / --all-properties). Lecture seule hors api_costs.")
+    parser.add_argument("--property-id", default=None)
+    parser.add_argument("--all-properties", action="store_true",
+                        help="V2-49 : dump des verdicts sur TOUT le parc (un fichier par "
+                             "logement). Implique --dump-verdicts.")
+    parser.add_argument("--dump-verdicts", action="store_true",
+                        help="V2-49 : dump des verdicts (TOUS les POI, suggested inclus ; "
+                             "retraits proposés en tête) au lieu du benchmark.")
     parser.add_argument("--dsn", default=None)
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--batch-size", type=int, default=15)
     parser.add_argument("--out", default=None,
-                        help="fichier du rapport (défaut : poi_judge_<id>_<date>.md).")
+                        help="fichier (mode 1 logement) ou RÉPERTOIRE (mode parc).")
     parser.add_argument("--dry-run", action="store_true",
-                        help="liste les POI et les lots, AUCUN appel API ni rapport.")
+                        help="plan + coût estimé, AUCUN appel API ni fichier.")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     opsenv.load_env(args.env_file)
     dsn = args.dsn or _default_dsn()
+    if not args.property_id and not args.all_properties:
+        log.error("✗ précisez --property-id <uuid> ou --all-properties.")
+        return 2
+    dump_mode = args.dump_verdicts or args.all_properties
+    stamp = _dt.date.today().isoformat()
 
     try:
         conn = psycopg.connect(dsn, row_factory=dict_row)
@@ -519,46 +649,80 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     with conn:
+        # ── Mode PARC (V2-49) : dump un fichier par logement ────────────────
+        if args.all_properties:
+            props = list_properties_with_pois(conn)
+            est = estimate_parc_cost(props, args.batch_size)
+            log.info("· parc : %d logement(s) avec POI, %d POI, ~%d appel(s) LLM ; "
+                     "coût ESTIMÉ ~%.1f ct.", est["n_props"], est["n_pois"],
+                     est["n_calls"], est["est_ct"])
+            if args.dry_run:
+                log.info("· DRY-RUN : aucun appel API, aucun fichier.")
+                return 0
+            out_dir = Path(args.out) if args.out else _HERE
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ask, client, model = _build_ask()
+            total_ct = 0.0
+            try:
+                for p in props:
+                    report, ct, n_pois, n_rem = run_dump(
+                        conn, p["id"], ask, model=model, batch_size=args.batch_size)
+                    (out_dir / f"poi_verdicts_{p['id']}_{stamp}.md").write_text(
+                        report, encoding="utf-8")
+                    total_ct += ct
+                    log.info("  · %s : %d POI, %d retrait(s) proposé(s), %.2f ct",
+                             p["name"], n_pois, n_rem, ct)
+            finally:
+                try:
+                    client.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            log.info("✔ parc dumpé (%d logement(s)) → %s · coût réel %.2f ct",
+                     len(props), out_dir, total_ct)
+            return 0
+
+        # ── Mode 1 LOGEMENT ─────────────────────────────────────────────────
         prop = load_property(conn, args.property_id)
         if prop is None:
             log.error("✗ logement introuvable : %s", args.property_id)
             return 2
-        pois = load_arbitrated_pois(conn, args.property_id)
-        n_keep = sum(1 for p in pois if p["status"] in RETAINED)
-        log.info("· %d POI arbitrés (%d retenus, %d rejetés), lots de %d.",
-                 len(pois), n_keep, len(pois) - n_keep, args.batch_size)
+        pois = (load_all_pois if dump_mode else load_arbitrated_pois)(
+            conn, args.property_id)
+        log.info("· %d POI (%s), lots de %d.", len(pois),
+                 "tous statuts" if dump_mode else "arbitrés", args.batch_size)
         if args.dry_run:
             n_batches = (len(pois) + args.batch_size - 1) // max(1, args.batch_size)
-            log.info("· DRY-RUN : %d lot(s) seraient jugés — aucun appel API.", n_batches)
+            est = round(len(pois) * _EST_CT_PER_POI, 1)
+            log.info("· DRY-RUN : %d lot(s), coût estimé ~%.1f ct — aucun appel API.",
+                     n_batches, est)
             return 0
         if not pois:
-            log.error("✗ aucun POI arbitré à juger.")
+            log.error("✗ aucun POI à juger.")
             return 3
 
-        # Appel Claude réel (chemin JSON robuste de l'enrichissement).
-        import anthropic  # noqa: PLC0415
-        from enrich import claude_enrich  # noqa: PLC0415
-        from enrich.settings import settings  # noqa: PLC0415
-        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-        model = settings.anthropic_model
-
-        def ask(prompt: str) -> tuple[dict, dict]:
-            return claude_enrich._ask_json(client, prompt, max_tokens=_JUDGE_MAX_TOKENS)
-
+        ask, client, model = _build_ask()
         try:
-            report, cost_cts, metrics = run_benchmark(
-                conn, args.property_id, ask, model=model, batch_size=args.batch_size)
+            if dump_mode:
+                report, cost_cts, n_pois, n_rem = run_dump(
+                    conn, args.property_id, ask, model=model, batch_size=args.batch_size)
+                out = Path(args.out) if args.out else (
+                    _HERE / f"poi_verdicts_{args.property_id}_{stamp}.md")
+                out.write_text(report, encoding="utf-8")
+                log.info("✔ %d POI, %d retrait(s) proposé(s), coût %.2f ct → %s",
+                         n_pois, n_rem, cost_cts, out)
+            else:
+                report, cost_cts, metrics = run_benchmark(
+                    conn, args.property_id, ask, model=model, batch_size=args.batch_size)
+                out = Path(args.out) if args.out else (
+                    _HERE / f"poi_judge_{args.property_id}_{stamp}.md")
+                out.write_text(report, encoding="utf-8")
+                log.info("✔ accord %.1f %% · faux rejets %.1f %% · coût %.2f ct → %s",
+                         metrics.agreement_pct, metrics.false_reject_rate, cost_cts, out)
         finally:
             try:
                 client.close()
             except Exception:  # noqa: BLE001
                 pass
-
-    out = Path(args.out) if args.out else (
-        _HERE / f"poi_judge_{args.property_id}_{_dt.date.today().isoformat()}.md")
-    out.write_text(report, encoding="utf-8")
-    log.info("✔ accord %.1f %% · faux rejets %.1f %% · coût %.2f ct → %s",
-             metrics.agreement_pct, metrics.false_reject_rate, cost_cts, out)
     return 0
 
 
