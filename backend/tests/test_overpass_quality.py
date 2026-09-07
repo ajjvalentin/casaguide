@@ -422,3 +422,118 @@ def test_fetch_grouped_fallback_category_still_escalates_to_three():
     client.close()
     assert len(calls) == 2          # 1 < 3 (repli) → escalade
     assert overpass.target_for("bus_station").min_results == 3
+
+
+# ── V2-47 : cantonner OSM (source & granularité) ─────────────────────────────
+
+def _poi(name, lat=LAT, lon=LON, tags=None, **fields):
+    """POI interne (avec _tags) pour les tests de réduction."""
+    t = {"name": name, **(tags or {})}
+    return {"name": name, "lat": lat, "lon": lon, "_tags": t,
+            "crow_m": overpass.haversine_m(LAT, LON, lat, lon), **fields}
+
+
+def test_atm_extended_to_banks_and_crypto_deprioritised():
+    # Une agence bancaire est acceptée comme distributeur (V2-47).
+    assert overpass.category_matches("atm", {"amenity": "bank", "name": "Banco Santander"})
+    assert overpass.category_matches("atm", {"amenity": "atm", "name": "ATM"})
+    # ATM crypto détecté (nom ou tag currency:XBT), banque non.
+    assert overpass._is_crypto_atm({"name": "Bitcoin ATM - Shitcoins.club"})
+    assert overpass._is_crypto_atm({"name": "BitBase"})
+    assert overpass._is_crypto_atm({"name": "ATM", "currency:XBT": "yes"})
+    assert not overpass._is_crypto_atm({"name": "Banco Santander"})
+    # Dépriorisation : la banque plus LOIN passe AVANT le crypto plus proche au tri.
+    crypto = _poi("BitBase", lat=LAT + 0.001)            # ~110 m
+    bank = _poi("Banco Sabadell", lat=LAT + 0.004,       # ~445 m
+                tags={"amenity": "bank"})
+    reduced, _ = overpass._reduce_category("atm", [crypto, bank])
+    ordered = overpass._finalize(reduced, 8)
+    assert [p["name"] for p in ordered] == ["Banco Sabadell", "BitBase"]
+
+
+def test_operator_dedup_collapses_bike_share_network():
+    # 8 stations MUyBICI (même operator) → une seule, la plus proche, renommée.
+    stations = [_poi(f"MUyBICI: Estación {i}", lat=LAT + 0.001 * i,
+                     tags={"amenity": "bicycle_rental", "operator": "MUyBICI"})
+                for i in range(1, 9)]
+    reduced, dropped = overpass._reduce_category("rental", stations)
+    names = [p["name"] for p in reduced]
+    assert dropped == 7 and len(names) == 1
+    assert names[0] == "MUyBICI (station la plus proche)"
+    # Sous le seuil (2 stations) → intactes.
+    two = stations[:2]
+    kept, d2 = overpass._reduce_category("rental", two)
+    assert d2 == 0 and len(kept) == 2
+
+
+def test_operator_dedup_never_collapses_shop_chains():
+    # Une CHAÎNE de supermarchés (même operator) reste DISTINCTE (lieux utiles) :
+    # la dédup réseau ne s'applique pas aux commerces.
+    branches = [_poi(f"Mercadona {i}", lat=LAT + 0.001 * i,
+                     tags={"shop": "supermarket", "operator": "Mercadona"})
+                for i in range(1, 5)]
+    reduced, dropped = overpass._reduce_category("supermarket", branches)
+    assert dropped == 0 and len(reduced) == 4
+
+
+def test_node_way_dedup_keeps_most_complete():
+    # « Greco » (node) et « Tintorería Greco » (way) à < 50 m → une fiche, la + complète.
+    node = _poi("Greco", lat=LAT)
+    way = _poi("Tintorería Greco", lat=LAT + 0.0002,      # ~22 m
+               tags={"shop": "dry_cleaning"}, phone="+34 968 000 000")
+    reduced, dropped = overpass._reduce_category("laundry", [node, way])
+    assert dropped == 1 and len(reduced) == 1
+    assert reduced[0]["name"] == "Tintorería Greco"       # la plus complète survit
+    # Deux lieux distincts (noms non imbriqués) ne fusionnent pas.
+    a = _poi("Lavandería Sol", lat=LAT)
+    b = _poi("Lavandería Luna", lat=LAT + 0.0002)
+    kept, d = overpass._reduce_category("laundry", [a, b])
+    assert d == 0 and len(kept) == 2
+
+
+def test_spanish_generic_names_filtered_by_language():
+    for n in ["Zona Infantil", "Columpios, tobogán", "Columpios", "Parque infantil",
+              "Zona de juegos", "Tobogán"]:
+        assert overpass.is_generic_name(n), n
+    # Structure par langue exposée + nom propre conservé.
+    assert "zona infantil" in overpass._GENERIC_NAMES_BY_LANG["es"]
+    assert not overpass.is_generic_name("Parque Warner Madrid")
+    assert not overpass.is_generic_name("Columpios del Rey")   # nom propre
+
+
+def test_police_excludes_civil_protection():
+    assert overpass.category_matches("police", {"amenity": "police", "name": "Comisaría"})
+    # Protección Civil / DIEM / Cruz Roja mal classés police → exclus.
+    assert not overpass.category_matches(
+        "police", {"amenity": "police", "name": "Protección Civil - Base de la Fica"})
+    assert not overpass.category_matches(
+        "police", {"amenity": "police", "name": "DIEM I", "emergency": "yes"})
+    assert not overpass.category_matches(
+        "police", {"amenity": "police", "government": "civil_protection", "name": "PC"})
+
+
+def test_post_office_excludes_couriers_keeps_relay_points():
+    assert overpass.category_matches("post_office",
+                                     {"amenity": "post_office", "name": "Correos"})
+    # Coursier / messagerie → exclu.
+    assert not overpass.category_matches(
+        "post_office", {"amenity": "post_office", "name": "Ecomensajeros"})
+    # Point relais (post_partner) → GARDÉ même si le nom évoque une enseigne.
+    assert overpass.category_matches(
+        "post_office", {"amenity": "post_office", "post_office": "post_partner",
+                        "name": "Punto GLS"})
+
+
+def test_fetch_grouped_reports_network_dropped():
+    settings.politeness_delay_s = 0
+    els = [{"type": "node", "id": i, "lat": LAT + 0.001 * i, "lon": LON,
+            "tags": {"name": f"MUyBICI: {i}", "amenity": "bicycle_rental",
+                     "operator": "MUyBICI"}} for i in range(1, 5)]
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler(els, '"amenity"="bicycle_rental"', calls)))
+    cats = [{"code": "rental", "default_radius_m": 10000, "max_radius_m": 10000}]
+    results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    assert stats["network_dropped"] == 3
+    assert [p["name"] for p in results["rental"]] == ["MUyBICI (station la plus proche)"]

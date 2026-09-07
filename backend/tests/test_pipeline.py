@@ -1666,3 +1666,64 @@ def test_pipeline_aborts_on_geocode_mismatch_and_harvests_nothing(property_id):
     assert prop["geocode_accuracy"] == "mismatch"        # position marquée pour ajustement
     assert job["status"] == "failed"                     # job échoué proprement
     assert job["steps"]["geocode"]["ok"] is False and job["steps"]["geocode"]["reason"]
+
+
+# ── V2-47 : cantonner OSM — banques en distributeur, réseau vélo réduit (bout-en-bout) ─
+
+def test_v247_reductions_end_to_end(property_id):
+    """Un run réel : une AGENCE bancaire entre comme distributeur, 4 stations MUyBICI se
+    réduisent à une seule, et le journal compte la réduction réseau."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    # Banque et crypto ESPACÉS de > 150 m pour ne pas déclencher la fusion V2-40
+    # (distance) — on teste ici l'admission des banques, pas la fusion de proximité.
+    bank = {"type": "node", "id": 10, "lat": PROP_LAT + 0.006, "lon": PROP_LON,
+            "tags": {"name": "Banco Santander", "amenity": "bank"}}
+    crypto = {"type": "node", "id": 11, "lat": PROP_LAT + 0.001, "lon": PROP_LON,
+              "tags": {"name": "BitBase", "amenity": "atm"}}
+    muybici = [{"type": "node", "id": 20 + i, "lat": PROP_LAT + 0.001 * i,
+                "lon": PROP_LON, "tags": {"name": f"MUyBICI: Estación {i}",
+                                          "amenity": "bicycle_rental",
+                                          "operator": "MUyBICI"}} for i in range(1, 5)]
+
+    def handler(request):
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=NOMINATIM)
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            els = []
+            if '"amenity"="bank"' in body or '"amenity"="atm"' in body:
+                els += [bank, crypto]
+            if '"amenity"="bicycle_rental"' in body or '"amenity"="car_rental"' in body:
+                els += muybici
+            return httpx.Response(200, json={"elements": els})
+        if "/table/v1/" in url:
+            return httpx.Response(200, json=_osrm_payload(url))
+        return httpx.Response(404)
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            summary = pipeline.run(property_id, use_claude=False,
+                                   only_categories={"atm", "rental"},
+                                   http_client=client, anthropic_client=FakeAnthropic())
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+
+    # ≥ 3 : le réseau MUyBICI est réduit (chaque passe de moisson réduit la sienne —
+    # l'escalade rurale re-moissonne rental, restée sous son minimum après collapse).
+    assert summary["network_dropped"] >= 3
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        atms = [r["name"] for r in conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s AND category_code='atm' "
+            "ORDER BY drive_min", (property_id,)).fetchall()]
+        rentals = [r["name"] for r in conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s AND category_code='rental'",
+            (property_id,)).fetchall()]
+        step = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                           (summary["job_id"],)).fetchone()["steps"]["overpass"]
+    # La banque est ADMISE comme distributeur (le fix central) ; le crypto reste (déprio,
+    # pas exclu). L'ordre de sélection banque-avant-crypto est couvert par le test unité.
+    assert "Banco Santander" in atms and "BitBase" in atms
+    assert rentals == ["MUyBICI (station la plus proche)"]   # une seule station (fusionnée)
+    assert step["network_dropped"] >= 3

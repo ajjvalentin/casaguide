@@ -189,7 +189,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
     summary: dict = {"pois": 0, "categories": {}, "area_facts": False,
                      "cost_cts": 0.0, "services_completed": 0, "babysitters": 0,
                      "markets_created": 0, "duplicates_merged": 0,
-                     "rental_web_kept": 0, "hard_cap_dropped": 0}
+                     "rental_web_kept": 0, "hard_cap_dropped": 0,
+                     "network_dropped": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -339,12 +340,14 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 - set(summary["categories"]))
             summary["empty_categories"] = empty_categories
             summary["generic_dropped"] = harvest.get("generic_dropped", 0)
+            summary["network_dropped"] = harvest.get("network_dropped", 0)
             db.job_step(conn, job_id, "overpass",
                         {"ok": not failed_categories or summary["pois"] > 0,
                          "pois": summary["pois"],
                          "duplicates_merged": summary["duplicates_merged"],
                          "empty": empty_categories,
                          "generic_dropped": summary["generic_dropped"],
+                         "network_dropped": summary["network_dropped"],
                          "hard_cap_dropped": summary["hard_cap_dropped"],
                          "failed": failed_categories})
             db.job_step(conn, job_id, "distances", {"ok": True})
@@ -354,6 +357,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                          if summary["duplicates_merged"] else "")
                       + (f", {summary['generic_dropped']} sans-nom écarté(s)"
                          if summary["generic_dropped"] else "")
+                      + (f", {summary['network_dropped']} station(s) réseau réduite(s)"
+                         if summary["network_dropped"] else "")
                       + (f", {summary['hard_cap_dropped']} hors plafond de route"
                          if summary["hard_cap_dropped"] else "")
                       + (f" — {len(failed_categories)} catégorie(s) en échec : "
@@ -858,6 +863,8 @@ def main() -> None:
     print(f"  Loueurs (web) retenus : {result.get('rental_web_kept', 0)}")
     if result.get("generic_dropped"):
         print(f"  Sans-nom écartés      : {result['generic_dropped']}")
+    if result.get("network_dropped"):
+        print(f"  Stations réseau réduites : {result['network_dropped']}")
     if result.get("hard_cap_dropped"):
         print(f"  Hors plafond de route : {result['hard_cap_dropped']}")
     print(f"  Coût IA               : {result['cost_cts']:.2f} ct")

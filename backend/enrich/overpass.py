@@ -79,7 +79,11 @@ CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
     "supermarket":     [("shop", "supermarket")],
     "market":          [("amenity", "marketplace")],
     "bakery":          [("shop", "bakery")],
-    "atm":             [("amenity", "atm")],
+    # V2-47 : toute agence BANCAIRE a un distributeur. En centre-ville, OSM ne tague
+    # souvent que les ATM crypto (« Bitcoin ATM », « BitBase ») → on élargit à
+    # `amenity=bank` (l'agence entre comme « distributeur » sous son nom), et les ATM
+    # crypto sont DÉPRIORISÉS (pas exclus) derrière les banques au tri.
+    "atm":             [("amenity", "atm"), ("amenity", "bank")],
     "post_office":     [("amenity", "post_office")],
     "mall":            [("shop", "mall")],
     "laundry":         [("shop", "laundry"), ("shop", "dry_cleaning")],
@@ -125,6 +129,18 @@ _RADIUS_BUCKETS = (2000, 5000, 10000, 25000, 100000)
 _DISQUALIFYING_TAGS: list[tuple[str, str]] = [
     ("shop", "estate_agent"),   # agence immobilière (constatée taggée marketplace)
 ]
+
+# V2-47 — PROTECTION CIVILE mal classée en « police » (benchmark Murcie : « Protección
+# Civil », base DIEM). Discriminateur : tags de protection civile / secours NON policiers,
+# ou nom explicite. Une VRAIE police est `amenity=police` sans ces marqueurs.
+_CIVIL_PROTECTION_RE = re.compile(
+    r"protecc?i[oó]n\s+civil|protection\s+civile|civil\s+protection|"
+    r"\bdiem\b|\bdya\b|cruz\s+roja|croix[- ]rouge|red\s+cross|bomber",
+    re.IGNORECASE)
+
+# V2-47 — COURSIERS / MESSAGERIES mal classés en « poste ». On EXCLUT le coursier
+# (Ecomensajeros) mais on GARDE bureaux de poste ET points relais (post_partner).
+_COURIER_RE = re.compile(r"mensajer|coursier|courier|\bglovo\b|\bstuart\b", re.IGNORECASE)
 
 # Catégories capées aux N plus proches EN TEMPS DE TRAJET (V2-44), après calcul des
 # distances (dans le pipeline). Un aéroport de vacances utile est l'un des rares
@@ -224,43 +240,49 @@ def apply_drive_cap(pois: list[dict], preferred_m: int,
     return kept, dropped
 
 
-# Noms GÉNÉRIQUES de type (V2-44) : un élément dont le nom N'EST QU'un mot de type
-# (« Speeltuin », « Aire de jeux », « Trampoline ») n'a pas de nom propre → aucune
-# valeur dans le guide (benchmark Op de Boerderie : « Speelweide », « Ballenbad »…).
-# Liste multilingue, comparée NORMALISÉE (casse/accents) sur le nom ENTIER : « Trampoline
-# Park Zeeland » (nom propre) n'y figure pas et est CONSERVÉ.
-_GENERIC_NAMES: frozenset[str] = frozenset({
-    # anglais
-    "playground", "play area", "play ground", "sports field", "sports ground",
-    # néerlandais
-    "speeltuin", "speeltuintje", "speelweide", "speelplaats", "speelplek",
-    "trampoline", "ballenbad", "glijbaan", "zandbak",
-    # français
-    "aire de jeux", "aire de jeu", "jeux pour enfants", "terrain de jeux",
-    # espagnol
-    "parque infantil", "zona de juegos", "area de juegos", "columpios",
-    # allemand
-    "spielplatz", "spielwiese", "bolzplatz", "trampolin",
-    # italien
-    "parco giochi", "area giochi",
-    # laveries génériques (V2-44 volet 2 : le benchmark en a laissé passer deux)
-    "wasserette", "was", "laundrette", "laverie", "lavanderia", "wasserij",
-})
+# Noms GÉNÉRIQUES de type (V2-44, structuré par langue V2-47) : un élément dont le nom
+# N'EST QU'un mot de type (« Speeltuin », « Aire de jeux », « Zona Infantil ») n'a pas de
+# nom propre → aucune valeur dans le guide. Structuré PAR LANGUE pour les extensions
+# futures (V2-47 : espagnol enrichi). Comparé NORMALISÉ (casse/accents/ponctuation) sur le
+# nom ENTIER : « Trampoline Park Zeeland » (nom propre) n'y figure pas et est CONSERVÉ.
+_GENERIC_NAMES_BY_LANG: dict[str, set[str]] = {
+    "en": {"playground", "play area", "play ground", "sports field", "sports ground",
+           "laundrette", "launderette"},
+    "nl": {"speeltuin", "speeltuintje", "speelweide", "speelplaats", "speelplek",
+           "trampoline", "ballenbad", "glijbaan", "zandbak", "wasserette", "wasserij",
+           "was"},
+    "fr": {"aire de jeux", "aire de jeu", "jeux pour enfants", "terrain de jeux",
+           "laverie"},
+    # Espagnol ENRICHI (V2-47, benchmark Murcie : « Zona Infantil », « Columpios, tobogán »
+    # non filtrés — le volet 1 était calibré sur le néerlandais). Formes normalisées :
+    # « Columpios, tobogán » → « columpios tobogan ».
+    "es": {"parque infantil", "zona de juegos", "area de juegos", "columpios",
+           "zona infantil", "columpios tobogan", "tobogan", "juegos infantiles",
+           "area infantil", "zona de juegos infantiles", "lavanderia"},
+    "de": {"spielplatz", "spielwiese", "bolzplatz", "trampolin"},
+    "it": {"parco giochi", "area giochi"},
+}
+_GENERIC_NAMES: frozenset[str] = frozenset(
+    n for names in _GENERIC_NAMES_BY_LANG.values() for n in names)
 
 
-def _norm_generic(name: str | None) -> str:
-    """Nom normalisé pour le test générique : sans accents, minuscule, ponctuation →
-    espace, espaces compactés (mêmes règles que dedup._norm)."""
+def _norm_name(name: str | None) -> str:
+    """Nom normalisé : sans accents, minuscule, ponctuation → espace, espaces compactés
+    (mêmes règles que dedup._norm). Base commune des filtres génériques et des dédups."""
     s = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode()
     s = re.sub(r"[^a-z0-9\s]", " ", s.lower())
     return " ".join(s.split())
+
+
+# Compat : ancien nom interne conservé (référencé par des tests).
+_norm_generic = _norm_name
 
 
 def is_generic_name(name: str | None) -> bool:
     """Vrai si le nom n'est QU'UN nom générique de type (V2-44). Comparaison sur le
     nom ENTIER normalisé → un nom propre qui CONTIENT un mot générique (« Trampoline
     Park Zeeland ») n'est jamais rejeté."""
-    return _norm_generic(name) in _GENERIC_NAMES
+    return _norm_name(name) in _GENERIC_NAMES
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
@@ -311,6 +333,24 @@ def _is_disqualified(category: str, tags: dict) -> bool:
             or tags.get("railway:preserved") == "yes"
             or tags.get("tourism") in {"attraction", "museum"}):
         return True
+    # V2-47 — PROTECTION CIVILE / secours non policier classé « police » : les tags
+    # `government=civil_protection`, `office=emergency`, un `emergency=*` non policier,
+    # ou un nom explicite (Protección Civil, DIEM, Cruz Roja…) disqualifient.
+    if category == "police":
+        if (tags.get("government") in {"civil_protection", "emergency"}
+                or tags.get("office") == "emergency"
+                or (tags.get("emergency") and tags.get("emergency") != "police")
+                or _CIVIL_PROTECTION_RE.search(tags.get("name") or "")
+                or _CIVIL_PROTECTION_RE.search(tags.get("operator") or "")):
+            return True
+    # V2-47 — COURSIER / MESSAGERIE classé « poste » : exclu, SAUF un point relais
+    # (`post_office=post_partner`) qu'on garde. Discriminateur : tag `office=courier`
+    # (déjà couvert par l'exclusion `office` globale ci-dessus) ou nom de messagerie.
+    if category == "post_office" and tags.get("post_office") != "post_partner":
+        if (tags.get("post_office") == "courier"
+                or tags.get("courier")
+                or _COURIER_RE.search(tags.get("name") or "")):
+            return True
     return False
 
 
@@ -342,6 +382,147 @@ def _dedup_health_categories(results: dict[str, list[dict]]) -> None:
         p for p in docs
         if p["source_ref"] not in vet_keys and p["name"].lower() not in vet_keys
     ]
+
+
+# ── V2-47 : réductions PAR catégorie (source & granularité OSM) ───────────────
+#
+# Correctifs que ni rayon ni plafond ne traitent : dédup des systèmes en RÉSEAU (une
+# station de vélos en libre-service comptée N fois), dédup node/way (même lieu en deux
+# éléments à noms imbriqués), dépriorisation des ATM crypto derrière les banques. Ces
+# passes opèrent sur les POI encore porteurs de leurs `_tags`, AVANT `_finalize`.
+
+_CRYPTO_ATM_RE = re.compile(r"bitcoin|crypto|shitcoin|bitbase|coinstar", re.IGNORECASE)
+# Catégories où la dédup par OPÉRATEUR/réseau est SÛRE : un système de vélos en
+# libre-service (MUyBICI ×8) doit se réduire à sa station la plus proche. On l'exclut
+# des commerces (les succursales d'une CHAÎNE — Mercadona, Lidl — sont des lieux
+# distincts utiles, jamais à fusionner).
+_NETWORK_DEDUP_CATEGORIES = frozenset({"rental"})
+_NETWORK_DEDUP_MIN = 3            # à partir de 3 occurrences d'un même réseau
+_NODE_WAY_DIST_M = 50.0          # deux éléments du même lieu (node + way)
+
+
+def _is_crypto_atm(tags: dict) -> bool:
+    """Vrai pour un distributeur de CRYPTOMONNAIE (V2-47) : tag `currency:XBT=yes`
+    (ou autre crypto) ou nom/opérateur évocateur (« Bitcoin ATM », « BitBase »)."""
+    for k, v in tags.items():
+        if k.startswith("currency:") and k not in ("currency:EUR",) and v == "yes":
+            return True
+    return bool(_CRYPTO_ATM_RE.search(tags.get("name") or "")
+                or _CRYPTO_ATM_RE.search(tags.get("operator") or ""))
+
+
+def _network_key(p: dict) -> tuple[str, str] | None:
+    """Clé de RÉSEAU d'un POI (V2-47) : `network`/`operator`, sinon préfixe de nom avant
+    « : » (« MUyBICI: Estación 5 » → « MUyBICI »). Renvoie (clé normalisée, libellé) ou
+    None si aucun signal de réseau."""
+    t = p.get("_tags", {})
+    op = (t.get("network") or t.get("operator") or "").strip()
+    if op:
+        return _norm_name(op), op
+    name = p.get("name") or ""
+    if ":" in name:
+        prefix = name.split(":", 1)[0].strip()
+        if len(prefix) >= 2:
+            return _norm_name(prefix), prefix
+    return None
+
+
+def _dedup_by_operator(pois: list[dict]) -> tuple[list[dict], int]:
+    """Réduit les systèmes en réseau (V2-47) : ≥ `_NETWORK_DEDUP_MIN` POI partageant la
+    même clé de réseau → on ne garde que le PLUS PROCHE, renommé « X (station la plus
+    proche) ». Renvoie (liste réduite, n_retirés). Ordre stable."""
+    groups: dict[str, list[dict]] = {}
+    for p in pois:
+        key = _network_key(p)
+        if key is not None:
+            groups.setdefault(key[0], []).append(p)
+    # Clés à réduire → on retient le plus proche, renommé.
+    collapse: dict[str, dict] = {}
+    for k, members in groups.items():
+        if len(members) >= _NETWORK_DEDUP_MIN:
+            nearest = min(members, key=lambda p: p["crow_m"])
+            label = _network_key(nearest)[1]
+            keep = dict(nearest)
+            keep["name"] = f"{label} (station la plus proche)"
+            collapse[k] = keep
+    if not collapse:
+        return pois, 0
+    out: list[dict] = []
+    emitted: set[str] = set()
+    dropped = 0
+    for p in pois:
+        key = _network_key(p)
+        k = key[0] if key else None
+        if k in collapse:
+            if k not in emitted:          # émettre le survivant une seule fois, à sa place
+                out.append(collapse[k])
+                emitted.add(k)
+            else:
+                dropped += 1
+        else:
+            out.append(p)
+    return out, dropped
+
+
+def _nonempty(v) -> bool:
+    return bool(v.strip()) if isinstance(v, str) else v is not None
+
+
+def _completeness(p: dict) -> tuple[int, int]:
+    """Score de complétude d'un POI (V2-47, dédup node/way) : nb de champs renseignés
+    puis longueur du nom — le SURVIVANT est le plus complet (« Tintorería Greco » >
+    « Greco »)."""
+    fields = sum(1 for f in ("phone", "website", "opening_hours", "cuisine", "address")
+                 if _nonempty(p.get(f)))
+    return fields, len(p.get("name") or "")
+
+
+def _name_nested(a: str, b: str) -> bool:
+    """Vrai si le nom normalisé le plus court est un SOUS-ENSEMBLE de tokens de l'autre
+    (« greco » ⊂ « tintoreria greco »). Jamais un simple chevauchement partiel."""
+    ta, tb = set(_norm_name(a).split()), set(_norm_name(b).split())
+    if not ta or not tb:
+        return False
+    return ta <= tb or tb <= ta
+
+
+def _dedup_node_way(pois: list[dict]) -> tuple[list[dict], int]:
+    """Dédup node/way (V2-47) : deux POI à < 50 m dont l'un des noms est imbriqué dans
+    l'autre → garder le plus COMPLET. Renvoie (liste, n_retirés). Ordre stable (le
+    survivant garde la place du premier rencontré)."""
+    keep: list[dict] = []
+    dropped = 0
+    for p in pois:
+        dup_idx = None
+        for i, s in enumerate(keep):
+            if (haversine_m(p["lat"], p["lon"], s["lat"], s["lon"]) <= _NODE_WAY_DIST_M
+                    and _name_nested(p.get("name") or "", s.get("name") or "")):
+                dup_idx = i
+                break
+        if dup_idx is None:
+            keep.append(p)
+        else:
+            dropped += 1
+            if _completeness(p) > _completeness(keep[dup_idx]):
+                keep[dup_idx] = p     # remplace en place par le plus complet
+    return keep, dropped
+
+
+def _reduce_category(code: str, pois: list[dict]) -> tuple[list[dict], int]:
+    """Applique les réductions V2-47 propres à une catégorie (avant `_finalize`).
+    Renvoie (liste réduite, n_retirés). Ordre : réseau (rental) → node/way → priorité
+    crypto (atm). Les POI conservent leurs `_tags` (l'appelant finalise ensuite)."""
+    dropped = 0
+    if code in _NETWORK_DEDUP_CATEGORIES:
+        pois, n = _dedup_by_operator(pois)
+        dropped += n
+    pois, n = _dedup_node_way(pois)
+    dropped += n
+    if code == "atm":
+        for p in pois:               # crypto DÉPRIORISÉ (pas exclu) derrière les banques
+            if _is_crypto_atm(p.get("_tags", {})):
+                p["_priority"] = 1
+    return pois, dropped
 
 
 # ── Requête et parsing ───────────────────────────────────────────────────────
@@ -465,20 +646,27 @@ def _norm_cuisine(raw: str | None) -> str | None:
     return first
 
 
+def _sort_key(p: dict) -> tuple[int, int]:
+    """Tri par (PRIORITÉ, distance) — `_priority` (défaut 0) déprioriser sans exclure
+    (V2-47 : ATM crypto derrière les banques). 0 = normal, 1 = relégué."""
+    return (p.get("_priority", 0), p["crow_m"])
+
+
 def _dedup_sort(pois: list[dict]) -> list[dict]:
-    """Dédoublonne (même nom à < 100 m) et trie par distance. Ne plafonne PAS et ne
-    retire PAS les tags — base commune de `_finalize` et `_select_adaptive`."""
+    """Dédoublonne (même nom à < 100 m) et trie par (priorité, distance). Ne plafonne
+    PAS et ne retire PAS les tags — base commune de `_finalize` et `_select_adaptive`."""
     seen: dict[str, dict] = {}
-    for p in sorted(pois, key=lambda p: p["crow_m"]):
+    for p in sorted(pois, key=_sort_key):
         key = p["name"].lower()
         if key not in seen or p["crow_m"] < seen[key]["crow_m"] - 100:
             seen.setdefault(key, p)
-    return sorted(seen.values(), key=lambda p: p["crow_m"])
+    return sorted(seen.values(), key=_sort_key)
 
 
 def _strip_tags(pois: list[dict]) -> list[dict]:
-    """Retire les tags internes (`_tags`) — copies propres prêtes pour l'upsert."""
-    return [{k: v for k, v in p.items() if k != "_tags"} for p in pois]
+    """Retire les champs internes (`_tags`, `_priority`…) — copies propres prêtes pour
+    l'upsert. Tout ce qui commence par « _ » est interne (jamais stocké)."""
+    return [{k: v for k, v in p.items() if not k.startswith("_")} for p in pois]
 
 
 def _finalize(pois: list[dict], limit: int) -> list[dict]:
@@ -526,7 +714,8 @@ def fetch_category(category: str, lat: float, lon: float, radius_m: int,
         matched = [p for p in parsed
                    if p and not is_generic_name(p["name"])  # V2-44 : noms génériques
                    and category_matches(category, p["_tags"])]
-        return _finalize(matched, settings.max_pois_per_category)
+        reduced, _ = _reduce_category(category, matched)     # V2-47 : réductions
+        return _finalize(reduced, settings.max_pois_per_category)
     finally:
         if own_client:
             client.close()
@@ -617,13 +806,16 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
     codes = list(pref_of)
 
     results: dict[str, list[dict]] = {}
+    network_dropped = 0
     own_client = client is None
     client = client or httpx.Client(timeout=settings.overpass_timeout_s + 5)
     try:
         # ── Passe 1 : rayon de PRÉFÉRENCE (historique) ──────────────────────
         m1, failures, generic = _run_buckets(client, codes, pref_of, lat, lon)
         for code in codes:
-            results[code] = _finalize(m1.get(code, []), settings.max_pois_per_category)
+            reduced, n = _reduce_category(code, m1.get(code, []))   # V2-47
+            network_dropped += n
+            results[code] = _finalize(reduced, settings.max_pois_per_category)
 
         # ── Passe 2 : ESCALADE ciblée (rural), MIN_RESULTS par catégorie (V2-44 v3) ─
         deficient = [c for c in codes
@@ -636,13 +828,16 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
             for code in deficient:
                 if code in f2:
                     continue  # escalade en échec : on garde le résultat de la passe 1
+                reduced, n = _reduce_category(code, m2.get(code, []))   # V2-47
+                network_dropped += n
                 results[code] = _select_adaptive(
-                    m2.get(code, []), pref_of[code],
+                    reduced, pref_of[code],
                     target_for(code).min_results, settings.max_pois_per_category)
 
         _dedup_health_categories(results)
         empty = [c for c in codes if not results.get(c) and c not in failures]
-        return results, failures, {"generic_dropped": generic, "empty": empty}
+        return results, failures, {"generic_dropped": generic,
+                                   "network_dropped": network_dropped, "empty": empty}
     finally:
         if own_client:
             client.close()
