@@ -103,25 +103,44 @@ NAME_MATCH_THRESHOLD = 0.55  # …ET similarité de nom (Dice trigrammes) ≥ 0,
 #                              seuil plus bas que le 0,70 intra-OSM de V2-40).
 BBOX_MAX_RADIUS_M = 25000    # plafond du rayon d'extraction bbox (garde-fou volume/disque)
 MIN_FREE_DISK_MB = 200       # refuse d'écrire si moins d'espace libre (garde-fou)
+MIN_MAPPED_PCT = 30.0        # V2-48c : sous ce seuil de lieux catégorisés reconnus, le
+#                              mapping est cassé → échec bruyant (jamais de grille trompeuse).
 
 
 # ── Mapping de taxonomie (artefact réutilisable) ──────────────────────────────
 
-def load_category_map(path: Path | None = None) -> list[dict]:
+def load_category_map(path: Path | None = None) -> dict:
+    """Charge l'artefact de mapping (V2-48c : structure EXACT + SUFFIXE sur valeurs
+    PLATES). Tolère l'ancien format {rules:[{prefix,code}]} (rétrocompat)."""
     path = path or (_HERE / "overture_category_map.json")
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return data.get("rules") or []
+    if "exact" in data or "suffix" in data:
+        return {"exact": {k.lower(): v for k, v in (data.get("exact") or {}).items()},
+                "suffix": data.get("suffix") or []}
+    # Ancien format à préfixes pointés → converti en suffixes/exacts sur le dernier segment.
+    exact: dict[str, str] = {}
+    suffix: list[dict] = []
+    for r in data.get("rules") or []:
+        seg = r["prefix"].rsplit(".", 1)[-1]
+        exact[seg] = r["code"]
+    return {"exact": exact, "suffix": suffix}
 
 
-def map_overture_category(primary: str | None, rules: list[dict]) -> str | None:
-    """Catégorie Overture (`categories.primary`, slug pointé) → notre `code`. Première
-    règle de PRÉFIXE qui matche (hiérarchique : « eat_and_drink.restaurant.italian » →
-    « restaurant »). None si aucune → listé en annexe (jamais tordu)."""
+def map_overture_category(primary: str | None, cmap: dict) -> str | None:
+    """Valeur Overture `categories.primary` → notre `code`. V2-48c : la taxonomie d'août
+    est PLATE (« restaurant », « bank_credit_union »…). On prend le DERNIER segment pointé
+    (robuste à l'ancien schéma « eat_and_drink.restaurant » comme au nouveau), puis EXACT
+    d'abord (tapas_bar→restaurant avant le suffixe _bar), SUFFIXE ensuite (« *_restaurant »
+    → restaurant). None si rien → annexe (jamais tordu)."""
     p = (primary or "").strip().lower()
     if not p:
         return None
-    for rule in rules:
-        if p == rule["prefix"] or p.startswith(rule["prefix"] + "."):
+    token = p.rsplit(".", 1)[-1]        # « eat_and_drink.restaurant » → « restaurant »
+    code = cmap.get("exact", {}).get(token)
+    if code:
+        return code
+    for rule in cmap.get("suffix", []):
+        if token.endswith(rule["suffix"]):
             return rule["code"]
     return None
 
@@ -230,29 +249,50 @@ def recommend(m: CatMetrics) -> str:
 # ── Sondes qualitatives nominatives ───────────────────────────────────────────
 
 def _name_present(places: list[dict], needle: str) -> list[str]:
+    """Lieux dont le nom CONTIENT le motif normalisé (substring — sonde large/brute)."""
     n = dedup._norm(needle)
     return [p["name"] for p in places
-            if n in dedup._norm(p.get("name")) and p.get("name")]
+            if p.get("name") and n in dedup._norm(p.get("name"))]
+
+
+def _name_match_exact_first(places: list[dict], needle: str) -> list[str]:
+    """Sonde nominative RESSERRÉE (V2-48c) : exact-d'abord. On cherche d'abord une
+    ÉGALITÉ de nom normalisé, sinon un nom qui contient le motif comme SÉQUENCE DE TOKENS
+    contiguë (phrase). Évite les faux positifs « Catedral Consultores » / « Gran Casino de
+    Ceuta » qu'un simple substring remontait."""
+    want = dedup._norm(needle)
+    want_toks = want.split()
+    exact = [p["name"] for p in places if dedup._norm(p.get("name")) == want]
+    if exact:
+        return exact
+    out = []
+    for p in places:
+        toks = dedup._norm(p.get("name")).split()
+        # phrase : les tokens du motif apparaissent contigus dans le nom.
+        if any(toks[i:i + len(want_toks)] == want_toks
+               for i in range(len(toks) - len(want_toks) + 1)) and p.get("name"):
+            out.append(p["name"])
+    return out
 
 
 def run_probes(terrain_key: str, osm: list[dict], overture: list[dict],
-               rules: list[dict]) -> list[dict]:
+               cmap: dict) -> list[dict]:
     """Sondes nominatives par terrain (le terrain connu sert à trancher). Renvoie une
-    liste de {question, answer}."""
+    liste de {question, answer}. Appariement EXACT-D'ABORD (V2-48c)."""
     probes: list[dict] = []
-    ovt_names = lambda needle: _name_present(overture, needle)  # noqa: E731
-    osm_names = lambda needle: _name_present(osm, needle)       # noqa: E731
+    ovt_exact = lambda needle: _name_match_exact_first(overture, needle)  # noqa: E731
 
     if terrain_key == "murcia":
-        cat = ovt_names("catedral")
+        cat = ovt_exact("Catedral de Murcia") or ovt_exact("Santa Iglesia Catedral de Murcia")
         probes.append({"question": "Catedral de Murcia dans Overture ?",
-                       "answer": ("OUI — " + ", ".join(cat)) if cat else "NON"})
-        casino = ovt_names("casino")
+                       "answer": ("OUI — " + ", ".join(cat[:3])) if cat else "NON"})
+        casino = ovt_exact("Real Casino de Murcia") or ovt_exact("Casino de Murcia")
         probes.append({"question": "Real Casino de Murcia dans Overture ?",
-                       "answer": ("OUI — " + ", ".join(casino)) if casino else "NON"})
-        # ATM bancaires vs crypto (Overture mappé atm).
+                       "answer": ("OUI — " + ", ".join(casino[:3])) if casino else "NON"})
+        # ATM bancaires vs crypto : les banques Overture (bank_credit_union → atm)
+        # répondent au crypto-only d'OSM (V2-48c : sonde corrigée, lit le mapping atm).
         atm_ovt = [p for p in overture
-                   if map_overture_category(p.get("category"), rules) == "atm"]
+                   if map_overture_category(p.get("category"), cmap) == "atm"]
         crypto = [p["name"] for p in atm_ovt
                   if overpass._is_crypto_atm({"name": p.get("name") or "",
                                               "operator": p.get("operator") or ""})]
@@ -261,22 +301,23 @@ def run_probes(terrain_key: str, osm: list[dict], overture: list[dict],
                        "(là où OSM ne montrait que du crypto) ?",
                        "answer": f"{len(banks)} banque(s) / {len(crypto)} crypto sur "
                                  f"{len(atm_ovt)} ATM Overture"})
-        muy = ovt_names("muybici") or ovt_names("muy bici")
+        muy = _name_present(overture, "muybici") or _name_present(overture, "muy bici")
         probes.append({"question": "MUyBICI : granularité Overture (station ou système) ?",
                        "answer": (f"{len(muy)} entrée(s)" if muy else "absent d'Overture")})
     elif terrain_key == "ballarin":
         resto_ovt = [p for p in overture
-                     if map_overture_category(p.get("category"), rules) == "restaurant"]
+                     if map_overture_category(p.get("category"), cmap) == "restaurant"]
         resto_osm = [p for p in osm if p.get("category_code") == "restaurant"]
         probes.append({"question": "Restaurants La Zenia : Overture vs notre moisson ?",
                        "answer": f"{len(resto_ovt)} Overture / {len(resto_osm)} en base"})
     elif terrain_key == "ardon":
+        # Verdict fondé sur les lieux MAPPÉS EN PÉRIMÈTRE (V2-48c : plus sur un mapping vide).
         mapped = [p for p in overture
-                  if map_overture_category(p.get("category"), rules) is not None]
+                  if map_overture_category(p.get("category"), cmap) is not None]
         probes.append({"question": "Tenue en zone rurale alpine (Overture réputé urbain) ?",
-                       "answer": f"{len(mapped)} lieu(x) Overture en périmètre "
-                                 f"(dont {len(_name_present(overture, ''))} bruts) — "
-                                 f"{'faible' if len(mapped) < 10 else 'correcte'}"})
+                       "answer": f"{len(mapped)} lieu(x) Overture en périmètre sur "
+                                 f"{len(overture)} bruts — "
+                                 f"{'faible' if len(mapped) < 20 else 'correcte'}"})
     return probes
 
 
@@ -293,6 +334,7 @@ def _bbox(lat: float, lon: float, radius_m: int) -> tuple[float, float, float, f
 # Format RÉEL d'une release Overture sur S3 : AAAA-MM-JJ.N (ex. 2026-08-19.0) — PAS
 # « AAAA-MM » (V2-48b : l'ancien défaut ne matchait aucun chemin S3).
 _RELEASE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.\d+$")
+_RELEASE_IN_PATH = re.compile(r"/release/(\d{4}-\d{2}-\d{2}\.\d+)/")
 _OVERTURE_S3 = "s3://overturemaps-us-west-2/release"
 
 
@@ -311,22 +353,34 @@ def _duckdb_connect():
     return con
 
 
+def _release_from_path(path: str) -> str | None:
+    """Extrait le segment de release « AAAA-MM-JJ.N » d'un chemin S3 Overture, où qu'il
+    soit (« …/release/2026-08-19.0/theme=places/… »)."""
+    m = _RELEASE_IN_PATH.search(str(path))
+    return m.group(1) if m else None
+
+
 def latest_overture_release(connect: Callable = _duckdb_connect) -> str:
-    """Dernière release Overture disponible sur S3 (glob DuckDB anonyme). Renvoie
-    « AAAA-MM-JJ.N ». `connect` injectable pour les tests."""
+    """Dernière release Overture disponible sur S3. `connect` injectable (tests).
+
+    V2-48c : le glob SHALLOW `release/*` renvoyait 0 ligne (« Aucune release détectée »)
+    car S3 n'a AUCUN objet à ce niveau — seulement des sous-préfixes ; DuckDB `glob`
+    liste des OBJETS. On globe donc les fichiers du thème `places` et on EXTRAIT le
+    segment de release (Python-side, distinct)."""
     con = connect()
     try:
-        rows = con.execute(f"SELECT file FROM glob('{_OVERTURE_S3}/*')").fetchall()
+        log.info("· détection de la release Overture (listing S3)…")
+        rows = con.execute(
+            f"SELECT DISTINCT file FROM "
+            f"glob('{_OVERTURE_S3}/*/theme=places/type=place/*.parquet')").fetchall()
     finally:
         con.close()
-    releases = []
-    for (f,) in rows:
-        seg = str(f).rstrip("/").rsplit("/", 1)[-1]
-        if _RELEASE_RE.match(seg):
-            releases.append(seg)
+    releases = sorted({rel for (f,) in rows if (rel := _release_from_path(f))})
     if not releases:
-        raise RuntimeError("Aucune release Overture détectée sur S3.")
-    return sorted(releases)[-1]
+        raise RuntimeError(
+            "Aucune release Overture détectée sur S3 — passez --release AAAA-MM-JJ.N "
+            "explicitement (dernière release visible sur overturemaps.org/download).")
+    return releases[-1]
 
 
 def resolve_release(release: str | None,
@@ -435,12 +489,12 @@ def category_radii(conn) -> dict[str, int]:
 # ── Orchestration (aucune écriture) ───────────────────────────────────────────
 
 def run_terrain(prop: dict, osm_all: list[dict], overture_all: list[dict],
-                radii: dict[str, int], rules: list[dict]) -> dict:
+                radii: dict[str, int], cmap: dict) -> dict:
     """Calcule métriques + sondes pour un terrain. PUR (données déjà chargées/fetchées)."""
     plat, plon = prop["lat"], prop["lon"]
     # Overture mappé à nos codes.
     for v in overture_all:
-        v["_code"] = map_overture_category(v.get("category"), rules)
+        v["_code"] = map_overture_category(v.get("category"), cmap)
         v["_dist"] = (overpass.haversine_m(plat, plon, v["lat"], v["lon"])
                       if v.get("lat") is not None else None)
     cats: list[CatMetrics] = []
@@ -451,13 +505,21 @@ def run_terrain(prop: dict, osm_all: list[dict], overture_all: list[dict],
                if v.get("_code") == code and v.get("_dist") is not None
                and v["_dist"] <= radius]
         cats.append(compute_category_metrics(code, osm, ovt))
-    probes = run_probes(prop["_key"], osm_all, overture_all, rules)
+    probes = run_probes(prop["_key"], osm_all, overture_all, cmap)
     # Annexe : catégories Overture rencontrées SANS correspondance (top occurrences).
     unmapped: dict[str, int] = {}
     for v in overture_all:
         if v.get("_code") is None and v.get("category"):
             unmapped[v["category"]] = unmapped.get(v["category"], 0) + 1
-    return {"prop": prop, "cats": cats, "probes": probes, "unmapped": unmapped}
+    # Métrique de SANTÉ du mapping (V2-48c) : % de lieux CATÉGORISÉS que l'on reconnaît.
+    # Dénominateur = lieux à catégorie non nulle (un lieu sans catégorie ne prouve rien).
+    # 0 % = mapping cassé (l'artefact du run V2-48). Le garde-fou vit dans run_benchmark.
+    with_cat = [v for v in overture_all if (v.get("category") or "").strip()]
+    mapped = [v for v in with_cat if v.get("_code") is not None]
+    mapped_pct = _pct(len(mapped), len(with_cat))
+    return {"prop": prop, "cats": cats, "probes": probes, "unmapped": unmapped,
+            "overture_total": len(overture_all), "overture_with_cat": len(with_cat),
+            "overture_mapped": len(mapped), "mapped_pct": mapped_pct}
 
 
 def _family_of(code: str) -> str:
@@ -486,6 +548,11 @@ def render_report(results: list[dict], release: str, when: str) -> str:
         p = r["prop"]
         L.append(f"## {p['_label']}")
         L.append(f"`{p['id']}` — {p.get('city') or '?'} ({p.get('country_code') or '?'})")
+        # Santé du mapping (V2-48c) : % de lieux catégorisés reconnus (0 % = mapping cassé).
+        L.append(f"- **Santé du mapping : {r.get('mapped_pct', 0)} %** de lieux "
+                 f"catégorisés reconnus ({r.get('overture_mapped', 0)}/"
+                 f"{r.get('overture_with_cat', 0)} ; {r.get('overture_total', 0)} bruts). "
+                 f"Seuil d'alerte : {MIN_MAPPED_PCT:.0f} %.")
         L.append("")
         L.append("| Catégorie | OSM | Overture | Recouvr. | Uniq. OSM | Uniq. Ovt | "
                  "Tél OSM/Ovt | Site OSM/Ovt | Horaires OSM/Ovt | Lisib. OSM/Ovt | Reco |")
@@ -556,11 +623,31 @@ def render_csv(result: dict) -> str:
     return buf.getvalue()
 
 
+class MappingHealthError(RuntimeError):
+    """Le mapping Overture reconnaît trop peu de lieux → grille trompeuse (V2-48c)."""
+
+
+def check_mapping_health(results: list[dict], min_pct: float = MIN_MAPPED_PCT) -> None:
+    """Garde-fou V2-48c : si un terrain mappe moins de `min_pct` % de ses lieux
+    CATÉGORISÉS, on ÉCHOUE BRUYAMMENT plutôt que de produire une grille trompeuse (le run
+    V2-48 mappait 0 % — mapping contre l'ancienne taxonomie). Lève `MappingHealthError`."""
+    bad = [r for r in results if r["overture_with_cat"] and r["mapped_pct"] < min_pct]
+    if bad:
+        detail = " ; ".join(f"{r['prop']['_key']} {r['mapped_pct']}% "
+                            f"({r['overture_mapped']}/{r['overture_with_cat']})"
+                            for r in bad)
+        raise MappingHealthError(
+            f"Mapping Overture insuffisant (< {min_pct:.0f} % de lieux catégorisés "
+            f"reconnus) : {detail}. La taxonomie a probablement changé — mettez à jour "
+            f"ops/overture_category_map.json (cf. annexes du rapport) avant de conclure.")
+
+
 def run_benchmark(conn, fetch: Callable[[float, float, int, str], list[dict]], *,
                   release: str, out_dir: Path, when: str | None = None) -> str:
     """Orchestration : résout les terrains, charge l'OSM (base), fetch Overture (injecté),
-    calcule, écrit rapport + CSV. Renvoie le chemin du rapport. AUCUNE écriture DB."""
-    rules = load_category_map()
+    calcule, écrit rapport + CSV. Renvoie le chemin du rapport. AUCUNE écriture DB.
+    Lève `MappingHealthError` (avant d'écrire) si le mapping est manifestement cassé."""
+    cmap = load_category_map()
     radii = category_radii(conn)
     max_radius = min(BBOX_MAX_RADIUS_M, max(radii.get(c, 10000) for c in IN_SCOPE))
     results: list[dict] = []
@@ -574,7 +661,14 @@ def run_benchmark(conn, fetch: Callable[[float, float, int, str], list[dict]], *
         log.info("· %s : %d POI OSM en base ; fetch Overture (rayon %d m)…",
                  terrain["key"], len(osm), max_radius)
         overture = fetch(prop["lat"], prop["lon"], max_radius, release)
-        results.append(run_terrain(prop, osm, overture, radii, rules))
+        r = run_terrain(prop, osm, overture, radii, cmap)
+        log.info("· %s : %d lieux Overture, %d catégorisés, %.1f %% mappés",
+                 terrain["key"], r["overture_total"], r["overture_with_cat"],
+                 r["mapped_pct"])
+        results.append(r)
+
+    # Garde-fou de santé AVANT d'écrire quoi que ce soit (jamais de grille trompeuse).
+    check_mapping_health(results)
 
     when = when or _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     report = render_report(results, release, when)
@@ -631,8 +725,12 @@ def main(argv: list[str] | None = None) -> int:
             return 4
         log.info("· release Overture : %s", release)
         out_dir = Path(args.out) if args.out else _HERE
-        path = run_benchmark(conn, fetch_overture_duckdb, release=release,
-                             out_dir=out_dir)
+        try:
+            path = run_benchmark(conn, fetch_overture_duckdb, release=release,
+                                 out_dir=out_dir)
+        except MappingHealthError as exc:   # V2-48c : mapping cassé → échec bruyant
+            log.error("✗ %s", exc)
+            return 5
     log.info("✔ rapport → %s", path)
     return 0
 

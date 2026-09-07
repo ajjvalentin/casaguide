@@ -34,18 +34,25 @@ def _osm(name, code, dlat=0.0, dlon=0.0, **f):
 
 # ── Mapping de taxonomie ──────────────────────────────────────────────────────
 
-def test_category_map_prefix_and_unmapped():
-    rules = SB.load_category_map()
-    assert SB.map_overture_category("eat_and_drink.restaurant", rules) == "restaurant"
-    # Sous-catégorie hiérarchique → même code (préfixe).
-    assert SB.map_overture_category(
-        "eat_and_drink.restaurant.italian_restaurant", rules) == "restaurant"
-    assert SB.map_overture_category("financial_service.atm", rules) == "atm"
-    assert SB.map_overture_category("arts_and_entertainment.museum", rules) == "sight"
-    # Hors périmètre / inconnu → None (listé en annexe, jamais tordu).
-    assert SB.map_overture_category("health_and_medical.hospital", rules) is None
-    assert SB.map_overture_category("", rules) is None
-    assert SB.map_overture_category(None, rules) is None
+def test_category_map_flat_values_and_unmapped():
+    cmap = SB.load_category_map()
+    # V2-48c : taxonomie PLATE réelle de la release d'août (le défaut du run V2-48).
+    assert SB.map_overture_category("restaurant", cmap) == "restaurant"
+    assert SB.map_overture_category("tapas_bar", cmap) == "restaurant"   # exact avant suffixe _bar
+    assert SB.map_overture_category("italian_restaurant", cmap) == "restaurant"  # suffixe
+    assert SB.map_overture_category("bank_credit_union", cmap) == "atm"
+    assert SB.map_overture_category("grocery_store", cmap) == "supermarket"
+    assert SB.map_overture_category("landmark_and_historical_building", cmap) == "sight"
+    assert SB.map_overture_category("ski_resort", cmap) == "sport"       # Valais
+    assert SB.map_overture_category("car_rental", cmap) == "rental"
+    # Rétrocompat : l'ancien slug pointé matche par son DERNIER segment.
+    assert SB.map_overture_category("eat_and_drink.restaurant", cmap) == "restaurant"
+    # Hors périmètre / prospection / inconnu → None (annexe, jamais tordu).
+    assert SB.map_overture_category("holiday_rental_home", cmap) is None
+    assert SB.map_overture_category("hospital", cmap) is None
+    assert SB.map_overture_category("office", cmap) is None
+    assert SB.map_overture_category("", cmap) is None
+    assert SB.map_overture_category(None, cmap) is None
 
 
 # ── Appariement ───────────────────────────────────────────────────────────────
@@ -107,23 +114,26 @@ def test_recommend_covers_the_four_outcomes():
 # ── Sondes qualitatives (Murcie) ─────────────────────────────────────────────
 
 def test_murcia_probes_answer_named_questions():
-    rules = SB.load_category_map()
+    cmap = SB.load_category_map()
     overture = [
-        _ovt("Catedral de Murcia", "attractions_and_activities.landmark"),
-        _ovt("Real Casino de Murcia", "attractions_and_activities.landmark"),
-        _ovt("Banco Santander", "financial_service.banking_and_finance"),
-        _ovt("CaixaBank", "financial_service.banking_and_finance"),
-        _ovt("Bitcoin ATM - Shitcoins.club", "financial_service.atm"),
-        _ovt("MUyBICI Estación 12", "active_life.bike_rental"),
+        _ovt("Catedral de Murcia", "landmark_and_historical_building"),
+        _ovt("Catedral Consultores", "office_supply_store"),   # LEURRE (substring "catedral")
+        _ovt("Real Casino de Murcia", "landmark_and_historical_building"),
+        _ovt("Gran Casino de Ceuta", "casino"),                # LEURRE (substring "casino")
+        _ovt("Banco Santander", "bank_credit_union"),
+        _ovt("CaixaBank", "bank_credit_union"),
+        _ovt("Bitcoin ATM - Shitcoins.club", "atm"),
+        _ovt("MUyBICI Estación 12", "bike_rental"),
     ]
-    probes = SB.run_probes("murcia", [], overture, rules)
+    probes = SB.run_probes("murcia", [], overture, cmap)
     answers = {p["question"]: p["answer"] for p in probes}
+    # Exact-d'abord : la sonde ne remonte PAS « Catedral Consultores » ni « Gran Casino de Ceuta ».
     cat = next(a for q, a in answers.items() if "Catedral" in q)
-    assert cat.startswith("OUI")
+    assert cat == "OUI — Catedral de Murcia"
     casino = next(a for q, a in answers.items() if "Casino" in q)
-    assert casino.startswith("OUI")
+    assert casino == "OUI — Real Casino de Murcia"
     banks = next(a for q, a in answers.items() if "banques nommées" in q)
-    assert "2 banque(s) / 1 crypto" in banks
+    assert "2 banque(s) / 1 crypto sur 3 ATM Overture" in banks   # bank_credit_union → atm
     muy = next(a for q, a in answers.items() if "MUyBICI" in q)
     assert "1 entrée" in muy
 
@@ -286,3 +296,61 @@ def test_query_places_wkb_fallback_real_duckdb(tmp_path):
     rows = _query(_write_parquet(tmp_path, "ST_AsWKB(ST_Point(-1.128, 37.984))"))
     assert rows == [("Catedral de Murcia", 37.984, -1.128,
                      "attractions_and_activities.landmark", "+34 1", "http://x")]
+
+
+# ── V2-48c : mapping plat, santé, sondes resserrées, détection release ────────
+
+def test_mapping_health_guard_fails_loudly_on_broken_mapping():
+    # 0 lieu mappé (le désastre V2-48) → MappingHealthError, jamais de grille.
+    broken = [{"prop": {"_key": "murcia"}, "overture_with_cat": 100,
+               "overture_mapped": 0, "mapped_pct": 0.0}]
+    with pytest.raises(SB.MappingHealthError) as ei:
+        SB.check_mapping_health(broken)
+    assert "murcia" in str(ei.value) and "0" in str(ei.value)
+    # Au-dessus du seuil → pas d'erreur.
+    ok = [{"prop": {"_key": "murcia"}, "overture_with_cat": 100,
+           "overture_mapped": 45, "mapped_pct": 45.0}]
+    SB.check_mapping_health(ok)   # ne lève pas
+
+
+def test_run_terrain_reports_mapping_health():
+    prop = {"id": "P", "_key": "murcia", "_label": "M", "city": "Murcia",
+            "country_code": "ES", "lat": LAT, "lon": LON}
+    cmap = SB.load_category_map()
+    overture = [_ovt("Mercadona", "supermarket"),           # mappé
+                _ovt("Bar Sol", "bar"),                     # mappé
+                _ovt("Mairie", "town_hall"),                # catégorisé, non mappé
+                _ovt("Sans catégorie", "")]                 # sans catégorie → hors dénominateur
+    r = SB.run_terrain(prop, [], overture, {c: 20000 for c in SB.IN_SCOPE}, cmap)
+    assert r["overture_total"] == 4 and r["overture_with_cat"] == 3
+    assert r["overture_mapped"] == 2
+    assert r["mapped_pct"] == round(200 / 3, 1)             # 2/3 des catégorisés
+
+
+def test_exact_first_probe_rejects_substring_lures():
+    places = [_ovt("Catedral de Murcia", "x"),
+              _ovt("Catedral Consultores", "x"),
+              _ovt("Parroquia de la Catedral", "x")]
+    hits = SB._name_match_exact_first(places, "Catedral de Murcia")
+    assert hits == ["Catedral de Murcia"]                  # exact seul, pas les leurres
+
+
+def test_release_extraction_from_deep_paths_and_latest():
+    p = "s3://overturemaps-us-west-2/release/2026-08-19.0/theme=places/type=place/x.parquet"
+    assert SB._release_from_path(p) == "2026-08-19.0"
+    assert SB._release_from_path("s3://.../release/nope/theme=places/") is None
+
+    class _FakeCon:
+        def execute(self, sql):
+            assert "theme=places" in sql   # V2-48c : glob PROFOND (pas 'release/*' shallow)
+            self._rows = [
+                (f"{SB._OVERTURE_S3}/2026-07-16.1/theme=places/type=place/a.parquet",),
+                (f"{SB._OVERTURE_S3}/2026-08-19.0/theme=places/type=place/b.parquet",),
+                (f"{SB._OVERTURE_S3}/2026-08-19.0/theme=places/type=place/c.parquet",),
+            ]
+            return self
+        def fetchall(self):
+            return self._rows
+        def close(self):
+            pass
+    assert SB.latest_overture_release(connect=_FakeCon) == "2026-08-19.0"
