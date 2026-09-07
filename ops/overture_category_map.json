@@ -80,12 +80,44 @@
     "boat_rental": "rental",
     "motorcycle_rental": "rental",
     "scooter_rental": "rental",
-    "beach": "beach"
+    "beach": "beach",
+    "gas_station": "fuel",
+    "petrol_station": "fuel",
+    "fuel_station": "fuel",
+    "winery": "sight",
+    "vineyard": "sight",
+    "spa": "sight",
+    "day_spa": "sight",
+    "thermal_baths": "sight"
   },
   "suffix": [
     {"suffix": "_restaurant", "code": "restaurant"},
     {"suffix": "_bar", "code": "bar"},
     {"suffix": "_museum", "code": "sight"},
     {"suffix": "_rental", "code": "rental"}
-  ]
+  ],
+  "ignore_note": "PANIER « HORS SUJET PAR NATURE » (V2-48d) : catégories Overture délibérément absentes du guide (le voyageur n'en a pas besoin) — elles SORTENT du dénominateur de santé du mapping (santé = mappés / (catégorisés − ignorés)). Distinct d'une LACUNE (catégorie qui DEVRAIT être mappée mais ne l'est pas encore → reste au dénominateur, remonte au diagnostic). `holiday_rental_home` est ignoré ici MAIS noté à l'horizon comme gisement de prospection B2B locataires.",
+  "ignore": {
+    "exact": [
+      "hotel", "motel", "hostel", "bed_and_breakfast", "guest_house", "inn",
+      "resort_hotel", "holiday_rental_home", "holiday_rental", "vacation_rental",
+      "apartment_rental", "campground", "rv_park",
+      "clothing_store", "shoe_store", "furniture_store", "hardware_store",
+      "beauty_salon", "hair_salon", "nail_salon", "barber", "tanning_salon",
+      "real_estate_agent", "real_estate_service",
+      "automotive_repair", "car_repair", "car_wash", "car_dealer", "gas_and_service",
+      "professional_services", "lawyer", "accountant", "insurance_agency", "notary",
+      "consulting_service", "employment_agency", "advertising_agency",
+      "town_hall", "courthouse", "embassy", "post_office", "government_office",
+      "police_department", "fire_department", "school", "university", "church_cathedral",
+      "place_of_worship", "funeral_home", "cemetery"
+    ],
+    "keywords": [
+      "real_estate", "salon", "automotive", "car_repair", "car_wash", "car_dealer",
+      "professional_service", "insurance", "lawyer", "attorney", "accounting",
+      "notary", "consulting", "employment_agenc", "government", "administration",
+      "clothing_store", "hair_care", "hotel", "hostel", "school", "university",
+      "medical", "hospital", "clinic", "dentist", "pharmac", "veterinar"
+    ]
+  }
 }

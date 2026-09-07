@@ -302,13 +302,13 @@ def test_query_places_wkb_fallback_real_duckdb(tmp_path):
 
 def test_mapping_health_guard_fails_loudly_on_broken_mapping():
     # 0 lieu mappé (le désastre V2-48) → MappingHealthError, jamais de grille.
-    broken = [{"prop": {"_key": "murcia"}, "overture_with_cat": 100,
+    broken = [{"prop": {"_key": "murcia"}, "mapped_denominator": 100,
                "overture_mapped": 0, "mapped_pct": 0.0}]
     with pytest.raises(SB.MappingHealthError) as ei:
         SB.check_mapping_health(broken)
     assert "murcia" in str(ei.value) and "0" in str(ei.value)
     # Au-dessus du seuil → pas d'erreur.
-    ok = [{"prop": {"_key": "murcia"}, "overture_with_cat": 100,
+    ok = [{"prop": {"_key": "murcia"}, "mapped_denominator": 100,
            "overture_mapped": 45, "mapped_pct": 45.0}]
     SB.check_mapping_health(ok)   # ne lève pas
 
@@ -319,12 +319,44 @@ def test_run_terrain_reports_mapping_health():
     cmap = SB.load_category_map()
     overture = [_ovt("Mercadona", "supermarket"),           # mappé
                 _ovt("Bar Sol", "bar"),                     # mappé
-                _ovt("Mairie", "town_hall"),                # catégorisé, non mappé
-                _ovt("Sans catégorie", "")]                 # sans catégorie → hors dénominateur
+                _ovt("Mairie", "town_hall"),                # IGNORÉ (hors dénominateur V2-48d)
+                _ovt("Truc obscur", "widget_repository"),   # LACUNE (au dénominateur)
+                _ovt("Sans catégorie", "")]                 # sans catégorie → hors tout
     r = SB.run_terrain(prop, [], overture, {c: 20000 for c in SB.IN_SCOPE}, cmap)
-    assert r["overture_total"] == 4 and r["overture_with_cat"] == 3
-    assert r["overture_mapped"] == 2
-    assert r["mapped_pct"] == round(200 / 3, 1)             # 2/3 des catégorisés
+    assert r["overture_total"] == 5 and r["overture_with_cat"] == 4
+    assert r["overture_mapped"] == 2 and r["overture_ignored"] == 1
+    assert r["overture_gap"] == 1                           # widget_repository = lacune
+    assert r["mapped_denominator"] == 3                     # 4 catégorisés − 1 ignoré
+    assert r["mapped_pct"] == round(200 / 3, 1)             # 2 mappés / 3 mappables
+    assert "widget_repository" in r["gaps"] and "town_hall" in r["ignored_cats"]
+
+
+# ── V2-48d : panier « ignore », dénominateur, diagnostic ─────────────────────
+
+def test_classify_category_mapped_ignored_gap():
+    cmap = SB.load_category_map()
+    assert SB.classify_category("gas_station", cmap) == "mapped"    # lacune V2-48d comblée
+    assert SB.classify_category("winery", cmap) == "mapped"         # terrain valaisan
+    assert SB.classify_category("spa", cmap) == "mapped"
+    assert SB.classify_category("hotel", cmap) == "ignored"
+    assert SB.classify_category("beauty_salon", cmap) == "ignored"  # mot-clé « salon »
+    assert SB.classify_category("holiday_rental_home", cmap) == "ignored"
+    assert SB.classify_category("real_estate_agent", cmap) == "ignored"
+    assert SB.classify_category("some_new_shop_type", cmap) == "gap"
+
+
+def test_diagnostic_report_lists_gaps_not_ignored():
+    prop = {"id": "P", "_key": "murcia", "_label": "CASA MURCIA", "city": "Murcia",
+            "country_code": "ES", "lat": LAT, "lon": LON}
+    cmap = SB.load_category_map()
+    overture = ([_ovt("Hotel X", "hotel")] * 3            # ignorés (hors dénominateur)
+                + [_ovt("Truc", "widget_repository")] * 2  # lacune (au dénominateur)
+                + [_ovt("Bar", "bar")])                    # mappé
+    r = SB.run_terrain(prop, [], overture, {c: 20000 for c in SB.IN_SCOPE}, cmap)
+    diag = SB.render_diagnostic([r], "2026-08-19.0", "2026-09-11 10:00")
+    assert "Diagnostic" in diag and "LACUNES" in diag
+    assert "widget_repository" in diag        # la lacune est listée (à mapper)
+    assert "hotel" not in diag                # l'ignoré n'encombre pas le diagnostic
 
 
 def test_exact_first_probe_rejects_substring_lures():

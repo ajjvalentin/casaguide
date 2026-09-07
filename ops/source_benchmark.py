@@ -114,16 +114,41 @@ def load_category_map(path: Path | None = None) -> dict:
     PLATES). Tolère l'ancien format {rules:[{prefix,code}]} (rétrocompat)."""
     path = path or (_HERE / "overture_category_map.json")
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    ig = data.get("ignore") or {}
+    ignore = {"exact": {t.lower() for t in (ig.get("exact") or [])},
+              "keywords": [k.lower() for k in (ig.get("keywords") or [])]}
     if "exact" in data or "suffix" in data:
         return {"exact": {k.lower(): v for k, v in (data.get("exact") or {}).items()},
-                "suffix": data.get("suffix") or []}
+                "suffix": data.get("suffix") or [], "ignore": ignore}
     # Ancien format à préfixes pointés → converti en suffixes/exacts sur le dernier segment.
     exact: dict[str, str] = {}
-    suffix: list[dict] = []
     for r in data.get("rules") or []:
         seg = r["prefix"].rsplit(".", 1)[-1]
         exact[seg] = r["code"]
-    return {"exact": exact, "suffix": suffix}
+    return {"exact": exact, "suffix": [], "ignore": ignore}
+
+
+def is_ignored(primary: str | None, cmap: dict) -> bool:
+    """V2-48d : la catégorie Overture est-elle « hors sujet PAR NATURE » (hôtel, salon,
+    immobilier, administration…) → HORS dénominateur de santé. Distinct d'une LACUNE (à
+    mapper). Un lieu MAPPÉ n'est jamais « ignoré » (le mapping prime)."""
+    p = (primary or "").strip().lower()
+    if not p:
+        return False
+    token = p.rsplit(".", 1)[-1]
+    ig = cmap.get("ignore") or {}
+    if token in ig.get("exact", set()):
+        return True
+    return any(kw in token for kw in ig.get("keywords", []))
+
+
+def classify_category(primary: str | None, cmap: dict) -> str:
+    """État d'une catégorie Overture (V2-48d) : « mapped » (reconnue), « ignored »
+    (hors guide, hors dénominateur) ou « gap » (LACUNE à mapper — reste au dénominateur,
+    remonte au diagnostic)."""
+    if map_overture_category(primary, cmap) is not None:
+        return "mapped"
+    return "ignored" if is_ignored(primary, cmap) else "gap"
 
 
 def map_overture_category(primary: str | None, cmap: dict) -> str | None:
@@ -506,20 +531,29 @@ def run_terrain(prop: dict, osm_all: list[dict], overture_all: list[dict],
                and v["_dist"] <= radius]
         cats.append(compute_category_metrics(code, osm, ovt))
     probes = run_probes(prop["_key"], osm_all, overture_all, cmap)
-    # Annexe : catégories Overture rencontrées SANS correspondance (top occurrences).
-    unmapped: dict[str, int] = {}
+    # Chaque catégorie non mappée se range en IGNORÉE (hors guide) ou LACUNE (à mapper).
+    gaps: dict[str, int] = {}       # lacunes = diagnostic (ce qu'il faut mapper)
+    ignored_cats: dict[str, int] = {}
     for v in overture_all:
-        if v.get("_code") is None and v.get("category"):
-            unmapped[v["category"]] = unmapped.get(v["category"], 0) + 1
-    # Métrique de SANTÉ du mapping (V2-48c) : % de lieux CATÉGORISÉS que l'on reconnaît.
-    # Dénominateur = lieux à catégorie non nulle (un lieu sans catégorie ne prouve rien).
-    # 0 % = mapping cassé (l'artefact du run V2-48). Le garde-fou vit dans run_benchmark.
+        cat = (v.get("category") or "").strip()
+        if not cat or v.get("_code") is not None:
+            continue
+        (ignored_cats if is_ignored(cat, cmap) else gaps)[cat] = \
+            (ignored_cats if is_ignored(cat, cmap) else gaps).get(cat, 0) + 1
+    # Santé du mapping (V2-48d) : mappés / (catégorisés − IGNORÉS). Le non-mappé « hors
+    # sujet par nature » ne compte plus contre nous ; seules les LACUNES pèsent.
     with_cat = [v for v in overture_all if (v.get("category") or "").strip()]
     mapped = [v for v in with_cat if v.get("_code") is not None]
-    mapped_pct = _pct(len(mapped), len(with_cat))
-    return {"prop": prop, "cats": cats, "probes": probes, "unmapped": unmapped,
+    n_ignored = sum(ignored_cats.values())
+    denom = len(with_cat) - n_ignored
+    mapped_pct = _pct(len(mapped), denom)
+    return {"prop": prop, "cats": cats, "probes": probes,
+            "unmapped": dict(gaps, **ignored_cats),      # annexe complète (rétrocompat)
+            "gaps": gaps, "ignored_cats": ignored_cats,
             "overture_total": len(overture_all), "overture_with_cat": len(with_cat),
-            "overture_mapped": len(mapped), "mapped_pct": mapped_pct}
+            "overture_mapped": len(mapped), "overture_ignored": n_ignored,
+            "overture_gap": sum(gaps.values()), "mapped_denominator": denom,
+            "mapped_pct": mapped_pct}
 
 
 def _family_of(code: str) -> str:
@@ -548,10 +582,12 @@ def render_report(results: list[dict], release: str, when: str) -> str:
         p = r["prop"]
         L.append(f"## {p['_label']}")
         L.append(f"`{p['id']}` — {p.get('city') or '?'} ({p.get('country_code') or '?'})")
-        # Santé du mapping (V2-48c) : % de lieux catégorisés reconnus (0 % = mapping cassé).
-        L.append(f"- **Santé du mapping : {r.get('mapped_pct', 0)} %** de lieux "
-                 f"catégorisés reconnus ({r.get('overture_mapped', 0)}/"
-                 f"{r.get('overture_with_cat', 0)} ; {r.get('overture_total', 0)} bruts). "
+        # Santé du mapping (V2-48d) : mappés / MAPPABLES (catégorisés − ignorés hors sujet).
+        L.append(f"- **Santé du mapping : {r.get('mapped_pct', 0)} %** "
+                 f"({r.get('overture_mapped', 0)}/{r.get('mapped_denominator', 0)} "
+                 f"mappables) · {r.get('overture_mapped', 0)} mappés, "
+                 f"{r.get('overture_ignored', 0)} ignorés (hors guide), "
+                 f"{r.get('overture_gap', 0)} lacunes · {r.get('overture_total', 0)} bruts. "
                  f"Seuil d'alerte : {MIN_MAPPED_PCT:.0f} %.")
         L.append("")
         L.append("| Catégorie | OSM | Overture | Recouvr. | Uniq. OSM | Uniq. Ovt | "
@@ -572,14 +608,22 @@ def render_report(results: list[dict], release: str, when: str) -> str:
             for pr in r["probes"]:
                 L.append(f"- {pr['question']} → **{pr['answer']}**")
             L.append("")
-        if r["unmapped"]:
-            top = sorted(r["unmapped"].items(), key=lambda kv: -kv[1])[:15]
-            L.append("<details><summary>Annexe : catégories Overture sans "
-                     "correspondance (top 15)</summary>")
+        gaps = sorted((r.get("gaps") or {}).items(), key=lambda kv: -kv[1])[:15]
+        ign = sorted((r.get("ignored_cats") or {}).items(), key=lambda kv: -kv[1])[:15]
+        if gaps or ign:
+            L.append("<details><summary>Annexe : catégories Overture non mappées "
+                     "(lacunes à mapper vs ignorées hors guide)</summary>")
             L.append("")
-            for cat, n in top:
-                L.append(f"- `{cat}` × {n}")
-            L.append("")
+            if gaps:
+                L.append("**Lacunes (à mapper — au dénominateur) :**")
+                for cat, n in gaps:
+                    L.append(f"- `{cat}` × {n}")
+                L.append("")
+            if ign:
+                L.append("**Ignorées (hors guide — hors dénominateur) :**")
+                for cat, n in ign:
+                    L.append(f"- `{cat}` × {n}")
+                L.append("")
             L.append("</details>")
             L.append("")
     # Grille de décision agrégée par famille (recommandation majoritaire).
@@ -628,18 +672,50 @@ class MappingHealthError(RuntimeError):
 
 
 def check_mapping_health(results: list[dict], min_pct: float = MIN_MAPPED_PCT) -> None:
-    """Garde-fou V2-48c : si un terrain mappe moins de `min_pct` % de ses lieux
-    CATÉGORISÉS, on ÉCHOUE BRUYAMMENT plutôt que de produire une grille trompeuse (le run
-    V2-48 mappait 0 % — mapping contre l'ancienne taxonomie). Lève `MappingHealthError`."""
-    bad = [r for r in results if r["overture_with_cat"] and r["mapped_pct"] < min_pct]
+    """Garde-fou : si un terrain mappe moins de `min_pct` % de ses lieux MAPPABLES
+    (catégorisés − ignorés, V2-48d), on ÉCHOUE BRUYAMMENT plutôt que de produire une grille
+    trompeuse. Lève `MappingHealthError`."""
+    bad = [r for r in results if r["mapped_denominator"] and r["mapped_pct"] < min_pct]
     if bad:
         detail = " ; ".join(f"{r['prop']['_key']} {r['mapped_pct']}% "
-                            f"({r['overture_mapped']}/{r['overture_with_cat']})"
+                            f"({r['overture_mapped']}/{r['mapped_denominator']} mappables)"
                             for r in bad)
         raise MappingHealthError(
-            f"Mapping Overture insuffisant (< {min_pct:.0f} % de lieux catégorisés "
-            f"reconnus) : {detail}. La taxonomie a probablement changé — mettez à jour "
-            f"ops/overture_category_map.json (cf. annexes du rapport) avant de conclure.")
+            f"Mapping Overture insuffisant (< {min_pct:.0f} % de lieux MAPPABLES reconnus) "
+            f": {detail}. Voir le rapport de DIAGNOSTIC (lacunes par terrain) pour compléter "
+            f"ops/overture_category_map.json.")
+
+
+def render_diagnostic(results: list[dict], release: str, when: str,
+                      top: int = 50) -> str:
+    """Rapport de DIAGNOSTIC (V2-48d) : les LACUNES (catégories non mappées ET non
+    ignorées), top `top` par terrain — c'est ce qui permet de corriger le mapping quand le
+    garde-fou déclenche (sans lui, on est aveugle). La grille de DÉCISION est retenue."""
+    L: list[str] = []
+    L.append("# Diagnostic mapping Overture (V2-48d) — LACUNES à mapper")
+    L.append("")
+    L.append(f"- Release `{release}` · {when}")
+    L.append(f"- Santé insuffisante (< {MIN_MAPPED_PCT:.0f} % de lieux mappables reconnus "
+             f"sur au moins un terrain) → grille de décision RETENUE ; ce diagnostic liste "
+             f"les catégories à ajouter (mapper) ou à ranger dans « ignore ».")
+    L.append("")
+    for r in results:
+        p = r["prop"]
+        L.append(f"## {p['_label']}")
+        L.append(f"- {r['overture_mapped']} mappés · {r['overture_ignored']} ignorés · "
+                 f"**{r['overture_gap']} lacunes** · santé "
+                 f"{r['mapped_pct']} % ({r['overture_mapped']}/{r['mapped_denominator']}).")
+        gaps = sorted((r.get("gaps") or {}).items(), key=lambda kv: -kv[1])[:top]
+        if not gaps:
+            L.append("- *Aucune lacune.*")
+        else:
+            L.append("")
+            L.append("| Catégorie Overture non reconnue | × | → mapper vers / ignorer ? |")
+            L.append("|---|--:|---|")
+            for cat, n in gaps:
+                L.append(f"| `{cat}` | {n} |  |")
+        L.append("")
+    return "\n".join(L)
 
 
 def run_benchmark(conn, fetch: Callable[[float, float, int, str], list[dict]], *,
@@ -662,18 +738,27 @@ def run_benchmark(conn, fetch: Callable[[float, float, int, str], list[dict]], *
                  terrain["key"], len(osm), max_radius)
         overture = fetch(prop["lat"], prop["lon"], max_radius, release)
         r = run_terrain(prop, osm, overture, radii, cmap)
-        log.info("· %s : %d lieux Overture, %d catégorisés, %.1f %% mappés",
-                 terrain["key"], r["overture_total"], r["overture_with_cat"],
-                 r["mapped_pct"])
+        log.info("· %s : %d Overture, %d catégorisés, %d mappés / %d ignorés / %d lacunes "
+                 "→ santé %.1f %%", terrain["key"], r["overture_total"],
+                 r["overture_with_cat"], r["overture_mapped"], r["overture_ignored"],
+                 r["overture_gap"], r["mapped_pct"])
         results.append(r)
 
-    # Garde-fou de santé AVANT d'écrire quoi que ce soit (jamais de grille trompeuse).
-    check_mapping_health(results)
-
     when = when or _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-    report = render_report(results, release, when)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = _dt.date.today().isoformat()
+
+    # Garde-fou de santé : sous le seuil, on RETIENT la grille de décision mais on ÉCRIT le
+    # DIAGNOSTIC (lacunes) — sans lui, impossible de corriger le mapping (V2-48d).
+    try:
+        check_mapping_health(results)
+    except MappingHealthError:
+        diag_path = out_dir / f"source_benchmark_DIAGNOSTIC_{stamp}.md"
+        diag_path.write_text(render_diagnostic(results, release, when), encoding="utf-8")
+        log.error("✗ santé insuffisante → diagnostic écrit : %s", diag_path)
+        raise
+
+    report = render_report(results, release, when)
     report_path = out_dir / f"source_benchmark_{stamp}.md"
     report_path.write_text(report, encoding="utf-8")
     for r in results:
