@@ -97,6 +97,22 @@ export function openPropertyInfoModal(property, { onSaved } = {}) {
     openPositionModal(property, { onSaved });
   });
 
+  // V2-46 : alerte de cohérence commune/CP. Affichée à l'ouverture si la position
+  // enregistrée est en écart ('mismatch'), et après un re-géocodage qui en révèle un.
+  // Renvoie vers l'ajustement (bouton « Ajuster la position sur la carte » ci-dessus).
+  const mismatchBox = el("div", { class: "notice notice-warn hidden" });
+  const mismatchText = el("span", {});
+  mismatchBox.append(icon("triangle-alert", 18), mismatchText);
+  function showMismatch(message) {
+    mismatchText.textContent = message;
+    mismatchBox.classList.remove("hidden");
+    refreshIcons();
+  }
+  if (property.geocode_accuracy === "mismatch") {
+    showMismatch("La position localisée ne correspond pas à la commune ou au code "
+      + "postal saisis — vérifiez le point sur la carte.");
+  }
+
   const err = el("div", { class: "errbox hidden" });
   const save = el("button", { class: "btn btn-primary" }, "Enregistrer");
 
@@ -110,6 +126,7 @@ export function openPropertyInfoModal(property, { onSaved } = {}) {
     name.node, addr1.node, addr2.node,
     el("div", { class: "grid-2" }, postal.node, city.node),
     el("div", { class: "grid-2" }, region.node, country),
+    mismatchBox,
     el("div", { class: "field-group" }, regeoRow, regeoHint),
     el("div", { class: "row", style: { marginTop: "6px" } }, posBtn),
     coverBlock,
@@ -164,6 +181,15 @@ export function openPropertyInfoModal(property, { onSaved } = {}) {
         try {
           const res = await api.geocodeProperty(property.id);
           updated = res.property;
+          // V2-46 : écart commune/CP → on N'ENFERME PAS l'erreur dans un toast : on
+          // affiche l'alerte détaillée et on laisse la modale ouverte pour ajuster.
+          if (res.mismatch) {
+            Object.assign(property, updated);   // le posBtn ouvrira la position à jour
+            showMismatch(res.mismatch.message);
+            save.disabled = false; save.textContent = "Enregistrer";
+            if (onSaved) onSaved(updated);
+            return;
+          }
           toast(`Adresse re-localisée (${res.distances_updated} lieu(x) recalculé(s)).`, "ok");
         } catch (ge) {
           toast(ge.message || "Re-localisation impossible : ajustez le point à la main.", "err");

@@ -17,9 +17,9 @@ from ..deps import (
     get_translation_runner, require_write_access,
 )
 from ..schemas import (
-    CoverIn, GeocodeOut, PropertyIn, PropertyOut, PropertyStatsOut,
-    PropertyUpdate, RecomputeOut, SecretsIn, SecretsOut, SectionUpsertIn,
-    WifiNetworkOut,
+    CoverIn, GeocodeMismatchOut, GeocodeOut, PropertyIn, PropertyOut,
+    PropertyStatsOut, PropertyUpdate, RecomputeOut, SecretsIn, SecretsOut,
+    SectionUpsertIn, WifiNetworkOut,
 )
 from enrich.geocode import GeocodeError
 from .enrich import schedule_translation
@@ -203,8 +203,15 @@ def geocode_property(
         lat=res["lat"], lon=res["lon"], accuracy=res.get("accuracy") or "city",
         source=res.get("source") or "nominatim")
     n = _recompute_distances(conn, updated, computer)
+    # V2-46 : écart commune/CP → l'accuracy est déjà 'mismatch', on renvoie les détails
+    # pour que le front alerte le propriétaire et l'invite à ajuster le point.
+    mm = res.get("mismatch")
+    mismatch_out = GeocodeMismatchOut(
+        input_city=mm.input_city, input_postcode=mm.input_postcode,
+        result_locality=mm.result_locality, result_postcode=mm.result_postcode,
+        message=mm.message_fr()) if mm is not None else None
     return GeocodeOut(property=updated, accuracy=updated["geocode_accuracy"],
-                      distances_updated=n)
+                      distances_updated=n, mismatch=mismatch_out)
 
 
 # ── Affiche « QR code à imprimer » du guide (§3.2, M-07) ─────────────────────

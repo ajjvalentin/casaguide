@@ -70,6 +70,18 @@ def trigger_enrich(
             f"« {q.plan['name']} ». Il se réinitialise le 1er du mois prochain ; "
             f"passez à une offre supérieure pour un quota plus élevé.")
 
+    # V2-46 : ne jamais enrichir une position INCOHÉRENTE avec la saisie (rue homonyme
+    # dans une autre commune) — c'est exactement ce qui a produit 132 POI hors sujet sur
+    # CASA MURCIA. Le propriétaire doit d'abord ajuster le point (→ 'manual'/'rooftop')
+    # ou corriger l'adresse et re-localiser.
+    if prop.get("geocode_accuracy") == "mismatch":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "geocode_mismatch",
+                    "message": "La position localisée ne correspond pas à la commune "
+                               "ou au code postal saisis. Ajustez le point sur la carte "
+                               "(ou corrigez l'adresse) avant de rechercher les lieux."})
+
     job_id = repo.create_pending_job(conn, str(prop["id"]), payload.trigger)
     # Rendre le job visible de la tâche de fond (connexion distincte) avant de la lancer.
     conn.commit()

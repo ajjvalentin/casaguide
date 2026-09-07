@@ -1618,3 +1618,51 @@ def test_min_one_suppresses_far_police_when_near_exists(property_id):
             "SELECT name FROM pois WHERE property_id=%s AND category_code='police'",
             (property_id,)).fetchall()}
     assert names == {"Politie Proche"}          # le lointain n'est pas proposé
+
+
+# ── V2-46 : géocodage incohérent → le pipeline s'arrête, aucune moisson ───────
+
+def test_pipeline_aborts_on_geocode_mismatch_and_harvests_nothing(property_id):
+    """Un géocodage frais qui résout une rue homonyme dans une AUTRE commune (cas CASA
+    MURCIA) doit STOPPER le job (échec motivé) sans moissonner 132 POI hors sujet ; la
+    position est enregistrée en 'mismatch' pour l'ajustement propriétaire."""
+    orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
+    settings.overpass_backoff_s = 0
+    # Le logement est saisi « Orihuela Costa » ; Nominatim renvoie Torre-Pacheco.
+    mismatched = [{"lat": "37.74", "lon": "-0.95", "type": "house", "class": "building",
+                   "display_name": "Rue homonyme",
+                   "address": {"town": "Torre-Pacheco", "municipality": "Torre-Pacheco",
+                               "county": "Murcia", "postcode": "30700"}}]
+
+    def handler(request):
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=mismatched)
+        if "overpass" in url:            # ne devrait JAMAIS être appelé
+            return httpx.Response(200, json={"elements": [
+                {"type": "node", "id": 1, "lat": 37.74, "lon": -0.95,
+                 "tags": {"name": "Ne devrait pas apparaître", "amenity": "police"}}]})
+        if "/table/v1/" in url:
+            return httpx.Response(200, json=_osrm_payload(url))
+        return httpx.Response(404)
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(Exception):
+                pipeline.run(property_id, use_claude=False,
+                             only_categories={"police"}, http_client=client,
+                             anthropic_client=FakeAnthropic())
+    finally:
+        settings.overpass_mirrors = orig; settings.overpass_backoff_s = orig_backoff
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        n = conn.execute("SELECT count(*) c FROM pois WHERE property_id=%s",
+                        (property_id,)).fetchone()["c"]
+        prop = conn.execute("SELECT geocode_accuracy FROM properties WHERE id=%s",
+                           (property_id,)).fetchone()
+        job = conn.execute("SELECT status, steps FROM enrichment_jobs WHERE property_id=%s "
+                          "ORDER BY started_at DESC LIMIT 1", (property_id,)).fetchone()
+    assert n == 0                                        # AUCUNE moisson
+    assert prop["geocode_accuracy"] == "mismatch"        # position marquée pour ajustement
+    assert job["status"] == "failed"                     # job échoué proprement
+    assert job["steps"]["geocode"]["ok"] is False and job["steps"]["geocode"]["reason"]

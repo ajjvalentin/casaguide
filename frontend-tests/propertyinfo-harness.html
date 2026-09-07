@@ -69,6 +69,16 @@ try {
     "PATCH /properties porte auto_send_guide=false (vu " + JSON.stringify(patch.auto_send_guide) + ")");
   chk(saved && saved.auto_send_guide === false,
     "onSaved remonte le logement mis à jour (auto_send_guide=false)");
+
+  // ── 3. Alerte de cohérence commune/CP (V2-46) ──────────────────────────────
+  // Un logement dont la position enregistrée est en écart ('mismatch') affiche la
+  // bannière d'alerte dès l'ouverture (renvoi vers l'ajustement carte).
+  openPropertyInfoModal({ ...PROP, geocode_accuracy: "mismatch" }, {});
+  await wait(40);
+  const warn = qa(".notice-warn").find((n) => !n.classList.contains("hidden"));
+  chk(!!warn, "bannière d'alerte 'mismatch' visible à l'ouverture (V2-46)");
+  chk(warn && /ne correspond pas/.test(warn.textContent || ""),
+    "message d'alerte commune/CP présent");
 } catch (e) {
   pass = false;
   log.push("✗ exception : " + (e && e.message ? e.message : e));

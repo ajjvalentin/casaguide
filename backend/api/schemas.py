@@ -467,11 +467,23 @@ class RecomputeOut(BaseModel):
     updated: int
 
 
+class GeocodeMismatchOut(BaseModel):
+    """Écart commune/CP détecté au (re)géocodage (V2-46) : de quoi bâtir l'alerte."""
+    input_city: str | None = None
+    input_postcode: str | None = None
+    result_locality: str | None = None
+    result_postcode: str | None = None
+    message: str
+
+
 class GeocodeOut(BaseModel):
     """Résultat d'un (re)géocodage explicite de l'adresse (M-24)."""
     property: PropertyOut
     accuracy: str
     distances_updated: int
+    # V2-46 : présent (non-null) quand la commune/CP du résultat divergent de la saisie
+    # (`accuracy == 'mismatch'`) → le front alerte et renvoie vers l'ajustement carte.
+    mismatch: GeocodeMismatchOut | None = None
 
 
 # ── Enrichissement ───────────────────────────────────────────────────────────

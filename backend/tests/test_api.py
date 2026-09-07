@@ -2486,6 +2486,48 @@ def test_geocode_endpoint_isolated_by_owner(client):
     assert r.status_code == 404
 
 
+def test_geocode_mismatch_is_surfaced_and_blocks_enrich(client):
+    """V2-46 : un géocodage incohérent (rue homonyme dans une autre commune) →
+    accuracy='mismatch', alerte détaillée renvoyée, et l'enrichissement REFUSE tant
+    que ce n'est pas résolu (cas CASA MURCIA)."""
+    from api.deps import get_geocoder
+    from enrich.geocode import Mismatch
+    # Géocodeur qui reproduit CASA MURCIA → Torre-Pacheco.
+    app.dependency_overrides[get_geocoder] = lambda: (lambda prop: {
+        "lat": 37.74, "lon": -0.95, "accuracy": "mismatch", "source": "nominatim",
+        "mismatch": Mismatch(input_city="Murcia", input_postcode="30007",
+                             result_locality="Torre-Pacheco", result_postcode="30700")})
+    try:
+        owner = register(client)
+        prop = make_property(client, owner["headers"], city="Murcia",
+                             postal_code="30007",
+                             address_line1="Príncipe de Asturias 38")
+        pid = prop["id"]
+        r = client.post(f"/api/properties/{pid}/geocode", headers=owner["headers"])
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["accuracy"] == "mismatch"          # jamais « précis »
+        assert body["mismatch"] is not None
+        assert body["mismatch"]["result_locality"] == "Torre-Pacheco"
+        assert "Torre-Pacheco" in body["mismatch"]["message"]
+        # La position stockée reflète l'état 'mismatch'.
+        cur = client.get(f"/api/properties/{pid}", headers=owner["headers"]).json()
+        assert cur["geocode_accuracy"] == "mismatch"
+        # L'enrichissement est REFUSÉ (409) tant que l'écart n'est pas résolu.
+        e = client.post(f"/api/properties/{pid}/enrich", headers=owner["headers"],
+                        json={"trigger": "manual"})
+        assert e.status_code == 409
+        assert e.json()["detail"]["code"] == "geocode_mismatch"
+        # Résolution par placement manuel → 'rooftop'/'manual' → l'enrichissement passe.
+        client.patch(f"/api/properties/{pid}", headers=owner["headers"],
+                     json={"lat": 37.98, "lon": -1.13})
+        e2 = client.post(f"/api/properties/{pid}/enrich", headers=owner["headers"],
+                         json={"trigger": "manual"})
+        assert e2.status_code == 202
+    finally:
+        app.dependency_overrides.pop(get_geocoder, None)
+
+
 # ── Liens de partage élégants : Open Graph + slug (M-25) ─────────────────────
 
 def test_share_open_graph_and_slug_link(client):

@@ -217,6 +217,19 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 db.save_geocode(conn, property_id, geo["lat"], geo["lon"],
                                 geo["source"], geo["accuracy"])
                 prop["lat"], prop["lon"] = geo["lat"], geo["lon"]
+                # V2-46 : commune/CP incohérents avec la saisie (rue homonyme) → NE PAS
+                # moissonner (132 POI hors sujet, cas CASA MURCIA). La position est
+                # enregistrée en 'mismatch' pour l'ajustement propriétaire, et le job
+                # s'arrête proprement (échec motivé, aucune corruption).
+                if geo["accuracy"] == "mismatch":
+                    mm = geo.get("mismatch")
+                    reason = mm.message_fr() if mm is not None else \
+                        "commune/code postal incohérents avec la saisie"
+                    db.job_step(conn, job_id, "geocode",
+                                {"ok": False, "accuracy": "mismatch", "reason": reason})
+                    conn.commit()
+                    _progress(f"  ✖ géocodage incohérent : {reason}")
+                    raise geocode.GeocodeError(reason)
                 db.job_step(conn, job_id, "geocode",
                             {"ok": True, "accuracy": geo["accuracy"]})
                 _progress(f"  ✓ géocodage : {geo['accuracy']} "
