@@ -121,6 +121,66 @@ def test_build_prompt_never_leaks_status():
     assert "Noordgouwe" in prompt
 
 
+# ── V2-45 1bis : prompt v2 (doctrine détecteur de bruit) ─────────────────────
+
+def test_prompt_v2_encodes_noise_detector_doctrine():
+    prop = {"name": "Villa", "city": "Noordgouwe", "country_code": "NL",
+            "lat": 51.71, "lon": 3.91}
+    batch = [_poi("1", "Strand", "beach", "approved")]
+    batch[0].update(drive_min=45)
+    prompt = J.build_prompt(prop, batch, zone_type="RURALE (…)")
+    low = prompt.lower()
+    # Rôle : détecteur de bruit, pas éditeur ; taux de rejet attendu ~20-25 %.
+    assert "détecteur de bruit" in low and "20-25" in prompt
+    # Les trois biais du benchmark sont explicitement neutralisés.
+    assert "la distance seule" in low          # biais 1 (distance absolue)
+    assert "redondance" in low                 # biais 2 (anti-redondance)
+    assert "lacune de la source" in low or "source" in low   # biais 3 (métadonnées pauvres)
+    # Tolérances par famille présentes.
+    assert "~40 min" in prompt and "aucun plafond" in low
+    # Le doute profite au maintien.
+    assert "doute" in low and "keep" in low
+
+
+def test_zone_hint_rural_vs_urban_from_harvest_density():
+    rural = [_poi("1", "AH", "supermarket", "approved")]
+    rural[0].update(drive_min=18)
+    assert "RURALE" in J.zone_hint(rural)
+    urban = [_poi("1", "AH", "supermarket", "approved")]
+    urban[0].update(drive_min=3)
+    assert "urbaine" in J.zone_hint(urban).lower()
+    # Aucun commerce du quotidien moissonné → indéterminée (jamais d'affirmation gratuite).
+    assert "indéterminée" in J.zone_hint(
+        [dict(_poi("1", "X", "beach", "approved"), drive_min=5)]).lower()
+
+
+# ── V2-45 1bis §5 : tout POI reçoit un verdict exploitable ───────────────────
+
+def test_finalize_verdicts_defaults_missing_to_keep_conf_zero():
+    pois = [_poi("1", "A", "cafe", "approved"), _poi("2", "B", "cafe", "approved")]
+    verdicts = {"1": J.Verdict("reject", 0.9, "bruit")}   # "2" manque
+    complete, defaulted = J.finalize_verdicts(pois, verdicts)
+    assert defaulted == ["2"]
+    assert complete["2"] == J.DEFAULT_VERDICT
+    assert complete["2"].verdict == "keep" and complete["2"].confidence == 0.0
+    # L'existant n'est pas touché.
+    assert complete["1"].verdict == "reject"
+
+
+def test_metrics_with_defaults_zero_unjudged_and_signalled():
+    pois = [_poi("1", "A", "cafe", "approved"), _poi("2", "B", "cafe", "rejected")]
+    verdicts = {"1": J.Verdict("keep", 0.9, "ok")}         # "2" manquera
+    complete, defaulted = J.finalize_verdicts(pois, verdicts)
+    m = J.compute_metrics(pois, complete, defaulted)
+    assert m.unjudged == [] and m.judged == 2              # 0 non jugé (recette)
+    assert m.defaulted == ["2"]
+    # Le défaut 'keep' sur un POI rejeté par André = faux positif (jamais faux rejet).
+    assert [r["id"] for r in m.false_keep] == ["2"] and m.false_reject == []
+    report = J.render_report({"name": "V", "city": "X", "country_code": "NL"},
+                             "PID", m, 1.0, "m", "2026-09-07 10:00")
+    assert "verdict par défaut" in report and "non jugé" not in report.split("⚠")[0]
+
+
 # ── Rapport : les cinq éléments exigés ───────────────────────────────────────
 
 def test_render_report_has_the_five_sections():

@@ -83,23 +83,80 @@ def load_arbitrated_pois(conn, property_id: str) -> list[dict]:
 # ── Prompt du juge (le STATUT n'y figure JAMAIS) ─────────────────────────────
 
 _CRITERIA = """\
-Tu es un relecteur qui décide, pour un guide d'accueil de logement de vacances, si un
-lieu mérite d'être proposé au voyageur. Juge CHAQUE lieu selon :
-- PERTINENCE pour un vacancier séjournant à CETTE adresse (pas un habitant, pas un pro) ;
-- NOM : un lieu sans nom propre (« Aire de jeux », « Parking ») n'a guère de valeur ;
-- COHÉRENCE catégorie / réalité (une agence taggée « marché », une base militaire en
-  « aéroport »… sont hors sujet) ;
-- DISTANCE RAISONNABLE POUR L'USAGE : un commissariat ou une pharmacie au plus proche
-  suffit ; un restaurant à 40 min n'aide personne ; une plage ou un site d'excursion
-  peut être plus loin. En zone rurale, une certaine distance est normale — ne rejette
-  pas un lieu utile juste parce qu'il n'est pas à 2 minutes.
-Dans le doute sur un lieu plausiblement utile, tends vers KEEP : mieux vaut le laisser
-que détruire de la valeur."""
+Tu es un DÉTECTEUR DE BRUIT pour un guide d'accueil de logement de vacances, PAS un
+éditeur qui sélectionne les meilleurs lieux. Ton seul rôle : écarter les fiches
+manifestement parasites et laisser TOUT le reste. Le propriétaire veut un ANNUAIRE
+d'options (redondances comprises), pas une liste minimale. Sur une moisson typique,
+tu ne devrais rejeter QU'ENVIRON 20-25 % des lieux. Rejeter EXIGE un motif POSITIF de
+bruit tiré de la liste ci-dessous ; en l'absence d'un tel motif, garde (`keep`). Le
+DOUTE profite TOUJOURS au maintien — un `keep` ne détruit rien (le propriétaire tranche
+ensuite), un `reject` à tort supprime une information utile.
+
+REJETER (verdict `reject`) est légitime UNIQUEMENT pour l'un de ces motifs :
+- NOM GÉNÉRIQUE d'équipement anonyme, sans nom propre : « Speeltuintje », « Trampoline »,
+  « Ballenbad », « Aire de jeux », « Parking » (mais « Trampoline Park Zeeland » est un
+  nom propre → garder) ;
+- ERREUR DE CATÉGORIE manifeste : un hôpital classé « gare routière », un cinéma classé
+  « marché », une agence immobilière taggée « marché »… le lieu ne correspond pas à sa
+  catégorie ;
+- INFRASTRUCTURE NON CIVILE ou non ouverte au public (base militaire en « aéroport »,
+  héliport privé) ;
+- PLATEFORME NATIONALE SURNUMÉRAIRE au-delà du raisonnable pour la catégorie (une 4e
+  plateforme de livraison/baby-sitting nationale quand 3 suffisent) ;
+- DOUBLON LOINTAIN d'un équipement DU QUOTIDIEN (catégorie C : supermarché, boulangerie,
+  distributeur…) alors qu'un équivalent PROCHE existe déjà dans le lot — p. ex. une
+  boulangerie à 37 min quand une autre est à 8 min.
+
+NE JAMAIS rejeter pour l'un de ces motifs (ils ne sont PAS du bruit) :
+- LA DISTANCE SEULE. Le guide cible des vacanciers MOTORISÉS ; en zone rurale, rouler
+  est normal. Tolérances par famille (indicatives, jamais un couperet) :
+    • quotidien (C : supermarché, boulangerie, marché, distributeur, poste, laverie,
+      centre commercial) : large, jusqu'à ~20-25 min ;
+    • santé / sécurité (D : hôpital, pharmacie, médecin, police, vétérinaire) : GARDE
+      les alternatives jusqu'à ~40 min — la redondance DIRECTIONNELLE (un hôpital de
+      chaque côté) est une valeur de sécurité, pas du bruit ;
+    • loisirs & tourisme (G : plage, site, activité famille, sport) et TRANSPORTS LOURDS
+      (aéroport, gare) : AUCUN plafond — une plage à 50 min, un aéroport international à
+      100 min, une gare à 40 min sont des informations utiles ;
+- LA REDONDANCE en santé, sécurité ou carburant (2e/3e station-service, 2e dentiste,
+  2e pharmacie…) : les options de secours sont VOULUES ;
+- L'ABSENCE d'adresse, de description ou de site web : c'est une lacune de la SOURCE
+  (OpenStreetMap), pas un défaut du lieu. Un « Shell », une « Nieuwe kerk », une borne
+  de recharge sans fiche riche restent des lieux réels et pertinents ;
+- UN A PRIORI d'inutilité de la CATÉGORIE (dentistes, bornes de recharge, vétérinaires…) :
+  décider quelles catégories figurent au guide est une décision PRODUIT déjà prise, pas
+  la tienne. Juge le lieu, jamais l'utilité de sa catégorie."""
 
 
-def build_prompt(prop: dict, batch: list[dict]) -> str:
+# Familles de catégories du quotidien (C) : sert au signal rural/urbain (densité de
+# la moisson) fourni au juge — miroir des chapitres du seed, pas une nouvelle vérité.
+_EVERYDAY_CATEGORIES = frozenset({
+    "supermarket", "bakery", "market", "atm", "post_office", "laundry", "mall"})
+
+
+def zone_hint(pois: list[dict]) -> str:
+    """Signal rural/urbain DÉDUIT DE LA DENSITÉ DE LA MOISSON (spec V2-45 1bis) : si le
+    commerce du quotidien le plus proche est loin en voiture, la zone est rurale. Neutre
+    (« indéterminée ») si l'information manque — jamais une affirmation gratuite."""
+    times = [p["drive_min"] for p in pois
+             if p.get("category_code") in _EVERYDAY_CATEGORIES
+             and p.get("drive_min") is not None]
+    if not times:
+        return ("indéterminée (peu de commerces du quotidien moissonnés — probablement "
+                "rurale)")
+    nearest = min(times)
+    if nearest >= 12:
+        return (f"RURALE (le commerce du quotidien le plus proche est à ~{nearest} min "
+                f"en voiture) — vacanciers motorisés, rouler est normal")
+    if nearest <= 5:
+        return f"urbaine ou périurbaine (commerces du quotidien à ~{nearest} min)"
+    return f"semi-rurale (commerces du quotidien à ~{nearest} min)"
+
+
+def build_prompt(prop: dict, batch: list[dict], zone_type: str | None = None) -> str:
     """Construit le prompt d'un lot. Contexte du logement + critères + la liste des
-    lieux SANS leur statut. Demande un JSON strict `{"verdicts": [...]}`."""
+    lieux SANS leur statut. Demande un JSON strict `{"verdicts": [...]}`.
+    `zone_type` : signal rural/urbain calculé sur TOUTE la moisson (voir `zone_hint`)."""
     zone = f'{prop.get("city") or "?"}'
     if prop.get("region"):
         zone += f', {prop["region"]}'
@@ -123,16 +180,18 @@ def build_prompt(prop: dict, batch: list[dict]) -> str:
             f'- id "{p["id"]}" : {p["name"]}{loc} (catégorie {p["category_code"]}, '
             f'source {p.get("source") or "?"}){addr}{dist_txt}{desc_txt}')
     poi_block = "\n".join(lines)
+    zt = zone_type or "indéterminée"
     return (
         f"{_CRITERIA}\n\n"
         f"LOGEMENT : {prop.get('name') or 'logement'} à {zone}{coords}.\n"
-        f"Type : location de vacances. Déduis toi-même le caractère rural ou urbain "
-        f"de la zone à partir de la commune et des coordonnées.\n\n"
+        f"Type : location de vacances. ZONE : {zt}. Le guide cible des vacanciers "
+        f"MOTORISÉS ; en zone rurale une distance en voiture est normale et attendue.\n\n"
         f"LIEUX À JUGER ({len(batch)}) :\n{poi_block}\n\n"
         f"Réponds UNIQUEMENT par un objet JSON valide, sans markdown :\n"
         f'{{"verdicts": [{{"id": "...", "verdict": "keep" ou "reject", '
         f'"confidence": 0.0 à 1.0, "reason": "une phrase courte"}}]}}\n'
-        f"Un verdict par id fourni, ni plus ni moins.")
+        f"Un verdict par id fourni, ni plus ni moins. Rappel : garde par défaut, ne "
+        f"rejette QUE sur un motif de bruit explicite.")
 
 
 # ── Parsing d'un verdict ──────────────────────────────────────────────────────
@@ -144,10 +203,16 @@ class Verdict:
     reason: str
 
 
+# Robustesse (spec V2-45 1bis, §5) : tout POI DOIT recevoir un verdict exploitable. Un
+# id que le juge n'a pas rendu (JSON tronqué, lot incomplet) reçoit ce défaut PRUDENT —
+# `keep` confiance 0 : ne détruit jamais de valeur, et est SIGNALÉ dans le rapport.
+DEFAULT_VERDICT = Verdict("keep", 0.0, "verdict par défaut (non rendu par le juge)")
+
+
 def parse_verdicts(data: dict) -> dict[str, Verdict]:
     """Extrait `{id: Verdict}` d'un objet `{"verdicts":[...]}`. Tolère les champs
-    manquants (verdict inconnu → 'reject' par défaut le plus PRUDENT pour la mesure ?
-    non : on marque 'invalide' et on l'ignore, l'id restera « non jugé »)."""
+    manquants / mal typés : un verdict hors ('keep','reject') ou un id vide est ignoré
+    (l'id manquant sera comblé par `finalize_verdicts` → jamais « non jugé »)."""
     out: dict[str, Verdict] = {}
     for v in (data or {}).get("verdicts") or []:
         if not isinstance(v, dict):
@@ -165,6 +230,19 @@ def parse_verdicts(data: dict) -> dict[str, Verdict]:
     return out
 
 
+def finalize_verdicts(pois: list[dict],
+                      verdicts: dict[str, Verdict]) -> tuple[dict[str, Verdict], list[str]]:
+    """Comble par `DEFAULT_VERDICT` tout POI sans verdict exploitable (§5). Renvoie
+    `(verdicts_complets, ids_par_défaut)` — les seconds sont SIGNALÉS au rapport. PUR."""
+    complete = dict(verdicts)
+    defaulted: list[str] = []
+    for p in pois:
+        if p["id"] not in complete:
+            complete[p["id"]] = DEFAULT_VERDICT
+            defaulted.append(p["id"])
+    return complete, defaulted
+
+
 # ── Jugement (l'appel Claude est INJECTÉ → testable sans réseau) ──────────────
 
 def _chunks(seq: list, size: int):
@@ -177,13 +255,15 @@ def judge_pois(prop: dict, pois: list[dict],
                batch_size: int = 15) -> tuple[dict[str, Verdict], list[dict]]:
     """Juge les POI par lots. `ask(prompt) -> (data, meta)` est injecté (réel : appel
     Claude ; test : bouchon). Renvoie ({id: Verdict}, attempts) où `attempts` est la
-    liste des coûts par essai à comptabiliser dans `api_costs`."""
+    liste des coûts par essai à comptabiliser dans `api_costs`. Le signal rural/urbain
+    est calculé UNE fois sur TOUTE la moisson (densité) et fourni à chaque lot."""
+    zt = zone_hint(pois)
     verdicts: dict[str, Verdict] = {}
     attempts: list[dict] = []
     batches = list(_chunks(pois, batch_size))
     for n, batch in enumerate(batches, 1):
         log.info("· lot %d/%d (%d lieux)…", n, len(batches), len(batch))
-        data, meta = ask(build_prompt(prop, batch))
+        data, meta = ask(build_prompt(prop, batch, zone_type=zt))
         verdicts.update(parse_verdicts(data))
         attempts.extend(meta.get("attempts")
                         or [{"units": meta.get("units", 0),
@@ -206,6 +286,7 @@ class Metrics:
     false_reject: list[dict] = field(default_factory=list)   # humain KEEP, juge REJECT
     false_keep: list[dict] = field(default_factory=list)     # humain REJECT, juge KEEP
     by_confidence: list[dict] = field(default_factory=list)
+    defaulted: list[str] = field(default_factory=list)       # verdict par défaut (§5)
 
     @property
     def agreement_pct(self) -> float:
@@ -226,14 +307,19 @@ _CONF_BUCKETS = ((0.9, 1.01, "≥ 0,90"), (0.7, 0.9, "0,70–0,90"),
                  (0.5, 0.7, "0,50–0,70"), (0.0, 0.5, "< 0,50"))
 
 
-def compute_metrics(pois: list[dict], verdicts: dict[str, Verdict]) -> Metrics:
-    """Compare verdicts et statuts réels. PUR (aucune E/S)."""
+def compute_metrics(pois: list[dict], verdicts: dict[str, Verdict],
+                    defaulted: list[str] | None = None) -> Metrics:
+    """Compare verdicts et statuts réels. PUR (aucune E/S). `defaulted` = ids ayant reçu
+    le verdict par défaut (§5) — comptés dans l'accord (ils ont un verdict `keep`) mais
+    signalés à part. `unjudged` reste pour un id RÉELLEMENT sans verdict (défensif :
+    vide après `finalize_verdicts`)."""
     human_keeps = sum(1 for p in pois if p["status"] in RETAINED)
     human_rejects = sum(1 for p in pois if p["status"] == REJECTED)
     unjudged = [p["id"] for p in pois if p["id"] not in verdicts]
     m = Metrics(total=len(pois), judged=len(pois) - len(unjudged), unjudged=unjudged,
                 human_keeps=human_keeps, human_rejects=human_rejects,
-                agree=0, agree_keep=0, agree_reject=0)
+                agree=0, agree_keep=0, agree_reject=0,
+                defaulted=list(defaulted or []))
     buckets = {label: [0, 0] for _, _, label in _CONF_BUCKETS}  # label -> [agree, n]
     for p in pois:
         v = verdicts.get(p["id"])
@@ -278,7 +364,8 @@ def render_report(prop: dict, property_id: str, metrics: Metrics,
     L.append(f"- Modèle juge : `{model}` · exécuté le {when}")
     L.append(f"- POI arbitrés : **{m.total}** ({m.human_keeps} retenus, "
              f"{m.human_rejects} rejetés)"
-             + (f" · {len(m.unjudged)} non jugé(s)" if m.unjudged else ""))
+             + (f" · {len(m.defaulted)} verdict(s) par défaut" if m.defaulted else "")
+             + (f" · ⚠ {len(m.unjudged)} non jugé(s)" if m.unjudged else ""))
     L.append("")
     # 1. Accord global
     L.append("## 1. Accord global")
@@ -326,10 +413,14 @@ def render_report(prop: dict, property_id: str, metrics: Metrics,
     for b in m.by_confidence:
         L.append(f"| {b['bucket']} | {b['n']} | "
                  f"{b['pct']} % ({b['agree']}/{b['n']}) |")
+    if m.defaulted:
+        L.append("")
+        L.append(f"> {len(m.defaulted)} POI ont reçu le **verdict par défaut** "
+                 f"(`keep` confiance 0 — non rendus par le juge, §5) : comptés dans "
+                 f"l'accord mais à re-soumettre.")
     if m.unjudged:
         L.append("")
-        L.append(f"> {len(m.unjudged)} POI sans verdict exploitable (ignorés du calcul "
-                 f"d'accord).")
+        L.append(f"> ⚠ {len(m.unjudged)} POI SANS aucun verdict (anomalie).")
     L.append("")
     return "\n".join(L)
 
@@ -360,13 +451,15 @@ def run_benchmark(conn, property_id: str, ask: Callable[[str], tuple[dict, dict]
         raise LookupError(f"Aucun POI arbitré (approved/edited/rejected) pour {property_id}")
 
     verdicts, attempts = judge_pois(prop, pois, ask, batch_size=batch_size)
+    # §5 : tout POI reçoit un verdict exploitable (défaut `keep` conf 0, signalé).
+    verdicts, defaulted = finalize_verdicts(pois, verdicts)
     # SEULE écriture : la comptabilité (une ligne par essai). job_id NULL (hors job).
     import enrich.db as edb  # noqa: PLC0415 — import tardif (après chargement .env)
     edb.record_costs(conn, property_id, None, "anthropic", OPERATION, attempts)
     conn.commit()
 
     cost_cts = round(sum(a.get("cost_cts", 0.0) for a in attempts), 4)
-    metrics = compute_metrics(pois, verdicts)
+    metrics = compute_metrics(pois, verdicts, defaulted)
     when = when or _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     report = render_report(prop, property_id, metrics, cost_cts, model, when)
     return report, cost_cts, metrics
