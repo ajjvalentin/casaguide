@@ -93,19 +93,25 @@ DOUTE profite TOUJOURS au maintien — un `keep` ne détruit rien (le propriéta
 ensuite), un `reject` à tort supprime une information utile.
 
 REJETER (verdict `reject`) est légitime UNIQUEMENT pour l'un de ces motifs :
-- NOM GÉNÉRIQUE d'équipement anonyme, sans nom propre : « Speeltuintje », « Trampoline »,
-  « Ballenbad », « Aire de jeux », « Parking » (mais « Trampoline Park Zeeland » est un
-  nom propre → garder) ;
+- NOM GÉNÉRIQUE là où un NOM PROPRE est ATTENDU (commerce, restaurant, site touristique,
+  équipement de JEU anonyme) : « Speeltuintje », « Trampoline », « Ballenbad », « Aire de
+  jeux » (mais « Trampoline Park Zeeland » est un nom propre → garder). La GÉNÉRICITÉ est
+  RELATIVE à la catégorie : une INFRASTRUCTURE FONCTIONNELLE porte légitimement un nom
+  fonctionnel — « Parada de Taxis », un arrêt de bus, une borne de recharge, un
+  distributeur, une station-service ne sont JAMAIS du bruit pour cette seule raison ;
 - ERREUR DE CATÉGORIE manifeste : un hôpital classé « gare routière », un cinéma classé
   « marché », une agence immobilière taggée « marché »… le lieu ne correspond pas à sa
   catégorie ;
 - INFRASTRUCTURE NON CIVILE ou non ouverte au public (base militaire en « aéroport »,
   héliport privé) ;
-- PLATEFORME NATIONALE SURNUMÉRAIRE au-delà du raisonnable pour la catégorie (une 4e
-  plateforme de livraison/baby-sitting nationale quand 3 suffisent) ;
-- DOUBLON LOINTAIN d'un équipement DU QUOTIDIEN (catégorie C : supermarché, boulangerie,
-  distributeur…) alors qu'un équivalent PROCHE existe déjà dans le lot — p. ex. une
-  boulangerie à 37 min quand une autre est à 8 min.
+- SURNUMÉRAIRE au-delà du raisonnable pour la catégorie : une 4e plateforme nationale de
+  livraison/baby-sitting quand 3 suffisent ; un aéroport ou une gare SUPPLÉMENTAIRE
+  au-delà des 1-2 PRINCIPAUX de la zone (un 3e aéroport lointain n'ajoute rien) ;
+- DOUBLON LOINTAIN d'un équipement DE PROXIMITÉ — du QUOTIDIEN (catégorie C :
+  supermarché, boulangerie, distributeur…) OU de loisir de proximité (aire de jeux, petit
+  terrain de quartier) — alors qu'un équivalent PROCHE existe, ou simplement trop loin
+  pour son usage de proximité (boulangerie à 37 min quand une autre est à 8 ; aire de jeux
+  à 49 min).
 
 NE JAMAIS rejeter pour l'un de ces motifs (ils ne sont PAS du bruit) :
 - LA DISTANCE SEULE. Le guide cible des vacanciers MOTORISÉS ; en zone rurale, rouler
@@ -115,9 +121,15 @@ NE JAMAIS rejeter pour l'un de ces motifs (ils ne sont PAS du bruit) :
     • santé / sécurité (D : hôpital, pharmacie, médecin, police, vétérinaire) : GARDE
       les alternatives jusqu'à ~40 min — la redondance DIRECTIONNELLE (un hôpital de
       chaque côté) est une valeur de sécurité, pas du bruit ;
-    • loisirs & tourisme (G : plage, site, activité famille, sport) et TRANSPORTS LOURDS
-      (aéroport, gare) : AUCUN plafond — une plage à 50 min, un aéroport international à
-      100 min, une gare à 40 min sont des informations utiles ;
+    • DESTINATIONS de loisir/tourisme pour lesquelles on se DÉPLACE (plage, site
+      touristique, parc d'attractions, grand parcours de golf) : AUCUN plafond de
+      distance — une plage à 50 min, un grand site à 60 min sont des informations utiles ;
+    • ÉQUIPEMENT de PROXIMITÉ de loisir (aire de jeux, petit terrain de sport de
+      quartier) : traité COMME le quotidien — un tel équipement LOINTAIN (aire de jeux à
+      49 min) est du bruit, pas une destination ;
+    • TRANSPORTS LOURDS (aéroport, gare) : pas de plafond de distance NON PLUS, mais
+      garde seulement les 1 ou 2 PRINCIPAUX de la zone — un aéroport (ou une gare)
+      SUPPLÉMENTAIRE plus lointain, au-delà de ces majeurs, est surnuméraire (bruit) ;
 - LA REDONDANCE en santé, sécurité ou carburant (2e/3e station-service, 2e dentiste,
   2e pharmacie…) : les options de secours sont VOULUES ;
 - L'ABSENCE d'adresse, de description ou de site web : c'est une lacune de la SOURCE
@@ -250,24 +262,41 @@ def _chunks(seq: list, size: int):
         yield seq[i:i + size]
 
 
+def _judge_batches(prop: dict, pois: list[dict], zt: str, batch_size: int,
+                   ask: Callable[[str], tuple[dict, dict]],
+                   verdicts: dict[str, Verdict], attempts: list[dict],
+                   label: str = "lot") -> None:
+    """Juge `pois` par lots et met à jour `verdicts`/`attempts` en place."""
+    batches = list(_chunks(pois, batch_size))
+    for n, batch in enumerate(batches, 1):
+        log.info("· %s %d/%d (%d lieux)…", label, n, len(batches), len(batch))
+        data, meta = ask(build_prompt(prop, batch, zone_type=zt))
+        verdicts.update(parse_verdicts(data))
+        attempts.extend(meta.get("attempts")
+                        or [{"units": meta.get("units", 0),
+                             "cost_cts": meta.get("cost_cts", 0.0)}])
+
+
 def judge_pois(prop: dict, pois: list[dict],
                ask: Callable[[str], tuple[dict, dict]], *,
                batch_size: int = 15) -> tuple[dict[str, Verdict], list[dict]]:
     """Juge les POI par lots. `ask(prompt) -> (data, meta)` est injecté (réel : appel
     Claude ; test : bouchon). Renvoie ({id: Verdict}, attempts) où `attempts` est la
     liste des coûts par essai à comptabiliser dans `api_costs`. Le signal rural/urbain
-    est calculé UNE fois sur TOUTE la moisson (densité) et fourni à chaque lot."""
+    est calculé UNE fois sur TOUTE la moisson (densité) et fourni à chaque lot.
+
+    V2-45 1ter §4 : un POI resté SANS verdict exploitable (échec de parsing du lot) est
+    RE-SOUMIS une fois — en petits lots — AVANT le verdict par défaut (3 ratés sur 243
+    jugements cumulés). Le retry est BORNÉ à une passe (pas de boucle)."""
     zt = zone_hint(pois)
     verdicts: dict[str, Verdict] = {}
     attempts: list[dict] = []
-    batches = list(_chunks(pois, batch_size))
-    for n, batch in enumerate(batches, 1):
-        log.info("· lot %d/%d (%d lieux)…", n, len(batches), len(batch))
-        data, meta = ask(build_prompt(prop, batch, zone_type=zt))
-        verdicts.update(parse_verdicts(data))
-        attempts.extend(meta.get("attempts")
-                        or [{"units": meta.get("units", 0),
-                             "cost_cts": meta.get("cost_cts", 0.0)}])
+    _judge_batches(prop, pois, zt, batch_size, ask, verdicts, attempts)
+    missing = [p for p in pois if p["id"] not in verdicts]
+    if missing:
+        log.info("· retry : %d POI sans verdict re-soumis", len(missing))
+        _judge_batches(prop, missing, zt, batch_size, ask, verdicts, attempts,
+                       label="retry")
     return verdicts, attempts
 
 

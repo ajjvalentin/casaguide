@@ -271,3 +271,63 @@ def test_run_benchmark_is_read_only_except_api_costs():
         finally:
             conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
             conn.commit()
+
+
+# ── V2-45 volet 1ter : quatre retouches du prompt + retry avant défaut ────────
+
+def test_prompt_1ter_heavy_transport_and_g_destination_split():
+    prop = {"name": "V", "city": "X", "country_code": "ES", "lat": 38.0, "lon": -0.9}
+    prompt = J.build_prompt(prop, [_poi("1", "A", "airport", "approved")],
+                            zone_type="urbaine")
+    low = " ".join(prompt.lower().split())    # espaces normalisés (le prompt est retourné à la ligne)
+    # Retouche 1 : transports lourds sans plafond MAIS 1-2 principaux, surnombre = bruit.
+    assert "1 ou 2 principaux" in low and "surnum" in low
+    # Retouche 2 : destinations G sans plafond ; proximité de loisir lointaine = bruit.
+    assert "destinations de loisir" in low and "aire de jeux à 49 min" in low
+    assert "équipement de proximité de loisir" in low
+    # Retouche 3 : généricité relative à la catégorie (nom fonctionnel légitime).
+    assert "parada de taxis" in low and "relative" in low
+    assert "infrastructure fonctionnelle" in low
+
+
+def test_retry_resubmits_missing_before_defaulting():
+    """§4 : un POI non rendu au 1er passage est RE-SOUMIS une fois ; s'il revient, pas
+    de verdict par défaut."""
+    prop = {"name": "V", "city": "X", "country_code": "NL", "lat": 51.7, "lon": 3.9}
+    pois = [_poi("a", "A", "cafe", "approved"), _poi("b", "B", "cafe", "approved")]
+    calls = {"n": 0}
+
+    def ask(prompt):
+        calls["n"] += 1
+        ids = re.findall(r'id "([^"]+)"', prompt)
+        # 1er appel : "b" manque (raté de parsing) ; retry : "b" est rendu.
+        out = [i for i in ids if not (calls["n"] == 1 and i == "b")]
+        return ({"verdicts": [{"id": i, "verdict": "keep", "confidence": 0.8,
+                               "reason": "r"} for i in out]},
+                {"attempts": [{"units": 10, "cost_cts": 0.1}]})
+
+    verdicts, attempts = J.judge_pois(prop, pois, ask, batch_size=15)
+    complete, defaulted = J.finalize_verdicts(pois, verdicts)
+    assert calls["n"] == 2                       # un passage + un retry
+    assert "b" in verdicts and defaulted == []   # récupéré par le retry, pas défaut
+    assert len(attempts) == 2                    # coût des deux passages compté
+
+
+def test_retry_bounded_then_defaults_if_still_missing():
+    """§4 : le retry est BORNÉ à une passe ; un POI toujours muet retombe sur le défaut."""
+    prop = {"name": "V", "city": "X", "country_code": "NL", "lat": 51.7, "lon": 3.9}
+    pois = [_poi("a", "A", "cafe", "approved"), _poi("b", "B", "cafe", "rejected")]
+    calls = {"n": 0}
+
+    def ask(prompt):
+        calls["n"] += 1
+        ids = re.findall(r'id "([^"]+)"', prompt)
+        out = [i for i in ids if i != "b"]       # "b" jamais rendu
+        return ({"verdicts": [{"id": i, "verdict": "keep", "confidence": 0.9,
+                               "reason": "r"} for i in out]},
+                {"attempts": [{"units": 10, "cost_cts": 0.1}]})
+
+    verdicts, _ = J.judge_pois(prop, pois, ask, batch_size=15)
+    complete, defaulted = J.finalize_verdicts(pois, verdicts)
+    assert calls["n"] == 2                        # une seule passe de retry (pas de boucle)
+    assert defaulted == ["b"] and complete["b"] == J.DEFAULT_VERDICT
