@@ -359,6 +359,45 @@ def test_diagnostic_report_lists_gaps_not_ignored():
     assert "hotel" not in diag                # l'ignoré n'encombre pas le diagnostic
 
 
+# ── V2-48e : mapping complété d'après le diagnostic réel 07/09 ────────────────
+
+def test_v48e_real_diagnostic_tokens_are_mapped():
+    cmap = SB.load_category_map()
+    # BUG V2-48d : le token réel est « spas » (pas « spa ») — 222+ lacunes. Ce test
+    # aurait attrapé l'écart (fixtures = tokens du diagnostic réel).
+    assert SB.map_overture_category("spas", cmap) == "sight"
+    expected = {
+        "car_rental_agency": "rental", "atms": "atm", "banks": "atm",
+        "ice_cream_shop": "cafe", "irish_pub": "bar", "lounge": "bar",
+        "dance_club": "bar", "music_venue": "bar", "park": "family_activity",
+        "active_life": "sport", "catholic_church": "sight", "art_gallery": "sight",
+        "cultural_center": "sight", "mountain": "sight", "lake": "sight",
+        "internal_medicine": "doctor", "taxi_service": "taxi",
+        "train_station": "train_station", "ev_charging_station": "charging_station",
+        "gas_station": "fuel",
+    }
+    for token, code in expected.items():
+        assert SB.map_overture_category(token, cmap) == code, token
+        assert SB.classify_category(token, cmap) == "mapped", token   # jamais ignoré
+
+
+def test_v48e_ignore_keywords_extended_by_family():
+    cmap = SB.load_category_map()
+    for token in ("general_contractor", "roofing_service", "plumbing_service",
+                  "landscaping_service", "building_materials",       # BTP
+                  "engineering_service", "architect", "property_management",
+                  "printing_service", "telecommunication_service",   # services pro
+                  "psychologist", "physical_therapy", "massage_therapy",
+                  "alternative_medicine", "nutritionist",            # paramédical
+                  "jewelry_store", "perfume_store", "electronics_store",
+                  "pet_store", "tattoo_parlor", "bookstore", "liquor_store",
+                  "butcher_shop", "health_food_store",               # commerce spécialisé
+                  "public_library", "funeral_services", "betting_center",
+                  "package_locker", "travel_services", "accommodation",
+                  "service_apartments"):                             # divers + horizon B2B
+        assert SB.classify_category(token, cmap) == "ignored", token
+
+
 def test_exact_first_probe_rejects_substring_lures():
     places = [_ovt("Catedral de Murcia", "x"),
               _ovt("Catedral Consultores", "x"),

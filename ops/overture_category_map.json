@@ -84,11 +84,31 @@
     "gas_station": "fuel",
     "petrol_station": "fuel",
     "fuel_station": "fuel",
+    "ev_charging_station": "charging_station",
     "winery": "sight",
     "vineyard": "sight",
+    "spas": "sight",
     "spa": "sight",
     "day_spa": "sight",
-    "thermal_baths": "sight"
+    "thermal_baths": "sight",
+    "car_rental_agency": "rental",
+    "atms": "atm",
+    "banks": "atm",
+    "ice_cream_shop": "cafe",
+    "irish_pub": "bar",
+    "lounge": "bar",
+    "dance_club": "bar",
+    "music_venue": "bar",
+    "park": "family_activity",
+    "active_life": "sport",
+    "catholic_church": "sight",
+    "art_gallery": "sight",
+    "cultural_center": "sight",
+    "mountain": "sight",
+    "lake": "sight",
+    "internal_medicine": "doctor",
+    "taxi_service": "taxi",
+    "train_station": "train_station"
   },
   "suffix": [
     {"suffix": "_restaurant", "code": "restaurant"},
@@ -96,7 +116,7 @@
     {"suffix": "_museum", "code": "sight"},
     {"suffix": "_rental", "code": "rental"}
   ],
-  "ignore_note": "PANIER « HORS SUJET PAR NATURE » (V2-48d) : catégories Overture délibérément absentes du guide (le voyageur n'en a pas besoin) — elles SORTENT du dénominateur de santé du mapping (santé = mappés / (catégorisés − ignorés)). Distinct d'une LACUNE (catégorie qui DEVRAIT être mappée mais ne l'est pas encore → reste au dénominateur, remonte au diagnostic). `holiday_rental_home` est ignoré ici MAIS noté à l'horizon comme gisement de prospection B2B locataires.",
+  "ignore_note": "PANIER « HORS SUJET PAR NATURE » (V2-48d, étendu V2-48e d'après le diagnostic réel du 07/09) : catégories Overture délibérément absentes du guide (le voyageur n'en a pas besoin) — elles SORTENT du dénominateur de santé (santé = mappés / (catégorisés − ignorés)). Distinct d'une LACUNE (catégorie qui DEVRAIT être mappée → reste au dénominateur, remonte au diagnostic). Les mots-clés sont testés en SOUS-CHAÎNE du token ; le mapping PRIME (un token mappé n'est jamais ignoré). HORIZON prospection B2B locataires : `holiday_rental_home`, `accommodation`, `service_apartments` (ignorés du guide, mais gisement à instruire).",
   "ignore": {
     "exact": [
       "hotel", "motel", "hostel", "bed_and_breakfast", "guest_house", "inn",
@@ -117,7 +137,23 @@
       "professional_service", "insurance", "lawyer", "attorney", "accounting",
       "notary", "consulting", "employment_agenc", "government", "administration",
       "clothing_store", "hair_care", "hotel", "hostel", "school", "university",
-      "medical", "hospital", "clinic", "dentist", "pharmac", "veterinar"
+      "medical", "hospital", "clinic", "dentist", "pharmac", "veterinar",
+      "construction", "contractor", "carpenter", "masonry", "roofing", "drywall",
+      "plumbing", "landscaping", "hvac", "metal_fabricator", "building_",
+      "engineering", "architect", "escrow", "marketing", "designer", "printing",
+      "business_", "property_management", "home_developer", "telecommunication",
+      "freight", "industrial", "manufacturing",
+      "physical_therapy", "psycholog", "osteopath", "naturopath",
+      "alternative_medicine", "massage_therapy", "diagnostic_services", "nutritionist",
+      "jewelry", "perfume", "thrift", "appliance", "mobile_phone", "electronics",
+      "eyewear", "cosmetic", "beauty_", "pet_", "tattoo", "flowers_and_gifts",
+      "sporting_goods", "building_supply", "home_goods", "home_improvement",
+      "bookstore", "liquor_store", "butcher_shop", "fruits_and_vegetables",
+      "health_food_store", "nursery_and_gardening",
+      "community_services", "religious_organization", "education", "library",
+      "funeral", "betting_center", "package_locker", "party_and_event",
+      "travel_services", "home_cleaning", "pool_cleaning", "shopping",
+      "structure_and_geography", "accommodation", "service_apartments"
     ]
   }
 }
