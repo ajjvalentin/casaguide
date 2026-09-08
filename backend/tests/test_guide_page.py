@@ -71,7 +71,10 @@ def test_area_facts_render_inside_declaring_section_not_in_final_block():
     marker = f'<h2>{guide_page._t("fr", "good_to_know")}</h2>'
     assert marker in html
     final = html[html.index(marker):]
-    assert "112" in final and "Guardia Civil" in final
+    # V2-51 : le numéro est inchangé ; le libellé « Guardia Civil » (fait ANCIEN, sans
+    # rôle) est repris vers le rôle national_police → affiché « Police nationale » en fr.
+    assert "112" in final and "062" in final
+    assert "Police nationale" in final and "Guardia Civil" not in final
 
     # waste_rules et noise_rules sont rendus AVANT le bloc final (donc dans leur
     # section) et ABSENTS du bloc final (M-17).
@@ -1185,3 +1188,59 @@ def test_hours_rendered_in_poi_card_fr_and_en():
     en = guide_page.render_guide(_prop(), [], [consum], {}, "tok", lang="en")
     assert "Monday–Saturday" in en and "· Indicative hours</div>" in en
     assert "Mo-Sa" not in fr and "Mo-Sa" not in en   # plus jamais la syntaxe OSM brute
+
+
+# ── V2-51 : i18n structurel des numéros d'urgence ────────────────────────────
+
+def test_emergency_labels_translated_by_role_in_seven_languages():
+    facts = {"emergency_numbers": {"items": [
+        {"role": "eu_emergency", "number": "112"},
+        {"role": "national_police", "number": "062"},
+        {"role": "municipal_police", "number": "092"},
+        {"role": "fire", "number": "080"},
+        {"role": "medical", "number": "061"}], "notes": ""}}
+    expected = {
+        "fr": ["Urgences européennes", "Police nationale", "Police municipale",
+               "Pompiers", "Urgences médicales"],
+        "es": ["Emergencias (UE)", "Policía Nacional", "Policía Local", "Bomberos",
+               "Urgencias médicas"],
+        "de": ["Euro-Notruf", "Nationale Polizei", "Stadtpolizei", "Feuerwehr",
+               "Rettungsdienst"],
+        "nl": ["Europees noodnummer", "Nationale politie", "Gemeentepolitie",
+               "Brandweer", "Medische hulp"],
+        "it": ["Emergenze (UE)", "Polizia nazionale", "Polizia municipale",
+               "Vigili del fuoco", "Emergenza medica"],
+        "en": ["European emergency", "National police", "Local police",
+               "Fire brigade", "Medical emergency"],
+        "sq": ["Urgjenca (BE)", "Policia kombëtare", "Policia bashkiake",
+               "Zjarrfikësit", "Ndihma mjekësore"],
+    }
+    for lang, labels in expected.items():
+        html = guide_page.render_guide(
+            _prop(), [_section("D_safety", "D", {"fields": []})], [], facts, "tok",
+            lang=lang)
+        for lbl in labels:
+            assert lbl in html, (lang, lbl)
+        # Les numéros ne dépendent JAMAIS de la langue.
+        for num in ("112", "062", "092", "080", "061"):
+            assert num in html, (lang, num)
+    # Le français corrige l'ancien « Urgences européen » → « Urgences européennes ».
+    assert guide_page._EMERGENCY_LABELS["eu_emergency"]["fr"] == "Urgences européennes"
+
+
+def test_emergency_backward_compat_maps_old_labels_and_degrades_gracefully():
+    # Fait ANCIEN (label texte, pas de rôle) → repris vers le rôle → traduit.
+    assert guide_page._emergency_label({"label": "Urgences européen", "number": "112"},
+                                       "es") == "Emergencias (UE)"
+    assert guide_page._emergency_label({"label": "Guardia Civil", "number": "062"},
+                                       "de") == "Nationale Polizei"
+    assert guide_page._emergency_label({"label": "Pompiers", "number": "080"},
+                                       "nl") == "Brandweer"
+    # Un rôle explicite prime sur le label.
+    assert guide_page._emergency_label({"role": "fire", "label": "n'importe quoi"},
+                                       "en") == "Fire brigade"
+    # Libellé/rôle INCONNU → affiché tel quel (dégradation douce, jamais vide).
+    assert guide_page._emergency_label({"label": "Croix-Rouge locale", "number": "900"},
+                                       "es") == "Croix-Rouge locale"
+    assert guide_page._emergency_label({"role": "wat", "label": "Custom 24h"},
+                                       "fr") == "Custom 24h"

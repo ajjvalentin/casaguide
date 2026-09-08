@@ -1212,12 +1212,86 @@ def _render_cuisine_chips(restaurants: list[dict], lang: str) -> str:
             f'aria-label="{_esc(_t(lang, "cuisine_filter"))}">{"".join(chips)}</div>')
 
 
+# ── Numéros d'urgence : libellés STRUCTURELS i18n (V2-51) ─────────────────────
+#
+# Défaut (guide TEST-V47, bascule FR→ES) : les libellés de la carte urgences restaient
+# en français quelle que soit la langue — ils étaient stockés en TEXTE dans area_facts
+# (langue source), hors circuit de traduction. Correctif : chaque numéro porte un RÔLE
+# dans un ensemble FERMÉ (généré par le pipeline, V2-51) ; les libellés d'AFFICHAGE
+# sortent du stockage et vivent ici, dans les 7 langues. Un fait ANCIEN ne porte qu'un
+# `label` texte → mappé au rôle par `_LABEL_TO_ROLE` À L'AFFICHAGE (reprise, aucune
+# migration) ; un rôle/label non reconnu s'affiche tel quel (dégradation douce, jamais
+# de carte vide). Les VALEURS (numéros) ne dépendent JAMAIS de la langue.
+_EMERGENCY_LABELS: dict[str, dict[str, str]] = {
+    "eu_emergency": {"fr": "Urgences européennes", "en": "European emergency",
+                     "es": "Emergencias (UE)", "it": "Emergenze (UE)",
+                     "de": "Euro-Notruf", "nl": "Europees noodnummer",
+                     "sq": "Urgjenca (BE)"},
+    "national_police": {"fr": "Police nationale", "en": "National police",
+                        "es": "Policía Nacional", "it": "Polizia nazionale",
+                        "de": "Nationale Polizei", "nl": "Nationale politie",
+                        "sq": "Policia kombëtare"},
+    "municipal_police": {"fr": "Police municipale", "en": "Local police",
+                         "es": "Policía Local", "it": "Polizia municipale",
+                         "de": "Stadtpolizei", "nl": "Gemeentepolitie",
+                         "sq": "Policia bashkiake"},
+    "fire": {"fr": "Pompiers", "en": "Fire brigade", "es": "Bomberos",
+             "it": "Vigili del fuoco", "de": "Feuerwehr", "nl": "Brandweer",
+             "sq": "Zjarrfikësit"},
+    "medical": {"fr": "Urgences médicales", "en": "Medical emergency",
+                "es": "Urgencias médicas", "it": "Emergenza medica",
+                "de": "Rettungsdienst", "nl": "Medische hulp",
+                "sq": "Ndihma mjekësore"},
+}
+
+# Reprise des faits ANCIENS (label texte → rôle), normalisé casse/accents. Couvre les
+# libellés produits par l'ancien prompt (FR) et vus en base (ES). Inconnu → pas de rôle
+# → le label stocké s'affiche tel quel.
+_LABEL_TO_ROLE: dict[str, str] = {
+    "urgences europeennes": "eu_emergency", "urgences europeen": "eu_emergency",
+    "urgences ue": "eu_emergency", "urgence europeenne": "eu_emergency",
+    "numero d urgence europeen": "eu_emergency", "emergencias ue": "eu_emergency",
+    "emergencias": "eu_emergency", "european emergency": "eu_emergency",
+    "police nationale": "national_police", "policia nacional": "national_police",
+    "guardia civil": "national_police", "national police": "national_police",
+    "police municipale": "municipal_police", "policia local": "municipal_police",
+    "policia municipal": "municipal_police", "local police": "municipal_police",
+    "pompiers": "fire", "bomberos": "fire", "vigili del fuoco": "fire",
+    "fire brigade": "fire", "sapeurs pompiers": "fire",
+    "urgences medicales": "medical", "urgencias medicas": "medical",
+    "samu": "medical", "ambulance": "medical", "ambulancia": "medical",
+    "emergencias medicas": "medical", "medical emergency": "medical",
+}
+
+
+def _emergency_label(item: dict, lang: str) -> str:
+    """Libellé d'affichage d'un numéro d'urgence dans `lang` (V2-51). Priorité : rôle
+    STRUCTUREL (`role`) → dictionnaire 7 langues (repli fr) ; sinon reprise du `label`
+    texte ancien via `_LABEL_TO_ROLE` ; sinon le `label` stocké tel quel (dégradation
+    douce). Renvoie "" si vraiment rien (l'appelant gère)."""
+    role = (item.get("role") or "").strip().lower()
+    stored = (item.get("label") or "").strip()
+    if role not in _EMERGENCY_LABELS:
+        role = _LABEL_TO_ROLE.get(_norm_label(stored), "")
+    if role in _EMERGENCY_LABELS:
+        loc = _EMERGENCY_LABELS[role]
+        return loc.get(lang) or loc["fr"]
+    return stored
+
+
+def _norm_label(s: str) -> str:
+    """Normalisation casse/accents/ponctuation pour la reprise des libellés anciens."""
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
+    return " ".join(re.sub(r"[^a-z0-9\s]", " ", s.lower()).split())
+
+
 # ── Barre d'urgences (numéros prioritaires, tel:) ────────────────────────────
 
-def _render_sos(area_facts: dict, big: bool = False) -> str:
+def _render_sos(area_facts: dict, big: bool = False, lang: str = "fr") -> str:
     """Barre d'urgences tactile (numéros prioritaires, `tel:`). En version
     compacte, elle reste en tête des TROIS onglets (§V2-09 : vital, ne se range
-    pas) ; en version `big`, elle ouvre l'onglet « Urgences »."""
+    pas) ; en version `big`, elle ouvre l'onglet « Urgences ». Libellés localisés
+    par rôle (V2-51) ; les numéros ne dépendent jamais de la langue."""
     items = ((area_facts.get("emergency_numbers") or {}).get("items") or [])[:4]
     if not items:
         return ""
@@ -1226,7 +1300,7 @@ def _render_sos(area_facts: dict, big: bool = False) -> str:
         num = str(it.get("number", ""))
         cells.append(f'<a class="sos-item" href="tel:{_tel(num)}">'
                      f'<span class="num">{_esc(num)}</span>'
-                     f'<span class="lbl">{_esc(it.get("label", ""))}</span></a>')
+                     f'<span class="lbl">{_esc(_emergency_label(it, lang))}</span></a>')
     cls = "sos sos-lg" if big else "sos"
     return f'<div class="{cls}">{"".join(cells)}</div>'
 
@@ -1349,7 +1423,8 @@ def _render_numbers(area_facts: dict, chapter_color: str, lang: str = "fr") -> s
     emerg = area_facts.get("emergency_numbers")
     if not emerg or not emerg.get("items"):
         return ""
-    nums = "".join(f'<li><b>{_esc(str(i.get("number", "")))}</b> — {_esc(i.get("label", ""))}</li>'
+    nums = "".join(f'<li><b>{_esc(str(i.get("number", "")))}</b> — '
+                   f'{_esc(_emergency_label(i, lang))}</li>'
                    for i in emerg["items"])
     notes = emerg.get("notes")
     card = (f'<div class="facts"><b class="tt">{_t(lang, "numbers")}</b>'
@@ -1589,7 +1664,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                 panels[tab].append(blk)
 
     # Urgences : barre SOS EN GRAND + santé (chap. D, déjà réparti) + numéros utiles.
-    big_sos = _render_sos(area_facts, big=True)
+    big_sos = _render_sos(area_facts, big=True, lang=lang)
     numbers = _render_numbers(area_facts, _CHAPTER_COLORS["I"], lang)
     emergency_inner = (([big_sos] if big_sos else []) + panels["emergency"]
                        + ([numbers] if numbers else []))
@@ -1670,7 +1745,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     tabs_nav = (f'<nav class="guide-tabs" role="tablist" '
                 f'aria-label="{_esc(_t(lang, "tabs"))}">{"".join(tabs_btns)}</nav>')
 
-    sos = _render_sos(area_facts)
+    sos = _render_sos(area_facts, lang=lang)
     default_lang = prop.get("default_lang") or "fr"
     langs = _render_langs(default_lang, prop.get("published_langs") or [], lang,
                           lang_names)

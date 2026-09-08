@@ -37,7 +37,7 @@ Tu prépares les données locales d'un guide de logement de vacances situé à
 markdown ni commentaire, avec exactement ces clés :
 
 {{
-  "emergency_numbers": {{"items": [{{"label": "...", "number": "..."}}],
+  "emergency_numbers": {{"items": [{{"role": "...", "label": "...", "number": "..."}}],
                          "notes": "..."}},
   "waste_rules": {{"summary": "...",
                    "containers": [{{"color_or_type": "...", "accepts": "..."}}]}},
@@ -49,8 +49,12 @@ doit se débrouiller seul — rien d'autre. Un touriste, pas un administré.
 
 Contraintes de CONTENU :
 - emergency_numbers : numéros RÉELLEMENT en vigueur dans ce pays (112 européen
-  inclus), avec un libellé court. `notes` : une précision utile seulement si elle
-  aide à composer le bon numéro, sinon "".
+  inclus). CHAQUE item porte un `role` de cet ENSEMBLE FERMÉ (le libellé d'affichage
+  est traduit côté guide À PARTIR du rôle) : `eu_emergency` (112 ou équivalent),
+  `national_police`, `municipal_police`, `fire`, `medical`. Pour un numéro utile qui
+  n'entre dans AUCUN de ces rôles, mets `role` = "" et donne un `label` court en
+  français. `notes` : une précision utile seulement si elle aide à composer le bon
+  numéro, sinon "".
 - waste_rules : pour CHAQUE conteneur, sa couleur (ou son type) et, en une poignée
   de mots, CE QU'ON Y MET (« emballages plastique et métal », « verre », « papier
   et carton », « déchets restants »). `summary` : une phrase pratique maximum
