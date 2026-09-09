@@ -501,8 +501,13 @@ def _dedup_by_operator(pois: list[dict]) -> tuple[list[dict], int]:
         if k is None:
             out.append(p)
         elif survivor[k] == i:
+            # V2-51b : le suffixe « (station la plus proche) » SORT du nom (donnée) — on
+            # stocke le nom NU + un marqueur `_nearest_of_network` en completion_meta ; le
+            # guide rend le suffixe LOCALISÉ à l'affichage (plus de français figé en base).
             keep = dict(p)
-            keep["name"] = f"{labels[k]} (station la plus proche)"
+            keep["name"] = labels[k]
+            keep["completion_meta"] = dict(keep.get("completion_meta") or {},
+                                           _nearest_of_network=True)
             out.append(keep)
         else:
             dropped += 1

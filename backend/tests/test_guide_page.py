@@ -1244,3 +1244,55 @@ def test_emergency_backward_compat_maps_old_labels_and_degrades_gracefully():
                                        "es") == "Croix-Rouge locale"
     assert guide_page._emergency_label({"role": "wat", "label": "Custom 24h"},
                                        "fr") == "Custom 24h"
+
+
+# ── V2-51b : colmatage des fuites i18n ───────────────────────────────────────
+
+def test_emergency_medical_combined_label_backward_compat():
+    # Le libellé COMPOSÉ « SAMU / Urgences médicales » (fait ancien) → rôle medical.
+    for lang, exp in [("fr", "Urgences médicales"), ("es", "Urgencias médicas"),
+                      ("de", "Rettungsdienst"), ("nl", "Medische hulp"),
+                      ("it", "Emergenza medica"), ("sq", "Ndihma mjekësore"),
+                      ("en", "Medical emergency")]:
+        assert guide_page._emergency_label(
+            {"label": "SAMU / Urgences médicales", "number": "061"}, lang) == exp
+
+
+def test_code_i18n_dicts_exhaustive_in_seven_languages():
+    """Test paramétré : toute chaîne des dictionnaires i18n AUTO-SUFFISANTS du guide SSR
+    (_UI7 + _EMERGENCY_LABELS) DOIT exister — non vide — dans les 7 langues. Échoue si une
+    clé manque quelque part (aurait attrapé « Horaires indicatifs » manquant en de)."""
+    for name, table in (("_UI7", guide_page._UI7),
+                        ("_EMERGENCY_LABELS", guide_page._EMERGENCY_LABELS)):
+        for key, per_lang in table.items():
+            for lang in guide_page.GUIDE_LANGS:
+                assert lang in per_lang, f"{name}[{key}] manque {lang}"
+                assert per_lang[lang].strip(), f"{name}[{key}][{lang}] vide"
+
+
+def test_hours_indicative_localised_in_all_seven_languages():
+    for lang, mention in [("de", "Zeiten ohne Gewähr"), ("nl", "Indicatieve"),
+                          ("it", "Orari indicativi"), ("sq", "Orari orientues"),
+                          ("es", "Horario orientativo")]:
+        html = guide_page._render_opening_hours("Mo-Fr 09:00-18:00", lang)
+        assert mention in html and "Horaires indicatifs" not in html or lang == "fr"
+
+
+def test_dedup_suffix_localised_at_render_and_reprise_of_old_names():
+    # Nouveau POI (nom nu + marqueur `nearest_of_network`) → suffixe localisé.
+    new = dict(_poi("MUyBICI", "rental", "E"), nearest_of_network=True)
+    html_de = guide_page._render_pois([new], "de")
+    assert "MUyBICI (nächste Station)" in html_de and "station la plus proche" not in html_de
+    # Reprise : ancien POI portant le suffixe FRANÇAIS figé → strip + localisé.
+    old = _poi("BiciCampus (station la plus proche)", "rental", "E")
+    html_es = guide_page._render_pois([old], "es")
+    assert "BiciCampus (estación más cercana)" in html_es and "plus proche" not in html_es
+
+
+def test_og_locale_follows_rendered_language():
+    for lang, loc in [("de", "de_DE"), ("it", "it_IT"), ("nl", "nl_NL"),
+                      ("sq", "sq_AL"), ("es", "es_ES")]:
+        html = guide_page.render_guide(_prop(), [_section("A_x", "A", {"fields": []})],
+                                       [], {}, "tok", lang=lang)
+        assert f'<meta property="og:locale" content="{loc}">' in html
+        assert 'content="fr_FR"' not in html

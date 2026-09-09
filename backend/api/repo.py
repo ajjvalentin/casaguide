@@ -1353,7 +1353,9 @@ def guide_pois(conn, property_id: str) -> list[dict]:
                   p.weekday, p.weekday_note,
                   p.description_md, p.owner_comment, p.price_level,
                   p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min,
-                  p.status
+                  p.status,
+                  jsonb_exists(p.completion_meta, '_nearest_of_network')
+                      AS nearest_of_network
            FROM pois p
            JOIN poi_categories c ON c.code = p.category_code
            WHERE p.property_id = %s AND p.status IN ('approved', 'edited')

@@ -44,7 +44,38 @@ except Exception:  # pragma: no cover — Babel est une dépendance déclarée
 _WEEKDAY_PIVOT = _dt.date(2024, 1, 1)
 
 # Locale Open Graph par langue (M-25) : repli fr_FR.
-_OG_LOCALE = {"fr": "fr_FR", "en": "en_GB", "es": "es_ES"}
+# og:locale par langue rendue (V2-51b : fr_FR s'affichait sur les pages de/it/nl/sq).
+_OG_LOCALE = {"fr": "fr_FR", "en": "en_GB", "es": "es_ES", "it": "it_IT",
+              "de": "de_DE", "nl": "nl_NL", "sq": "sq_AL"}
+
+# Les 7 langues offertes par le produit (registre V2-21a). Sert au test d'exhaustivité
+# des dictionnaires i18n auto-suffisants EN CODE (_UI7, _EMERGENCY_LABELS).
+GUIDE_LANGS = ("fr", "en", "es", "it", "de", "nl", "sq")
+
+# Libellés d'interface du guide qui doivent être AUTO-SUFFISANTS dans les 7 langues, EN
+# CODE (V2-51b) — indépendamment de l'overlay `ui_translations` en base (qui, non peuplé
+# pour une langue, laissait fuiter le français : « Horaires indicatifs » en DE). Rendus
+# par `_t7`. Un test d'exhaustivité vérifie les 7 langues pour chaque clé.
+_UI7: dict[str, dict[str, str]] = {
+    "hours_indicative": {"fr": "Horaires indicatifs", "en": "Indicative hours",
+                         "es": "Horario orientativo", "it": "Orari indicativi",
+                         "de": "Zeiten ohne Gewähr", "nl": "Indicatieve openingstijden",
+                         "sq": "Orari orientues"},
+    "hours_closed": {"fr": "fermé", "en": "closed", "es": "cerrado", "it": "chiuso",
+                     "de": "geschlossen", "nl": "gesloten", "sq": "mbyllur"},
+    "nearest_of_network": {"fr": "station la plus proche", "en": "nearest station",
+                           "es": "estación más cercana", "it": "stazione più vicina",
+                           "de": "nächste Station", "nl": "dichtstbijzijnde station",
+                           "sq": "stacioni më i afërt"},
+}
+
+
+def _t7(lang: str, key: str) -> str:
+    """Libellé d'un dictionnaire AUTO-SUFFISANT 7 langues (V2-51b). L'overlay de
+    relecture (`ui_translations`) garde la priorité (correction), puis le code 7 langues,
+    puis le français — JAMAIS de fuite vers le français pour une langue offerte."""
+    return (_i18n_mod.overlaid(_i18n_mod.ui_key(key))
+            or _UI7[key].get(lang) or _UI7[key]["fr"])
 
 # ── Couleurs de chapitre (alignées sur frontend/js/constants.js) ─────────────
 _CHAPTER_COLORS: dict[str, str] = {
@@ -489,7 +520,7 @@ def _normalize_hours(val: str, lang: str) -> str:
         for days, times in rules:
             day_txt = _fmt_day_range(days, lang)
             if times is None:
-                parts.append(f"{day_txt} {_t(lang, 'hours_closed')}")
+                parts.append(f"{day_txt} {_t7(lang, 'hours_closed')}")
             else:
                 rng = ", ".join(f"{_fmt_time(h1, m1, lang)}–{_fmt_time(h2, m2, lang)}"
                                 for h1, m1, h2, m2 in times)
@@ -509,7 +540,7 @@ def _render_opening_hours(raw: Any, lang: str) -> str:
         return ""
     human = _normalize_hours(val, lang)
     return (f'<div class="hours">{_esc(human)} · '
-            f'{_esc(_t(lang, "hours_indicative"))}</div>')
+            f'{_esc(_t7(lang, "hours_indicative"))}</div>')
 
 
 def _seed_label(lang: str, key: str, i18n: Any, fallback: str = "") -> str:
@@ -1066,7 +1097,7 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             cards.append(
                 f'<div class="poi-card"{cuisine_attr} style="border-left-color:{color}">'
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
-                f'<div class="poi-body"><h4>{_esc(p["name"])}{loc_html}{cuisine_tag}</h4>{day_html}{comment}'
+                f'<div class="poi-body"><h4>{_esc(_poi_display_name(p, lang))}{loc_html}{cuisine_tag}</h4>{day_html}{comment}'
                 f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}{nav_html}</div></div>')
         n = len(lst)
         head = f'<h4 class="cat-title">{cat_name} · {n}</h4>'
@@ -1244,35 +1275,45 @@ _EMERGENCY_LABELS: dict[str, dict[str, str]] = {
                 "sq": "Ndihma mjekësore"},
 }
 
-# Reprise des faits ANCIENS (label texte → rôle), normalisé casse/accents. Couvre les
-# libellés produits par l'ancien prompt (FR) et vus en base (ES). Inconnu → pas de rôle
-# → le label stocké s'affiche tel quel.
-_LABEL_TO_ROLE: dict[str, str] = {
-    "urgences europeennes": "eu_emergency", "urgences europeen": "eu_emergency",
-    "urgences ue": "eu_emergency", "urgence europeenne": "eu_emergency",
-    "numero d urgence europeen": "eu_emergency", "emergencias ue": "eu_emergency",
-    "emergencias": "eu_emergency", "european emergency": "eu_emergency",
-    "police nationale": "national_police", "policia nacional": "national_police",
-    "guardia civil": "national_police", "national police": "national_police",
-    "police municipale": "municipal_police", "policia local": "municipal_police",
-    "policia municipal": "municipal_police", "local police": "municipal_police",
-    "pompiers": "fire", "bomberos": "fire", "vigili del fuoco": "fire",
-    "fire brigade": "fire", "sapeurs pompiers": "fire",
-    "urgences medicales": "medical", "urgencias medicas": "medical",
-    "samu": "medical", "ambulance": "medical", "ambulancia": "medical",
-    "emergencias medicas": "medical", "medical emergency": "medical",
-}
+# Reprise des faits ANCIENS (label texte → rôle) par SOUS-CHAÎNE (V2-51b : « SAMU /
+# Urgences médicales » — libellé COMPOSÉ — ne matchait pas un dict exact). Phrases
+# distinctives, ordre = plus spécifique d'abord ; la première trouvée dans le libellé
+# normalisé gagne. Aucune correspondance → pas de rôle → label stocké tel quel.
+_ROLE_PHRASES: list[tuple[str, str]] = [
+    ("urgences europ", "eu_emergency"), ("urgence europ", "eu_emergency"),
+    ("emergencias ue", "eu_emergency"), ("european emergency", "eu_emergency"),
+    ("euro notruf", "eu_emergency"), ("numero d urgence europ", "eu_emergency"),
+    ("samu", "medical"), ("urgences medicales", "medical"),
+    ("urgencias medicas", "medical"), ("emergencias medicas", "medical"),
+    ("emergenza medica", "medical"), ("ambulanc", "medical"),
+    ("medical emergency", "medical"), ("rettungsdienst", "medical"),
+    ("police municipale", "municipal_police"), ("policia local", "municipal_police"),
+    ("policia municipal", "municipal_police"), ("local police", "municipal_police"),
+    ("police nationale", "national_police"), ("policia nacional", "national_police"),
+    ("guardia civil", "national_police"), ("national police", "national_police"),
+    ("pompiers", "fire"), ("bomberos", "fire"), ("vigili del fuoco", "fire"),
+    ("fire brigade", "fire"), ("feuerwehr", "fire"), ("brandweer", "fire"),
+]
+
+
+def _role_from_label(stored: str) -> str:
+    """Rôle déduit d'un libellé ANCIEN par sous-chaîne (V2-51b). "" si rien."""
+    norm = _norm_label(stored)
+    for phrase, role in _ROLE_PHRASES:
+        if phrase in norm:
+            return role
+    return ""
 
 
 def _emergency_label(item: dict, lang: str) -> str:
     """Libellé d'affichage d'un numéro d'urgence dans `lang` (V2-51). Priorité : rôle
     STRUCTUREL (`role`) → dictionnaire 7 langues (repli fr) ; sinon reprise du `label`
-    texte ancien via `_LABEL_TO_ROLE` ; sinon le `label` stocké tel quel (dégradation
-    douce). Renvoie "" si vraiment rien (l'appelant gère)."""
+    texte ancien par sous-chaîne (`_role_from_label`) ; sinon le `label` stocké tel quel
+    (dégradation douce). Renvoie "" si vraiment rien (l'appelant gère)."""
     role = (item.get("role") or "").strip().lower()
     stored = (item.get("label") or "").strip()
     if role not in _EMERGENCY_LABELS:
-        role = _LABEL_TO_ROLE.get(_norm_label(stored), "")
+        role = _role_from_label(stored)
     if role in _EMERGENCY_LABELS:
         loc = _EMERGENCY_LABELS[role]
         return loc.get(lang) or loc["fr"]
@@ -1283,6 +1324,24 @@ def _norm_label(s: str) -> str:
     """Normalisation casse/accents/ponctuation pour la reprise des libellés anciens."""
     s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
     return " ".join(re.sub(r"[^a-z0-9\s]", " ", s.lower()).split())
+
+
+# Suffixe de dédup opérateur FIGÉ EN BASE (V2-47, français) — on le retire au rendu et on
+# rend l'équivalent LOCALISÉ (V2-51b). Couvre les POI existants ; les nouveaux stockent le
+# nom nu + le marqueur `nearest_of_network`.
+_NEAREST_SUFFIX_RE = re.compile(r"\s*\(\s*station la plus proche\s*\)\s*$", re.IGNORECASE)
+
+
+def _poi_display_name(p: dict, lang: str) -> str:
+    """Nom d'affichage d'un POI (V2-51b) : si c'est le survivant d'un réseau (marqueur
+    `nearest_of_network` OU ancien nom portant le suffixe français figé), on affiche le
+    nom NU + le suffixe « station la plus proche » LOCALISÉ. Sinon le nom tel quel."""
+    name = (p.get("name") or "").strip()
+    nu = _NEAREST_SUFFIX_RE.sub("", name).strip()
+    is_network = bool(p.get("nearest_of_network")) or nu != name
+    if is_network and nu:
+        return f"{nu} ({_t7(lang, 'nearest_of_network')})"
+    return name
 
 
 # ── Barre d'urgences (numéros prioritaires, tel:) ────────────────────────────
@@ -1673,7 +1732,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     around_pois = [p for p in pois if _POI_TAB.get(p["chapter"], "home") == "around"]
     map_data = {
         "property": {"name": prop.get("name"), "lat": prop.get("lat"), "lon": prop.get("lon")},
-        "pois": [{"name": p["name"], "lat": p["lat"], "lon": p["lon"],
+        "pois": [{"name": _poi_display_name(p, lang), "lat": p["lat"], "lon": p["lon"],
                   "chapter": p["chapter"], "category_code": p["category_code"],
                   "color": p.get("map_color"),
                   "category": _seed_label(lang, _i18n_mod.poi_category_key(p["category_code"]),

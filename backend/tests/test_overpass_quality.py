@@ -459,7 +459,9 @@ def test_operator_dedup_collapses_bike_share_network():
     reduced, dropped = overpass._reduce_category("rental", stations)
     names = [p["name"] for p in reduced]
     assert dropped == 7 and len(names) == 1
-    assert names[0] == "MUyBICI (station la plus proche)"
+    # V2-51b : nom NU + marqueur (le suffixe est localisé À L'AFFICHAGE, pas figé en base).
+    assert names[0] == "MUyBICI"
+    assert reduced[0]["completion_meta"]["_nearest_of_network"] is True
     # Sous le seuil (2 stations) → intactes.
     two = stations[:2]
     kept, d2 = overpass._reduce_category("rental", two)
@@ -536,7 +538,7 @@ def test_fetch_grouped_reports_network_dropped():
     results, failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
     client.close()
     assert stats["network_dropped"] == 3
-    assert [p["name"] for p in results["rental"]] == ["MUyBICI (station la plus proche)"]
+    assert [p["name"] for p in results["rental"]] == ["MUyBICI"]   # nom nu (V2-51b)
 
 
 # ── V2-50 : dédup opérateur GÉNÉRALISÉE (tokens de tête + inter-chaînes) ──────
@@ -552,7 +554,8 @@ def test_operator_dedup_groups_common_head_token():
                      tags={"amenity": "bicycle_rental"})]
     reduced, dropped = overpass._reduce_category("rental", stations)
     assert dropped == 2 and len(reduced) == 1
-    assert reduced[0]["name"] == "BiciCampus (station la plus proche)"
+    assert reduced[0]["name"] == "BiciCampus"   # nom nu + marqueur (V2-51b)
+    assert reduced[0]["completion_meta"]["_nearest_of_network"] is True
 
 
 def test_operator_dedup_reconciles_cross_chain_same_system():
@@ -567,7 +570,7 @@ def test_operator_dedup_reconciles_cross_chain_same_system():
                   tags={"amenity": "bicycle_rental"})]
     reduced, dropped = overpass._reduce_category("rental", mixed)
     assert dropped == 2 and len(reduced) == 1
-    assert reduced[0]["name"] == "MUyBICI (station la plus proche)"
+    assert reduced[0]["name"] == "MUyBICI"   # nom nu (V2-51b)
 
 
 def test_operator_dedup_spares_distinct_agencies_sharing_generic_words():

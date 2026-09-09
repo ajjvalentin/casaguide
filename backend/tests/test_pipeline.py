@@ -1723,15 +1723,17 @@ def test_v247_reductions_end_to_end(property_id):
         atms = [r["name"] for r in conn.execute(
             "SELECT name FROM pois WHERE property_id=%s AND category_code='atm' "
             "ORDER BY drive_min", (property_id,)).fetchall()]
-        rentals = [r["name"] for r in conn.execute(
-            "SELECT name FROM pois WHERE property_id=%s AND category_code='rental'",
-            (property_id,)).fetchall()]
+        rentals = [(r["name"], r["completion_meta"]) for r in conn.execute(
+            "SELECT name, completion_meta FROM pois WHERE property_id=%s "
+            "AND category_code='rental'", (property_id,)).fetchall()]
         step = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
                            (summary["job_id"],)).fetchone()["steps"]["overpass"]
     # La banque est ADMISE comme distributeur (le fix central) ; le crypto reste (déprio,
     # pas exclu). L'ordre de sélection banque-avant-crypto est couvert par le test unité.
     assert "Banco Santander" in atms and "BitBase" in atms
-    assert rentals == ["MUyBICI (station la plus proche)"]   # une seule station (fusionnée)
+    # V2-51b : une seule station, nom NU + marqueur (suffixe localisé à l'affichage).
+    assert [n for n, _ in rentals] == ["MUyBICI"]
+    assert rentals[0][1]["_nearest_of_network"] is True
     assert step["network_dropped"] >= 3
 
 
