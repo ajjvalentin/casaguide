@@ -143,6 +143,21 @@ class Settings:
     web_search_max_attempts: int = int(
         os.getenv("CASAGUIDE_WEB_SEARCH_ATTEMPTS", "2"))
 
+    # Fusion de sources — Overture Maps (V2-52 volet 1). Décision de sources
+    # (benchmark 2026-09-09) : OSM le factuel, Overture le commercial. Le fetch
+    # DuckDB/S3 est un flux réseau sortant supplémentaire → gardé par un flag
+    # d'activation (dark-launch ; André l'allume sur le serveur via `.env`). Défaut
+    # DÉSACTIVÉ : aucun réseau Overture tant que le flag n'est pas posé (les tests
+    # d'intégration ne l'activent qu'avec un fetcher injecté).
+    overture_enabled: bool = os.getenv("CASAGUIDE_OVERTURE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+    # Release Overture (AAAA-MM-JJ.N). Vide → détection auto de la dernière sur S3.
+    overture_release: str | None = os.getenv("CASAGUIDE_OVERTURE_RELEASE") or None
+    # Rayon d'extraction bbox (garde-fou volume/disque) — plafonne le max des rayons
+    # des catégories en périmètre.
+    overture_bbox_max_radius_m: int = int(
+        os.getenv("CASAGUIDE_OVERTURE_BBOX_MAX_M", "25000"))
+
     # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial)
     describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity", "market")
 

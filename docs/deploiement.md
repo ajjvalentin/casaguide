@@ -286,6 +286,29 @@ Idempotent : ne touche que les logements où `care_rules = {}` et saute les code
 catalogue déjà présents → ré-exécutable sans risque. (Voir CLAUDE.md, « Migrations
 & amorçage » : tout état amorcé à la création exige un backfill.)
 
+### 2ter. Activer la fusion Overture (V2-52 volet 1)
+
+Décision de sources (benchmark 2026-09-09) : **OSM le factuel, Overture le
+commercial**. La fusion (banques pour les distributeurs, comblement des catégories
+commerciales vides, enrichissement tél/site par appariement) est **désactivée par
+défaut** — l'extraction bbox DuckDB/S3 est un flux réseau sortant supplémentaire à
+allumer sciemment. Pour l'activer sur le serveur, ajouter à `backend/.env` puis
+redémarrer :
+
+```ini
+CASAGUIDE_OVERTURE=1
+# CASAGUIDE_OVERTURE_RELEASE=      # vide → dernière release détectée sur S3
+```
+
+`duckdb` est installé par `deploy.sh` (via `ops/requirements.txt`). Best-effort
+**absolu** : un échec S3/duckdb est tracé dans `enrichment_jobs.steps.overture`
+(`ok:false`) et le job **termine sur OSM seul** (jamais un job cassé par la source
+secondaire). Aucune migration, aucun backfill (les POI existants ne sont pas
+retouchés ; l'apport Overture arrive au prochain (ré)enrichissement). Recette :
+enrichir une fiche jetable urbaine (distributeurs = banques nommées avec téléphone)
+et une fiche rurale (une catégorie vide au run OSM seul est comblée). Le benchmark
+lecture seule reste `ops/source_benchmark.py`.
+
 ---
 
 ## 3. Versionnage des assets (cache-busting automatique)

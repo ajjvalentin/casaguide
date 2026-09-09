@@ -26,7 +26,7 @@ from typing import Callable
 import anthropic
 import httpx
 
-from . import claude_enrich, db, dedup, distance, geocode, overpass
+from . import claude_enrich, db, dedup, distance, fusion, geocode, overpass, overture
 from .settings import settings
 
 log = logging.getLogger("casaguide.pipeline")
@@ -210,11 +210,18 @@ def _resolve_market_position(market: dict, prop: dict,
     return None, None
 
 
+def _default_overture_fetch(lat: float, lon: float, radius_m: int) -> list[dict]:
+    """Fetcher Overture de PRODUCTION (DuckDB/S3, réseau). Résout la release depuis la
+    config. Injectable via le paramètre `overture_fetch` de `run` (tests sans réseau)."""
+    return overture.fetch_places(lat, lon, radius_m, release=settings.overture_release)
+
+
 def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         only_categories: set[str] | None = None,
         job_id: str | None = None,
         http_client: httpx.Client | None = None,
-        anthropic_client: anthropic.Anthropic | None = None) -> dict:
+        anthropic_client: anthropic.Anthropic | None = None,
+        overture_fetch: Callable[[float, float, int], list[dict]] | None = None) -> dict:
     """Exécute le pipeline pour un logement. Retourne un résumé.
 
     Si `job_id` est fourni (job 'pending' pré-créé par l'API pour renvoyer un
@@ -225,7 +232,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                      "markets_created": 0, "duplicates_merged": 0,
                      "rental_web_kept": 0, "hard_cap_dropped": 0,
                      "network_dropped": 0, "service_dropped": 0,
-                     "service_qualified": 0}
+                     "service_qualified": 0,
+                     "overture_added": 0, "overture_contacts": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -295,6 +303,41 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             grouped, failed_categories, harvest = overpass.fetch_grouped(
                 wanted, origin[0], origin[1], client=http_client)
 
+            # ── V2-52 volet 1 : acquisition Overture (une seule extraction bbox) ──
+            # Décision de sources (benchmark 2026-09-09) : OSM le factuel, Overture le
+            # commercial. Best-effort ABSOLU : tout échec (S3/duckdb/mapping) est tracé
+            # et le pipeline CONTINUE sur OSM seul (jamais un job cassé par la source
+            # secondaire). Gardé par le flag `overture_enabled` (dark-launch).
+            fetch_ovt = overture_fetch or (
+                _default_overture_fetch if settings.overture_enabled else None)
+            overture_by_code: dict[str, list[dict]] = {}
+            wanted_scope = {c["code"] for c in wanted} & fusion.SCOPE
+            if fetch_ovt is not None and wanted_scope:
+                try:
+                    max_r = min(settings.overture_bbox_max_radius_m,
+                                max(c["default_radius_m"] for c in wanted
+                                    if c["code"] in wanted_scope))
+                    raw = fetch_ovt(origin[0], origin[1], max_r)
+                    cmap = overture.load_category_map()
+                    for v in raw:
+                        code = overture.map_overture_category(v.get("category"), cmap)
+                        if code in fusion.SCOPE:
+                            overture_by_code.setdefault(code, []).append(v)
+                    mapped = sum(len(x) for x in overture_by_code.values())
+                    db.job_step(conn, job_id, "overture",
+                                {"ok": True, "fetched": len(raw), "mapped": mapped,
+                                 "by_category": {k: len(v)
+                                                 for k, v in overture_by_code.items()}})
+                    _progress(f"  ✓ Overture : {len(raw)} lieu(x), "
+                              f"{mapped} en périmètre commercial")
+                except Exception as exc:  # noqa: BLE001 — dégradation douce sur OSM seul
+                    db.job_step(conn, job_id, "overture",
+                                {"ok": False, "error": overpass._short(str(exc))})
+                    _progress(f"  ⚠ Overture indisponible "
+                              f"({overpass._short(str(exc))}) — OSM seul")
+                    overture_by_code = {}
+                conn.commit()
+
             all_editorial: list[dict] = []
             capped_empty: set[str] = set()   # V2-44 v3 : vidées par le plafond de pertinence
             for cat in wanted:
@@ -320,6 +363,35 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 if code == "rental" and use_claude and ai is not None:
                     pois = pois + _discover_web_rentals(
                         conn, prop, origin, ai, job_id, http_client, summary)
+                # ── V2-52 volet 1 : fusion Overture (contacts + comblement) ──
+                # Gain 3 : enrichir les contacts des POI OSM appariés (tél/site NULL).
+                # Gain 1 : `atm` AUGMENTÉ des banques Overture (toujours). Gain 2 : les
+                # autres catégories commerciales COMBLÉES seulement si vides/sous le
+                # minimum. Les candidats ajoutés reçoivent leurs distances puis passent
+                # par TOUTE la chaîne (pertinence, dédup V2-40, règles V2-50, upsert).
+                ovt_contributed = False
+                ovt = overture_by_code.get(code) or []
+                if ovt and code in fusion.SCOPE:
+                    today = _dt.date.today().isoformat()
+                    pois, enriched, consumed = fusion.enrich_osm_contacts(
+                        pois, ovt, today=today)
+                    summary["overture_contacts"] += enriched
+                    min_needed = overpass.target_for(code).min_results
+                    if code == "atm" or len(pois) < min_needed:
+                        radius_m = cat.get("max_radius_m") or cat["default_radius_m"]
+                        fill = fusion.build_fill_candidates(
+                            ovt, consumed, code=code, lat0=origin[0], lon0=origin[1],
+                            radius_m=radius_m, limit=settings.max_pois_per_category,
+                            today=today)
+                        if fill:
+                            try:
+                                distance.compute_distances(origin, fill,
+                                                           client=http_client)
+                            except Exception:  # noqa: BLE001 — garde crow_m en repli
+                                pass
+                            pois = pois + fill
+                            summary["overture_added"] += len(fill)
+                            ovt_contributed = True
                 # ── V2-44 volet 3 : plafond de PERTINENCE ────────────────────
                 # Retire les résultats amenés par l'escalade (hors rayon de préférence)
                 # trop LOIN EN ROUTE pour combler le quota — un commissariat à 30 min
@@ -365,6 +437,13 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         _dt.date.today().isoformat())
                     if not pois:
                         continue
+                # V2-52 : quand Overture a AUGMENTÉ la catégorie (atm, comblement),
+                # replafonner aux plus pertinents (banques devant crypto, proche devant
+                # lointain) — l'union OSM+Overture peut dépasser le plafond de moisson.
+                # Jamais appliqué sur une catégorie OSM seule (déjà plafonnée) →
+                # non-régression des catégories pleines.
+                if ovt_contributed:
+                    pois = fusion.cap_after_fusion(pois, settings.max_pois_per_category)
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
                 n = db.upsert_pois(conn, property_id, code, pois)
@@ -406,6 +485,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                          if summary["network_dropped"] else "")
                       + (f", {summary['hard_cap_dropped']} hors plafond de route"
                          if summary["hard_cap_dropped"] else "")
+                      + (f", +{summary['overture_added']} Overture"
+                         if summary["overture_added"] else "")
+                      + (f", {summary['overture_contacts']} contact(s) Overture"
+                         if summary["overture_contacts"] else "")
                       + (f" — {len(failed_categories)} catégorie(s) en échec : "
                          + ", ".join(sorted(failed_categories))
                          if failed_categories else " — 0 échec")
@@ -906,6 +989,10 @@ def main() -> None:
     print(f"  Baby-sitting créés    : {result.get('babysitters', 0)}")
     print(f"  Marchés créés         : {result.get('markets_created', 0)}")
     print(f"  Loueurs (web) retenus : {result.get('rental_web_kept', 0)}")
+    if result.get("overture_added"):
+        print(f"  Overture ajoutés      : {result['overture_added']}")
+    if result.get("overture_contacts"):
+        print(f"  Contacts Overture     : {result['overture_contacts']}")
     if result.get("generic_dropped"):
         print(f"  Sans-nom écartés      : {result['generic_dropped']}")
     if result.get("network_dropped"):

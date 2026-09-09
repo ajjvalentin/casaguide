@@ -1799,3 +1799,133 @@ def test_v250_service_rules_qualify_and_drop(property_id):
     assert greg["completion_meta"]["_qualification"]["subtype"] == "fourgonnettes et camions"
     # Non-régression : la boulangerie (commerce de passage) n'est jamais retirée.
     assert bakery_db == ["Boulangerie Sans Tel"]
+
+
+# ── V2-52 volet 1 : fusion de sources Overture ────────────────────────────────
+# Overture est un flux réseau (DuckDB/S3) → INJECTÉ ici (aucun réseau). Le flag
+# `overture_enabled` reste OFF (conftest) : passer un fetcher l'emporte sur le flag.
+
+def _ovt_place(name, category, lat, lon, **f):
+    """Un lieu Overture à la surface du fetcher de production (`enrich.overture`)."""
+    return {"name": name, "lat": lat, "lon": lon, "category": category,
+            "phone": f.get("phone"), "website": f.get("website"),
+            "source_ref": f.get("ref", f"gers:{name}")}
+
+
+def test_overture_fills_empty_atm_with_banks(property_id, http_client):
+    """Gains 1+2 : OSM ne moissonne aucun distributeur (mock overpass sans 'atm') →
+    Overture comble avec des banques NOMMÉES (téléphone présent), source 'overture'."""
+    def fetch(lat, lon, radius):
+        # Espacés > 150 m (sinon la dédup V2-40 les prendrait pour le même lieu).
+        return [_ovt_place("Banco Santander", "bank_credit_union",
+                           PROP_LAT + 0.001, PROP_LON, phone="+34 900 111", ref="gers:s"),
+                _ovt_place("CaixaBank", "bank_credit_union",
+                           PROP_LAT + 0.003, PROP_LON + 0.002, phone="+34 900 222",
+                           ref="gers:c")]
+
+    result = pipeline.run(property_id, use_claude=False, only_categories={"atm"},
+                          http_client=http_client, anthropic_client=FakeAnthropic(),
+                          overture_fetch=fetch)
+    assert result["overture_added"] == 2
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rows = conn.execute(
+            "SELECT name, source, source_ref, phone, status FROM pois "
+            "WHERE property_id=%s AND category_code='atm' ORDER BY name",
+            (property_id,)).fetchall()
+        job = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                           (result["job_id"],)).fetchone()
+    assert {r["name"] for r in rows} == {"Banco Santander", "CaixaBank"}
+    assert all(r["source"] == "overture" and r["source_ref"].startswith("gers:")
+               for r in rows)
+    assert all(r["phone"] and r["status"] == "suggested" for r in rows)
+    # Étape Overture tracée dans le journal du job.
+    assert job["steps"]["overture"]["ok"] is True
+    assert job["steps"]["overture"]["mapped"] == 2
+
+
+def test_overture_enriches_osm_contact_without_adding(property_id, http_client):
+    """Gain 3 : un POI OSM retenu reçoit tél/site d'Overture par appariement sûr —
+    source reste 'osm', provenance tracée, AUCUN POI ajouté (le lieu apparié est
+    consommé, il ne repart pas en comblement)."""
+    def fetch(lat, lon, radius):
+        return [_ovt_place("Mercadona", "grocery_store", 37.9310, -0.7510,
+                           phone="+34 966 000 000", website="https://mercadona.es",
+                           ref="gers:merca")]
+
+    result = pipeline.run(property_id, use_claude=False, only_categories={"supermarket"},
+                          http_client=http_client, anthropic_client=FakeAnthropic(),
+                          overture_fetch=fetch)
+    assert result["overture_contacts"] == 1 and result["overture_added"] == 0
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rows = conn.execute(
+            "SELECT name, source, phone, website, completion_meta FROM pois "
+            "WHERE property_id=%s AND category_code='supermarket' ORDER BY name",
+            (property_id,)).fetchall()
+    assert len(rows) == 2                                  # aucun POI ajouté
+    merca = next(r for r in rows if r["name"] == "Mercadona")
+    lidl = next(r for r in rows if r["name"] == "Lidl")
+    assert merca["source"] == "osm"                        # jamais requalifié
+    assert merca["phone"] == "+34 966 000 000"
+    assert merca["website"] == "https://mercadona.es"
+    assert merca["completion_meta"]["_overture"]["source_ref"] == "gers:merca"
+    assert set(merca["completion_meta"]["_overture"]["fields"]) == {"phone", "website"}
+    assert lidl["phone"] is None                           # non apparié → intact
+
+
+def test_overture_failure_degrades_to_osm_only(property_id, http_client):
+    """Dégradation douce : un fetch Overture qui ÉCHOUE est tracé et le job termine
+    sur OSM seul (jamais un job cassé par la source secondaire)."""
+    def boom(lat, lon, radius):
+        raise RuntimeError("S3 indisponible")
+
+    result = pipeline.run(property_id, use_claude=False, only_categories={"supermarket"},
+                          http_client=http_client, anthropic_client=FakeAnthropic(),
+                          overture_fetch=boom)
+    assert result["overture_added"] == 0 and result["overture_contacts"] == 0
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rows = conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s AND category_code='supermarket'",
+            (property_id,)).fetchall()
+        job = conn.execute("SELECT steps, status FROM enrichment_jobs WHERE id=%s",
+                           (result["job_id"],)).fetchone()
+    assert job["status"] == "done"                         # job intact
+    assert job["steps"]["overture"]["ok"] is False
+    assert "S3" in job["steps"]["overture"]["error"]
+    assert {r["name"] for r in rows} == {"Mercadona", "Lidl"}   # OSM seul
+
+
+def test_overture_respects_arbitrated_pois(property_id, http_client):
+    """Invariant 1 + dédup inter-sources : un distributeur DÉJÀ approuvé n'est jamais
+    touché ; un candidat Overture qui le DOUBLE est écarté (dédup contre l'arbitré) ;
+    un candidat distinct est bien ajouté."""
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            "INSERT INTO pois (property_id, category_code, name, geom, source, "
+            "source_ref, status) VALUES (%s,'atm','Banco Santander', "
+            "ST_SetSRID(ST_MakePoint(%s,%s),4326),'owner','owner:1','approved')",
+            (property_id, PROP_LON, PROP_LAT))
+        conn.commit()
+
+    def fetch(lat, lon, radius):
+        return [_ovt_place("Banco Santander", "bank_credit_union",
+                           PROP_LAT + 0.0001, PROP_LON, phone="+34 1", ref="gers:s"),
+                _ovt_place("CaixaBank", "bank_credit_union",
+                           PROP_LAT + 0.003, PROP_LON + 0.003, phone="+34 2", ref="gers:c")]
+
+    result = pipeline.run(property_id, use_claude=False, only_categories={"atm"},
+                          http_client=http_client, anthropic_client=FakeAnthropic(),
+                          overture_fetch=fetch)
+    assert result["job_id"]
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        rows = conn.execute(
+            "SELECT name, source, status FROM pois WHERE property_id=%s "
+            "AND category_code='atm' ORDER BY name", (property_id,)).fetchall()
+    assert {r["name"] for r in rows} == {"Banco Santander", "CaixaBank"}
+    santander = next(r for r in rows if r["name"] == "Banco Santander")
+    assert santander["status"] == "approved" and santander["source"] == "owner"
+    caixa = next(r for r in rows if r["name"] == "CaixaBank")
+    assert caixa["source"] == "overture" and caixa["status"] == "suggested"

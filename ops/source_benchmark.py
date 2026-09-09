@@ -51,10 +51,8 @@ import argparse
 import csv
 import datetime as _dt
 import io
-import json
 import logging
 import os
-import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -68,7 +66,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))                       # ops/
 sys.path.insert(0, str(_HERE.parent / "backend"))    # enrich.*
 import opsenv  # noqa: E402
-from enrich import dedup, overpass  # noqa: E402
+from enrich import dedup, fusion, overpass  # noqa: E402
+from enrich import overture as _overture  # noqa: E402
 
 log = logging.getLogger("casaguide.source_benchmark")
 
@@ -107,81 +106,24 @@ MIN_MAPPED_PCT = 30.0        # V2-48c : sous ce seuil de lieux catégorisés rec
 #                              mapping est cassé → échec bruyant (jamais de grille trompeuse).
 
 
-# ── Mapping de taxonomie (artefact réutilisable) ──────────────────────────────
+# ── Mapping de taxonomie & appariement — EXTRAITS et PARTAGÉS (V2-52) ─────────
+# Le mapping de taxonomie + la détection de release vivent désormais dans
+# `enrich.overture` ; le matcher inter-sources dans `enrich.fusion`. Le benchmark les
+# RÉUTILISE (une seule source de vérité, partagée avec le pipeline de production).
+load_category_map = _overture.load_category_map
+map_overture_category = _overture.map_overture_category
+is_ignored = _overture.is_ignored
+classify_category = _overture.classify_category
 
-def load_category_map(path: Path | None = None) -> dict:
-    """Charge l'artefact de mapping (V2-48c : structure EXACT + SUFFIXE sur valeurs
-    PLATES). Tolère l'ancien format {rules:[{prefix,code}]} (rétrocompat)."""
-    path = path or (_HERE / "overture_category_map.json")
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    ig = data.get("ignore") or {}
-    ignore = {"exact": {t.lower() for t in (ig.get("exact") or [])},
-              "keywords": [k.lower() for k in (ig.get("keywords") or [])]}
-    if "exact" in data or "suffix" in data:
-        return {"exact": {k.lower(): v for k, v in (data.get("exact") or {}).items()},
-                "suffix": data.get("suffix") or [], "ignore": ignore}
-    # Ancien format à préfixes pointés → converti en suffixes/exacts sur le dernier segment.
-    exact: dict[str, str] = {}
-    for r in data.get("rules") or []:
-        seg = r["prefix"].rsplit(".", 1)[-1]
-        exact[seg] = r["code"]
-    return {"exact": exact, "suffix": [], "ignore": ignore}
-
-
-def is_ignored(primary: str | None, cmap: dict) -> bool:
-    """V2-48d : la catégorie Overture est-elle « hors sujet PAR NATURE » (hôtel, salon,
-    immobilier, administration…) → HORS dénominateur de santé. Distinct d'une LACUNE (à
-    mapper). Un lieu MAPPÉ n'est jamais « ignoré » (le mapping prime)."""
-    p = (primary or "").strip().lower()
-    if not p:
-        return False
-    token = p.rsplit(".", 1)[-1]
-    ig = cmap.get("ignore") or {}
-    if token in ig.get("exact", set()):
-        return True
-    return any(kw in token for kw in ig.get("keywords", []))
-
-
-def classify_category(primary: str | None, cmap: dict) -> str:
-    """État d'une catégorie Overture (V2-48d) : « mapped » (reconnue), « ignored »
-    (hors guide, hors dénominateur) ou « gap » (LACUNE à mapper — reste au dénominateur,
-    remonte au diagnostic)."""
-    if map_overture_category(primary, cmap) is not None:
-        return "mapped"
-    return "ignored" if is_ignored(primary, cmap) else "gap"
-
-
-def map_overture_category(primary: str | None, cmap: dict) -> str | None:
-    """Valeur Overture `categories.primary` → notre `code`. V2-48c : la taxonomie d'août
-    est PLATE (« restaurant », « bank_credit_union »…). On prend le DERNIER segment pointé
-    (robuste à l'ancien schéma « eat_and_drink.restaurant » comme au nouveau), puis EXACT
-    d'abord (tapas_bar→restaurant avant le suffixe _bar), SUFFIXE ensuite (« *_restaurant »
-    → restaurant). None si rien → annexe (jamais tordu)."""
-    p = (primary or "").strip().lower()
-    if not p:
-        return None
-    token = p.rsplit(".", 1)[-1]        # « eat_and_drink.restaurant » → « restaurant »
-    code = cmap.get("exact", {}).get(token)
-    if code:
-        return code
-    for rule in cmap.get("suffix", []):
-        if token.endswith(rule["suffix"]):
-            return rule["code"]
-    return None
-
-
-# ── Appariement & métriques (PUR) ─────────────────────────────────────────────
 
 def _name_sim(a: str | None, b: str | None) -> float:
-    return dedup._dice(dedup._norm(a), dedup._norm(b))
+    return fusion.name_similarity(a, b)
 
 
 def places_match(a: dict, b: dict) -> bool:
-    """« Le même lieu » : distance < 75 m ET similarité de nom ≥ seuil (V2-48)."""
-    if None in (a.get("lat"), a.get("lon"), b.get("lat"), b.get("lon")):
-        return False
-    d = overpass.haversine_m(a["lat"], a["lon"], b["lat"], b["lon"])
-    return d < MATCH_DIST_M and _name_sim(a.get("name"), b.get("name")) >= NAME_MATCH_THRESHOLD
+    """« Le même lieu » : distance < 75 m ET similarité de nom ≥ seuil (V2-48). Délègue
+    au matcher partagé `fusion.same_place` (mêmes seuils)."""
+    return fusion.same_place(a, b, dist_m=MATCH_DIST_M, name_thr=NAME_MATCH_THRESHOLD)
 
 
 def match_sets(osm: list[dict], overture: list[dict]) -> dict:
@@ -347,79 +289,18 @@ def run_probes(terrain_key: str, osm: list[dict], overture: list[dict],
 
 
 # ── Acquisition Overture (DuckDB) — INJECTABLE ───────────────────────────────
-
-def _bbox(lat: float, lon: float, radius_m: int) -> tuple[float, float, float, float]:
-    """Bbox (minlon, minlat, maxlon, maxlat) autour d'un point pour un rayon donné."""
-    dlat = radius_m / 111_320.0
-    import math
-    dlon = radius_m / (111_320.0 * max(0.1, math.cos(math.radians(lat))))
-    return (lon - dlon, lat - dlat, lon + dlon, lat + dlat)
-
-
-# Format RÉEL d'une release Overture sur S3 : AAAA-MM-JJ.N (ex. 2026-08-19.0) — PAS
-# « AAAA-MM » (V2-48b : l'ancien défaut ne matchait aucun chemin S3).
-_RELEASE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\.\d+$")
-_RELEASE_IN_PATH = re.compile(r"/release/(\d{4}-\d{2}-\d{2}\.\d+)/")
-_OVERTURE_S3 = "s3://overturemaps-us-west-2/release"
-
-
-def _duckdb_connect():
-    """Connexion DuckDB prête pour Overture (httpfs + spatial, S3 anonyme us-west-2).
-    Message explicite si `duckdb` manque (installé par deploy.sh via ops/requirements.txt)."""
-    try:
-        import duckdb  # noqa: PLC0415
-    except ImportError as exc:
-        raise RuntimeError(
-            "duckdb requis pour le fetch Overture réel — `pip install duckdb` (ou "
-            "deploy.sh l'installe désormais via ops/requirements.txt)." ) from exc
-    con = duckdb.connect()
-    con.execute("INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial;")
-    con.execute("SET s3_region='us-west-2';")
-    return con
-
-
-def _release_from_path(path: str) -> str | None:
-    """Extrait le segment de release « AAAA-MM-JJ.N » d'un chemin S3 Overture, où qu'il
-    soit (« …/release/2026-08-19.0/theme=places/… »)."""
-    m = _RELEASE_IN_PATH.search(str(path))
-    return m.group(1) if m else None
-
-
-def latest_overture_release(connect: Callable = _duckdb_connect) -> str:
-    """Dernière release Overture disponible sur S3. `connect` injectable (tests).
-
-    V2-48c : le glob SHALLOW `release/*` renvoyait 0 ligne (« Aucune release détectée »)
-    car S3 n'a AUCUN objet à ce niveau — seulement des sous-préfixes ; DuckDB `glob`
-    liste des OBJETS. On globe donc les fichiers du thème `places` et on EXTRAIT le
-    segment de release (Python-side, distinct)."""
-    con = connect()
-    try:
-        log.info("· détection de la release Overture (listing S3)…")
-        rows = con.execute(
-            f"SELECT DISTINCT file FROM "
-            f"glob('{_OVERTURE_S3}/*/theme=places/type=place/*.parquet')").fetchall()
-    finally:
-        con.close()
-    releases = sorted({rel for (f,) in rows if (rel := _release_from_path(f))})
-    if not releases:
-        raise RuntimeError(
-            "Aucune release Overture détectée sur S3 — passez --release AAAA-MM-JJ.N "
-            "explicitement (dernière release visible sur overturemaps.org/download).")
-    return releases[-1]
-
-
-def resolve_release(release: str | None,
-                    detector: Callable[[], str] = latest_overture_release) -> str:
-    """Valide/résout la release. Une valeur explicite DOIT respecter « AAAA-MM-JJ.N »
-    (message d'erreur montrant le format sinon) ; absente → détection de la dernière."""
-    if release:
-        if _RELEASE_RE.match(release):
-            return release
-        raise ValueError(
-            f"--release invalide : {release!r}. Format attendu AAAA-MM-JJ.N "
-            f"(ex. 2026-08-19.0). Omettez --release pour détecter automatiquement la "
-            f"dernière release disponible sur S3.")
-    return detector()
+# La détection/validation de release et la connexion DuckDB sont EXTRAITES dans
+# `enrich.overture` (partagées avec le pipeline). Re-exportées ici pour les tests
+# et le CLI du benchmark ; la requête `_query_places` reste LOCALE (contrat 6 colonnes
+# du benchmark, sans l'id GERS que porte la version production).
+_bbox = _overture._bbox
+_RELEASE_RE = _overture._RELEASE_RE
+_RELEASE_IN_PATH = _overture._RELEASE_IN_PATH
+_OVERTURE_S3 = _overture._OVERTURE_S3
+_duckdb_connect = _overture._duckdb_connect
+_release_from_path = _overture._release_from_path
+latest_overture_release = _overture.latest_overture_release
+resolve_release = _overture.resolve_release
 
 
 def _places_sql(release: str, geom_expr: str, bbox: tuple,
