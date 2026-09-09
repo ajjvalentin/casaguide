@@ -49,12 +49,17 @@ doit se débrouiller seul — rien d'autre. Un touriste, pas un administré.
 
 Contraintes de CONTENU :
 - emergency_numbers : numéros RÉELLEMENT en vigueur dans ce pays (112 européen
-  inclus). CHAQUE item porte un `role` de cet ENSEMBLE FERMÉ (le libellé d'affichage
-  est traduit côté guide À PARTIR du rôle) : `eu_emergency` (112 ou équivalent),
-  `national_police`, `municipal_police`, `fire`, `medical`. Pour un numéro utile qui
-  n'entre dans AUCUN de ces rôles, mets `role` = "" et donne un `label` court en
-  français. `notes` : une précision utile seulement si elle aide à composer le bon
-  numéro, sinon "".
+  inclus). CHAQUE item porte un `role` STRUCTUREL en snake_case (le libellé d'affichage
+  est traduit côté guide À PARTIR du rôle — ne le laisse JAMAIS vide). Rôles connus,
+  traduits automatiquement : `eu_emergency` (112 ou équivalent), `police` (police
+  générique, ex. 117 suisse), `national_police`, `municipal_police` (ou locale),
+  `gendarmerie` (Guardia Civil), `police_nonemergency`, `fire`, `medical` (SAMU,
+  ambulance, urgences médicales), `doctor_on_call` (médecin/garde médicale),
+  `poison_control` (toxicologie/antipoison), `air_rescue` (Rega/sauvetage aérien).
+  Pour un numéro utile qui n'entre dans AUCUN de ces rôles, invente un `role`
+  snake_case DESCRIPTIF (ex. `red_cross`, `mountain_rescue`) — jamais vide — et donne
+  un `label` court en français (il servira de repli). `notes` : une précision utile
+  seulement si elle aide à composer le bon numéro, sinon "".
 - waste_rules : pour CHAQUE conteneur, sa couleur (ou son type) et, en une poignée
   de mots, CE QU'ON Y MET (« emballages plastique et métal », « verre », « papier
   et carton », « déchets restants »). `summary` : une phrase pratique maximum

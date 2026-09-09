@@ -1273,26 +1273,91 @@ _EMERGENCY_LABELS: dict[str, dict[str, str]] = {
                 "es": "Urgencias médicas", "it": "Emergenza medica",
                 "de": "Rettungsdienst", "nl": "Medische hulp",
                 "sq": "Ndihma mjekësore"},
+    # V2-51c : rôles complétés d'après l'inventaire réel du parc (CH/ES/NL).
+    "gendarmerie": {"fr": "Garde civile", "en": "Civil Guard", "es": "Guardia Civil",
+                    "it": "Guardia Civil", "de": "Guardia Civil", "nl": "Guardia Civil",
+                    "sq": "Garda Civile"},
+    "police": {"fr": "Police", "en": "Police", "es": "Policía", "it": "Polizia",
+               "de": "Polizei", "nl": "Politie", "sq": "Policia"},
+    "police_nonemergency": {"fr": "Police (non-urgence)", "en": "Police (non-emergency)",
+                            "es": "Policía (no urgente)", "it": "Polizia (non urgente)",
+                            "de": "Polizei (kein Notfall)", "nl": "Politie (geen spoed)",
+                            "sq": "Policia (jo urgjente)"},
+    "doctor_on_call": {"fr": "Médecin de garde", "en": "On-call doctor",
+                       "es": "Médico de guardia", "it": "Medico di guardia",
+                       "de": "Ärztlicher Notdienst", "nl": "Huisartsenpost",
+                       "sq": "Mjeku i gatshëm"},
+    "poison_control": {"fr": "Centre antipoison", "en": "Poison control",
+                       "es": "Toxicología", "it": "Centro antiveleni",
+                       "de": "Vergiftungsnotruf", "nl": "Vergiftigingencentrum",
+                       "sq": "Qendra e helmimeve"},
+    "air_rescue": {"fr": "Secours aérien", "en": "Air rescue", "es": "Rescate aéreo",
+                   "it": "Soccorso aereo", "de": "Luftrettung",
+                   "nl": "Luchtreddingsdienst", "sq": "Shpëtimi ajror"},
 }
 
-# Reprise des faits ANCIENS (label texte → rôle) par SOUS-CHAÎNE (V2-51b : « SAMU /
-# Urgences médicales » — libellé COMPOSÉ — ne matchait pas un dict exact). Phrases
-# distinctives, ordre = plus spécifique d'abord ; la première trouvée dans le libellé
-# normalisé gagne. Aucune correspondance → pas de rôle → label stocké tel quel.
+# Reprise des faits ANCIENS (label texte → rôle) par FAMILLES de mots-clés multilingues
+# (V2-51b : « SAMU / Urgences médicales » composé ; V2-51c : inventaire réel du parc,
+# 6 rôles de plus). Ordre = PLUS SPÉCIFIQUE D'ABORD, la première phrase trouvée dans le
+# libellé normalisé gagne → il FAUT que « rega » (air_rescue) précède un « sauvetage »
+# générique, que « non urgence » (police_nonemergency) précède « police », que la police
+# NOMMÉE (municipale/nationale/garde civile) précède la police GÉNÉRIQUE. Aucune
+# correspondance → pas de rôle → label stocké tel quel (dégradation douce).
 _ROLE_PHRASES: list[tuple[str, str]] = [
+    # Secours aérien (Rega) — avant tout « sauvetage » générique.
+    ("rega", "air_rescue"), ("sauvetage aerien", "air_rescue"),
+    ("secours aerien", "air_rescue"), ("air rescue", "air_rescue"),
+    ("rescate aereo", "air_rescue"), ("soccorso aereo", "air_rescue"),
+    ("luftrettung", "air_rescue"), ("luchtredding", "air_rescue"),
+    # Toxicologie / antipoison.
+    ("toxicolog", "poison_control"), ("antipoison", "poison_control"),
+    ("anti poison", "poison_control"), ("poison control", "poison_control"),
+    ("antiveleni", "poison_control"), ("vergiftung", "poison_control"),
+    ("vergiftigingen", "poison_control"), ("helmim", "poison_control"),
+    # Urgence européenne combinée (« Urgences (police, pompiers, SAMU) ») — avant samu.
+    ("urgences police pompiers", "eu_emergency"),
     ("urgences europ", "eu_emergency"), ("urgence europ", "eu_emergency"),
     ("emergencias ue", "eu_emergency"), ("european emergency", "eu_emergency"),
     ("euro notruf", "eu_emergency"), ("numero d urgence europ", "eu_emergency"),
+    # Police NON-URGENTE — avant tout « police ».
+    ("non urgence", "police_nonemergency"), ("non emergency", "police_nonemergency"),
+    ("no urgente", "police_nonemergency"), ("non urgente", "police_nonemergency"),
+    ("geen spoed", "police_nonemergency"), ("kein notfall", "police_nonemergency"),
+    ("jo urgjente", "police_nonemergency"),
+    # Médecin / garde médicale — avant le medical générique.
+    ("medecin de garde", "doctor_on_call"), ("garde medicale", "doctor_on_call"),
+    ("medisite", "doctor_on_call"), ("medico de guardia", "doctor_on_call"),
+    ("medico di guardia", "doctor_on_call"), ("on call doctor", "doctor_on_call"),
+    ("arztlicher", "doctor_on_call"), ("bereitschaftsdienst", "doctor_on_call"),
+    ("notdienst", "doctor_on_call"), ("huisartsenpost", "doctor_on_call"),
+    ("mjeku i gatshem", "doctor_on_call"),
+    # Urgences médicales (SAMU, ambulance…) — le rôle medical absorbe ces variantes.
     ("samu", "medical"), ("urgences medicales", "medical"),
     ("urgencias medicas", "medical"), ("emergencias medicas", "medical"),
-    ("emergenza medica", "medical"), ("ambulanc", "medical"),
+    ("emergenza medica", "medical"), ("ambulanc", "medical"), ("ambulanz", "medical"),
     ("medical emergency", "medical"), ("rettungsdienst", "medical"),
-    ("police municipale", "municipal_police"), ("policia local", "municipal_police"),
-    ("policia municipal", "municipal_police"), ("local police", "municipal_police"),
+    ("medische hulp", "medical"), ("ndihma mjekesore", "medical"),
+    # Police NOMMÉE (municipale / locale, puis nationale) — avant la police générique.
+    ("police municipale", "municipal_police"), ("police locale", "municipal_police"),
+    ("policia local", "municipal_police"), ("policia municipal", "municipal_police"),
+    ("local police", "municipal_police"), ("stadtpolizei", "municipal_police"),
+    ("gemeentepolitie", "municipal_police"), ("polizia municipale", "municipal_police"),
+    ("policia bashkiake", "municipal_police"),
     ("police nationale", "national_police"), ("policia nacional", "national_police"),
-    ("guardia civil", "national_police"), ("national police", "national_police"),
+    ("national police", "national_police"), ("nationale polizei", "national_police"),
+    ("nationale politie", "national_police"), ("polizia nazionale", "national_police"),
+    ("policia kombetare", "national_police"),
+    # Gendarmerie (Garde civile / Guardia Civil).
+    ("garde civile", "gendarmerie"), ("guardia civil", "gendarmerie"),
+    ("civil guard", "gendarmerie"), ("garda civile", "gendarmerie"),
+    # Pompiers.
     ("pompiers", "fire"), ("bomberos", "fire"), ("vigili del fuoco", "fire"),
     ("fire brigade", "fire"), ("feuerwehr", "fire"), ("brandweer", "fire"),
+    ("zjarrfikes", "fire"),
+    # Police GÉNÉRIQUE (117 suisse) — EN DERNIER : ne joue que si aucune police nommée
+    # n'a matché (ne JAMAIS forcer un « Police » nu en « nationale »).
+    ("police", "police"), ("policia", "police"), ("polizia", "police"),
+    ("polizei", "police"), ("politie", "police"),
 ]
 
 

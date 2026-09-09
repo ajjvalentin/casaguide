@@ -71,10 +71,10 @@ def test_area_facts_render_inside_declaring_section_not_in_final_block():
     marker = f'<h2>{guide_page._t("fr", "good_to_know")}</h2>'
     assert marker in html
     final = html[html.index(marker):]
-    # V2-51 : le numéro est inchangé ; le libellé « Guardia Civil » (fait ANCIEN, sans
-    # rôle) est repris vers le rôle national_police → affiché « Police nationale » en fr.
+    # V2-51/51c : le numéro est inchangé ; « Guardia Civil » (fait ANCIEN, sans rôle) est
+    # repris vers le rôle gendarmerie → affiché « Garde civile » en fr.
     assert "112" in final and "062" in final
-    assert "Police nationale" in final and "Guardia Civil" not in final
+    assert "Garde civile" in final and "Guardia Civil" not in final
 
     # waste_rules et noise_rules sont rendus AVANT le bloc final (donc dans leur
     # section) et ABSENTS du bloc final (M-17).
@@ -1232,8 +1232,11 @@ def test_emergency_backward_compat_maps_old_labels_and_degrades_gracefully():
     # Fait ANCIEN (label texte, pas de rôle) → repris vers le rôle → traduit.
     assert guide_page._emergency_label({"label": "Urgences européen", "number": "112"},
                                        "es") == "Emergencias (UE)"
-    assert guide_page._emergency_label({"label": "Guardia Civil", "number": "062"},
+    assert guide_page._emergency_label({"label": "Policía Nacional", "number": "091"},
                                        "de") == "Nationale Polizei"
+    # V2-51c : Guardia Civil est désormais un rôle DISTINCT (gendarmerie), plus national.
+    assert guide_page._emergency_label({"label": "Guardia Civil", "number": "062"},
+                                       "en") == "Civil Guard"
     assert guide_page._emergency_label({"label": "Pompiers", "number": "080"},
                                        "nl") == "Brandweer"
     # Un rôle explicite prime sur le label.
@@ -1268,6 +1271,70 @@ def test_code_i18n_dicts_exhaustive_in_seven_languages():
             for lang in guide_page.GUIDE_LANGS:
                 assert lang in per_lang, f"{name}[{key}] manque {lang}"
                 assert per_lang[lang].strip(), f"{name}[{key}][{lang}] vide"
+
+
+# ── V2-51c : inventaire réel des libellés d'urgence (contrat) ────────────────
+
+# Inventaire EXACT relevé sur le parc (8 area_facts, CH/ES/NL). Chaque libellé DOIT
+# résoudre vers un rôle traduit — le repli « tel quel » ne joue plus sur aucun. Tout
+# nouveau libellé découvert au prochain enrichissement s'ajoute ici : le test est le contrat.
+_EMERGENCY_INVENTORY: list[tuple[str, str]] = [
+    ("Urgences européennes", "eu_emergency"),
+    ("Urgences européen", "eu_emergency"),
+    ("Urgences (police, pompiers, SAMU)", "eu_emergency"),
+    ("Police nationale", "national_police"),
+    ("Police municipale", "municipal_police"),
+    ("Police locale", "municipal_police"),
+    ("Police", "police"),
+    ("Police (non-urgence)", "police_nonemergency"),
+    ("Garde civile", "gendarmerie"),
+    ("Pompiers", "fire"),
+    ("SAMU (urgences médicales)", "medical"),
+    ("SAMU / Urgences médicales", "medical"),
+    ("Ambulance", "medical"),
+    ("Ambulance / Urgences médicales", "medical"),
+    ("Médecin de garde", "doctor_on_call"),
+    ("Garde médicale (Médisite)", "doctor_on_call"),
+    ("Toxicologie", "poison_control"),
+    ("Rega (sauvetage aérien)", "air_rescue"),
+]
+
+
+def test_emergency_inventory_every_label_resolves_to_expected_role():
+    for label, role in _EMERGENCY_INVENTORY:
+        got = guide_page._role_from_label(label)
+        assert got == role, f"{label!r} → {got!r}, attendu {role!r}"
+        assert role in guide_page._EMERGENCY_LABELS               # rôle traduit
+        # Zéro repli « tel quel » : le rendu allemand est le libellé du DICTIONNAIRE.
+        de = guide_page._emergency_label({"label": label}, "de")
+        assert de == guide_page._EMERGENCY_LABELS[role]["de"] and de.strip()
+
+
+def test_swiss_emergency_numbers_translated_en_de_sq():
+    # Guide suisse (Ardon) : toxicologie, Rega et garde médicale traduits.
+    facts = {"emergency_numbers": {"items": [
+        {"label": "Police", "number": "117"},
+        {"label": "Toxicologie", "number": "145"},
+        {"label": "Rega (sauvetage aérien)", "number": "1414"},
+        {"label": "Garde médicale (Médisite)", "number": "0848"}], "notes": ""}}
+    expected = {
+        "en": ["Police", "Poison control", "Air rescue", "On-call doctor"],
+        "de": ["Polizei", "Vergiftungsnotruf", "Luftrettung", "Ärztlicher Notdienst"],
+        "sq": ["Policia", "Qendra e helmimeve", "Shpëtimi ajror", "Mjeku i gatshëm"],
+    }
+    for lang, labels in expected.items():
+        html = guide_page.render_guide(
+            _prop(), [_section("D_safety", "D", {"fields": []})], [], facts, "tok",
+            lang=lang)
+        for lbl in labels:
+            assert lbl in html, (lang, lbl)
+        assert "Toxicologie" not in html and "sauvetage aérien" not in html  # pas de FR
+
+
+def test_generic_police_never_forced_to_national():
+    # Le 117 suisse (« Police » nu) ne doit JAMAIS devenir « Police nationale ».
+    assert guide_page._role_from_label("Police") == "police"
+    assert guide_page._emergency_label({"label": "Police"}, "de") == "Polizei"
 
 
 def test_hours_indicative_localised_in_all_seven_languages():
