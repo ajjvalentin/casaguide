@@ -81,32 +81,53 @@ function initMap() {
   const bounds = [[P.lat, P.lon]];
   allMarkers = [];
   for (const p of GUIDE.pois || []) {
-    const m = L.circleMarker([p.lat, p.lon], {
-      radius: 7, weight: 2, color: "#fff", fillColor: p.color || "#0E5A73", fillOpacity: 0.95,
-    });
-    const dist = fmtDist(p);
-    let html = `<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.category || "")}`;
-    if (dist) html += ` · ${dist}`;
-    // Jour du marché (V2-33) : badge localisé dans la popup, aligné sur le SSR.
-    if (p.category_code === "market" && p.weekday) {
-      const day = weekdayLabel(p.weekday);
-      const note = (p.weekday_note || "").trim();
-      if (day) html += `<br>📅 <b>${escapeHtml(day)}</b>${note ? " · " + escapeHtml(note) : ""}`;
+    // Ajout RÉSILIENT par POI (V2-53d) : un POI illisible (coordonnée invalide, champ
+    // inattendu) ne doit JAMAIS avorter la boucle et faire disparaître TOUS les suivants
+    // (recette Ballarin v38 : 1 seul marqueur au lieu de ~126). Journalisé, jamais avalé.
+    try {
+      const m = L.circleMarker([p.lat, p.lon], {
+        radius: 7, weight: 2, color: "#fff", fillColor: p.color || "#0E5A73", fillOpacity: 0.95,
+      });
+      const dist = fmtDist(p);
+      let html = `<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.category || "")}`;
+      if (dist) html += ` · ${dist}`;
+      // Jour du marché (V2-33) : badge localisé dans la popup, aligné sur le SSR.
+      if (p.category_code === "market" && p.weekday) {
+        const day = weekdayLabel(p.weekday);
+        const note = (p.weekday_note || "").trim();
+        if (day) html += `<br>📅 <b>${escapeHtml(day)}</b>${note ? " · " + escapeHtml(note) : ""}`;
+      }
+      if (p.phone) html += `<br>📞 <a href="tel:${tel(p.phone)}">${escapeHtml(p.phone)}</a>`;
+      html += `<br><a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">Itinéraire ↗</a>`;
+      m.bindPopup(html);
+      m._catCode = p.category_code || "";
+      m._chapter = p.chapter || "";
+      m.addTo(map);
+      allMarkers.push(m);
+      bounds.push([p.lat, p.lon]);
+    } catch (e) {
+      console.error("[guide] POI ignoré (marqueur illisible) :", (p && p.name) || "?", e);
     }
-    if (p.phone) html += `<br>📞 <a href="tel:${tel(p.phone)}">${escapeHtml(p.phone)}</a>`;
-    html += `<br><a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">Itinéraire ↗</a>`;
-    m.bindPopup(html);
-    m._catCode = p.category_code || "";
-    m._chapter = p.chapter || "";
-    m.addTo(map);
-    allMarkers.push(m);
-    bounds.push([p.lat, p.lon]);
   }
   allBounds = bounds;
   if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
   // La carte est créée avant la mise en page finale : recalage.
   setTimeout(() => map.invalidateSize(), 80);
   window._guideMap = map;
+}
+
+// Recentrage de la carte « Autour » à CHAQUE activation de l'onglet (V2-53d). La carte
+// est souvent créée alors que le panneau est MASQUÉ (taille 0×0) → le fitBounds initial
+// part faux (centre aberrant, cas Ballarin 38.04,-0.84 loin de la villa). On recalcule la
+// taille PUIS on recadre sur les POI affichés — la villa TOUJOURS dans le cadre. Les DEUX
+// chemins d'entrée (onglet direct, bascule mini-carte) passent par `activate` → un seul
+// point de vérité.
+function recenterAround() {
+  const map = window._guideMap;
+  if (!map) return;
+  map.invalidateSize();
+  const cat = window._filterCat || "";
+  if (cat) fitFiltered(cat); else fitAll();
 }
 
 // Chapitre actif de la puce de filtre (vide = « Tout ») — source de vérité du
@@ -346,9 +367,11 @@ function initTabs() {
       const h = "#" + TAB_HASH[tabKey];
       if (location.hash !== h) history.pushState(null, "", h);
     }
-    // La carte est créée dans l'onglet « Autour » (masqué au départ) : recalage.
+    // La carte « Autour » est souvent créée panneau masqué (taille 0) : à CHAQUE
+    // activation on recalcule la taille ET on RECADRE (V2-53d) — sinon le centrage
+    // initial faux persiste. Vaut pour l'onglet direct ET la bascule mini-carte.
     if (tabKey === "around" && window._guideMap) {
-      setTimeout(() => window._guideMap.invalidateSize(), 30);
+      setTimeout(recenterAround, 30);
     }
     // Idem carte de situation à l'ouverture de l'onglet Logement (V2-53).
     if (tabKey === "home" && window._situMap) {

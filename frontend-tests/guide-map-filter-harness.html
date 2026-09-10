@@ -55,7 +55,13 @@
     tileLayer() { return { on() { return this; }, addTo() { return this; } }; },
     divIcon() { return {}; },
     marker(ll) { return mkMarker(ll, "home"); },
-    circleMarker(ll) { window.__created += 1; return mkMarker(ll, "poi"); },
+    circleMarker(ll) {
+      // Comme la vraie Leaflet : une coordonnée non finie JETTE (« Invalid LatLng »).
+      // V2-53d : un POI malformé (fixture ci-dessous) doit être ISOLÉ par le try/catch
+      // par-POI d'initMap ; sans lui, la boucle avorte → contrôle négatif (FAIL).
+      if (!(Number.isFinite(ll[0]) && Number.isFinite(ll[1]))) throw new Error("Invalid LatLng");
+      window.__created += 1; return mkMarker(ll, "poi");
+    },
   };
 
   // État initial : grille de l'onglet « Autour de vous ».
@@ -123,6 +129,7 @@
   "property": { "name": "Villa Test", "lat": 38.00, "lon": -0.70 },
   "pois": [
     { "name": "R1", "lat": 38.001, "lon": -0.701, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
+    { "name": "POI cassé", "lat": null, "lon": null, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
     { "name": "R2", "lat": 38.002, "lon": -0.702, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
     { "name": "R3", "lat": 38.003, "lon": -0.703, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
     { "name": "S1", "lat": 38.004, "lon": -0.704, "chapter": "F", "category_code": "supermarket", "color": "#0E5A73", "category": "Supermarché" },
