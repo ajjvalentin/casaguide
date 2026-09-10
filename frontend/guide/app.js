@@ -160,37 +160,49 @@ function initSituationMap() {
   const P = GUIDE.property || {};
   if (!mapEl || !window.L || P.lat == null || P.lon == null) return;
 
+  // Handlers d'interaction à couper (image de situation, pas un widget). On les
+  // désactive APRÈS l'init, en GARDANT chaque accès : Leaflet 1.9.4 a SUPPRIMÉ le
+  // handler `tap` (map.tap absent) — un `tap:false` en OPTION du constructeur ou un
+  // `map.tap.disable()` codé en dur plante l'init (recette 10/09). Jamais de nom de
+  // handler supposé présent contre une version de Leaflet.
+  const INTERACTION_HANDLERS = ["dragging", "scrollWheelZoom", "doubleClickZoom",
+    "touchZoom", "boxZoom", "keyboard", "tap"];
   let built = false;
   const build = () => {
     if (built) return;
     built = true;
-    // Image de situation, PAS un widget : TOUTES les interactions coupées (sinon la
-    // carte volerait le défilement de page sur mobile — recette 10/09).
-    const map = L.map(mapEl, {
-      dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
-      touchZoom: false, boxZoom: false, keyboard: false, tap: false,
-      zoomControl: false,
-    }).setView([P.lat, P.lon], 15);   // zoom de QUARTIER (contexte, pas la parcelle)
-    const TRANSPARENT_TILE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-      { attribution: "© OpenStreetMap", maxZoom: 19, errorTileUrl: TRANSPARENT_TILE });
-    // Hors-ligne : dégradation propre, MÊME comportement que « Autour » (tuiles
-    // transparentes + note discrète, jamais de vignette cassée). L'adresse reste
-    // affichée juste au-dessus (bloc neutre).
-    tiles.on("tileerror", () => { if (!navigator.onLine) showMapOffline(mapEl); });
-    tiles.addTo(map);
-    const marker = L.marker([P.lat, P.lon], {
-      icon: L.divIcon({ className: "", html: '<div class="home-pin">🏠</div>', iconAnchor: [13, 13] }),
-      keyboard: false,
-    }).addTo(map);
-    // Bascule via l'API LEAFLET elle-même : un écouteur DOM concurrent était capturé
-    // par les handlers Leaflet (le tap ne basculait pas — recette 10/09). La carte ET
-    // le marqueur pointent vers « Autour de vous ».
-    const toAround = () => { if (window._activateTab) window._activateTab("around"); };
-    map.on("click", toAround);
-    marker.on("click", toAround);
-    setTimeout(() => map.invalidateSize(), 80);
-    window._situMap = map;
+    try {
+      const map = L.map(mapEl, { zoomControl: false })   // zoomControl = option de contrôle, sûre partout
+        .setView([P.lat, P.lon], 15);                    // zoom de QUARTIER (contexte, pas la parcelle)
+      for (const h of INTERACTION_HANDLERS) {
+        if (map[h] && map[h].disable) map[h].disable();  // accès GARDÉ (tap absent en 1.9)
+      }
+      const TRANSPARENT_TILE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+      const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        { attribution: "© OpenStreetMap", maxZoom: 19, errorTileUrl: TRANSPARENT_TILE });
+      // Hors-ligne : dégradation propre, MÊME comportement que « Autour » (tuiles
+      // transparentes + note discrète, jamais de vignette cassée). L'adresse reste
+      // affichée juste au-dessus (bloc neutre).
+      tiles.on("tileerror", () => { if (!navigator.onLine) showMapOffline(mapEl); });
+      tiles.addTo(map);
+      const marker = L.marker([P.lat, P.lon], {
+        icon: L.divIcon({ className: "", html: '<div class="home-pin">🏠</div>', iconAnchor: [13, 13] }),
+        keyboard: false,
+      }).addTo(map);
+      // Bascule via l'API LEAFLET elle-même : un écouteur DOM concurrent était capturé
+      // par les handlers Leaflet (le tap ne basculait pas — recette 10/09). La carte ET
+      // le marqueur pointent vers « Autour de vous ».
+      const toAround = () => { if (window._activateTab) window._activateTab("around"); };
+      map.on("click", toAround);
+      marker.on("click", toAround);
+      setTimeout(() => map.invalidateSize(), 80);
+      window._situMap = map;
+    } catch (e) {
+      // JAMAIS de silence (V2-53c) : trace explicite + dégradation propre (la boîte
+      // reste neutre, l'adresse est affichée au-dessus). L'init morte de la mini-carte
+      // ne doit pas non plus casser le reste du guide.
+      console.error("[guide] carte de situation : initialisation échouée", e);
+    }
   };
 
   if ("IntersectionObserver" in window) {

@@ -1,10 +1,13 @@
 <!doctype html>
-<!-- Harnais headless de la carte de SITUATION du logement (V2-53/53b). Pilote le VRAI
-     /frontend/guide/app.js sur un DOM fidèle au SSR + la vraie guide.css. Leaflet est
-     remplacé par un mock qui capture les OPTIONS de la mini-carte et ses écouteurs de
-     clic (map + marqueur). On vérifie : (1) toutes les interactions coupées ; (2) le clic
-     map ET le clic marqueur basculent vers l'onglet « Autour » RÉELLEMENT VISIBLE
-     (offsetParent, pas seulement une classe). Verdict dans #result. -->
+<!-- Harnais headless de la carte de SITUATION du logement (V2-53/53b/53c). Pilote le
+     VRAI /frontend/guide/app.js sur un DOM fidèle au SSR + la vraie guide.css. Le mock
+     Leaflet REFLÈTE 1.9.4 : handlers d'interaction exposés en objets `.disable()`, et le
+     handler `tap` VOLONTAIREMENT ABSENT (comme la vraie 1.9) — un accès non gardé
+     `map.tap.disable()` planterait, exactement comme en réel (le mock trop permissif de
+     v37 validait à tort). On vérifie : (1) l'init RÉUSSIT (leaflet-container posé,
+     window._situMap présent) malgré l'absence de `tap` ; (2) toutes les interactions
+     RÉELLES sont désactivées ; (3) clic map ET marqueur → onglet « Autour » RÉELLEMENT
+     visible ; (4) touch-action:pan-y calculé. Verdict dans #result. -->
 <html lang="fr">
 <head>
 <meta charset="utf-8">
@@ -25,13 +28,26 @@
     disconnect() {}
   };
 
-  // ── Mock Leaflet : capture options de la mini-carte + écouteurs de clic ──────
-  window.__situ = { opts: null, mapClick: null, markerClick: null };
+  // ── Mock Leaflet FIDÈLE À 1.9.4 ─────────────────────────────────────────────
+  // Les handlers sont des objets `.disable()` (espionnés) ; `tap` est ABSENT (comme
+  // la vraie 1.9.4). Un `map.tap.disable()` non gardé jetterait → build() attrape →
+  // window._situMap resterait absent → le harnais ROUGIT (il aurait attrapé v37).
+  window.__situ = { disabled: [], mapClick: null, markerClick: null };
+  function spyHandler(name) {
+    return { disable() { window.__situ.disabled.push(name); }, enable() {} };
+  }
   window.L = {
     map(el, opts) {
-      window.__situ.opts = opts || {};
+      el.classList.add("leaflet-container");   // comme Leaflet à l'initialisation
       const map = {
         _on: {},
+        dragging: spyHandler("dragging"),
+        scrollWheelZoom: spyHandler("scrollWheelZoom"),
+        doubleClickZoom: spyHandler("doubleClickZoom"),
+        touchZoom: spyHandler("touchZoom"),
+        boxZoom: spyHandler("boxZoom"),
+        keyboard: spyHandler("keyboard"),
+        // tap : VOLONTAIREMENT ABSENT (Leaflet 1.9.4).
         setView() { return map; },
         on(t, f) { (map._on[t] = map._on[t] || []).push(f); if (t === "click") window.__situ.mapClick = f; return map; },
         invalidateSize() { return map; },
@@ -104,37 +120,42 @@
     await import("/frontend/guide/app.js");
     await wait(160);   // laisse l'IntersectionObserver + build + init s'exécuter
 
-    // 1) Interactions TOUTES coupées (image de situation, pas un widget).
-    const o = window.__situ.opts || {};
-    chk(o.dragging === false && o.scrollWheelZoom === false && o.doubleClickZoom === false
-      && o.touchZoom === false && o.boxZoom === false && o.keyboard === false
-      && o.tap === false && o.zoomControl === false, "toutes les interactions désactivées");
+    // 1) L'init RÉUSSIT malgré l'absence de `tap` (le bug v37 : build() plantait,
+    //    _situMap restait absent, la boîte restait vide sans leaflet-container).
+    chk(!!window._situMap, "mini-carte construite (init non plantée par l'absence de tap)");
+    chk(q("#situ-map").classList.contains("leaflet-container"),
+      "classe leaflet-container posée (init Leaflet complétée)");
 
-    // 2) Bascule câblée via l'API Leaflet (map + marqueur), pas un listener DOM.
-    chk(typeof window.__situ.mapClick === "function", "écouteur de clic sur la CARTE (Leaflet)");
-    chk(typeof window.__situ.markerClick === "function", "écouteur de clic sur le MARQUEUR (Leaflet)");
-    chk(!!window._situMap, "mini-carte construite (paresseuse)");
+    // 2) Toutes les interactions RÉELLES coupées (désactivation défensive, gardée).
+    const d = window.__situ.disabled;
+    for (const h of ["dragging", "scrollWheelZoom", "doubleClickZoom", "touchZoom",
+      "boxZoom", "keyboard"]) {
+      chk(d.includes(h), "interaction désactivée : " + h);
+    }
 
-    // État initial : onglet Logement actif, « Autour » caché.
-    chk(rendered(home()), "départ : onglet Logement visible");
-    chk(!rendered(around()), "départ : onglet Autour caché");
+    // 3) touch-action:pan-y calculé (défilement de page jamais volé).
+    chk(getComputedStyle(q("#situ-map")).touchAction === "pan-y",
+      "touch-action:pan-y (t=" + getComputedStyle(q("#situ-map")).touchAction + ")");
 
-    // 3) Tap sur la TUILE (clic map Leaflet) → onglet Autour RÉELLEMENT visible.
+    // 4) Écouteurs de clic câblés via l'API Leaflet (carte + marqueur).
+    chk(typeof window.__situ.mapClick === "function", "écouteur de clic sur la CARTE");
+    chk(typeof window.__situ.markerClick === "function", "écouteur de clic sur le MARQUEUR");
+
+    // État initial : Logement visible, Autour caché.
+    chk(rendered(home()) && !rendered(around()), "départ : Logement visible, Autour caché");
+
+    // 5) Tap TUILE (clic map) → onglet Autour RÉELLEMENT visible.
     window.__situ.mapClick();
     await wait(120);
-    chk(around().classList.contains("tab-active"), "tap tuile : classe tab-active posée");
-    chk(rendered(around()), "tap tuile : onglet Autour VISIBLE (offsetParent)");
-    chk(!rendered(home()), "tap tuile : onglet Logement masqué");
+    chk(rendered(around()) && !rendered(home()), "tap tuile → Autour visible, Logement masqué");
 
-    // Retour au Logement pour ré-éprouver le marqueur.
+    // Retour au Logement, puis tap MARQUEUR → Autour visible aussi.
     window._activateTab("home");
     await wait(120);
     chk(rendered(home()) && !rendered(around()), "retour Logement : Autour de nouveau caché");
-
-    // 4) Tap sur le MARQUEUR (clic marker Leaflet) → onglet Autour visible aussi.
     window.__situ.markerClick();
     await wait(120);
-    chk(rendered(around()), "tap marqueur : onglet Autour VISIBLE");
+    chk(rendered(around()), "tap marqueur → Autour visible");
   } catch (e) {
     pass = false;
     log.push("✗ exception : " + (e && e.message ? e.message : e));
