@@ -489,6 +489,39 @@ def test_train_station_also_gets_planning_block():
     assert "Gare de Torrevieja" in html and '<div class="trip">' in html
 
 
+# ── V2-53 : carte de situation du logement (onglet Logement) ─────────────────
+
+def test_situation_map_container_rendered_in_home_arrival():
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
+    html = guide_page.render_guide(_prop(lat=37.928, lon=-0.748),
+                                   sections, [_airport()], {}, "tok")
+    # Conteneur présent, dans le PANNEAU LOGEMENT (home), entre l'adresse/GPS et les
+    # blocs de trajet. Vide → AUCUNE chaîne visible (rien à traduire), attribution
+    # posée par Leaflet côté client.
+    assert '<div class="situ-map" id="situ-map" aria-hidden="true"></div>' in html
+    home = _panel(html, "home")
+    assert 'id="situ-map"' in home
+    assert (html.index("arrival-meta") < html.index('id="situ-map"')
+            < html.index('<div class="transport"'))
+
+
+def test_situation_map_absent_without_position():
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
+    html = guide_page.render_guide(_prop(lat=None, lon=None),
+                                   sections, [], {}, "tok")
+    assert "situ-map" not in html
+
+
+def test_situation_map_identical_across_languages():
+    # La carte n'introduit aucune chaîne localisée : le conteneur est byte-identique
+    # dans toutes les langues (non-régression 7 langues).
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]
+    for lang in guide_page.GUIDE_LANGS:
+        html = guide_page.render_guide(_prop(lat=37.928, lon=-0.748),
+                                       sections, [_airport()], {}, "tok", lang=lang)
+        assert '<div class="situ-map" id="situ-map" aria-hidden="true"></div>' in html
+
+
 def test_bus_station_gets_planning_block_like_airport():
     """M-21 : la gare routière (bus_station) rejoint aéroport/gare dans les blocs
     de planification M-14/M-20 (durée voiture + « Voir l'itinéraire »)."""

@@ -151,6 +151,11 @@ html.js .tab-panel[data-tab="around"].fact-filtered > #map{display:none}
 
 /* ── Carte ───────────────────────────────────────────────────────────────── */
 #map{position:relative;height:320px;border-radius:14px;border:1px solid var(--line);margin:14px 0 4px;background:#E9EEF0}
+/* Carte de SITUATION du logement (onglet Logement, V2-53) : compacte, un tap
+   bascule vers « Autour de vous ». Non interactive (pointeur = invite au tap). */
+.situ-map{position:relative;height:180px;border-radius:14px;border:1px solid var(--line);
+  margin:12px 0 4px;background:#E9EEF0;cursor:pointer}
+.situ-map .leaflet-marker-icon,.situ-map .leaflet-tile-pane{pointer-events:none}
 /* Message discret hors-ligne / hors zone pré-chargée (M-10) */
 .map-offline{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:600;
   max-width:calc(100% - 24px);background:rgba(30,42,50,.86);color:#fff;font-size:12.5px;

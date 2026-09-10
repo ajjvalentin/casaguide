@@ -149,6 +149,54 @@ function fitAll() {
   if (map && allBounds && allBounds.length > 1) map.fitBounds(allBounds, { padding: [30, 30], maxZoom: 15 });
 }
 
+// ── Carte de SITUATION du logement (onglet Logement, V2-53) ───────────────────
+// Aperçu compact de l'emplacement, sous l'adresse/GPS. Instance dédiée
+// (window._situMap), MÊME config tuiles/attribution/hors-ligne que « Autour ».
+// Initialisation PARESSEUSE (IntersectionObserver) : aucune tuile tant que le
+// conteneur n'est pas visible (onglet Logement non ouvert ou map hors écran). Non
+// éditable ; un tap n'importe où bascule vers « Autour de vous ».
+function initSituationMap() {
+  const mapEl = document.getElementById("situ-map");
+  const P = GUIDE.property || {};
+  if (!mapEl || !window.L || P.lat == null || P.lon == null) return;
+
+  let built = false;
+  const build = () => {
+    if (built) return;
+    built = true;
+    const map = L.map(mapEl, {
+      scrollWheelZoom: false, dragging: false, zoomControl: false,
+      doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false,
+    }).setView([P.lat, P.lon], 15);   // zoom de QUARTIER (contexte, pas la parcelle)
+    const TRANSPARENT_TILE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      { attribution: "© OpenStreetMap", maxZoom: 19, errorTileUrl: TRANSPARENT_TILE });
+    // Hors-ligne : dégradation propre, MÊME comportement que « Autour » (tuiles
+    // transparentes + note discrète, jamais de vignette cassée). L'adresse reste
+    // affichée juste au-dessus (bloc neutre).
+    tiles.on("tileerror", () => { if (!navigator.onLine) showMapOffline(mapEl); });
+    tiles.addTo(map);
+    L.marker([P.lat, P.lon], {
+      icon: L.divIcon({ className: "", html: '<div class="home-pin">🏠</div>', iconAnchor: [13, 13] }),
+      keyboard: false, interactive: false,
+    }).addTo(map);
+    // Un tap bascule vers « Autour de vous » (le conteneur reçoit le clic : la carte
+    // est non interactive, la propagation remonte).
+    mapEl.addEventListener("click", () => { if (window._activateTab) window._activateTab("around"); });
+    setTimeout(() => map.invalidateSize(), 80);
+    window._situMap = map;
+  };
+
+  if ("IntersectionObserver" in window) {
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { build(); io.disconnect(); }
+    });
+    io.observe(mapEl);
+  } else {
+    build();   // repli (navigateurs sans IntersectionObserver) : construit d'emblée
+  }
+}
+
 // Message discret « hors ligne / hors zone » sur la carte (M-10).
 function showMapOffline(mapEl) {
   if (mapEl.querySelector(".map-offline")) return;
@@ -283,6 +331,10 @@ function initTabs() {
     // La carte est créée dans l'onglet « Autour » (masqué au départ) : recalage.
     if (tabKey === "around" && window._guideMap) {
       setTimeout(() => window._guideMap.invalidateSize(), 30);
+    }
+    // Idem carte de situation à l'ouverture de l'onglet Logement (V2-53).
+    if (tabKey === "home" && window._situMap) {
+      setTimeout(() => window._situMap.invalidateSize(), 30);
     }
     updateLangHash();
   }
@@ -791,6 +843,7 @@ function escapeHtml(s) {
 // ── Démarrage ────────────────────────────────────────────────────────────────
 initLang();
 initMap();
+initSituationMap();
 initTabs();
 initChips();
 initBackToServices();

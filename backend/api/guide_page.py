@@ -846,6 +846,18 @@ def _render_arrival_meta(prop: dict, lang: str = "fr") -> str:
     return f'<div class="arrival-meta">{"".join(rows)}</div>'
 
 
+def _render_situation_map(lat: Any, lon: Any) -> str:
+    """Carte de SITUATION du logement (V2-53) : conteneur vide, initialisé
+    PARESSEUSEMENT par `app.js` (`initSituationMap`) à la première visibilité de
+    l'onglet Logement — aucune tuile si le voyageur n'y descend pas. Marqueur maison
+    unique sur la position stockée (lue côté client dans `guide-data`, jamais dupliquée
+    dans le DOM), zoom de quartier, non éditable ; un tap bascule vers « Autour de
+    vous ». N'introduit AUCUNE chaîne visible (attribution posée par Leaflet)."""
+    if lat is None or lon is None:
+        return ""
+    return '<div class="situ-map" id="situ-map" aria-hidden="true"></div>'
+
+
 def _render_transport(pois: list[dict], home_lat: Any, home_lon: Any,
                       lang: str = "fr") -> str:
     if not pois or home_lat is None or home_lon is None:
@@ -924,6 +936,10 @@ def _render_section(sec: dict, contact: dict, tourism_license: str | None,
         meta_html = _render_arrival_meta(arrival.get("prop") or {}, lang)
         if meta_html:
             parts.append(meta_html)
+        # Carte de situation (V2-53) : sous l'adresse/GPS, au-dessus des itinéraires.
+        situ_html = _render_situation_map(arrival.get("lat"), arrival.get("lon"))
+        if situ_html:
+            parts.append(situ_html)
         trans_html = _render_transport(arrival.get("pois") or [],
                                        arrival.get("lat"), arrival.get("lon"), lang)
         if trans_html:
