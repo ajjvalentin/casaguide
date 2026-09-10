@@ -110,7 +110,13 @@ function initMap() {
     }
   }
   allBounds = bounds;
-  if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+  // RACINE du bug Ballarin (V2-53d) : cadrer MAINTENANT si l'onglet « Autour » est
+  // MASQUÉ (conteneur 0×0) donne un cadrage faux (centre arrière-pays, villa hors
+  // cadre) que le seul invalidateSize ne corrige pas. On ne cadre que si le conteneur
+  // est visible ; sinon `recenterAround` s'en charge à la première activation.
+  if (bounds.length > 1 && mapEl.offsetParent !== null) {
+    map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+  }
   // La carte est créée avant la mise en page finale : recalage.
   setTimeout(() => map.invalidateSize(), 80);
   window._guideMap = map;

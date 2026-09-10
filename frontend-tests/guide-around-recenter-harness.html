@@ -1,0 +1,134 @@
+<!doctype html>
+<!-- Harnais headless du RECADRAGE de la carte « Autour » à l'activation (V2-53d). C'est
+     le scénario RÉEL Ballarin que le harnais map-filter ne couvrait pas : la carte est
+     construite alors que l'onglet « Autour » est MASQUÉ (démarrage sur « Le logement »),
+     donc le fitBounds initial part sur un conteneur 0×0 → cadrage faux. On vérifie qu'à
+     CHAQUE activation de « Autour » — onglet direct ET bascule mini-carte (_activateTab) —
+     la carte se RECADRE (invalidateSize + fitBounds sur villa + tous les POI, villa dans
+     le cadre). Verdict dans #result. -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>guide-around-recenter-harness</title>
+<script>document.documentElement.className += " js";</script>
+<link rel="stylesheet" href="/frontend/guide/guide.css">
+<script>
+  Element.prototype.scrollIntoView = function () {};
+  window.scrollTo = () => {};
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+
+  // Mock Leaflet : enregistre CHAQUE fitBounds (nb de points + villa incluse) et les
+  // marqueurs posés. La mini-carte de situation n'existe pas ici (pas de #situ-map).
+  window.__fits = [];
+  const HOME = [37.9262, -0.7233];
+  function mkMarker(ll, kind) {
+    const m = { _ll: ll, _kind: kind, addTo(map) { map._layers.add(m); return m; },
+      bindPopup() { return m; }, getLatLng() { return { lat: m._ll[0], lng: m._ll[1] }; } };
+    return m;
+  }
+  window.L = {
+    map() {
+      const map = {
+        _layers: new Set(),
+        setView() { return map; },
+        fitBounds(b) {
+          const hasHome = b.some((p) => Math.abs(p[0] - HOME[0]) < 1e-6 && Math.abs(p[1] - HOME[1]) < 1e-6);
+          window.__fits.push({ n: b.length, hasHome });
+          return map;
+        },
+        invalidateSize() { return map; },
+        removeLayer(m) { map._layers.delete(m); return map; },
+        on() { return map; },
+      };
+      window.__map = map;
+      return map;
+    },
+    tileLayer() { return { on() { return this; }, addTo() { return this; } }; },
+    divIcon() { return {}; },
+    marker(ll) { return mkMarker(ll, "home"); },
+    circleMarker(ll) { return mkMarker(ll, "poi"); },
+  };
+  // DÉMARRAGE SUR « LE LOGEMENT » : « Autour » masqué → le fitBounds initial part 0×0.
+  location.hash = "#logement";
+</script>
+</head>
+<body data-token="tok" data-lang="fr" data-default-lang="fr">
+<div class="wrap">
+  <nav class="guide-tabs" role="tablist">
+    <button class="tab on" role="tab" data-tab="home" id="tabbtn-home" aria-controls="tab-home" aria-selected="true">Le logement</button>
+    <button class="tab" role="tab" data-tab="emergency" id="tabbtn-emergency" aria-controls="tab-emergency" aria-selected="false">Urgences</button>
+    <button class="tab" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="false">Autour de vous</button>
+  </nav>
+  <main>
+    <section class="tab-panel tab-active" data-tab="home" id="tab-home" role="tabpanel">home</section>
+    <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
+    <section class="tab-panel" data-tab="around" id="tab-around" role="tabpanel">
+      <nav class="svc-grid" id="autour" aria-label="Services"></nav>
+      <div id="map"></div>
+      <nav class="chips" aria-label="Filtrer"><button class="chip on" data-chapter="">Tout</button></nav>
+      <section class="chapter" data-chapter="F">
+        <div class="cat" data-cat="restaurant" id="autour/restaurant"><div class="poi-group" data-cat="restaurant"><div class="poi-card">R1</div></div></section>
+    </section>
+  </main>
+</div>
+
+<pre id="result">PENDING</pre>
+
+<script id="guide-data" type="application/json">{
+  "property": { "name": "Villa Ballarin", "lat": 37.9262, "lon": -0.7233 },
+  "pois": [
+    { "name": "R1", "lat": 37.928, "lon": -0.725, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
+    { "name": "Marché lointain", "lat": 38.16, "lon": -0.96, "chapter": "F", "category_code": "market", "weekday": 6, "color": "#0E5A73", "category": "Marché" },
+    { "name": "R2", "lat": 37.930, "lon": -0.722, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
+    { "name": "S1", "lat": 37.931, "lon": -0.724, "chapter": "F", "category_code": "supermarket", "color": "#0E5A73", "category": "Supermarché" }
+  ]
+}</script>
+
+<script type="module">
+  const log = [];
+  let pass = true;
+  const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const q = (sel) => document.querySelector(sel);
+  const EXPECTED = 5;   // villa + 4 POI
+
+  try {
+    await import("/frontend/guide/app.js");
+    await wait(160);
+
+    // 0) Démarrage sur « Le logement » : les 4 POI + villa sont posés (boucle résiliente).
+    //    Racine V2-53d : AUCUN cadrage tant que « Autour » est masqué (conteneur 0×0) —
+    //    on n'inflige plus le cadrage faux ; il viendra à l'activation.
+    chk(q('.tab-panel[data-tab="home"]').classList.contains("tab-active"), "démarrage sur Logement");
+    chk([...window.__map._layers].filter((m) => m._kind === "poi").length === 4,
+      "4 marqueurs POI posés (aucun perdu)");
+    chk(window.__fits.length === 0, "aucun cadrage tant que Autour est masqué (conteneur 0×0)");
+
+    // 1) ONGLET DIRECT → « Autour » : recadrage (nouveau fitBounds sur villa + tous les POI).
+    const before1 = window.__fits.length;
+    q('.tab[data-tab="around"]').click();
+    await wait(120);
+    chk(window.__fits.length > before1, "recadrage à l'activation DIRECTE de l'onglet");
+    const f1 = window.__fits[window.__fits.length - 1];
+    chk(f1.n === EXPECTED && f1.hasHome, "recadrage sur villa + tous les POI (villa dans le cadre)");
+
+    // 2) Retour Logement, puis BASCULE MINI-CARTE (via _activateTab, le chemin du tap) →
+    //    même recadrage : les DEUX chemins convergent sur `activate`.
+    window._activateTab("home");
+    await wait(80);
+    const before2 = window.__fits.length;
+    window._activateTab("around");   // exactement ce que fait le tap de la mini-carte
+    await wait(120);
+    chk(window.__fits.length > before2, "recadrage AUSSI via la bascule mini-carte (_activateTab)");
+    const f2 = window.__fits[window.__fits.length - 1];
+    chk(f2.n === EXPECTED && f2.hasHome, "bascule : recadrage villa + tous les POI");
+  } catch (e) {
+    pass = false;
+    log.push("✗ exception : " + (e && e.message ? e.message : e));
+  }
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>
+</body>
+</html>
