@@ -164,9 +164,12 @@ function initSituationMap() {
   const build = () => {
     if (built) return;
     built = true;
+    // Image de situation, PAS un widget : TOUTES les interactions coupées (sinon la
+    // carte volerait le défilement de page sur mobile — recette 10/09).
     const map = L.map(mapEl, {
-      scrollWheelZoom: false, dragging: false, zoomControl: false,
-      doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false,
+      dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
+      touchZoom: false, boxZoom: false, keyboard: false, tap: false,
+      zoomControl: false,
     }).setView([P.lat, P.lon], 15);   // zoom de QUARTIER (contexte, pas la parcelle)
     const TRANSPARENT_TILE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
     const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -176,13 +179,16 @@ function initSituationMap() {
     // affichée juste au-dessus (bloc neutre).
     tiles.on("tileerror", () => { if (!navigator.onLine) showMapOffline(mapEl); });
     tiles.addTo(map);
-    L.marker([P.lat, P.lon], {
+    const marker = L.marker([P.lat, P.lon], {
       icon: L.divIcon({ className: "", html: '<div class="home-pin">🏠</div>', iconAnchor: [13, 13] }),
-      keyboard: false, interactive: false,
+      keyboard: false,
     }).addTo(map);
-    // Un tap bascule vers « Autour de vous » (le conteneur reçoit le clic : la carte
-    // est non interactive, la propagation remonte).
-    mapEl.addEventListener("click", () => { if (window._activateTab) window._activateTab("around"); });
+    // Bascule via l'API LEAFLET elle-même : un écouteur DOM concurrent était capturé
+    // par les handlers Leaflet (le tap ne basculait pas — recette 10/09). La carte ET
+    // le marqueur pointent vers « Autour de vous ».
+    const toAround = () => { if (window._activateTab) window._activateTab("around"); };
+    map.on("click", toAround);
+    marker.on("click", toAround);
     setTimeout(() => map.invalidateSize(), 80);
     window._situMap = map;
   };

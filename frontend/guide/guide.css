@@ -155,7 +155,11 @@ html.js .tab-panel[data-tab="around"].fact-filtered > #map{display:none}
    bascule vers « Autour de vous ». Non interactive (pointeur = invite au tap). */
 .situ-map{position:relative;height:180px;border-radius:14px;border:1px solid var(--line);
   margin:12px 0 4px;background:#E9EEF0;cursor:pointer}
-.situ-map .leaflet-marker-icon,.situ-map .leaflet-tile-pane{pointer-events:none}
+/* Le défilement de page (touch) ne doit jamais être capturé par la mini-carte
+   (V2-53b) : on autorise le pan vertical de la PAGE au-dessus d'elle. Spécificité
+   renforcée (`.leaflet-container`, posée par Leaflet à l'init) pour primer sur la
+   base Leaflet quel que soit l'ordre des feuilles. */
+.situ-map.leaflet-container{touch-action:pan-y}
 /* Message discret hors-ligne / hors zone pré-chargée (M-10) */
 .map-offline{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:600;
   max-width:calc(100% - 24px);background:rgba(30,42,50,.86);color:#fff;font-size:12.5px;

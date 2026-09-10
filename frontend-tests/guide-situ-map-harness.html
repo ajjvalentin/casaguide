@@ -1,0 +1,145 @@
+<!doctype html>
+<!-- Harnais headless de la carte de SITUATION du logement (V2-53/53b). Pilote le VRAI
+     /frontend/guide/app.js sur un DOM fidèle au SSR + la vraie guide.css. Leaflet est
+     remplacé par un mock qui capture les OPTIONS de la mini-carte et ses écouteurs de
+     clic (map + marqueur). On vérifie : (1) toutes les interactions coupées ; (2) le clic
+     map ET le clic marqueur basculent vers l'onglet « Autour » RÉELLEMENT VISIBLE
+     (offsetParent, pas seulement une classe). Verdict dans #result. -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>guide-situ-map-harness</title>
+<script>document.documentElement.className += " js";</script>
+<link rel="stylesheet" href="/frontend/guide/guide.css">
+<script>
+  Element.prototype.scrollIntoView = function () {};
+  window.scrollTo = () => {};
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+
+  // IntersectionObserver mock : déclenche l'init paresseuse tout de suite.
+  window.IntersectionObserver = class {
+    constructor(cb) { this.cb = cb; }
+    observe(el) { setTimeout(() => this.cb([{ isIntersecting: true, target: el }]), 0); }
+    disconnect() {}
+  };
+
+  // ── Mock Leaflet : capture options de la mini-carte + écouteurs de clic ──────
+  window.__situ = { opts: null, mapClick: null, markerClick: null };
+  window.L = {
+    map(el, opts) {
+      window.__situ.opts = opts || {};
+      const map = {
+        _on: {},
+        setView() { return map; },
+        on(t, f) { (map._on[t] = map._on[t] || []).push(f); if (t === "click") window.__situ.mapClick = f; return map; },
+        invalidateSize() { return map; },
+        removeLayer() { return map; },
+        fitBounds() { return map; },
+      };
+      window.__situMap = map;
+      return map;
+    },
+    tileLayer() { return { on() { return this; }, addTo() { return this; } }; },
+    divIcon() { return {}; },
+    marker(ll) {
+      const m = {
+        _on: {},
+        addTo() { return m; },
+        bindPopup() { return m; },
+        getLatLng() { return { lat: ll[0], lng: ll[1] }; },
+        on(t, f) { (m._on[t] = m._on[t] || []).push(f); if (t === "click") window.__situ.markerClick = f; return m; },
+      };
+      window.__situMarker = m;
+      return m;
+    },
+    circleMarker(ll) { return this.marker(ll); },
+  };
+</script>
+</head>
+<body data-token="tok" data-lang="fr" data-default-lang="fr">
+<div class="wrap">
+  <header class="guide-head">
+    <div class="hrow"><div><h1>Villa Test</h1></div></div>
+    <div class="sos"><a class="sos-item" href="tel:112"><span class="num">112</span><span class="lbl">Urgences</span></a></div>
+  </header>
+  <nav class="guide-tabs" role="tablist">
+    <button class="tab on" role="tab" data-tab="home" id="tabbtn-home" aria-controls="tab-home" aria-selected="true">Le logement</button>
+    <button class="tab" role="tab" data-tab="emergency" id="tabbtn-emergency" aria-controls="tab-emergency" aria-selected="false">Urgences</button>
+    <button class="tab" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="false">Autour de vous</button>
+  </nav>
+  <main>
+    <section class="tab-panel tab-active" data-tab="home" id="tab-home" role="tabpanel">
+      <div class="sec-card"><h3>Arrivée &amp; départ</h3>
+        <div class="arrival-meta"><div class="copy-row"><div class="cr-val">Calle 1</div></div></div>
+        <div class="situ-map" id="situ-map" aria-hidden="true"></div>
+      </div>
+    </section>
+    <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
+    <section class="tab-panel" data-tab="around" id="tab-around" role="tabpanel">
+      <nav class="svc-grid" id="autour" aria-label="Services"></nav>
+    </section>
+  </main>
+</div>
+
+<pre id="result">PENDING</pre>
+
+<script id="guide-data" type="application/json">{
+  "property": { "name": "Villa Test", "lat": 38.00, "lon": -0.70 },
+  "pois": []
+}</script>
+
+<script type="module">
+  const log = [];
+  let pass = true;
+  const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const q = (sel) => document.querySelector(sel);
+  const around = () => q('.tab-panel[data-tab="around"]');
+  const home = () => q('.tab-panel[data-tab="home"]');
+  const rendered = (el) => !!el && el.offsetParent !== null;   // présence RÉELLE dans le rendu
+
+  try {
+    await import("/frontend/guide/app.js");
+    await wait(160);   // laisse l'IntersectionObserver + build + init s'exécuter
+
+    // 1) Interactions TOUTES coupées (image de situation, pas un widget).
+    const o = window.__situ.opts || {};
+    chk(o.dragging === false && o.scrollWheelZoom === false && o.doubleClickZoom === false
+      && o.touchZoom === false && o.boxZoom === false && o.keyboard === false
+      && o.tap === false && o.zoomControl === false, "toutes les interactions désactivées");
+
+    // 2) Bascule câblée via l'API Leaflet (map + marqueur), pas un listener DOM.
+    chk(typeof window.__situ.mapClick === "function", "écouteur de clic sur la CARTE (Leaflet)");
+    chk(typeof window.__situ.markerClick === "function", "écouteur de clic sur le MARQUEUR (Leaflet)");
+    chk(!!window._situMap, "mini-carte construite (paresseuse)");
+
+    // État initial : onglet Logement actif, « Autour » caché.
+    chk(rendered(home()), "départ : onglet Logement visible");
+    chk(!rendered(around()), "départ : onglet Autour caché");
+
+    // 3) Tap sur la TUILE (clic map Leaflet) → onglet Autour RÉELLEMENT visible.
+    window.__situ.mapClick();
+    await wait(120);
+    chk(around().classList.contains("tab-active"), "tap tuile : classe tab-active posée");
+    chk(rendered(around()), "tap tuile : onglet Autour VISIBLE (offsetParent)");
+    chk(!rendered(home()), "tap tuile : onglet Logement masqué");
+
+    // Retour au Logement pour ré-éprouver le marqueur.
+    window._activateTab("home");
+    await wait(120);
+    chk(rendered(home()) && !rendered(around()), "retour Logement : Autour de nouveau caché");
+
+    // 4) Tap sur le MARQUEUR (clic marker Leaflet) → onglet Autour visible aussi.
+    window.__situ.markerClick();
+    await wait(120);
+    chk(rendered(around()), "tap marqueur : onglet Autour VISIBLE");
+  } catch (e) {
+    pass = false;
+    log.push("✗ exception : " + (e && e.message ? e.message : e));
+  }
+  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+</script>
+</body>
+</html>
