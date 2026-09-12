@@ -566,6 +566,129 @@ def count_guest_generations(conn, *, email: str | None = None,
     ).fetchone()["n"]
 
 
+# ── Commandes payantes de guide voyageur (V2-54 Mission B) ───────────────────
+
+_GUEST_ORDER_COLS = """
+    id, token, stripe_session_id, email, lang, ip, city, country_code,
+    address_line1, postal_code, region, lat, lon, status, property_id,
+    guide_token, error, paid_at, delivered_at, created_at, updated_at
+"""
+
+
+def create_guest_order(conn, *, email: str, lang: str, ip: str | None,
+                       city: str, country_code: str,
+                       address_line1: str | None = None,
+                       postal_code: str | None = None, region: str | None = None,
+                       lat: float | None = None, lon: float | None = None) -> dict:
+    """Crée une commande `pending` (avant le Checkout). Le `token` (128 bits) est la
+    clé du parcours sans compte (suivi/reprise/renvoi)."""
+    return conn.execute(
+        f"""INSERT INTO guest_guide_orders
+              (email, lang, ip, city, country_code, address_line1, postal_code,
+               region, lat, lon)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING {_GUEST_ORDER_COLS}""",
+        (email, lang, ip, city, country_code.upper(), address_line1, postal_code,
+         region, lat, lon),
+    ).fetchone()
+
+
+def attach_guest_order_session(conn, order_id: str, session_id: str) -> None:
+    """Rapproche la commande de sa session Checkout (posée après création de la
+    session, qui a besoin de l'order_id en metadata)."""
+    conn.execute(
+        "UPDATE guest_guide_orders SET stripe_session_id=%s, updated_at=now() "
+        "WHERE id=%s", (session_id, order_id))
+
+
+def get_guest_order_by_session(conn, session_id: str) -> dict | None:
+    return conn.execute(
+        f"SELECT {_GUEST_ORDER_COLS} FROM guest_guide_orders "
+        "WHERE stripe_session_id=%s", (session_id,)).fetchone()
+
+
+def get_guest_order_by_token(conn, token: str) -> dict | None:
+    return conn.execute(
+        f"SELECT {_GUEST_ORDER_COLS} FROM guest_guide_orders WHERE token=%s",
+        (token,)).fetchone()
+
+
+def get_guest_order(conn, order_id: str) -> dict | None:
+    return conn.execute(
+        f"SELECT {_GUEST_ORDER_COLS} FROM guest_guide_orders WHERE id=%s",
+        (order_id,)).fetchone()
+
+
+def guest_resend_allowed(conn, order_id: str, interval_s: int) -> bool:
+    """True si le dernier envoi remonte à plus de `interval_s` (cadence anti-abus
+    du renvoi). Un envoi jamais fait (delivered_at NULL) est autorisé."""
+    return conn.execute(
+        "SELECT (delivered_at IS NULL OR "
+        "        delivered_at < now() - make_interval(secs => %s)) AS ok "
+        "FROM guest_guide_orders WHERE id=%s", (interval_s, order_id)
+    ).fetchone()["ok"]
+
+
+def mark_guest_order_paid(conn, order_id: str) -> None:
+    """Passe une commande `pending` → `paid` (paiement confirmé par le webhook).
+    Idempotent : n'agit que sur une commande encore `pending`."""
+    conn.execute(
+        "UPDATE guest_guide_orders SET status='paid', paid_at=now(), updated_at=now() "
+        "WHERE id=%s AND status='pending'", (order_id,))
+
+
+def lock_guest_order_for_generation(conn, order_id: str) -> bool:
+    """Verrou d'idempotence de la GÉNÉRATION : passe `paid`/`failed` → `generating`
+    de façon atomique. Renvoie True si CE processus a pris le verrou (à lui de
+    générer), False sinon (déjà en cours/faite ailleurs). Belt & suspenders avec
+    l'idempotence `stripe_events`."""
+    return conn.execute(
+        "UPDATE guest_guide_orders SET status='generating', updated_at=now() "
+        "WHERE id=%s AND status IN ('paid','failed') RETURNING id",
+        (order_id,)).fetchone() is not None
+
+
+def update_guest_order_point(conn, order_id: str, *, lat: float, lon: float,
+                             address_line1: str | None = None) -> None:
+    """Reprise (V2-54 §3) : le vacancier a ajusté le point après un échec géocodage.
+    N'agit que sur une commande déjà payée non aboutie (jamais une `pending` : pas de
+    génération sans paiement)."""
+    conn.execute(
+        "UPDATE guest_guide_orders SET lat=%s, lon=%s, "
+        "address_line1=COALESCE(%s, address_line1), updated_at=now() "
+        "WHERE id=%s AND status IN ('paid','failed','generating')",
+        (lat, lon, address_line1, order_id))
+
+
+def complete_guest_order(conn, order_id: str, *, property_id: str,
+                         guide_token: str) -> None:
+    conn.execute(
+        "UPDATE guest_guide_orders SET status='done', property_id=%s, guide_token=%s, "
+        "error=NULL, delivered_at=now(), updated_at=now() WHERE id=%s",
+        (property_id, guide_token, order_id))
+
+
+def fail_guest_order(conn, order_id: str, error: str) -> None:
+    conn.execute(
+        "UPDATE guest_guide_orders SET status='failed', error=%s, updated_at=now() "
+        "WHERE id=%s", (error[:500], order_id))
+
+
+def touch_guest_order_delivered(conn, order_id: str) -> None:
+    """Horodate un (re)envoi du guide (cadence anti-abus du renvoi)."""
+    conn.execute(
+        "UPDATE guest_guide_orders SET delivered_at=now(), updated_at=now() "
+        "WHERE id=%s", (order_id,))
+
+
+def latest_delivered_order_for_email(conn, email: str) -> dict | None:
+    """Dernière commande LIVRÉE (guide publié) pour un e-mail — pour le renvoi."""
+    return conn.execute(
+        f"SELECT {_GUEST_ORDER_COLS} FROM guest_guide_orders "
+        "WHERE email=%s AND status='done' AND guide_token IS NOT NULL "
+        "ORDER BY created_at DESC LIMIT 1", (email,)).fetchone()
+
+
 # Champs simples modifiables via PATCH (hors lat/lon traités à part)
 _UPDATABLE = (
     "name", "address_line1", "address_line2", "postal_code", "city", "region",

@@ -254,6 +254,20 @@ _EMAIL: dict[str, dict[str, str]] = {
                             "de vous accueillir !",
         "button": "Ouvrir le guide",
         "footer": "Guide propulsé par Holaguia. Bon séjour !",
+        "guest_subject": "Votre Guide Voyageur est prêt",
+        "guest_title": "Votre guide des environs",
+        "guest_intro": "merci ! Votre guide des environs est prêt : commerces, "
+                       "restaurants, plages, numéros d'urgence — tout y est, "
+                       "consultable hors connexion. Ajoutez-le à votre écran "
+                       "d'accueil pour l'avoir sous la main tout le séjour.",
+        "guest_resend_subject": "Votre Guide Voyageur (renvoi)",
+        "guest_retry_subject": "Votre Guide Voyageur — une dernière étape",
+        "guest_retry_title": "Une précision sur l'adresse",
+        "guest_retry_intro": "votre paiement est bien reçu, merci ! Nous n'avons pas "
+                             "pu situer l'adresse avec certitude. Ajustez le point sur "
+                             "la carte (aucun nouveau paiement) et votre guide se "
+                             "génère aussitôt.",
+        "guest_retry_button": "Ajuster l'adresse",
     },
     "en": {
         "stay_subject": "Your guide for {property} — stay from {start} to {end}",
@@ -274,6 +288,20 @@ _EMAIL: dict[str, dict[str, str]] = {
                             "welcoming you!",
         "button": "Open the guide",
         "footer": "Guide powered by Holaguia. Enjoy your stay!",
+        "guest_subject": "Your Travel Guide is ready",
+        "guest_title": "Your guide to the area",
+        "guest_intro": "thank you! Your guide to the area is ready: shops, "
+                       "restaurants, beaches, emergency numbers — it's all here, "
+                       "available offline. Add it to your home screen to keep it "
+                       "handy throughout your stay.",
+        "guest_resend_subject": "Your Travel Guide (resend)",
+        "guest_retry_subject": "Your Travel Guide — one last step",
+        "guest_retry_title": "A detail about the address",
+        "guest_retry_intro": "your payment went through, thank you! We couldn't "
+                             "pinpoint the address with certainty. Adjust the point "
+                             "on the map (no new payment) and your guide is generated "
+                             "right away.",
+        "guest_retry_button": "Adjust the address",
     },
     "es": {
         "stay_subject": "Tu guía para {property} — estancia del {start} al {end}",
@@ -294,6 +322,20 @@ _EMAIL: dict[str, dict[str, str]] = {
                             "¡Un placer darte la bienvenida!",
         "button": "Abrir la guía",
         "footer": "Guía con tecnología de Holaguia. ¡Feliz estancia!",
+        "guest_subject": "Tu Guía de Viaje está lista",
+        "guest_title": "Tu guía de la zona",
+        "guest_intro": "¡gracias! Tu guía de la zona está lista: comercios, "
+                       "restaurantes, playas, números de emergencia — todo está "
+                       "aquí, disponible sin conexión. Añádela a tu pantalla de "
+                       "inicio para tenerla a mano durante toda tu estancia.",
+        "guest_resend_subject": "Tu Guía de Viaje (reenvío)",
+        "guest_retry_subject": "Tu Guía de Viaje — un último paso",
+        "guest_retry_title": "Un detalle sobre la dirección",
+        "guest_retry_intro": "¡tu pago se ha recibido, gracias! No hemos podido "
+                             "situar la dirección con certeza. Ajusta el punto en el "
+                             "mapa (sin ningún pago nuevo) y tu guía se genera al "
+                             "instante.",
+        "guest_retry_button": "Ajustar la dirección",
     },
 }
 
@@ -343,6 +385,38 @@ def guide_showcase_email(*, property_name: str, url: str, image_url: str,
     return Email(subject=subject, text=text, html=_shell(
         _et(lang, "showcase_title"), body_html,
         footer=_html.escape(_et(lang, "footer")), hero_url=image_url))
+
+
+def guide_purchase_email(*, url: str, lang: str = "fr",
+                         image_url: str | None = None,
+                         resend: bool = False) -> Email:
+    """Livraison de l'offre « Guide Voyageur » (V2-54 Mission B) : e-mail sans compte
+    portant le lien du guide `/g/{token}`. `resend=True` → sujet « renvoi » (endpoint
+    « renvoyer mon guide »)."""
+    lead = f"{_et(lang, 'stay_hello_generic')} {_et(lang, 'guest_intro')}"
+    button = _et(lang, "button")
+    subject = _et(lang, "guest_resend_subject" if resend else "guest_subject")
+    text = f"{lead}\n\n{url}\n\n— {_BRAND}"
+    body_html = (f'<p style="margin:0 0 12px;">{_html.escape(lead)}</p>'
+                 f"{_button(url, button)}")
+    return Email(subject=subject, text=text, html=_shell(
+        _et(lang, "guest_title"), body_html,
+        footer=_html.escape(_et(lang, "footer")), hero_url=image_url))
+
+
+def guide_retry_email(*, retry_url: str, lang: str = "fr") -> Email:
+    """Reprise après échec de génération (V2-54 Mission B, §3) : le paiement est
+    acquis, le vacancier ajuste le point sur la carte via `retry_url` — AUCUN nouveau
+    paiement. Aucune donnée de logement (la génération n'a pas abouti)."""
+    lead = f"{_et(lang, 'stay_hello_generic')} {_et(lang, 'guest_retry_intro')}"
+    button = _et(lang, "guest_retry_button")
+    subject = _et(lang, "guest_retry_subject")
+    text = f"{lead}\n\n{retry_url}\n\n— {_BRAND}"
+    body_html = (f'<p style="margin:0 0 12px;">{_html.escape(lead)}</p>'
+                 f"{_button(retry_url, button)}")
+    return Email(subject=subject, text=text, html=_shell(
+        _et(lang, "guest_retry_title"), body_html,
+        footer=_html.escape(_et(lang, "footer"))))
 
 
 def watchdog_restart_email(reason: str, when_utc: str) -> Email:

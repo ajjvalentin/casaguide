@@ -17,11 +17,11 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 
-from .. import billing_stripe, plans, repo, stripe_events
+from .. import billing_stripe, guest_guides, plans, repo, stripe_events
 from ..config import settings
-from ..deps import Conn, CurrentOwner, Stripe
+from ..deps import Conn, CurrentOwner, Mailer, Stripe
 from ..schemas import (AddonIn, AddonOut, CancelScheduledOut, ChangePlanIn,
                        ChangePlanOut, CheckoutIn, CheckoutOut, PlanOut,
                        PortalOut, QuotaGaugeOut, ScheduledChangeOut,
@@ -342,7 +342,8 @@ def cancel_scheduled_change(conn: Conn, owner: CurrentOwner, gateway: Stripe):
 # ── Webhooks Stripe : la seule source de vérité (V2-05b, volet 2) ────────────
 
 @router.post("/stripe/webhook", include_in_schema=False)
-async def stripe_webhook(request: Request, conn: Conn, gateway: Stripe):
+async def stripe_webhook(request: Request, conn: Conn, gateway: Stripe,
+                         background: BackgroundTasks, mailer: Mailer):
     """Reçoit les événements Stripe. Signature obligatoire (400 sinon),
     idempotence par `stripe_events` (un rejeu est accusé mais non retraité). Met
     à jour `subscriptions` (plan/statut/fin de période). Un type non géré est
@@ -374,7 +375,15 @@ async def stripe_webhook(request: Request, conn: Conn, gateway: Stripe):
     if not repo.stripe_event_begin(conn, event_id, event_type):
         return {"received": True, "duplicate": True}
 
-    action = stripe_events.process_event(conn, event)
+    # Checkout d'un GUIDE VOYAGEUR (V2-54 Mission B, mode payment) : la génération
+    # est lourde → enqueue en tâche de fond (jamais inline), le reste des événements
+    # (abonnements) suit le chemin habituel. Le webhook reste seule source de vérité.
+    if (event_type == "checkout.session.completed"
+            and guest_guides.is_guest_checkout(event)):
+        action = guest_guides.on_guest_checkout_paid(
+            conn, event, background, mailer, base_url=_public_base(request))
+    else:
+        action = stripe_events.process_event(conn, event)
     repo.stripe_event_mark_processed(conn, event_id)
     log.info("Webhook Stripe %s (%s) → %s", event_type, event_id, action)
     return {"received": True}

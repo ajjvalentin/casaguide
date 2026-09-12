@@ -18,8 +18,8 @@ from enrich import db as enrich_db
 from . import repo
 from .assets import RevalidatingStaticFiles, asset_version, versioned
 from .config import missing_production_config, settings
-from .routers import (auth, billing, calendars, enrich, guide, help, languages,
-                      media, pois, properties, send, share)
+from .routers import (auth, billing, calendars, enrich, guest_pay, guide, help,
+                      languages, media, pois, properties, send, share)
 
 log = logging.getLogger("casaguide.api")
 
@@ -98,6 +98,7 @@ app.include_router(send.router)
 app.include_router(pois.router)
 app.include_router(media.router)
 app.include_router(enrich.router)
+app.include_router(guest_pay.router)
 app.include_router(guide.router)
 app.include_router(languages.router)
 app.include_router(help.router)

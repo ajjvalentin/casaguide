@@ -148,6 +148,35 @@ CREATE TABLE guest_guide_generations (
 CREATE INDEX idx_guest_gen_email ON guest_guide_generations(email, created_at);
 CREATE INDEX idx_guest_gen_ip    ON guest_guide_generations(ip, created_at);
 
+-- Commandes de l'offre « Guide Voyageur » (V2-54 Mission B) : paiement one-shot
+-- Stripe sans compte. Le webhook est la seule source de vérité (génération après
+-- paiement confirmé). Le `token` est la clé du parcours sans compte (suivi/reprise/
+-- renvoi), jamais le guide_token du guide. Voir db/migrations/036.
+CREATE TABLE guest_guide_orders (
+    id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    token             TEXT NOT NULL UNIQUE DEFAULT encode(gen_random_bytes(16), 'hex'),
+    stripe_session_id TEXT UNIQUE,
+    email             TEXT NOT NULL,
+    lang              TEXT NOT NULL DEFAULT 'fr',
+    ip                TEXT,
+    city              TEXT NOT NULL,
+    country_code      CHAR(2) NOT NULL,
+    address_line1     TEXT,
+    postal_code       TEXT,
+    region            TEXT,
+    lat               DOUBLE PRECISION,
+    lon               DOUBLE PRECISION,
+    status            TEXT NOT NULL DEFAULT 'pending',  -- pending|paid|generating|done|failed
+    property_id       UUID REFERENCES properties(id) ON DELETE SET NULL,
+    guide_token       TEXT,
+    error             TEXT,
+    paid_at           TIMESTAMPTZ,
+    delivered_at      TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_guest_orders_email ON guest_guide_orders(email, created_at);
+
 -- Données sensibles chiffrées au niveau applicatif (§8) : le backend chiffre
 -- (AES-GCM, clé hors base) avant insertion ; la base ne voit que du bytea.
 CREATE TABLE property_secrets (

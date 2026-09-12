@@ -63,6 +63,11 @@ class StripeGateway(Protocol):
     def create_portal_session(self, *, customer_id: str,
                               return_url: str) -> str: ...
 
+    def create_guest_checkout_session(
+            self, *, amount_cts: int, currency: str, product_name: str,
+            email: str, success_url: str, cancel_url: str,
+            metadata: dict) -> tuple[str, str]: ...
+
     def set_addon_quantity(self, *, subscription_id: str, addon_price_id: str,
                            quantity: int) -> None: ...
 
@@ -115,6 +120,36 @@ class LiveStripeGateway:
             "cancel_url": cancel_url,
         })
         return session.url
+
+    # ── Checkout one-shot « Guide Voyageur » (V2-54, mode payment) ────────────
+    def create_guest_checkout_session(
+            self, *, amount_cts: int, currency: str, product_name: str,
+            email: str, success_url: str, cancel_url: str,
+            metadata: dict) -> tuple[str, str]:
+        """Session Checkout en mode **payment** (paiement unique, PAS d'abonnement)
+        pour l'offre Guide Voyageur. Le montant vient de la config (`price_data`
+        inline → aucun Price Stripe à re-synchroniser, la config reste l'autorité).
+        L'e-mail est collecté par Stripe (`customer_email`) ; les `metadata`
+        (kind='guest_guide', order_id) sont posées sur la session ET le PaymentIntent
+        pour rapprocher le webhook. Renvoie `(session_id, url)` — le `session_id` est
+        stocké sur la commande pour rapprocher `checkout.session.completed`."""
+        session = self._client.v1.checkout.sessions.create({
+            "mode": "payment",
+            "customer_email": email,
+            "line_items": [{
+                "price_data": {
+                    "currency": currency,
+                    "unit_amount": amount_cts,
+                    "product_data": {"name": product_name},
+                },
+                "quantity": 1,
+            }],
+            "metadata": metadata,
+            "payment_intent_data": {"metadata": metadata},
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+        })
+        return session.id, session.url
 
     # ── Portail client (cartes, factures, annulation) ────────────────────────
     def create_portal_session(self, *, customer_id: str,

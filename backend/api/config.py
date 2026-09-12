@@ -82,6 +82,17 @@ class ApiSettings:
     stripe_secret_key: str | None = os.getenv("CASAGUIDE_STRIPE_SECRET_KEY") or None
     stripe_webhook_secret: str | None = (
         os.getenv("CASAGUIDE_STRIPE_WEBHOOK_SECRET") or None)
+    # ── Offre « Guide Voyageur » one-shot (V2-54 Mission B) ───────────────────
+    # Montant du paiement unique, EN CENTIMES, lu de la configuration (jamais codé
+    # en dur — 290 = 2,90 € prix de lancement, ajustable sans commit). Le Checkout
+    # Stripe (mode `payment`) l'envoie en `price_data` inline → la config reste
+    # l'autorité du prix (aucune dérive avec un Price Stripe à re-synchroniser).
+    guest_guide_price_cts: int = int(os.getenv("CASAGUIDE_GUEST_PRICE_CTS", "290"))
+    guest_guide_currency: str = os.getenv("CASAGUIDE_GUEST_CURRENCY", "eur").lower()
+    # Cadence minimale entre deux renvois du guide par e-mail (anti-abus « renvoyer
+    # mon guide »), en secondes.
+    guest_resend_min_interval_s: int = int(
+        os.getenv("CASAGUIDE_GUEST_RESEND_MIN_INTERVAL_S", "120"))
 
     @property
     def smtp_configured(self) -> bool:

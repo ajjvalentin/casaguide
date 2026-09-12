@@ -236,3 +236,45 @@ La bascule ne change **aucun code** — uniquement des clés :
 > **En attente d'André** avant le mode Live : montants définitifs, éventuelle
 > facturation annuelle (s'ajoutera comme de simples Prices Stripe
 > supplémentaires — l'architecture le permet sans refonte).
+
+---
+
+## 6. Offre « Guide Voyageur » one-shot (V2-54 Mission B)
+
+Paiement **unique** (mode `payment`, PAS d'abonnement) pour un guide touristique
+auto-généré à l'adresse d'un lieu de vacances (2,90 € de lancement). **Sans compte**.
+
+- **Prix** : lu de la config (`CASAGUIDE_GUEST_PRICE_CTS`, défaut 290 = 2,90 € ;
+  `CASAGUIDE_GUEST_CURRENCY`, défaut `eur`). Le Checkout envoie le montant en
+  `price_data` inline → **aucun Price Stripe à synchroniser** (la config est
+  l'autorité, jamais de dérive). Un Product « Guide Voyageur Holaguia — <commune> »
+  apparaît côté Stripe pour le reporting.
+- **Webhook = seule source de vérité** (doctrine V2-27) : la génération ne démarre
+  qu'à `checkout.session.completed` **payé** (`payment_status == 'paid'`). Elle est
+  **lourde** (géocodage + moisson + IA + traduction) → jamais inline : le webhook
+  accuse vite et **enqueue** la génération en tâche de fond. Idempotence à deux
+  niveaux : `stripe_events` (event.id) + verrou atomique `paid→generating` sur la
+  commande. Un rejeu du webhook = **aucune** seconde génération.
+- **Livraison** : e-mail avec le lien `/g/{token}` (localisé fr/en/es). En cas
+  d'échec (mismatch géocodage, erreur pipeline) : e-mail de **reprise** vers le
+  tunnel (`/#/voyageur/reprise/{order_token}`) — le vacancier ajuste le point,
+  **aucun re-paiement** ; remboursement manuel si besoin (pas d'automatisation v1).
+- **Renvoi** : `POST /api/guest-guides/resend` (`{email}`) renvoie le dernier guide
+  livré ; réponse **200 constante** (anti-énumération), cadence anti-abus
+  (`CASAGUIDE_GUEST_RESEND_MIN_INTERVAL_S`, 120 s).
+
+### Recette 4242 (mode Test, geste d'André)
+
+1. `stripe listen --forward-to localhost:8000/api/stripe/webhook` (ou l'endpoint
+   Dashboard du VPS) → récupérer le `whsec_…` dans `.env`.
+2. `POST /api/guest-guides/checkout` (`{email, city, country_code, lat, lon}`) →
+   ouvrir l'URL renvoyée, payer avec `4242 4242 4242 4242`.
+3. Le webhook `checkout.session.completed` génère le guide (voir les journaux) puis
+   l'e-mail de livraison part. `stripe events resend <evt_id>` → **aucune** seconde
+   génération (idempotence prouvée).
+4. Sans clé Stripe, `/api/guest-guides/checkout` répond **503** (mode dégradé propre).
+
+> Comme le reste du code réseau Stripe (V2-05b), le parcours Live/4242 n'est pas
+> exercé par les tests (fakes injectés) ; la logique — signature, idempotence,
+> livraison, reprise, renvoi — est couverte par `tests/test_guest_pay.py` contre le
+> vrai FastAPI + la vraie vérification de signature HMAC.

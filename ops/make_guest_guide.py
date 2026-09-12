@@ -82,7 +82,9 @@ def main(argv: list[str] | None = None) -> int:
     print("\n=== Guide voyageur généré ===", flush=True)
     print(f"  Logement        : {prop.get('id')}  ({prop.get('city')}, {prop.get('country_code')})")
     print(f"  Lien du guide   : /g/{token}")
-    print(f"  Statut          : {prop.get('status')}")
+    # get_published_property_by_id ne filtre QUE les publiés → le statut est implicite
+    # ('published'). Le repli évite le « Statut : None » du récapitulatif (retouche B §4b).
+    print(f"  Statut          : {prop.get('status') or 'published'}")
     print(f"  Langues publiées : {', '.join(prop.get('published_langs') or []) or '(fr seul)'}")
     print(f"  POI moissonnés  : {summary.get('pois', 0)}")
     print(f"  Juge → approuvés : {summary.get('judge_approved', 0)}  "

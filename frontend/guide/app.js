@@ -120,8 +120,15 @@ function initMap() {
   // MASQUÉ (conteneur 0×0) donne un cadrage faux (centre arrière-pays, villa hors
   // cadre) que le seul invalidateSize ne corrige pas. On ne cadre que si le conteneur
   // est visible ; sinon `recenterAround` s'en charge à la première activation.
-  if (bounds.length > 1 && mapEl.offsetParent !== null) {
-    map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+  if (mapEl.offsetParent !== null) {
+    if (isGuestGuide()) {
+      // Guide voyageur (V2-54) : vue centrée sur l'ADRESSE saisie (le vacancier
+      // n'est pas encore sur place), JAMAIS le barycentre des POI — un lieu lointain
+      // (aéroport, grand site) tirerait sinon la vue vers l'arrière-pays.
+      map.setView([P.lat, P.lon], 13);
+    } else if (bounds.length > 1) {
+      map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+    }
   }
   // La carte est créée avant la mise en page finale : recalage.
   setTimeout(() => map.invalidateSize(), 80);
@@ -179,8 +186,19 @@ function fitFiltered(code) {
 // Retour au cadrage d'origine (grille) : logement + tous les POI.
 function fitAll() {
   const map = window._guideMap;
-  if (map && allBounds && allBounds.length > 1) map.fitBounds(allBounds, { padding: [30, 30], maxZoom: 15 });
+  if (!map) return;
+  // Guide voyageur (V2-54) : la vue « Tout » reste centrée sur l'adresse (zoom ~13),
+  // pas sur le barycentre des POI (cohérent avec le cadrage initial ci-dessus).
+  if (isGuestGuide()) {
+    const P = (typeof GUIDE !== "undefined" && GUIDE.property) || {};
+    if (P.lat != null && P.lon != null) map.setView([P.lat, P.lon], 13);
+    return;
+  }
+  if (allBounds && allBounds.length > 1) map.fitBounds(allBounds, { padding: [30, 30], maxZoom: 15 });
 }
+
+// Guide voyageur (V2-54) : signalé par le SSR sur le <body> (data-guest-guide).
+function isGuestGuide() { return document.body.dataset.guestGuide === "1"; }
 
 // ── Carte de SITUATION du logement (onglet Logement, V2-53) ───────────────────
 // Aperçu compact de l'emplacement, sous l'adresse/GPS. Instance dédiée
