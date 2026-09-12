@@ -1668,7 +1668,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  watermark: bool = False, lang_names: dict | None = None,
                  ui_overlay: dict | None = None, variant: str = "house",
                  stay: dict | None = None, canonical_path: str | None = None,
-                 manifest: bool = True, api_base: str | None = None) -> str:
+                 manifest: bool = True, api_base: str | None = None,
+                 guest_guide: bool = False) -> str:
     """Rend la page du guide dans `lang`. `ui_overlay` (V2-21a) = carte
     {clé: texte} des libellés statiques traduits pour une langue publiée
     supplémentaire (nl/de/it/sq…) ; vide pour FR/EN/ES (rendu depuis le code).
@@ -1698,7 +1699,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                                   variant=variant, stay=stay,
                                   canonical_path=canonical_path,
                                   manifest=manifest,
-                                  api_base=api_base or f"/g/{token}")
+                                  api_base=api_base or f"/g/{token}",
+                                  guest_guide=guest_guide)
     finally:
         _i18n_mod.reset_overlay(_ov_tok)
 
@@ -1731,7 +1733,8 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                        watermark: bool = False, lang_names: dict | None = None,
                        variant: str = "house", stay: dict | None = None,
                        canonical_path: str | None = None,
-                       manifest: bool = True, api_base: str = "") -> str:
+                       manifest: bool = True, api_base: str = "",
+                       guest_guide: bool = False) -> str:
     secrets_example = variant == "showcase"
     requests_enabled = variant != "showcase"
     # Invariant « sections vierges » (V2-07 volet 1bis) : une section virtuelle
@@ -1774,6 +1777,12 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # dont sections et POI vont au même espace produit UN bloc ; le chapitre C
     # (sections → « logement », commerces → « autour ») produit deux blocs.
     panels: dict[str, list[str]] = {"home": [], "emergency": [], "around": []}
+    # Guide voyageur (V2-54) : guide AMPUTÉ — seulement « Autour de vous » et
+    # « Urgences » (aucun onglet Logement → ni carte de situation, ni check-in/wifi/
+    # règles maison, données propriétaires absentes de toute façon). L'onglet « Autour »
+    # d'abord : c'est le produit. Les sections/POI destinés à « home » ne sont tout
+    # simplement jamais émis.
+    tab_order = ["around", "emergency"] if guest_guide else list(_TAB_ORDER)
     # POI réellement rendus en cartes dans « Autour de vous » (V2-12) : sert de
     # source à la grille de services (mêmes POI, même ordre → tuiles ↔ blocs 1:1).
     around_card_pois: list[dict] = []
@@ -1795,7 +1804,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
             around_card_pois.extend(chapter_card_pois)
         pois_html = _render_pois(chapter_card_pois, lang, tab_hash=_TAB_HASH[poi_tab],
                                  home_city=prop.get("city") or "")
-        for tab in _TAB_ORDER:
+        for tab in tab_order:
             inner = list(sec_by_tab.get(tab, []))
             if tab == poi_tab and pois_html:
                 inner.append(pois_html)
@@ -1872,10 +1881,11 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
               "emergency": "".join(emergency_inner),
               "around": "".join(around_inner)}
     tabs_btns, panels_html = [], []
-    for key in _TAB_ORDER:
-        on = " on" if key == "home" else ""
-        sel = "true" if key == "home" else "false"
-        active = " tab-active" if key == "home" else ""
+    _first_tab = tab_order[0]
+    for key in tab_order:
+        on = " on" if key == _first_tab else ""
+        sel = "true" if key == _first_tab else "false"
+        active = " tab-active" if key == _first_tab else ""
         tabs_btns.append(
             f'<button class="tab{on}" role="tab" data-tab="{key}" id="tabbtn-{key}" '
             f'aria-controls="tab-{key}" aria-selected="{sel}">{_esc(_labels[key])}</button>')
@@ -1919,6 +1929,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     guest_lang_attr = (f' data-guest-lang="{_esc(stay["guest_lang"])}"'
                        if variant == "stay" and stay and stay.get("guest_lang")
                        else "")
+    # Guide voyageur (V2-54) : signale au client de poser un marqueur de carte
+    # NEUTRE (point d'intérêt) au lieu du 🏠 « votre logement » — le vacancier n'est
+    # pas encore sur place, la carte « Autour » est centrée sur l'adresse visée.
+    guest_guide_attr = ' data-guest-guide="1"' if guest_guide else ""
     # Le manifeste PWA n'existe que pour le lien maison (`/g/`, QR imprimé, à
     # vie) : installer une PWA depuis un lien de séjour qui meurt à J+7 la
     # casserait (volet 1bis, §3). `manifest=False` sur séjour ET vitrine.
@@ -1944,7 +1958,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}">
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}">
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">

@@ -299,7 +299,8 @@ def _render_guide_html(conn, prop_row: dict, request: Request,
                                    ui_overlay=ui_overlay, variant=variant,
                                    stay=stay_ctx, api_base=api_base,
                                    canonical_path=canonical_path,
-                                   manifest=manifest)
+                                   manifest=manifest,
+                                   guest_guide=bool(prop_row.get("guest_guide")))
 
 
 # ── Lien de SÉJOUR (V2-23c, §1.2/§1.3, amendé 02/08 — préfixe dédié `/b/`) ─────

@@ -27,7 +27,7 @@ def connect() -> psycopg.Connection:
 def load_property(conn, property_id: str) -> dict:
     row = conn.execute(
         """SELECT id, name, address_line1, address_line2, postal_code, city,
-                  region, country_code, default_lang,
+                  region, country_code, default_lang, guest_guide,
                   ST_Y(geom) AS lat, ST_X(geom) AS lon, geocode_source
            FROM properties WHERE id = %s""",
         (property_id,),
@@ -285,6 +285,46 @@ def mark_pois_checked(conn, poi_ids: list[str], checked_on: str) -> None:
            SET completion_meta = COALESCE(completion_meta, '{}'::jsonb) || %s
            WHERE id = ANY(%s) AND status IN ('approved', 'edited')""",
         (json.dumps({"_checked_on": checked_on}), list(poi_ids)),
+    )
+
+
+# ── Juge IA & auto-publication (offre « Guide Voyageur », V2-54) ──────────────
+
+def load_pois_for_judge(conn, property_id: str) -> list[dict]:
+    """POI encore à arbitrer (`status='suggested'`) d'un logement, avec les champs
+    dont le prompt du juge a besoin. Seuls les 'suggested' sont chargés : les fiches
+    déjà arbitrées (jamais le cas d'un guide guest neuf) ne sont pas re-jugées."""
+    return conn.execute(
+        """SELECT id::text AS id, name, category_code, address, locality,
+                  walk_min, drive_min, source, description_md
+           FROM pois
+           WHERE property_id = %s AND status = 'suggested'
+           ORDER BY category_code, name""", (property_id,)).fetchall()
+
+
+def apply_judge_verdict(conn, poi_id: str, status: str, judge_meta: dict) -> int:
+    """Arbitre un POI `suggested` d'après le verdict du juge (offre Guide Voyageur) :
+    fixe `status` ('approved' ou 'rejected') et TRACE le motif dans
+    `completion_meta._judge` (verdict, confiance, motif, seuil) — patron V2-07, aucun
+    nouveau champ de schéma. N'agit QUE sur un POI encore `suggested` (idempotent, ne
+    touche jamais une fiche déjà arbitrée)."""
+    cur = conn.execute(
+        """UPDATE pois
+           SET status = %s,
+               completion_meta = COALESCE(completion_meta, '{}'::jsonb) || %s,
+               updated_at = now()
+           WHERE id = %s AND status = 'suggested'""",
+        (status, json.dumps({"_judge": judge_meta}), poi_id),
+    )
+    return cur.rowcount
+
+
+def publish_property(conn, property_id: str) -> None:
+    """Publie un logement (`status='published'`) — auto-publication en fin de pipeline
+    pour un guide voyageur. `published_langs` est rempli séparément par la traduction."""
+    conn.execute(
+        "UPDATE properties SET status = 'published', updated_at = now() WHERE id = %s",
+        (property_id,),
     )
 
 

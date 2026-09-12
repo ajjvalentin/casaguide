@@ -522,6 +522,34 @@ def test_situation_map_identical_across_languages():
         assert '<div class="situ-map" id="situ-map" aria-hidden="true"></div>' in html
 
 
+def test_guest_guide_render_is_amputated_to_around_and_emergency():
+    """V2-54 : un guide voyageur ne rend QUE « Autour de vous » + « Urgences » — pas
+    d'onglet Logement (donc pas de carte de situation, ni check-in/wifi/règles) et un
+    marqueur de carte NEUTRE (signalé par `data-guest-guide`)."""
+    sections = [_section("A_arrival", "A", _ARRIVAL_SCHEMA)]   # → onglet Logement
+    pois = [_airport(), _poi("La Marejada", "restaurant", "F")]  # resto (F) → Autour
+    prop = _prop(lat=37.928, lon=-0.748)
+
+    # Contrôle : un guide propriétaire normal a l'onglet Logement + la carte de situation.
+    normal = guide_page.render_guide(prop, sections, pois, AREA_FACTS, "tok")
+    assert 'data-tab="home"' in normal and 'id="situ-map"' in normal
+    assert 'data-guest-guide' not in normal
+
+    # Guide voyageur : amputé.
+    html = guide_page.render_guide(prop, sections, pois, AREA_FACTS, "tok",
+                                   guest_guide=True)
+    assert '<nav class="guide-tabs"' in html
+    for key in ("around", "emergency"):
+        assert f'data-tab="{key}"' in html and f'id="tab-{key}"' in html
+    assert 'data-tab="home"' not in html and 'id="tab-home"' not in html
+    # « Autour de vous » est l'onglet actif par défaut ; aucune carte de situation.
+    assert 'class="tab-panel tab-active" data-tab="around"' in html
+    assert 'id="situ-map"' not in html
+    # Marqueur neutre signalé au client ; la valeur demeure (urgences + contenu Autour).
+    assert 'data-guest-guide="1"' in html
+    assert "112" in html and "La Marejada" in html
+
+
 def test_bus_station_gets_planning_block_like_airport():
     """M-21 : la gare routière (bus_station) rejoint aéroport/gare dans les blocs
     de planification M-14/M-20 (durée voiture + « Voir l'itinéraire »)."""

@@ -158,6 +158,27 @@ class Settings:
     overture_bbox_max_radius_m: int = int(
         os.getenv("CASAGUIDE_OVERTURE_BBOX_MAX_M", "25000"))
 
+    # Juge IA du flux POI (V2-45 → V2-54) : dans l'offre « Guide Voyageur », chaque POI
+    # moissonné est jugé et un rejet à confiance ≥ seuil est écarté d'office (statut
+    # 'rejected', motif tracé) ; le reste est approuvé (pas de triage humain sur cette
+    # offre). Seuil validé sur trois corpus (décision André 11/09). Jamais en dur.
+    judge_reject_threshold: float = float(
+        os.getenv("CASAGUIDE_JUDGE_REJECT_THRESHOLD", "0.90"))
+    judge_batch_size: int = int(os.getenv("CASAGUIDE_JUDGE_BATCH_SIZE", "15"))
+    judge_max_tokens: int = int(os.getenv("CASAGUIDE_JUDGE_MAX_TOKENS", "4000"))
+
+    # Offre « Guide Voyageur » (V2-54) — anti-abus & cache. Une même adresse (point
+    # géocodé à moins de `guest_cache_radius_m`) demandée à nouveau dans la fenêtre
+    # `guest_cache_max_age_days` resert le guide existant (marge pure). Limites de
+    # génération par e-mail et par IP sur 24 h (0 = illimité).
+    guest_cache_radius_m: int = int(os.getenv("CASAGUIDE_GUEST_CACHE_RADIUS_M", "100"))
+    guest_cache_max_age_days: int = int(
+        os.getenv("CASAGUIDE_GUEST_CACHE_MAX_AGE_DAYS", "30"))
+    guest_max_per_email_per_day: int = int(
+        os.getenv("CASAGUIDE_GUEST_MAX_PER_EMAIL_PER_DAY", "5"))
+    guest_max_per_ip_per_day: int = int(
+        os.getenv("CASAGUIDE_GUEST_MAX_PER_IP_PER_DAY", "10"))
+
     # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial)
     describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity", "market")
 

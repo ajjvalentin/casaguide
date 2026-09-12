@@ -73,10 +73,16 @@ function initMap() {
   // un message discret. Se retire au retour en ligne.
   tiles.on("tileerror", () => { if (!navigator.onLine) showMapOffline(mapEl); });
   tiles.addTo(map);
-  L.marker([P.lat, P.lon], {
-    icon: L.divIcon({ className: "", html: '<div class="home-pin">🏠</div>', iconAnchor: [13, 13] }),
+  // Guide voyageur (V2-54) : marqueur NEUTRE (point d'intérêt 📍) au lieu du 🏠
+  // « votre logement » — le vacancier n'est pas encore sur place, la carte est
+  // centrée sur l'adresse visée. Repli 🏠 pour un guide propriétaire normal.
+  const guestGuide = document.body.dataset.guestGuide === "1";
+  const homeMarker = L.marker([P.lat, P.lon], {
+    icon: L.divIcon({ className: "", iconAnchor: [13, 13],
+      html: `<div class="home-pin">${guestGuide ? "📍" : "🏠"}</div>` }),
     keyboard: false,
-  }).addTo(map).bindPopup(`<b>${escapeHtml(P.name || "Votre logement")}</b>`);
+  }).addTo(map);
+  if (!guestGuide) homeMarker.bindPopup(`<b>${escapeHtml(P.name || "Votre logement")}</b>`);
 
   const bounds = [[P.lat, P.lon]];
   allMarkers = [];

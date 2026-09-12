@@ -126,11 +126,27 @@ CREATE TABLE properties (
     -- interrupteur par logement, défaut ACTIVÉ. Le planificateur J-7 (timer
     -- quotidien, ops/send_guides.py) n'envoie que si ce drapeau est vrai.
     auto_send_guide  BOOLEAN NOT NULL DEFAULT TRUE,
+    -- Guide voyageur auto-généré (V2-54) : fiche possédée par l'owner système,
+    -- publiée automatiquement, servie amputée (Autour + Urgences). Exclue des
+    -- listings/quotas propriétaires. FALSE = fiche propriétaire normale.
+    guest_guide      BOOLEAN NOT NULL DEFAULT FALSE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_properties_owner ON properties(owner_id);
 CREATE INDEX idx_properties_geom  ON properties USING GIST(geom);
+
+-- Journal des générations de guides voyageur (V2-54, anti-abus) : limites par
+-- e-mail / par IP. Voir db/migrations/035.
+CREATE TABLE guest_guide_generations (
+    id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email        TEXT,
+    ip           TEXT,
+    property_id  UUID REFERENCES properties(id) ON DELETE SET NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_guest_gen_email ON guest_guide_generations(email, created_at);
+CREATE INDEX idx_guest_gen_ip    ON guest_guide_generations(ip, created_at);
 
 -- Données sensibles chiffrées au niveau applicatif (§8) : le backend chiffre
 -- (AES-GCM, clé hors base) avant insertion ; la base ne voit que du bytea.

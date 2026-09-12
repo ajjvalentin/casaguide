@@ -21,7 +21,7 @@ _PROP_COLS = """
     default_lang, published_langs, contact_name, contact_phone,
     contact_whatsapp, contact_email, contact_backup, tourism_license,
     default_checkin_time, default_checkout_time, care_rules, cover_media_id,
-    auto_send_guide, created_at, updated_at
+    auto_send_guide, guest_guide, created_at, updated_at
 """
 
 
@@ -428,16 +428,20 @@ def published_langs(conn, property_id: str) -> list[str]:
 # ── Logements ────────────────────────────────────────────────────────────────
 
 def list_properties(conn, owner_id: str) -> list[dict]:
+    # `NOT guest_guide` : les guides voyageur (V2-54), possédés par l'owner système,
+    # n'apparaissent JAMAIS dans les listings du back-office (défense en profondeur).
     return conn.execute(
-        f"SELECT {_PROP_COLS} FROM properties WHERE owner_id = %s "
-        "ORDER BY created_at",
+        f"SELECT {_PROP_COLS} FROM properties "
+        "WHERE owner_id = %s AND NOT guest_guide ORDER BY created_at",
         (owner_id,),
     ).fetchall()
 
 
 def count_properties(conn, owner_id: str) -> int:
+    # Idem : les guides voyageur n'entrent pas dans le quota logements propriétaire.
     return conn.execute(
-        "SELECT count(*) AS n FROM properties WHERE owner_id = %s", (owner_id,)
+        "SELECT count(*) AS n FROM properties WHERE owner_id = %s AND NOT guest_guide",
+        (owner_id,)
     ).fetchone()["n"]
 
 
@@ -469,6 +473,97 @@ def create_property(conn, owner_id: str, data: dict) -> dict:
     ).fetchone()
     seed_request_types(conn, str(row["id"]), care.DEFAULT_REQUEST_TYPES)
     return row
+
+
+# ── Offre « Guide Voyageur » (V2-54) : fiches guest, cache, anti-abus ─────────
+
+GUEST_OWNER_EMAIL = "guest-guides@holaguia.internal"
+
+
+def guest_guide_owner_id(conn) -> str:
+    """Id de l'owner SYSTÈME propriétaire de tous les guides voyageur. Résolu par
+    e-mail (jamais d'UUID en dur) ; auto-guérison : créé s'il manque (idempotent,
+    même compte que la migration 035)."""
+    conn.execute(
+        """INSERT INTO owners (email, full_name, email_verified, is_active)
+           VALUES (%s, 'Guides Voyageur', true, true)
+           ON CONFLICT (email) DO NOTHING""",
+        (GUEST_OWNER_EMAIL,),
+    )
+    return str(conn.execute(
+        "SELECT id FROM owners WHERE email = %s", (GUEST_OWNER_EMAIL,)
+    ).fetchone()["id"])
+
+
+def create_guest_property(conn, *, name: str, city: str, country_code: str,
+                          lat: float, lon: float, address_line1: str | None = None,
+                          postal_code: str | None = None, region: str | None = None,
+                          default_lang: str = "fr",
+                          geocode_accuracy: str = "manual") -> dict:
+    """Crée une fiche GUIDE VOYAGEUR (V2-54) : possédée par l'owner système,
+    `guest_guide=TRUE`, position DÉJÀ connue (le point est ajusté dans le tunnel →
+    `geom` posé directement, `geocode_source='manual'`). Ne sème NI secrets NI
+    sections NI care_rules (guide amputé Autour + Urgences)."""
+    owner_id = guest_guide_owner_id(conn)
+    # `address_line1` est NOT NULL mais un guide voyageur peut n'avoir qu'un point
+    # (le tunnel ajuste sur la carte) → repli sur la commune. Non rendu au voyageur
+    # de toute façon (guide amputé : pas d'onglet Logement).
+    row = conn.execute(
+        f"""INSERT INTO properties
+              (owner_id, name, address_line1, postal_code, city, region,
+               country_code, default_lang, guest_guide,
+               geom, geocode_source, geocode_accuracy)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE,
+                    ST_SetSRID(ST_MakePoint(%s, %s), 4326), 'manual', %s)
+            RETURNING {_PROP_COLS}""",
+        (owner_id, name, address_line1 or city, postal_code, city, region,
+         country_code.upper(), default_lang, lon, lat, geocode_accuracy),
+    ).fetchone()
+    return row
+
+
+def find_recent_guest_guide_near(conn, lat: float, lon: float,
+                                 radius_m: int, days: int) -> dict | None:
+    """Cache anti-abus (V2-54) : un guide voyageur PUBLIÉ à moins de `radius_m` du
+    point et créé dans les `days` derniers jours → on le ressert (nouveau paiement =
+    nouveau lien vers le même contenu, marge pure). Le plus proche d'abord. None sinon."""
+    return conn.execute(
+        f"""SELECT {_PROP_COLS} FROM properties
+            WHERE guest_guide AND status = 'published' AND geom IS NOT NULL
+              AND created_at > now() - make_interval(days => %s)
+              AND ST_DWithin(geom::geography,
+                             ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
+            ORDER BY geom <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)
+            LIMIT 1""",
+        (days, lon, lat, radius_m, lon, lat),
+    ).fetchone()
+
+
+def record_guest_generation(conn, email: str | None, ip: str | None,
+                            property_id: str | None) -> None:
+    """Trace une génération de guide voyageur (anti-abus par e-mail / IP)."""
+    conn.execute(
+        "INSERT INTO guest_guide_generations (email, ip, property_id) "
+        "VALUES (%s, %s, %s)",
+        (email, ip, property_id),
+    )
+
+
+def count_guest_generations(conn, *, email: str | None = None,
+                            ip: str | None = None, within_hours: int = 24) -> int:
+    """Nombre de générations récentes pour un e-mail OU une IP (fenêtre glissante),
+    pour l'application des limites anti-abus. Un critère à la fois."""
+    if email is not None:
+        col, val = "email", email
+    elif ip is not None:
+        col, val = "ip", ip
+    else:
+        return 0
+    return conn.execute(
+        f"SELECT count(*) AS n FROM guest_guide_generations "
+        f"WHERE {col} = %s AND created_at > now() - make_interval(hours => %s)",
+        (val, within_hours),
+    ).fetchone()["n"]
 
 
 # Champs simples modifiables via PATCH (hors lat/lon traités à part)
@@ -1091,7 +1186,7 @@ def get_published_property_by_token(conn, token: str) -> dict | None:
         """SELECT id, name, address_line1, address_line2, postal_code,
                   city, region, country_code,
                   ST_Y(geom) AS lat, ST_X(geom) AS lon,
-                  default_lang, published_langs, access_mode,
+                  default_lang, published_langs, access_mode, guest_guide,
                   contact_name, contact_phone, contact_whatsapp, contact_email,
                   contact_backup, tourism_license, cover_media_id
            FROM properties
@@ -1110,7 +1205,7 @@ def get_published_property_by_id(conn, property_id: str) -> dict | None:
         """SELECT id, name, address_line1, address_line2, postal_code,
                   city, region, country_code,
                   ST_Y(geom) AS lat, ST_X(geom) AS lon,
-                  default_lang, published_langs, access_mode, guide_token,
+                  default_lang, published_langs, access_mode, guide_token, guest_guide,
                   contact_name, contact_phone, contact_whatsapp, contact_email,
                   contact_backup, tourism_license, cover_media_id
            FROM properties

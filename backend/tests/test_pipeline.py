@@ -134,6 +134,22 @@ class FakeMessages:
 
     def create(self, *, model, max_tokens, messages, tools=None, **kwargs):
         prompt = messages[0]["content"]
+        if "DÉTECTEUR DE BRUIT" in prompt:  # juge IA du flux POI (V2-54)
+            import re
+            verdicts = []
+            for m in re.finditer(r'- id "([^"]+)" : ([^\n]+)', prompt):
+                vid, rest = m.group(1), m.group(2)
+                if "Lidl" in rest:   # rejet FRANC (≥ seuil) → écarté d'office
+                    verdicts.append({"id": vid, "verdict": "reject",
+                                     "confidence": 0.95, "reason": "doublon proche"})
+                else:
+                    verdicts.append({"id": vid, "verdict": "keep",
+                                     "confidence": 0.80, "reason": "ok"})
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text",
+                                         text=json.dumps({"verdicts": verdicts}))],
+                usage=SimpleNamespace(input_tokens=500, output_tokens=200),
+                stop_reason="end_turn")
         if "BABY-SITTING" in prompt:  # création baby-sitting (V2-07 volet 2)
             assert tools and tools[0]["type"] == "web_search_20250305"
             return _web_reply(json.dumps({"services": self.babysitter_services}))
@@ -219,6 +235,31 @@ def property_id():
                VALUES (%s, %s, 'Villa Pipeline', 'Calle Ejemplo 1',
                        'Orihuela Costa', 'ES')""",
             (pid, oid))
+        conn.commit()
+    yield pid
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM owners WHERE id = %s", (oid,))
+        conn.execute("DELETE FROM area_facts WHERE country_code = 'ES'")
+        conn.commit()
+
+
+@pytest.fixture()
+def guest_property_id():
+    """Fiche GUIDE VOYAGEUR (V2-54) : guest_guide=TRUE, déjà positionnée (le point est
+    ajusté dans le tunnel → le pipeline saute le géocodage)."""
+    pid, oid = str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM area_facts WHERE country_code = 'ES'")
+        conn.execute("INSERT INTO owners (id, email, full_name) VALUES (%s, %s, 'Sys')",
+                     (oid, f"{oid}@test.local"))
+        conn.execute(
+            """INSERT INTO properties (id, owner_id, name, address_line1, city,
+                                       country_code, guest_guide, geom,
+                                       geocode_source, geocode_accuracy)
+               VALUES (%s, %s, 'Guide — Orihuela Costa', 'Calle Ejemplo 1',
+                       'Orihuela Costa', 'ES', TRUE,
+                       ST_SetSRID(ST_MakePoint(%s, %s), 4326), 'manual', 'manual')""",
+            (pid, oid, PROP_LON, PROP_LAT))
         conn.commit()
     yield pid
     with psycopg.connect(settings.db_dsn) as conn:
@@ -322,6 +363,46 @@ def test_full_pipeline(property_id, http_client):
         # run neuf tous les POI sont 'suggested', la complétion ne vise que les retenus.
         assert ops == {"area_facts", "describe_pois", "food_delivery", "babysitter",
                        "markets"}
+
+
+def test_guest_guide_is_auto_judged_and_published(guest_property_id, http_client):
+    """Offre Guide Voyageur (V2-54) : le juge arbitre TOUS les POI moissonnés (rejet
+    ≥ seuil → 'rejected' motif tracé ; sinon 'approved'), puis la fiche est PUBLIÉE."""
+    result = pipeline.run(
+        guest_property_id, use_claude=True, trigger="guest",
+        only_categories={"hospital", "supermarket", "restaurant"},
+        http_client=http_client, anthropic_client=FakeAnthropic())
+
+    assert result["judge_rejected"] == 1     # Lidl (verdict fake ≥ 0,90)
+    # hôpital + Mercadona + resto + baby-sitting + marché (tous les 'suggested' arbitrés)
+    assert result["judge_approved"] == 5
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        prop = conn.execute("SELECT status FROM properties WHERE id=%s",
+                            (guest_property_id,)).fetchone()
+        assert prop["status"] == "published"   # auto-publication en fin de pipeline
+
+        pois = conn.execute(
+            "SELECT name, status, completion_meta FROM pois WHERE property_id=%s "
+            "AND category_code NOT IN ('babysitter','market')",
+            (guest_property_id,)).fetchall()
+        by_name = {p["name"]: p for p in pois}
+        # Aucun POI ne reste 'suggested' (arbitrage automatique, pas de triage humain).
+        assert {p["status"] for p in pois} == {"approved", "rejected"}
+        lidl = by_name["Lidl"]
+        assert lidl["status"] == "rejected"
+        # Motif tracé dans completion_meta._judge (patron V2-07, aucun champ de schéma).
+        assert lidl["completion_meta"]["_judge"]["verdict"] == "reject"
+        assert lidl["completion_meta"]["_judge"]["confidence"] >= 0.90
+        assert by_name["Mercadona"]["status"] == "approved"
+
+        # L'étape « judge » est tracée dans le journal du job + coût comptabilisé.
+        steps = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                            (result["job_id"],)).fetchone()["steps"]
+        assert steps["judge"]["rejected"] == 1 and steps["judge"]["approved"] == 5
+        ops = {r["operation"] for r in conn.execute(
+            "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
+        assert "judge" in ops
 
 
 def test_rerun_is_idempotent_and_preserves_owner_choices(property_id, http_client):

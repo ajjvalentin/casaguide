@@ -26,7 +26,7 @@ from typing import Callable
 import anthropic
 import httpx
 
-from . import claude_enrich, db, dedup, distance, fusion, geocode, overpass, overture
+from . import claude_enrich, db, dedup, distance, fusion, geocode, judge, overpass, overture
 from .settings import settings
 
 log = logging.getLogger("casaguide.pipeline")
@@ -214,6 +214,79 @@ def _default_overture_fetch(lat: float, lon: float, radius_m: int) -> list[dict]
     """Fetcher Overture de PRODUCTION (DuckDB/S3, réseau). Résout la release depuis la
     config. Injectable via le paramètre `overture_fetch` de `run` (tests sans réseau)."""
     return overture.fetch_places(lat, lon, radius_m, release=settings.overture_release)
+
+
+def _judge_and_publish_guest(conn, prop: dict, ai, job_id: str,
+                             summary: dict, use_claude: bool) -> None:
+    """Offre « Guide Voyageur » (V2-54) : arbitre AUTOMATIQUEMENT les POI moissonnés
+    puis publie la fiche. Chaque POI `suggested` est jugé (juge IA V2-45) ; un `reject`
+    à confiance ≥ `judge_reject_threshold` est écarté (statut 'rejected', motif tracé
+    dans `completion_meta._judge`), tout le reste est `approved` (pas de triage humain
+    sur cette offre). ROBUSTE : un échec du juge approuve tout (le doute garde, rien de
+    détruit) et la fiche est publiée quand même — un guide FR utile vaut mieux qu'un
+    échec. Idempotent (n'agit que sur les 'suggested')."""
+    property_id = prop["id"]
+    pois = db.load_pois_for_judge(conn, property_id)
+    threshold = settings.judge_reject_threshold
+    approved = rejected = 0
+    judge_cost = 0.0
+    ok = True
+
+    def _approve_all(remaining: list[dict], reason: str) -> int:
+        n = 0
+        for p in remaining:
+            db.apply_judge_verdict(conn, p["id"], "approved",
+                                   {"verdict": "keep", "confidence": 0.0,
+                                    "reason": reason, "threshold": threshold})
+            n += 1
+        return n
+
+    if pois and use_claude and ai is not None:
+        try:
+            def ask(prompt: str):
+                return claude_enrich._ask_json(
+                    ai, prompt, max_tokens=settings.judge_max_tokens)
+            verdicts, attempts = judge.judge_pois(
+                prop, pois, ask, batch_size=settings.judge_batch_size)
+            verdicts, _defaulted = judge.finalize_verdicts(pois, verdicts)
+            db.record_costs(conn, property_id, job_id, "anthropic", "judge", attempts)
+            judge_cost = round(sum(a.get("cost_cts", 0.0) for a in attempts), 4)
+            summary["cost_cts"] += judge_cost
+            for p in pois:
+                v = verdicts[p["id"]]
+                status = ("rejected"
+                          if v.verdict == "reject" and v.confidence >= threshold
+                          else "approved")
+                db.apply_judge_verdict(conn, p["id"], status,
+                                       {"verdict": v.verdict, "confidence": v.confidence,
+                                        "reason": v.reason, "threshold": threshold})
+                if status == "rejected":
+                    rejected += 1
+                else:
+                    approved += 1
+        except Exception as exc:  # noqa: BLE001 — le juge ne bloque JAMAIS la livraison
+            log.warning("Juge (guide voyageur %s) non résolu : %s", property_id, exc)
+            c = _record_failed_call_cost(conn, property_id, job_id, "judge", exc)
+            summary["cost_cts"] += c
+            judge_cost += c
+            ok = False
+            # Approve-all sur ce qui reste `suggested` : rien de détruit.
+            approved += _approve_all(db.load_pois_for_judge(conn, property_id),
+                                     "juge indisponible → approuvé par défaut")
+    elif pois:
+        # Chemin sans IA (--no-claude) : approuver tout, publier (guide FR minimal).
+        approved += _approve_all(pois, "juge non exécuté (sans IA)")
+
+    summary["judge_approved"] = approved
+    summary["judge_rejected"] = rejected
+    db.job_step(conn, job_id, "judge",
+                {"ok": ok, "judged": len(pois), "approved": approved,
+                 "rejected": rejected, "threshold": threshold,
+                 "cost_cts": round(judge_cost, 2)})
+    db.publish_property(conn, property_id)
+    conn.commit()
+    _progress(f"  ✓ juge : {approved} approuvé(s), {rejected} rejeté(s) "
+              f"(seuil {threshold}) — {judge_cost:.2f} ct ; guide publié")
 
 
 def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
@@ -802,6 +875,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})
             else:
                 db.job_step(conn, job_id, "claude", {"ok": True, "skipped": True})
+
+            # ── 5. Guide voyageur (V2-54) : arbitrage auto par le juge + publication ─
+            # UNIQUEMENT pour une fiche guest (les fiches propriétaires gardent leurs
+            # POI 'suggested' pour l'arbitrage humain — invariant 1 intact).
+            if prop.get("guest_guide"):
+                _judge_and_publish_guest(conn, prop, ai, job_id, summary, use_claude)
 
             db.job_finish(conn, job_id, "done")
             conn.commit()
