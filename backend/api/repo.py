@@ -571,7 +571,7 @@ def count_guest_generations(conn, *, email: str | None = None,
 _GUEST_ORDER_COLS = """
     id, token, stripe_session_id, email, lang, ip, city, country_code,
     address_line1, postal_code, region, lat, lon, status, property_id,
-    guide_token, error, paid_at, delivered_at, created_at, updated_at
+    guide_token, error, quality_notes, paid_at, delivered_at, created_at, updated_at
 """
 
 
@@ -661,11 +661,12 @@ def update_guest_order_point(conn, order_id: str, *, lat: float, lon: float,
 
 
 def complete_guest_order(conn, order_id: str, *, property_id: str,
-                         guide_token: str) -> None:
+                         guide_token: str, quality_notes: str | None = None) -> None:
     conn.execute(
         "UPDATE guest_guide_orders SET status='done', property_id=%s, guide_token=%s, "
-        "error=NULL, delivered_at=now(), updated_at=now() WHERE id=%s",
-        (property_id, guide_token, order_id))
+        "quality_notes=%s, error=NULL, delivered_at=now(), updated_at=now() "
+        "WHERE id=%s",
+        (property_id, guide_token, quality_notes, order_id))
 
 
 def fail_guest_order(conn, order_id: str, error: str) -> None:

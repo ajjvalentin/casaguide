@@ -172,6 +172,7 @@ CREATE TABLE guest_guide_orders (
     error             TEXT,
     paid_at           TIMESTAMPTZ,
     delivered_at      TIMESTAMPTZ,
+    quality_notes     TEXT,                      -- ce qui manque au guide servi (V2-57)
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );

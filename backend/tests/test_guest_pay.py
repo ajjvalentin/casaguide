@@ -178,6 +178,28 @@ def test_webhook_paid_generates_once_and_delivers(pay):
     assert len(_CREATED_PROPS) == 1
 
 
+def test_quality_notes_recorded_on_order(pay, monkeypatch):
+    """V2-57 : le récapitulatif de qualité (ce qui manque au guide servi) est écrit
+    sur la commande — plus jamais d'échec muet."""
+    client, _, _ = pay
+
+    def _degraded(**kw):
+        res = _stub_generate(**kw)
+        res["quality"] = {"notes": "catégories non moissonnées (échec réseau) : atm, "
+                                   "cafe ; traduction de/nl échouée : Claude 529"}
+        return res
+    monkeypatch.setattr(guest_guides, "generate_guest_guide", _degraded)
+
+    out = _checkout(client, "quality@paytest.com")
+    order = _order_by_token(out["token"])
+    _webhook(client, _completed_event("evt_g1", order["stripe_session_id"],
+                                      str(order["id"])))
+    done = _order_by_token(out["token"])
+    assert done["status"] == "done"
+    assert "atm, cafe" in done["quality_notes"]
+    assert "traduction de/nl échouée" in done["quality_notes"]
+
+
 def test_no_generation_without_confirmed_payment(pay):
     client, _, mailer = pay
     out = _checkout(client, "unpaid@paytest.com")

@@ -93,6 +93,9 @@ def main(argv: list[str] | None = None) -> int:
     failed = summary.get("failed_categories") or {}
     if failed:
         print(f"  Catégories en échec : {', '.join(sorted(failed))}")
+    # Plancher de qualité (V2-57) : la VÉRITÉ de ce qui a été servi (jamais muet).
+    notes = (res.get("quality") or {}).get("notes")
+    print(f"  Qualité             : {notes if notes else 'guide complet'}")
     sys.stdout.flush()
     return 0
 

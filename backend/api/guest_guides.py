@@ -100,7 +100,8 @@ def generate_guest_guide(*, city: str, country_code: str,
             repo.record_guest_generation(conn, email, ip, str(cached["id"]))
             conn.commit()
             log.info("Guide voyageur resservi depuis le cache : %s", cached["id"])
-            return {"property": cached, "cached": True, "summary": None}
+            return {"property": cached, "cached": True, "summary": None,
+                    "quality": None}
 
         # (3) Création de la fiche guest (position déjà connue).
         prop = repo.create_guest_property(
@@ -111,21 +112,72 @@ def generate_guest_guide(*, city: str, country_code: str,
         repo.record_guest_generation(conn, email, ip, property_id)
         conn.commit()
 
-    # (4) Enrichissement complet (le pipeline juge et publie en fin de course).
+    # (4) Enrichissement complet — le pipeline JUGE, PUBLIE et RE-TENTE en interne
+    # les paliers Overpass échoués (M-18 `run_with_retries`, plancher de qualité V2-57).
     summary = pipeline.run_with_retries(
         property_id, use_claude=use_claude, trigger="guest")
 
-    # (5) Traduction 7 langues (best-effort : un guide FR utile vaut mieux qu'un échec).
+    # (5) Traduction 7 langues avec UNE REPRISE avant publication (V2-57) : la
+    # traduction est all-or-nothing et échouait parfois sans trace (guide FR seul).
+    # Best-effort : un échec PERSISTANT n'empêche pas la livraison FR — mais il est
+    # NOMMÉ dans les notes de qualité (plus d'échec muet).
+    missing_langs: list[str] = []
+    translation_error: str | None = None
     if do_translate:
-        try:
-            translate.run(property_id)
-        except Exception as exc:  # noqa: BLE001 — jamais bloquant
-            log.warning("Traduction du guide voyageur %s non résolue : %s",
-                        property_id, exc)
+        missing_langs, translation_error = _translate_with_retry(property_id)
 
+    quality = _build_quality(summary, missing_langs, translation_error)
     with db.connect() as conn:
         published = repo.get_published_property_by_id(conn, property_id)
-    return {"property": published, "cached": False, "summary": summary}
+    return {"property": published, "cached": False, "summary": summary,
+            "quality": quality}
+
+
+def _target_langs(property_id: str) -> list[str]:
+    """Langues cibles du guide (registre publié moins la langue source)."""
+    with db.connect() as conn:
+        source = db.load_property(conn, property_id).get("default_lang") or "fr"
+        registry = db.published_language_codes(conn)
+    return [l for l in registry if l and l != source]
+
+
+def _translate_with_retry(property_id: str) -> tuple[list[str], str | None]:
+    """Traduit le guide, avec UNE reprise avant publication (V2-57). Best-effort :
+    ne lève jamais. Renvoie `(langues manquantes, dernière erreur)` — `missing` vide
+    et erreur None si tout est publié."""
+    target = _target_langs(property_id)
+    last_error: str | None = None
+    for attempt in (1, 2):
+        try:
+            translate.run(property_id)
+            break
+        except Exception as exc:  # noqa: BLE001 — jamais bloquant
+            last_error = f"{type(exc).__name__}: {exc}"
+            log.warning("Traduction guide %s — tentative %d échouée : %s",
+                        property_id, attempt, exc)
+    with db.connect() as conn:
+        published = set(repo.published_langs(conn, property_id))
+    missing = [l for l in target if l not in published]
+    return missing, (last_error if missing else None)
+
+
+def _build_quality(summary: dict, missing_langs: list[str],
+                   translation_error: str | None) -> dict:
+    """Récapitulatif de qualité du guide SERVI (V2-57) : ce qui manque, nommé. Plus
+    jamais d'échec muet — la dégradation douce reste la doctrine, mais elle est tracée."""
+    failed = sorted((summary.get("failed_categories") or {}).keys())
+    empty = sorted(summary.get("empty_categories") or [])
+    parts: list[str] = []
+    if failed:
+        parts.append("catégories non moissonnées (échec réseau) : " + ", ".join(failed))
+    if empty:
+        parts.append("catégories sans résultat : " + ", ".join(empty))
+    if missing_langs:
+        why = f" : {translation_error}" if translation_error else ""
+        parts.append("traduction " + "/".join(missing_langs) + " échouée" + why)
+    return {"failed_categories": failed, "empty_categories": empty,
+            "missing_langs": missing_langs, "translation_error": translation_error,
+            "notes": " ; ".join(parts)}
 
 
 # ── Paiement one-shot Stripe (V2-54 Mission B) ───────────────────────────────
@@ -200,10 +252,13 @@ def fulfill_order_bg(order_id: str, mailer, base_url: str) -> None:
         return
     token = (res.get("property") or {}).get("guide_token")
     pid = (res.get("property") or {}).get("id")
+    notes = (res.get("quality") or {}).get("notes") or None
     with db.connect() as conn:
         repo.complete_guest_order(conn, order_id, property_id=str(pid),
-                                  guide_token=token)
+                                  guide_token=token, quality_notes=notes)
         conn.commit()
+    if notes:
+        log.info("Guide voyageur %s livré AVEC réserves : %s", order_id, notes)
     url = f"{base_url.rstrip('/')}/g/{token}"
     _send_bg_safe(mailer, order["email"],
                   emails.guide_purchase_email(url=url, lang=order["lang"]))
