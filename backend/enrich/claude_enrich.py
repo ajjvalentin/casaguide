@@ -845,6 +845,99 @@ def fetch_rentals(city: str, country_code: str,
     return out, meta
 
 
+# ── Sélection éditoriale « sorties » : découverte CLAUDE + web (V2-56) ────────
+#
+# OSM est pauvre sur le commercial touristique (constat Catedral/La Zenia), le
+# réservoir Overture est fermé, et aucune source ne porte de signal de NOTORIÉTÉ.
+# Cette passe demande à Claude les adresses RÉPUTÉES/incontournables du secteur
+# (restaurant/bar/cafe) — la famille « sorties ». Chaque pick est géocodé (le
+# pipeline s'en charge), apparié à OSM/Overture (récupération tél/site/position
+# sûre), et entre quand même s'il géocode proprement mais reste introuvable en base.
+EDITORIAL_SORTIES = ("restaurant", "bar", "cafe")
+
+_REPUTED_PROMPT = """\
+Tu prépares, pour un GUIDE VOYAGEUR, la sélection des adresses RÉPUTÉES et
+INCONTOURNABLES du secteur autour d'un logement de vacances à {city}
+({country_code}) — la famille « sorties » : RESTAURANTS, BARS et CAFÉS.
+
+Cherche dans la LANGUE LOCALE : blogs, guides de voyage, presse locale, articles
+« meilleurs restaurants/bars de {city} », mentions RÉPÉTÉES d'une même adresse.
+L'objectif est la NOTORIÉTÉ : les lieux dont les habitants et les guides parlent,
+pas un annuaire exhaustif.
+
+Pour chaque adresse retenue, fournis :
+- `name` : le nom exact du lieu ;
+- `category` : « restaurant », « bar » ou « cafe » (choisis le plus juste) ;
+- `address` : l'adresse postale la plus COMPLÈTE possible (rue + numéro + commune)
+  — indispensable pour situer le lieu sur la carte ;
+- `reason` : UNE phrase courte disant POURQUOI il est réputé (spécialité, ambiance,
+  ce qu'on y va chercher). Factuelle, jamais du remplissage.
+- `phone`, `website` : si vérifiés en ligne, sinon "" (le pipeline complètera) ;
+- `source_url` : l'URL de la preuve (le guide/l'article/la mention) ;
+- `verified_on` : « {today} ».
+
+RÈGLES STRICTES :
+- PREUVE OU RIEN : pas de nom, pas d'adresse géocodable, ou pas de source → écarté.
+- N'invente JAMAIS un lieu ni une réputation. Une liste VIDE est un résultat valide.
+- Reste dans le secteur de {city} et ses environs immédiats (le voyageur est motorisé
+  mais cherche des sorties de proximité, pas à l'autre bout de la province).
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
+{{
+  "places": [
+    {{"name": "...", "category": "restaurant", "address": "rue et numéro, commune",
+      "reason": "...", "phone": "...", "website": "...",
+      "source_url": "https://...", "verified_on": "{today}"}}
+  ]
+}}
+"""
+
+
+def fetch_reputed_places(city: str, country_code: str,
+                         client: anthropic.Anthropic,
+                         today: str | None = None) -> tuple[list[dict], dict]:
+    """Adresses réputées « sorties » (restaurant/bar/cafe) du secteur, vérifiées par
+    recherche web (V2-56). Retourne (liste de {name, category, address, reason,
+    phone?, website?, source_url, verified_on}, méta coût). **PREUVE OU RIEN** : une
+    entrée sans nom, sans adresse (géocodable), sans source, ou de catégorie hors
+    (restaurant/bar/cafe) est ÉCARTÉE. **Une liste vide est un résultat valide.**
+    Réponse malformée → ValueError (robustesses V2-37 héritées)."""
+    today = today or _dt.date.today().isoformat()
+    data, meta = _ask_web_search_json(
+        client, _REPUTED_PROMPT.format(city=city, country_code=country_code,
+                                       today=today),
+        city=city, country_code=country_code,
+        max_searches=settings.reputed_max_searches,
+        max_tokens=settings.reputed_max_tokens)
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    places = data.get("places")
+    if not isinstance(places, list):
+        raise ValueError("Réponse IA invalide : 'places' doit être une liste.")
+    out: list[dict] = []
+    for r in places:
+        if not isinstance(r, dict):
+            continue
+        def _s(key: str) -> str:
+            v = r.get(key)
+            return v.strip() if isinstance(v, str) else ""
+        name, address = _s("name"), _s("address")
+        category = _s("category").lower()
+        source_url = _s("source_url")
+        if not (name and address and source_url) or category not in EDITORIAL_SORTIES:
+            continue
+        entry: dict = {"name": name, "category": category, "address": address,
+                       "reason": _s("reason"), "source_url": source_url,
+                       "verified_on": _s("verified_on") or today}
+        phone, website = _s("phone"), _s("website")
+        if phone:
+            entry["phone"] = phone
+        if website:
+            entry["website"] = website
+        out.append(entry)
+    return out, meta
+
+
 # ── Marchés hebdomadaires par zone : découverte CLAUDE + web (V2-07 volet 3) ──
 #
 # Découverte MUTUALISÉE par (pays, commune), mise en cache area_facts sous

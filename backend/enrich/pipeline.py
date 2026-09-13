@@ -180,6 +180,147 @@ def _discover_web_rentals(conn, prop: dict, origin: tuple, ai, job_id: str,
     return kept
 
 
+def _discover_editorial_sorties(conn, prop: dict, origin: tuple, ai, job_id: str,
+                                http_client: httpx.Client | None,
+                                summary: dict) -> dict[str, list[dict]]:
+    """Sélection éditoriale « sorties » (V2-56) : découverte des adresses RÉPUTÉES
+    (restaurant/bar/cafe) du secteur par Claude+web, UNE seule fois par run (couvre les
+    trois catégories), mémorisée sur `summary`. Chaque pick est géocodé par son adresse
+    (le lieu réputé a une adresse même absent d'OSM) + distances OSRM ; un pick non
+    géocodable est écarté et journalisé. Renvoie {code: [picks]}. Best-effort : tout
+    échec web est journalisé, le coût des essais comptabilisé, et renvoie {} (jamais un
+    job cassé). Cadence propre par logement (un vide n'est pas re-cherché)."""
+    if "_editorial_picks" in summary:
+        return summary["_editorial_picks"]
+    property_id = prop["id"]
+    out: dict[str, list[dict]] = {}
+    summary["_editorial_picks"] = out
+    if db.recent_operation(conn, property_id, "reputed_sorties",
+                           settings.reputed_max_age_days):
+        return out
+    today = _dt.date.today().isoformat()
+    try:
+        places, meta = claude_enrich.fetch_reputed_places(
+            prop["city"], prop["country_code"], ai, today=today)
+    except Exception as exc:  # noqa: BLE001 — best-effort (web/parse)
+        log.warning("Sélection éditoriale (%s) non résolue : %s", prop["city"], exc)
+        c = _record_failed_call_cost(conn, property_id, job_id, "reputed_sorties", exc)
+        summary["cost_cts"] += c
+        db.job_step(conn, job_id, "reputed_sorties",
+                    {"ok": False, "error": overpass._short(str(exc)),
+                     "cost_cts": round(c, 2)})
+        conn.commit()
+        _progress(f"  ⚠ sélection éditoriale non résolue : {overpass._short(str(exc))}")
+        return out
+    db.record_costs(conn, property_id, job_id, "anthropic", "reputed_sorties",
+                    meta["attempts"])
+    summary["cost_cts"] += meta["cost_cts"]
+    skipped_geo = 0
+    for pl in places:
+        code = pl["category"]
+        try:
+            geo = geocode.geocode(street=pl["address"], city=prop["city"],
+                                  country_code=prop["country_code"], client=http_client)
+        except geocode.GeocodeError:
+            skipped_geo += 1
+            log.warning("Pick réputé « %s » sauté : adresse non géocodable (%s)",
+                        pl["name"], pl["address"])
+            continue
+        out.setdefault(code, []).append({
+            "name": pl["name"], "lat": geo["lat"], "lon": geo["lon"],
+            "address": pl["address"], "locality": geo.get("locality"),
+            "category": code, "source": "web",
+            "phone": pl.get("phone"), "website": pl.get("website"),
+            "opening_hours": None, "cuisine": None, "description_md": None,
+            "owner_comment": pl.get("reason") or None,
+            "source_ref": "web:reputed:" + _slug(pl["name"]),
+            "crow_m": overpass.haversine_m(origin[0], origin[1], geo["lat"], geo["lon"]),
+            "completion_meta": {"_editorial": {"source_url": pl.get("source_url"),
+                                               "verified_on": pl.get("verified_on")}},
+        })
+    all_picks = [p for lst in out.values() for p in lst]
+    if all_picks:
+        try:
+            distance.compute_distances(origin, all_picks, client=http_client)
+        except Exception as exc:  # noqa: BLE001 — les distances ne bloquent pas
+            log.warning("Distances picks éditoriaux non calculées : %s", exc)
+    summary["editorial_found"] = len(all_picks)
+    db.job_step(conn, job_id, "reputed_sorties",
+                {"ok": True, "discovered": len(places), "geocoded": len(all_picks),
+                 "skipped_geocode": skipped_geo,
+                 "by_category": {k: len(v) for k, v in out.items()},
+                 "cost_cts": round(meta["cost_cts"], 2)})
+    conn.commit()
+    _progress(f"  ✓ sélection éditoriale : {len(all_picks)} pick(s) réputé(s) / "
+              f"{len(places)} trouvé(s)"
+              + (f", {skipped_geo} sans position" if skipped_geo else "")
+              + f" — {meta['cost_cts']:.2f} ct")
+    return out
+
+
+def _best_editorial_match(pk: dict, candidates: list[dict]) -> dict | None:
+    """Meilleur candidat « même lieu » (matcher V2-52 `same_place`) pour un pick, ou
+    None. Le plus proche à égalité de nom."""
+    best, best_d = None, None
+    for c in candidates:
+        if fusion.same_place(pk, c):
+            d = overpass.haversine_m(pk["lat"], pk["lon"], c["lat"], c["lon"])
+            if best_d is None or d < best_d:
+                best, best_d = c, d
+    return best
+
+
+def _fill_editorial_contacts(target: dict, src: dict) -> None:
+    """Comble les contacts NULL de `target` depuis `src` (jamais d'écrasement)."""
+    for f in ("phone", "website"):
+        if not target.get(f) and src.get(f):
+            target[f] = src[f]
+
+
+def _mark_editorial(poi: dict, pk: dict) -> None:
+    """Marque un POI comme pick éditorial (badge « réputé » + raison), sans écraser un
+    coup de cœur déjà présent."""
+    if not poi.get("owner_comment") and pk.get("owner_comment"):
+        poi["owner_comment"] = pk["owner_comment"]
+    meta = dict(poi.get("completion_meta") or {})
+    meta["_editorial"] = ((pk.get("completion_meta") or {}).get("_editorial")
+                          or {"origin": "match"})
+    poi["completion_meta"] = meta
+
+
+def _merge_editorial_picks(pois: list[dict], picks: list[dict],
+                           ovt: list[dict] | None) -> tuple[list[dict], int]:
+    """Fusionne les picks éditoriaux (V2-56). Un pick apparié à un POI OSM/Overture
+    DÉJÀ présent le MARQUE (réputé + raison) et récupère ses contacts manquants — pas de
+    doublon. Sinon, un pick apparié à un Overture (hors liste) récupère ses contacts,
+    puis entre comme sa propre fiche géocodée. Renvoie `(pois, n_ajoutés)`."""
+    added = 0
+    for pk in picks:
+        m = _best_editorial_match(pk, pois)
+        if m is not None:
+            _mark_editorial(m, pk)
+            _fill_editorial_contacts(m, pk)
+            continue
+        ov = _best_editorial_match(pk, ovt) if ovt else None
+        if ov is not None:
+            _fill_editorial_contacts(pk, ov)
+        _mark_editorial(pk, pk)
+        pois.append(pk)
+        added += 1
+    return pois, added
+
+
+def _cap_guest_sorties(pois: list[dict], target: int) -> list[dict]:
+    """Cape une catégorie « sorties » d'un guide voyageur (V2-56) à `target` en
+    GARANTISSANT les picks éditoriaux (les réputés), puis en complétant par les plus
+    proches. Ne jette jamais un réputé (le cap ne descend pas sous leur nombre)."""
+    def _is_ed(p: dict) -> bool:
+        return bool((p.get("completion_meta") or {}).get("_editorial"))
+    ed = [p for p in pois if _is_ed(p)]
+    rest = sorted((p for p in pois if not _is_ed(p)), key=dedup._travel)
+    return ed + rest[:max(0, target - len(ed))]
+
+
 def _resolve_market_position(market: dict, prop: dict,
                              http_client: httpx.Client | None
                              ) -> tuple[float | None, float | None]:
@@ -306,7 +447,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                      "rental_web_kept": 0, "hard_cap_dropped": 0,
                      "network_dropped": 0, "service_dropped": 0,
                      "service_qualified": 0,
-                     "overture_added": 0, "overture_contacts": 0}
+                     "overture_added": 0, "overture_contacts": 0,
+                     "editorial_found": 0, "editorial_added": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -479,7 +621,13 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         summary["hard_cap_dropped"] += capped
                         if not pois:            # la catégorie devient vide PAR le cap
                             capped_empty.add(code)
-                if not pois:
+                # V2-56 : une catégorie « sorties » VIDE côté OSM/Overture (le cas
+                # constaté : bars/restos réputés absents d'OSM) doit tout de même
+                # atteindre la passe éditoriale ci-dessous — on ne `continue` pas.
+                is_guest_sorties = (prop.get("guest_guide") and use_claude
+                                    and ai is not None
+                                    and code in claude_enrich.EDITORIAL_SORTIES)
+                if not pois and not is_guest_sorties:
                     continue
                 # ── Dédoublonnage à la suggestion (V2-40) ────────────────────
                 # OSM porte le même lieu en plusieurs éléments (Alicante « (ALC) »
@@ -510,12 +658,33 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         _dt.date.today().isoformat())
                     if not pois:
                         continue
+                # ── V2-56 : sélection éditoriale « sorties » (GUIDE VOYAGEUR) ──
+                # OSM/Overture pauvres sur le commercial touristique + aucun signal de
+                # notoriété → on ajoute les adresses RÉPUTÉES (blogs/presse/guides),
+                # appariées à OSM/Overture (contacts, position sûre) ou géocodées. Un
+                # pick apparié marque la fiche existante ; un pick nouveau entre. Puis
+                # cap ENRICHI (restaurant 10, bar 8, cafe 6). Les guides propriétaires
+                # ne changent pas (curation humaine). Le juge (guest) passe derrière.
+                guest_capped = False
+                if is_guest_sorties:
+                    picks = _discover_editorial_sorties(
+                        conn, prop, origin, ai, job_id, http_client, summary).get(code, [])
+                    if picks:
+                        # Cap de distance famille F sur les picks comme sur le reste.
+                        picks, _dropped = overpass.apply_drive_cap(
+                            picks, cat["default_radius_m"],
+                            overpass.target_for(code).hard_cap_drive_min)
+                        pois, n_ed = _merge_editorial_picks(pois, picks, ovt)
+                        summary["editorial_added"] = (
+                            summary.get("editorial_added", 0) + n_ed)
+                    pois = _cap_guest_sorties(pois, settings.guest_sorties_target(code))
+                    guest_capped = True
                 # V2-52 : quand Overture a AUGMENTÉ la catégorie (atm, comblement),
                 # replafonner aux plus pertinents (banques devant crypto, proche devant
                 # lointain) — l'union OSM+Overture peut dépasser le plafond de moisson.
                 # Jamais appliqué sur une catégorie OSM seule (déjà plafonnée) →
-                # non-régression des catégories pleines.
-                if ovt_contributed:
+                # non-régression des catégories pleines. (Le cap guest a déjà tranché.)
+                if ovt_contributed and not guest_capped:
                     pois = fusion.cap_after_fusion(pois, settings.max_pois_per_category)
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
@@ -1068,6 +1237,9 @@ def main() -> None:
     print(f"  Baby-sitting créés    : {result.get('babysitters', 0)}")
     print(f"  Marchés créés         : {result.get('markets_created', 0)}")
     print(f"  Loueurs (web) retenus : {result.get('rental_web_kept', 0)}")
+    if result.get("editorial_found"):
+        print(f"  Picks réputés (web)   : {result.get('editorial_found', 0)} trouvés, "
+              f"{result.get('editorial_added', 0)} ajoutés")
     if result.get("overture_added"):
         print(f"  Overture ajoutés      : {result['overture_added']}")
     if result.get("overture_contacts"):

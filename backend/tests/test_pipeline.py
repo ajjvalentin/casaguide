@@ -106,8 +106,23 @@ class FakeMessages:
     # baby-sitting (V2-07 volet 2) renvoie par défaut un service crédible.
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
-                 describe_malformed=False, rentals=None, service_qualifications=None):
+                 describe_malformed=False, rentals=None, service_qualifications=None,
+                 reputed_places=None):
         self._service_qualifications = service_qualifications
+        # V2-56 : sélection éditoriale « sorties » (réputés) — deux incontournables
+        # par défaut (le cas La Zenia : absents d'OSM), avec contacts + raison.
+        self.reputed_places = ([
+            {"name": "Brown's Cocktail Bar", "category": "bar",
+             "address": "Calle Brown 1, La Zenia",
+             "reason": "Cocktails réputés, terrasse animée.",
+             "phone": "+34 966 111 222", "website": "https://browns.example",
+             "source_url": "https://guide.example/bares", "verified_on": "2026-09-13"},
+            {"name": "Casa Manolo", "category": "restaurant",
+             "address": "Avenida Manolo 2, La Zenia",
+             "reason": "Institution locale pour les arroces.",
+             "phone": "+34 966 333 444", "website": "https://casamanolo.example",
+             "source_url": "https://guide.example/restos", "verified_on": "2026-09-13"}]
+            if reputed_places is None else reputed_places)
         self.food_delivery_malformed = food_delivery_malformed
         self.markets_malformed = markets_malformed
         self.describe_malformed = describe_malformed
@@ -150,6 +165,9 @@ class FakeMessages:
                                          text=json.dumps({"verdicts": verdicts}))],
                 usage=SimpleNamespace(input_tokens=500, output_tokens=200),
                 stop_reason="end_turn")
+        if "RÉPUTÉES" in prompt:  # sélection éditoriale « sorties » (V2-56)
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            return _web_reply(json.dumps({"places": self.reputed_places}))
         if "BABY-SITTING" in prompt:  # création baby-sitting (V2-07 volet 2)
             assert tools and tools[0]["type"] == "web_search_20250305"
             return _web_reply(json.dumps({"services": self.babysitter_services}))
@@ -210,11 +228,13 @@ class FakeMessages:
 class FakeAnthropic:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
-                 describe_malformed=False, rentals=None, service_qualifications=None):
+                 describe_malformed=False, rentals=None, service_qualifications=None,
+                 reputed_places=None):
         self.messages = FakeMessages(food_delivery_malformed, babysitter_services,
                                      service_completions, markets, markets_malformed,
                                      describe_malformed, rentals,
-                                     service_qualifications=service_qualifications)
+                                     service_qualifications=service_qualifications,
+                                     reputed_places=reputed_places)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -371,7 +391,10 @@ def test_guest_guide_is_auto_judged_and_published(guest_property_id, http_client
     result = pipeline.run(
         guest_property_id, use_claude=True, trigger="guest",
         only_categories={"hospital", "supermarket", "restaurant"},
-        http_client=http_client, anthropic_client=FakeAnthropic())
+        http_client=http_client,
+        # reputed_places=[] : ce test isole le JUGE (la passe éditoriale V2-56 a son
+        # propre test) — sinon un pick réputé restaurant gonflerait les compteurs.
+        anthropic_client=FakeAnthropic(reputed_places=[]))
 
     assert result["judge_rejected"] == 1     # Lidl (verdict fake ≥ 0,90)
     # hôpital + Mercadona + resto + baby-sitting + marché (tous les 'suggested' arbitrés)
@@ -403,6 +426,58 @@ def test_guest_guide_is_auto_judged_and_published(guest_property_id, http_client
         ops = {r["operation"] for r in conn.execute(
             "SELECT operation FROM api_costs WHERE job_id=%s", (result["job_id"],))}
         assert "judge" in ops
+
+
+def test_guest_guide_editorial_sorties_adds_reputed_places(guest_property_id,
+                                                           http_client):
+    """V2-56 : pour un GUIDE VOYAGEUR, la passe éditoriale ajoute les adresses
+    RÉPUTÉES « sorties » (bar/resto absents d'OSM), géocodées, avec contacts + raison,
+    marquées « réputé » (completion_meta._editorial), et arbitrées par le juge."""
+    result = pipeline.run(
+        guest_property_id, use_claude=True, trigger="guest",
+        only_categories={"restaurant", "bar", "hospital"},
+        http_client=http_client, anthropic_client=FakeAnthropic())
+    assert result["editorial_found"] == 2 and result["editorial_added"] == 2
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        pois = {p["name"]: p for p in conn.execute(
+            "SELECT name, category_code, phone, website, owner_comment, "
+            "completion_meta, source, status FROM pois WHERE property_id=%s",
+            (guest_property_id,)).fetchall()}
+        # Les incontournables sont présents (le cas La Zenia : Brown's + Casa Manolo).
+        assert "Brown's Cocktail Bar" in pois and "Casa Manolo" in pois
+        brown = pois["Brown's Cocktail Bar"]
+        assert brown["category_code"] == "bar" and brown["source"] == "web"
+        assert brown["phone"] and brown["website"]         # contacts (web)
+        assert brown["owner_comment"] == "Cocktails réputés, terrasse animée."
+        assert brown["completion_meta"]["_editorial"]["source_url"]
+        assert brown["status"] == "approved"               # jugé + publié (guest)
+        # La sélection cohabite avec le socle de proximité (La Marejada, OSM).
+        assert pois["Casa Manolo"]["category_code"] == "restaurant"
+        assert "La Marejada" in pois
+
+        # Étape tracée dans le journal du job.
+        steps = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                            (result["job_id"],)).fetchone()["steps"]
+        assert steps["reputed_sorties"]["geocoded"] == 2
+
+
+def test_owner_guide_has_no_editorial_pass(property_id, http_client):
+    """La passe éditoriale est réservée aux guides voyageur : un guide propriétaire
+    ne reçoit AUCUN pick réputé (curation humaine) — invariant du périmètre V2-56."""
+    result = pipeline.run(
+        property_id, use_claude=True, trigger="initial",
+        only_categories={"restaurant", "bar", "hospital"},
+        http_client=http_client, anthropic_client=FakeAnthropic())
+    assert result["editorial_found"] == 0 and result["editorial_added"] == 0
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        names = {r["name"] for r in conn.execute(
+            "SELECT name FROM pois WHERE property_id=%s", (property_id,)).fetchall()}
+        assert "Brown's Cocktail Bar" not in names and "Casa Manolo" not in names
+        # Les POI OSM restent 'suggested' (pas de juge sur un guide propriétaire).
+        assert {r["status"] for r in conn.execute(
+            "SELECT status FROM pois WHERE property_id=%s AND source='osm'",
+            (property_id,)).fetchall()} == {"suggested"}
 
 
 def test_rerun_is_idempotent_and_preserves_owner_choices(property_id, http_client):

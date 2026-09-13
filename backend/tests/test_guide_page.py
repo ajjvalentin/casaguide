@@ -522,6 +522,23 @@ def test_situation_map_identical_across_languages():
         assert '<div class="situ-map" id="situ-map" aria-hidden="true"></div>' in html
 
 
+def test_reputed_editorial_pick_shows_badge_not_heart():
+    """V2-56 : un pick éditorial « réputé » porte un badge dédié (localisé) au lieu du
+    ❤ ; sa raison (owner_comment) reste affichée. Un coup de cœur ordinaire garde le ❤."""
+    pick = _poi("Brown's Cocktail Bar", "bar", "F",
+                comment="Cocktails réputés, terrasse animée.")
+    pick["editorial"] = True
+    html = guide_page.render_guide(_prop(), [], [pick], {}, "tok")
+    assert "Réputé" in html and "Cocktails réputés, terrasse animée." in html
+    assert "❤ Cocktails" not in html                 # badge, pas le cœur
+    # Badge localisé (7 langues, dictionnaire auto-suffisant _UI7).
+    assert "Popular" in guide_page.render_guide(_prop(), [], [pick], {}, "tok", lang="en")
+
+    ordinary = _poi("Chez Nous", "restaurant", "F", comment="Le préféré du proprio.")
+    html2 = guide_page.render_guide(_prop(), [], [ordinary], {}, "tok")
+    assert "❤ Le préféré du proprio." in html2 and "Réputé" not in html2
+
+
 def test_guest_guide_render_is_amputated_to_around_and_emergency():
     """V2-54 : un guide voyageur ne rend QUE « Autour de vous » + « Urgences » — pas
     d'onglet Logement (donc pas de carte de situation, ni check-in/wifi/règles) et un

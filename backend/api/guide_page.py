@@ -67,6 +67,9 @@ _UI7: dict[str, dict[str, str]] = {
                            "es": "estación más cercana", "it": "stazione più vicina",
                            "de": "nächste Station", "nl": "dichtstbijzijnde station",
                            "sq": "stacioni më i afërt"},
+    # V2-56 : badge d'un pick éditorial « réputé/incontournable » du secteur.
+    "reputed": {"fr": "Réputé", "en": "Popular", "es": "Popular", "it": "Rinomato",
+                "de": "Beliebt", "nl": "Populair", "sq": "I njohur"},
 }
 
 
@@ -1068,8 +1071,22 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             n, u = _fmt_dist(p, lang)
             color = _esc(p.get("map_color") or "#0E5A73")
             desc = _md_to_html(p.get("description_md")) if p.get("description_md") else ""
-            comment = (f'<p class="fav">❤ {_esc(p["owner_comment"])}</p>'
-                       if p.get("owner_comment") else "")
+            # Coup de cœur (owner_comment) en tête de la fiche. Un pick ÉDITORIAL
+            # « réputé » (V2-56) porte un badge dédié au lieu du ❤ (la raison de la
+            # réputation est dans owner_comment, traduite par le pipeline). Style
+            # inline → SSR seul, aucun bump SW (précédent locality V2-38).
+            if p.get("owner_comment") and p.get("editorial"):
+                comment = ('<p class="fav"><span class="rep-badge" '
+                           'style="display:inline-block;font-size:.72em;font-weight:700;'
+                           'letter-spacing:.04em;text-transform:uppercase;'
+                           'color:var(--sea,#0E5A73);border:1px solid currentColor;'
+                           'border-radius:4px;padding:1px 6px;margin-right:6px">'
+                           f'★ {_esc(_t7(lang, "reputed"))}</span>'
+                           f'{_esc(p["owner_comment"])}</p>')
+            elif p.get("owner_comment"):
+                comment = f'<p class="fav">❤ {_esc(p["owner_comment"])}</p>'
+            else:
+                comment = ""
             hours = _render_opening_hours(p.get("opening_hours"), lang)
             # Type de cuisine (M-16) : étiquette localisée + attribut de filtrage.
             cuisine = (p.get("cuisine") or "").strip().lower()

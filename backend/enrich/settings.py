@@ -8,6 +8,23 @@ import os
 from dataclasses import dataclass, field
 
 
+def _parse_targets(spec: str) -> dict:
+    """Parse « restaurant:10,bar:8,cafe:6 » en {code: n} (V2-56). Ignore les
+    entrées mal formées (jamais de crash au démarrage sur une variable d'env)."""
+    out: dict[str, int] = {}
+    for part in (spec or "").split(","):
+        if ":" not in part:
+            continue
+        code, _, num = part.partition(":")
+        code = code.strip()
+        try:
+            if code:
+                out[code] = int(num.strip())
+        except ValueError:
+            continue
+    return out
+
+
 @dataclass
 class Settings:
     # Base de données — sans utilisateur explicite : psycopg prend l'utilisateur
@@ -178,6 +195,25 @@ class Settings:
         os.getenv("CASAGUIDE_GUEST_MAX_PER_EMAIL_PER_DAY", "5"))
     guest_max_per_ip_per_day: int = int(
         os.getenv("CASAGUIDE_GUEST_MAX_PER_IP_PER_DAY", "10"))
+
+    # Sélection éditoriale « sorties » (V2-56) : passe web-discovery Claude qui
+    # découvre les adresses RÉPUTÉES/incontournables du secteur (restaurant/bar/cafe)
+    # — OSM est pauvre sur le commercial touristique, Overture est fermé. Réservée
+    # aux GUIDES VOYAGEUR (guest_guide) ; les guides propriétaires gardent leurs
+    # minimums (la curation humaine décide). Cadence/plafonds propres.
+    reputed_max_searches: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_SEARCHES", "6"))
+    reputed_max_age_days: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_AGE_DAYS", "90"))
+    reputed_max_tokens: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_TOKENS", "4000"))
+    # Cibles ENRICHIES par catégorie pour un guide voyageur (un touriste veut du
+    # choix) : proximité (socle OSM/Overture) + picks éditoriaux. Jamais en dur
+    # (invariant 8) — surchargeable « restaurant:10,bar:8,cafe:6 ».
+    guest_sorties_targets: dict = field(default_factory=lambda: _parse_targets(
+        os.getenv("CASAGUIDE_GUEST_SORTIES_TARGETS", "restaurant:10,bar:8,cafe:6")))
+
+    def guest_sorties_target(self, code: str) -> int:
+        """Cible d'une catégorie « sorties » pour un guide voyageur (repli sur le
+        plafond global si la catégorie n'est pas dans la table)."""
+        return self.guest_sorties_targets.get(code, self.max_pois_per_category)
 
     # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial)
     describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity", "market")

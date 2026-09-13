@@ -307,6 +307,62 @@
     "fr": "Guide propulsé par Holaguia. Bon séjour !",
     "key": "email.footer"
   },
+  "email.guest_intro": {
+    "context": "Email d'envoi du guide",
+    "en": "thank you! Your guide to the area is ready: shops, restaurants, beaches, emergency numbers — it's all here, available offline. Add it to your home screen to keep it handy throughout your stay.",
+    "es": "¡gracias! Tu guía de la zona está lista: comercios, restaurantes, playas, números de emergencia — todo está aquí, disponible sin conexión. Añádela a tu pantalla de inicio para tenerla a mano durante toda tu estancia.",
+    "fr": "merci ! Votre guide des environs est prêt : commerces, restaurants, plages, numéros d'urgence — tout y est, consultable hors connexion. Ajoutez-le à votre écran d'accueil pour l'avoir sous la main tout le séjour.",
+    "key": "email.guest_intro"
+  },
+  "email.guest_resend_subject": {
+    "context": "Email d'envoi du guide",
+    "en": "Your Travel Guide (resend)",
+    "es": "Tu Guía de Viaje (reenvío)",
+    "fr": "Votre Guide Voyageur (renvoi)",
+    "key": "email.guest_resend_subject"
+  },
+  "email.guest_retry_button": {
+    "context": "Email d'envoi du guide",
+    "en": "Adjust the address",
+    "es": "Ajustar la dirección",
+    "fr": "Ajuster l'adresse",
+    "key": "email.guest_retry_button"
+  },
+  "email.guest_retry_intro": {
+    "context": "Email d'envoi du guide",
+    "en": "your payment went through, thank you! We couldn't pinpoint the address with certainty. Adjust the point on the map (no new payment) and your guide is generated right away.",
+    "es": "¡tu pago se ha recibido, gracias! No hemos podido situar la dirección con certeza. Ajusta el punto en el mapa (sin ningún pago nuevo) y tu guía se genera al instante.",
+    "fr": "votre paiement est bien reçu, merci ! Nous n'avons pas pu situer l'adresse avec certitude. Ajustez le point sur la carte (aucun nouveau paiement) et votre guide se génère aussitôt.",
+    "key": "email.guest_retry_intro"
+  },
+  "email.guest_retry_subject": {
+    "context": "Email d'envoi du guide",
+    "en": "Your Travel Guide — one last step",
+    "es": "Tu Guía de Viaje — un último paso",
+    "fr": "Votre Guide Voyageur — une dernière étape",
+    "key": "email.guest_retry_subject"
+  },
+  "email.guest_retry_title": {
+    "context": "Email d'envoi du guide",
+    "en": "A detail about the address",
+    "es": "Un detalle sobre la dirección",
+    "fr": "Une précision sur l'adresse",
+    "key": "email.guest_retry_title"
+  },
+  "email.guest_subject": {
+    "context": "Email d'envoi du guide",
+    "en": "Your Travel Guide is ready",
+    "es": "Tu Guía de Viaje está lista",
+    "fr": "Votre Guide Voyageur est prêt",
+    "key": "email.guest_subject"
+  },
+  "email.guest_title": {
+    "context": "Email d'envoi du guide",
+    "en": "Your guide to the area",
+    "es": "Tu guía de la zona",
+    "fr": "Votre guide des environs",
+    "key": "email.guest_title"
+  },
   "email.showcase_hello": {
     "context": "Email d'envoi du guide",
     "en": "Hello,",
