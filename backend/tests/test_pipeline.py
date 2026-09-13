@@ -270,6 +270,8 @@ def guest_property_id():
     pid, oid = str(uuid.uuid4()), str(uuid.uuid4())
     with psycopg.connect(settings.db_dsn) as conn:
         conn.execute("DELETE FROM area_facts WHERE country_code = 'ES'")
+        # V2-56c : la mémoire de secteur est CUMULATIVE → repartir vierge pour l'isolation.
+        conn.execute("DELETE FROM editorial_picks WHERE country_code = 'ES'")
         conn.execute("INSERT INTO owners (id, email, full_name) VALUES (%s, %s, 'Sys')",
                      (oid, f"{oid}@test.local"))
         conn.execute(
@@ -285,6 +287,7 @@ def guest_property_id():
     with psycopg.connect(settings.db_dsn) as conn:
         conn.execute("DELETE FROM owners WHERE id = %s", (oid,))
         conn.execute("DELETE FROM area_facts WHERE country_code = 'ES'")
+        conn.execute("DELETE FROM editorial_picks WHERE country_code = 'ES'")
         conn.commit()
 
 
@@ -462,25 +465,14 @@ def test_guest_guide_editorial_sorties_adds_reputed_places(guest_property_id,
         assert steps["reputed_sorties"]["discovered"] == 2
 
 
-def test_editorial_placement_name_match_then_strict_geocode_never_centroid(monkeypatch):
-    """V2-56b : cascade de positionnement des picks — (1) appariement par NOM contre
+def test_position_pick_cascade_never_centroid(monkeypatch):
+    """V2-56b : cascade de POSITIONNEMENT d'un pick — (1) appariement par NOM contre
     OSM/Overture SANS distance (position de la base), (2) géocodage de rue STRICT,
-    (3) sinon le pick TOMBE (jamais le centroïde communal, jamais de punaises empilées)."""
-    prop = {"city": "Orihuela Costa", "country_code": "ES", "default_lang": "fr"}
+    (3) sinon None (jamais le centroïde communal)."""
+    prop = {"city": "Orihuela Costa", "country_code": "ES"}
     origin = (37.90, -0.75)
-    # OSM déjà moissonné : Casa Manolo existe (position sûre), sans contacts.
     osm = [{"name": "Casa Manolo", "lat": 37.905, "lon": -0.752,
-            "category": "restaurant", "phone": None, "website": None,
-            "completion_meta": None, "owner_comment": None}]
-    raw = [
-        {"name": "Casa Manolo", "category": "restaurant", "address": "Av X",
-         "reason": "Arroces réputés.", "source_url": "u1",
-         "phone": "+34 111", "website": "https://cm.example"},
-        {"name": "Bar Centroïde", "category": "restaurant", "address": "Calle Y",
-         "reason": "r", "source_url": "u2"},          # géocode → 'city' → TOMBE
-        {"name": "Bien Placé", "category": "restaurant", "address": "Calle Z 5",
-         "reason": "r", "source_url": "u3"},          # géocode → rooftop → ajouté
-    ]
+            "phone": "+34 111", "website": None}]
 
     def fake_geocode(**kw):
         if "Y" in (kw.get("street") or ""):   # centroïde communal refusé
@@ -489,27 +481,105 @@ def test_editorial_placement_name_match_then_strict_geocode_never_centroid(monke
         return {"lat": 37.906, "lon": -0.753, "accuracy": "rooftop",
                 "locality": "La Zenia"}
     monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
-    monkeypatch.setattr(pipeline.distance, "compute_distances",
-                        lambda *a, **k: None)
 
-    pois, added, skipped = pipeline._merge_editorial_picks(
-        prop, "restaurant", osm, None, raw, origin, None,
-        preferred_m=5000, hard_cap=None)
+    # (1) name-match OSM → position + contacts de la base.
+    assert pipeline._position_pick({"name": "Casa Manolo", "address": "Av X"},
+                                   osm, None, prop, origin, None) == \
+        (37.905, -0.752, None, "+34 111", None)
+    # (2) sans appariement, géocode 'city' → None (JAMAIS le centroïde).
+    assert pipeline._position_pick({"name": "Bar Centroïde", "address": "Calle Y"},
+                                   osm, None, prop, origin, None) is None
+    # (3) sans appariement, rue rooftop → position géocodée.
+    pos = pipeline._position_pick({"name": "Bien Placé", "address": "Calle Z 5"},
+                                  osm, None, prop, origin, None)
+    assert pos[:3] == (37.906, -0.753, "La Zenia")
 
-    # (1) Casa Manolo : la fiche OSM est MARQUÉE (position base inchangée, pas de
-    # doublon, pas de géocodage) + contacts récupérés du pick.
-    manolo = [p for p in pois if p["name"] == "Casa Manolo"]
-    assert len(manolo) == 1 and manolo[0]["lat"] == 37.905   # position de la base
-    assert manolo[0]["completion_meta"]["_editorial"]["origin"] == "osm_match"
-    assert manolo[0]["owner_comment"] == "Arroces réputés."
-    assert manolo[0]["phone"] == "+34 111"
-    # (2) Bar Centroïde : géocode 'city' → écarté (JAMAIS le centroïde).
-    assert not any(p["name"] == "Bar Centroïde" for p in pois)
-    # (3) Bien Placé : rue rooftop → ajouté à SA position.
-    bp = [p for p in pois if p["name"] == "Bien Placé"]
-    assert len(bp) == 1 and bp[0]["lat"] == 37.906
-    assert bp[0]["completion_meta"]["_editorial"]["origin"] == "geocode"
-    assert added == 2 and skipped == 1
+
+def test_sector_editorial_memory_accumulates_and_dedups():
+    """V2-56c : la mémoire de secteur accumule et déduplique (upsert par nom normalisé),
+    et rafraîchit position/contacts/raison au re-passage."""
+    from enrich import db as edb
+    SECT = "testsector56c"
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        conn.execute("DELETE FROM editorial_picks WHERE city_norm=%s", (SECT,))
+        edb.upsert_editorial_pick(
+            conn, country_code="ES", city="La Zenia", city_norm=SECT,
+            name="Casa Manolo", name_norm="casamanolo", category="restaurant",
+            reason="Arroces", source_url="u1", verified_on="2026-09-13",
+            lat=37.92, lon=-0.73, phone="+34 1", website=None, locality="La Zenia")
+        edb.upsert_editorial_pick(   # re-vu : rafraîchit (pas de doublon)
+            conn, country_code="ES", city="La Zenia", city_norm=SECT,
+            name="Casa Manolo", name_norm="casamanolo", category="restaurant",
+            reason="Arroces (maj)", source_url="u1b", verified_on="2026-09-14",
+            lat=37.921, lon=-0.731, phone="+34 1", website="https://cm.example",
+            locality="La Zenia")
+        edb.upsert_editorial_pick(   # autre élu du secteur
+            conn, country_code="ES", city="La Zenia", city_norm=SECT,
+            name="Brown's Cocktail Bar", name_norm="brownscocktailbar", category="bar",
+            reason="Cocktails", source_url="u2", verified_on="2026-09-14",
+            lat=37.93, lon=-0.74, phone=None, website="https://browns-cocktailbar.com",
+            locality="La Zenia")
+        conn.commit()
+        resto = edb.sector_editorial_picks(conn, "ES", SECT, "restaurant", 90)
+        bars = edb.sector_editorial_picks(conn, "ES", SECT, "bar", 90)
+        conn.execute("DELETE FROM editorial_picks WHERE city_norm=%s", (SECT,))
+        conn.commit()
+    assert [r["name"] for r in resto] == ["Casa Manolo"]       # dédup (un seul)
+    assert resto[0]["website"] == "https://cm.example"          # contacts rafraîchis
+    assert resto[0]["reason"] == "Arroces (maj)"                # raison rafraîchie
+    assert resto[0]["lat"] == pytest.approx(37.921)            # position rafraîchie
+    assert [r["name"] for r in bars] == ["Brown's Cocktail Bar"]
+
+
+def test_second_run_inherits_first_run_editorial_picks(http_client):
+    """V2-56c : deux générations SUCCESSIVES du même secteur (logements distincts) — la
+    seconde contient AU MOINS les élus positionnés de la première + ses frais, MÊME si
+    le jury web du 2e run ne les redécouvre pas (Casa Manolo stable)."""
+    oid = str(uuid.uuid4())
+    pid1, pid2 = str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+        conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        conn.execute("INSERT INTO owners (id,email,full_name) VALUES (%s,%s,'S')",
+                     (oid, f"{oid}@test.local"))
+        for pid in (pid1, pid2):
+            conn.execute(
+                """INSERT INTO properties (id,owner_id,name,address_line1,city,
+                       country_code,guest_guide,geom,geocode_source,geocode_accuracy)
+                   VALUES (%s,%s,'G','Rue','Orihuela Costa','ES',TRUE,
+                       ST_SetSRID(ST_MakePoint(%s,%s),4326),'manual','manual')""",
+                (pid, oid, PROP_LON, PROP_LAT))
+        conn.commit()
+    try:
+        # Run 1 : le jury web renvoie Casa Manolo.
+        pipeline.run(pid1, use_claude=True, trigger="guest",
+                     only_categories={"restaurant"}, http_client=http_client,
+                     anthropic_client=FakeAnthropic(reputed_places=[
+                         {"name": "Casa Manolo", "category": "restaurant",
+                          "address": "Av Manolo, La Zenia", "reason": "Arroces",
+                          "source_url": "u1", "phone": "+34 1",
+                          "website": "https://cm.example"}]))
+        # Run 2 : le jury web renvoie Brown's SEULEMENT (Casa Manolo absent du jury).
+        pipeline.run(pid2, use_claude=True, trigger="guest",
+                     only_categories={"restaurant"}, http_client=http_client,
+                     anthropic_client=FakeAnthropic(reputed_places=[
+                         {"name": "Brown's", "category": "restaurant",
+                          "address": "Calle Brown, La Zenia", "reason": "Cocktails",
+                          "source_url": "u2", "phone": "+34 2",
+                          "website": "https://browns-cocktailbar.com"}]))
+        with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+            names2 = {r["name"] for r in conn.execute(
+                "SELECT name FROM pois WHERE property_id=%s AND category_code='restaurant'",
+                (pid2,)).fetchall()}
+        # Le 2e guide hérite de Casa Manolo (mémoire du secteur) ET a Brown's (frais).
+        assert "Casa Manolo" in names2 and "Brown's" in names2
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM properties WHERE id = ANY(%s)", ([pid1, pid2],))
+            conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
+            conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+            conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+            conn.commit()
 
 
 def test_owner_guide_has_no_editorial_pass(property_id, http_client):

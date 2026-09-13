@@ -335,6 +335,54 @@ def publish_property(conn, property_id: str) -> None:
     )
 
 
+# ── Mémoire de secteur des picks éditoriaux « sorties » (V2-56c) ──────────────
+
+def upsert_editorial_pick(conn, *, country_code: str, city: str, city_norm: str,
+                          name: str, name_norm: str, category: str,
+                          reason: str | None, source_url: str | None,
+                          verified_on: str | None, lat: float, lon: float,
+                          phone: str | None, website: str | None,
+                          locality: str | None) -> None:
+    """Mémorise un pick éditorial POSITIONNÉ pour son secteur (pays+commune). Idempotent
+    par (secteur, catégorie, nom normalisé) : un re-run rafraîchit position/contacts/
+    raison (les plus récents gagnent) et `last_seen`. La connaissance du secteur
+    s'accumule (V2-56c) — Casa Manolo ne disparaît plus."""
+    conn.execute(
+        """INSERT INTO editorial_picks
+             (country_code, city, city_norm, name, name_norm, category, reason,
+              source_url, verified_on, geom, phone, website, locality)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                   ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s, %s)
+           ON CONFLICT (country_code, city_norm, category, name_norm)
+           DO UPDATE SET
+               reason      = COALESCE(EXCLUDED.reason, editorial_picks.reason),
+               source_url  = COALESCE(EXCLUDED.source_url, editorial_picks.source_url),
+               verified_on = COALESCE(EXCLUDED.verified_on, editorial_picks.verified_on),
+               geom        = EXCLUDED.geom,
+               phone       = COALESCE(EXCLUDED.phone, editorial_picks.phone),
+               website     = COALESCE(EXCLUDED.website, editorial_picks.website),
+               locality    = COALESCE(EXCLUDED.locality, editorial_picks.locality),
+               last_seen   = now()""",
+        (country_code.upper(), city, city_norm, name, name_norm, category, reason,
+         source_url, verified_on, lon, lat, phone, website, locality),
+    )
+
+
+def sector_editorial_picks(conn, country_code: str, city_norm: str, category: str,
+                           max_age_days: int) -> list[dict]:
+    """Picks éditoriaux mémorisés du secteur pour une catégorie, récents (< max_age) —
+    l'UNION que la fusion consomme (V2-56c). Déjà positionnés (geom fiable)."""
+    return conn.execute(
+        """SELECT name, category, reason, source_url, verified_on,
+                  ST_Y(geom) AS lat, ST_X(geom) AS lon, phone, website, locality
+           FROM editorial_picks
+           WHERE country_code = %s AND city_norm = %s AND category = %s
+             AND last_seen > now() - make_interval(days => %s)
+           ORDER BY last_seen DESC""",
+        (country_code.upper(), city_norm, category, max_age_days),
+    ).fetchall()
+
+
 def insert_service_poi(conn, property_id: str, category: str, name: str,
                        lat: float, lon: float, *, phone: str | None,
                        website: str | None, source_ref: str,

@@ -201,7 +201,9 @@ class Settings:
     # — OSM est pauvre sur le commercial touristique, Overture est fermé. Réservée
     # aux GUIDES VOYAGEUR (guest_guide) ; les guides propriétaires gardent leurs
     # minimums (la curation humaine décide). Cadence/plafonds propres.
-    reputed_max_searches: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_SEARCHES", "6"))
+    # V2-56c : échantillonner large (12-15 candidats) — le positionnement strict
+    # élague, la mémoire de secteur accumule. Plus de recherches web par appel.
+    reputed_max_searches: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_SEARCHES", "8"))
     reputed_max_age_days: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_AGE_DAYS", "90"))
     reputed_max_tokens: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_TOKENS", "4000"))
     # Cibles ENRICHIES par catégorie pour un guide voyageur (un touriste veut du

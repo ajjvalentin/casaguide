@@ -178,6 +178,31 @@ CREATE TABLE guest_guide_orders (
 );
 CREATE INDEX idx_guest_orders_email ON guest_guide_orders(email, created_at);
 
+-- Mémoire de secteur des picks éditoriaux « sorties » (V2-56c) : la découverte web
+-- accumule au lieu d'échantillonner. Voir db/migrations/038.
+CREATE TABLE editorial_picks (
+    id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    country_code  CHAR(2) NOT NULL,
+    city          TEXT NOT NULL,
+    city_norm     TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    name_norm     TEXT NOT NULL,
+    category      TEXT NOT NULL,               -- restaurant | bar | cafe
+    reason        TEXT,
+    source_url    TEXT,
+    verified_on   TEXT,
+    geom          GEOMETRY(Point, 4326) NOT NULL,
+    phone         TEXT,
+    website       TEXT,
+    locality      TEXT,
+    first_seen    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX ux_editorial_picks
+    ON editorial_picks(country_code, city_norm, category, name_norm);
+CREATE INDEX idx_editorial_picks_sector
+    ON editorial_picks(country_code, city_norm, last_seen);
+
 -- Données sensibles chiffrées au niveau applicatif (§8) : le backend chiffre
 -- (AES-GCM, clé hors base) avant insertion ; la base ne voit que du bytea.
 CREATE TABLE property_secrets (

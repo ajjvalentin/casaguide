@@ -869,12 +869,21 @@ articles « meilleurs restaurants/bars de {city} », mentions RÉPÉTÉES d'une 
 adresse. L'objectif est la NOTORIÉTÉ : les lieux dont les habitants et les guides
 parlent, pas un annuaire exhaustif.
 
+VISE 12 À 15 ADRESSES au total (échantillonne LARGE — le pipeline vérifie et
+positionne strictement, il élaguera ce qui n'est pas prouvé ; mieux vaut proposer
+généreusement et laisser filtrer).
+
 RATISSE PAR QUARTIER, pas seulement par commune : {city} regroupe souvent plusieurs
 QUARTIERS / URBANIZACIONES / stations balnéaires (par ex. sur la Costa Blanca : La
 Zenia, Playa Flamenca, Cabo Roig, Punta Prima, Villamartín…). Identifie ceux du
 secteur et interroge-les EXPLICITEMENT (« mejores bares La Zenia », « cocktail bar
 Cabo Roig »…). Couvre des types VARIÉS : restaurants, bars, BARS À COCKTAILS,
 BEACH CLUBS / chiringuitos, cafés/salons de thé réputés.
+
+N'OUBLIE PAS LES LIEUX À FORTE PRÉSENCE SUR LES RÉSEAUX SOCIAUX (Instagram,
+TripAdvisor, Google) même s'ils sont discrets dans la presse : bars à cocktails et
+beach clubs branchés ont souvent leur PROPRE SITE (par ex. un « Brown's Cocktail
+Bar » → browns-cocktailbar.com). Cherche aussi « [type] {city} instagram / tripadvisor ».
 
 Pour chaque adresse retenue, fournis :
 - `name` : le nom exact du lieu ;

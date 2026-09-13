@@ -306,44 +306,71 @@ def _geocode_pick_strict(pk: dict, prop: dict, origin: tuple,
     return geo
 
 
-def _merge_editorial_picks(prop: dict, code: str, pois: list[dict],
-                           ovt: list[dict] | None, raw_picks: list[dict],
-                           origin: tuple, http_client: httpx.Client | None, *,
-                           preferred_m: int,
-                           hard_cap: int | None) -> tuple[list[dict], int, int]:
-    """Positionne et fusionne les picks éditoriaux (V2-56b), cascade STRICTE :
-      1. APPARIEMENT PAR NOM contre l'OSM déjà moissonné (sans distance) → MARQUE la
-         fiche existante (réputé + raison) et complète ses contacts, position = base ;
-      2. sinon appariement par NOM contre Overture → position + contacts de la base ;
-      3. sinon géocodage de rue STRICT (jamais le centroïde) ;
-      4. sinon le pick TOMBE (jamais une punaise au mauvais endroit).
-    Les nouveaux picks reçoivent leurs distances puis le cap de distance famille F.
-    Renvoie `(pois, n_placés, n_écartés)`."""
-    matched = 0
+def _position_pick(pk: dict, pois: list[dict], ovt: list[dict] | None,
+                   prop: dict, origin: tuple,
+                   http_client: httpx.Client | None) -> tuple | None:
+    """Position FIABLE d'un pick, cascade STRICTE (V2-56b) : appariement par NOM contre
+    l'OSM moissonné PUIS Overture (sans distance — la position du pick n'est pas fiable,
+    celle de la base fait foi), sinon géocodage de rue STRICT (jamais le centroïde).
+    Renvoie `(lat, lon, locality, phone_base, website_base)` ou None (le pick tombe)."""
+    m = _name_match(pk["name"], pois)                     # 1. OSM moissonné
+    if m is not None:
+        return m["lat"], m["lon"], m.get("locality"), m.get("phone"), m.get("website")
+    ov = _name_match(pk["name"], ovt) if ovt else None    # 2. Overture
+    if ov is not None and ov.get("lat") is not None and ov.get("lon") is not None:
+        return (ov["lat"], ov["lon"], ov.get("locality"),
+                ov.get("phone"), ov.get("website"))
+    geo = _geocode_pick_strict(pk, prop, origin, http_client)   # 3. rue stricte
+    if geo is not None:
+        return geo["lat"], geo["lon"], geo.get("locality"), None, None
+    return None                                            # 4. tombe
+
+
+def _memorize_fresh_picks(conn, prop: dict, code: str, pois: list[dict],
+                          ovt: list[dict] | None, raw_picks: list[dict],
+                          origin: tuple, http_client: httpx.Client | None,
+                          city_norm: str) -> int:
+    """Positionne les picks FRAIS du run et les MÉMORISE pour le secteur (V2-56c) :
+    chaque run enrichit la mémoire commune. Un pick non positionnable TOMBE (jamais un
+    centroïde). Renvoie le nombre écarté (sans position)."""
     skipped = 0
-    new_pois: list[dict] = []
     for pk in raw_picks:
-        m = _name_match(pk["name"], pois)                    # 1. OSM moissonné
-        if m is not None:
-            _mark_editorial(m, pk, "osm_match")
-            _fill_editorial_contacts(m, pk)
-            matched += 1
-            continue
-        ov = _name_match(pk["name"], ovt) if ovt else None    # 2. Overture
-        if ov is not None and ov.get("lat") is not None and ov.get("lon") is not None:
-            poi = _build_editorial_poi(pk, code, ov["lat"], ov["lon"],
-                                       ov.get("locality"), origin, "overture")
-            _fill_editorial_contacts(poi, ov)
-            new_pois.append(poi)
-            continue
-        geo = _geocode_pick_strict(pk, prop, origin, http_client)  # 3. rue stricte
-        if geo is None:                                            # 4. tombe
+        pos = _position_pick(pk, pois, ovt, prop, origin, http_client)
+        if pos is None:
             skipped += 1
             log.warning("Pick réputé « %s » sauté : position non fiable (%s)",
                         pk["name"], pk.get("address"))
             continue
+        lat, lon, locality, base_phone, base_web = pos
+        db.upsert_editorial_pick(
+            conn, country_code=prop["country_code"], city=prop["city"],
+            city_norm=city_norm, name=pk["name"], name_norm=dedup._norm(pk["name"]),
+            category=code, reason=pk.get("reason"), source_url=pk.get("source_url"),
+            verified_on=pk.get("verified_on"), lat=lat, lon=lon, locality=locality,
+            phone=pk.get("phone") or base_phone,
+            website=pk.get("website") or base_web)
+    return skipped
+
+
+def _merge_sector_picks(pois: list[dict], memory: list[dict], origin: tuple,
+                        http_client: httpx.Client | None, *, preferred_m: int,
+                        hard_cap: int | None) -> tuple[list[dict], int]:
+    """Fusionne l'UNION mémorisée du secteur (V2-56c) dans le guide : chaque pick est
+    DÉJÀ positionné (mémoire). Apparié par nom à l'OSM courant → MARQUE la fiche (pas
+    de doublon) ; sinon entre comme sa propre fiche à sa position mémorisée. Distances
+    relatives à CE logement + cap de distance famille F. Renvoie `(pois, n_placés)`."""
+    matched = 0
+    new_pois: list[dict] = []
+    for mp in memory:
+        m = _name_match(mp["name"], pois)
+        if m is not None:
+            _mark_editorial(m, mp, "sector_memory")
+            _fill_editorial_contacts(m, mp)
+            matched += 1
+            continue
         new_pois.append(_build_editorial_poi(
-            pk, code, geo["lat"], geo["lon"], geo.get("locality"), origin, "geocode"))
+            mp, mp["category"], mp["lat"], mp["lon"], mp.get("locality"),
+            origin, "sector_memory"))
     if new_pois:
         try:
             distance.compute_distances(origin, new_pois, client=http_client)
@@ -351,7 +378,7 @@ def _merge_editorial_picks(prop: dict, code: str, pois: list[dict],
             log.warning("Distances picks éditoriaux non calculées : %s", exc)
         new_pois, _dropped = overpass.apply_drive_cap(new_pois, preferred_m, hard_cap)
     pois.extend(new_pois)
-    return pois, matched + len(new_pois), skipped
+    return pois, matched + len(new_pois)
 
 
 def _cap_guest_sorties(pois: list[dict], target: int) -> list[dict]:
@@ -712,17 +739,28 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # ne changent pas (curation humaine). Le juge (guest) passe derrière.
                 guest_capped = False
                 if is_guest_sorties:
+                    city_norm = dedup._norm(prop["city"])
                     raw = _discover_editorial_sorties(
                         conn, prop, ai, job_id, summary).get(code, [])
+                    # A. Positionner les FRAIS et les MÉMORISER pour le secteur (V2-56c).
                     if raw:
-                        pois, n_ed, n_sk = _merge_editorial_picks(
-                            prop, code, pois, ovt, raw, origin, http_client,
+                        n_sk = _memorize_fresh_picks(
+                            conn, prop, code, pois, ovt, raw, origin, http_client,
+                            city_norm)
+                        summary["editorial_skipped"] = (
+                            summary.get("editorial_skipped", 0) + n_sk)
+                        conn.commit()   # mémoire du secteur persistée avant lecture
+                    # B. Consommer l'UNION mémorisée du secteur (frais + anciens < 90 j).
+                    memory = db.sector_editorial_picks(
+                        conn, prop["country_code"], city_norm, code,
+                        settings.reputed_max_age_days)
+                    if memory:
+                        pois, n_ed = _merge_sector_picks(
+                            pois, memory, origin, http_client,
                             preferred_m=cat["default_radius_m"],
                             hard_cap=overpass.target_for(code).hard_cap_drive_min)
                         summary["editorial_added"] = (
                             summary.get("editorial_added", 0) + n_ed)
-                        summary["editorial_skipped"] = (
-                            summary.get("editorial_skipped", 0) + n_sk)
                     pois = _cap_guest_sorties(pois, settings.guest_sorties_target(code))
                     guest_capped = True
                 # V2-52 : quand Overture a AUGMENTÉ la catégorie (atm, comblement),
