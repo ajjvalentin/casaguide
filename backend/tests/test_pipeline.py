@@ -459,7 +459,57 @@ def test_guest_guide_editorial_sorties_adds_reputed_places(guest_property_id,
         # Étape tracée dans le journal du job.
         steps = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
                             (result["job_id"],)).fetchone()["steps"]
-        assert steps["reputed_sorties"]["geocoded"] == 2
+        assert steps["reputed_sorties"]["discovered"] == 2
+
+
+def test_editorial_placement_name_match_then_strict_geocode_never_centroid(monkeypatch):
+    """V2-56b : cascade de positionnement des picks — (1) appariement par NOM contre
+    OSM/Overture SANS distance (position de la base), (2) géocodage de rue STRICT,
+    (3) sinon le pick TOMBE (jamais le centroïde communal, jamais de punaises empilées)."""
+    prop = {"city": "Orihuela Costa", "country_code": "ES", "default_lang": "fr"}
+    origin = (37.90, -0.75)
+    # OSM déjà moissonné : Casa Manolo existe (position sûre), sans contacts.
+    osm = [{"name": "Casa Manolo", "lat": 37.905, "lon": -0.752,
+            "category": "restaurant", "phone": None, "website": None,
+            "completion_meta": None, "owner_comment": None}]
+    raw = [
+        {"name": "Casa Manolo", "category": "restaurant", "address": "Av X",
+         "reason": "Arroces réputés.", "source_url": "u1",
+         "phone": "+34 111", "website": "https://cm.example"},
+        {"name": "Bar Centroïde", "category": "restaurant", "address": "Calle Y",
+         "reason": "r", "source_url": "u2"},          # géocode → 'city' → TOMBE
+        {"name": "Bien Placé", "category": "restaurant", "address": "Calle Z 5",
+         "reason": "r", "source_url": "u3"},          # géocode → rooftop → ajouté
+    ]
+
+    def fake_geocode(**kw):
+        if "Y" in (kw.get("street") or ""):   # centroïde communal refusé
+            return {"lat": 37.9375, "lon": -0.7453, "accuracy": "city",
+                    "locality": None}
+        return {"lat": 37.906, "lon": -0.753, "accuracy": "rooftop",
+                "locality": "La Zenia"}
+    monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
+    monkeypatch.setattr(pipeline.distance, "compute_distances",
+                        lambda *a, **k: None)
+
+    pois, added, skipped = pipeline._merge_editorial_picks(
+        prop, "restaurant", osm, None, raw, origin, None,
+        preferred_m=5000, hard_cap=None)
+
+    # (1) Casa Manolo : la fiche OSM est MARQUÉE (position base inchangée, pas de
+    # doublon, pas de géocodage) + contacts récupérés du pick.
+    manolo = [p for p in pois if p["name"] == "Casa Manolo"]
+    assert len(manolo) == 1 and manolo[0]["lat"] == 37.905   # position de la base
+    assert manolo[0]["completion_meta"]["_editorial"]["origin"] == "osm_match"
+    assert manolo[0]["owner_comment"] == "Arroces réputés."
+    assert manolo[0]["phone"] == "+34 111"
+    # (2) Bar Centroïde : géocode 'city' → écarté (JAMAIS le centroïde).
+    assert not any(p["name"] == "Bar Centroïde" for p in pois)
+    # (3) Bien Placé : rue rooftop → ajouté à SA position.
+    bp = [p for p in pois if p["name"] == "Bien Placé"]
+    assert len(bp) == 1 and bp[0]["lat"] == 37.906
+    assert bp[0]["completion_meta"]["_editorial"]["origin"] == "geocode"
+    assert added == 2 and skipped == 1
 
 
 def test_owner_guide_has_no_editorial_pass(property_id, http_client):

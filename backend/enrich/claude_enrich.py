@@ -855,23 +855,35 @@ def fetch_rentals(city: str, country_code: str,
 # sûre), et entre quand même s'il géocode proprement mais reste introuvable en base.
 EDITORIAL_SORTIES = ("restaurant", "bar", "cafe")
 
+_REPUTED_LANG_NAMES = {"fr": "français", "en": "anglais", "es": "espagnol",
+                       "de": "allemand", "nl": "néerlandais", "it": "italien",
+                       "sq": "albanais"}
+
 _REPUTED_PROMPT = """\
 Tu prépares, pour un GUIDE VOYAGEUR, la sélection des adresses RÉPUTÉES et
 INCONTOURNABLES du secteur autour d'un logement de vacances à {city}
 ({country_code}) — la famille « sorties » : RESTAURANTS, BARS et CAFÉS.
 
-Cherche dans la LANGUE LOCALE : blogs, guides de voyage, presse locale, articles
-« meilleurs restaurants/bars de {city} », mentions RÉPÉTÉES d'une même adresse.
-L'objectif est la NOTORIÉTÉ : les lieux dont les habitants et les guides parlent,
-pas un annuaire exhaustif.
+CHERCHE LARGE, dans la LANGUE LOCALE : blogs, guides de voyage, presse locale,
+articles « meilleurs restaurants/bars de {city} », mentions RÉPÉTÉES d'une même
+adresse. L'objectif est la NOTORIÉTÉ : les lieux dont les habitants et les guides
+parlent, pas un annuaire exhaustif.
+
+RATISSE PAR QUARTIER, pas seulement par commune : {city} regroupe souvent plusieurs
+QUARTIERS / URBANIZACIONES / stations balnéaires (par ex. sur la Costa Blanca : La
+Zenia, Playa Flamenca, Cabo Roig, Punta Prima, Villamartín…). Identifie ceux du
+secteur et interroge-les EXPLICITEMENT (« mejores bares La Zenia », « cocktail bar
+Cabo Roig »…). Couvre des types VARIÉS : restaurants, bars, BARS À COCKTAILS,
+BEACH CLUBS / chiringuitos, cafés/salons de thé réputés.
 
 Pour chaque adresse retenue, fournis :
 - `name` : le nom exact du lieu ;
-- `category` : « restaurant », « bar » ou « cafe » (choisis le plus juste) ;
-- `address` : l'adresse postale la plus COMPLÈTE possible (rue + numéro + commune)
-  — indispensable pour situer le lieu sur la carte ;
-- `reason` : UNE phrase courte disant POURQUOI il est réputé (spécialité, ambiance,
-  ce qu'on y va chercher). Factuelle, jamais du remplissage.
+- `category` : « restaurant », « bar » ou « cafe » (choisis le plus juste ; un beach
+  club / cocktail bar = « bar ») ;
+- `address` : l'adresse postale la plus COMPLÈTE possible (rue + numéro + quartier +
+  commune) — indispensable pour situer le lieu sur la carte ;
+- `reason` : UNE phrase courte, EN {lang_name}, disant POURQUOI il est réputé
+  (spécialité, ambiance, ce qu'on y va chercher). Factuelle, jamais du remplissage.
 - `phone`, `website` : si vérifiés en ligne, sinon "" (le pipeline complètera) ;
 - `source_url` : l'URL de la preuve (le guide/l'article/la mention) ;
 - `verified_on` : « {today} ».
@@ -885,7 +897,7 @@ RÈGLES STRICTES :
 Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
 {{
   "places": [
-    {{"name": "...", "category": "restaurant", "address": "rue et numéro, commune",
+    {{"name": "...", "category": "restaurant", "address": "rue et numéro, quartier, commune",
       "reason": "...", "phone": "...", "website": "...",
       "source_url": "https://...", "verified_on": "{today}"}}
   ]
@@ -895,7 +907,8 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
 
 def fetch_reputed_places(city: str, country_code: str,
                          client: anthropic.Anthropic,
-                         today: str | None = None) -> tuple[list[dict], dict]:
+                         today: str | None = None,
+                         lang: str = "fr") -> tuple[list[dict], dict]:
     """Adresses réputées « sorties » (restaurant/bar/cafe) du secteur, vérifiées par
     recherche web (V2-56). Retourne (liste de {name, category, address, reason,
     phone?, website?, source_url, verified_on}, méta coût). **PREUVE OU RIEN** : une
@@ -903,9 +916,10 @@ def fetch_reputed_places(city: str, country_code: str,
     (restaurant/bar/cafe) est ÉCARTÉE. **Une liste vide est un résultat valide.**
     Réponse malformée → ValueError (robustesses V2-37 héritées)."""
     today = today or _dt.date.today().isoformat()
+    lang_name = _REPUTED_LANG_NAMES.get(lang, "français")
     data, meta = _ask_web_search_json(
         client, _REPUTED_PROMPT.format(city=city, country_code=country_code,
-                                       today=today),
+                                       today=today, lang_name=lang_name),
         city=city, country_code=country_code,
         max_searches=settings.reputed_max_searches,
         max_tokens=settings.reputed_max_tokens)

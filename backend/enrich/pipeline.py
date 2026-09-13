@@ -180,16 +180,24 @@ def _discover_web_rentals(conn, prop: dict, origin: tuple, ai, job_id: str,
     return kept
 
 
-def _discover_editorial_sorties(conn, prop: dict, origin: tuple, ai, job_id: str,
-                                http_client: httpx.Client | None,
+# Appariement par NOM des picks éditoriaux (V2-56b) : sans condition de distance
+# (la position du pick n'est PAS fiable — c'est celle de la base qui fait foi), donc
+# un seuil de nom PLUS EXIGEANT que le same_place géo (0,55) pour éviter un faux
+# appariement ailleurs dans la commune.
+_EDITORIAL_NAME_THR = 0.72
+# Garde-fou anti-position aberrante d'un géocodage de rue (comme les marchés).
+_EDITORIAL_MAX_DIST_M = claude_enrich.MARKET_MAX_DIST_M   # 25 km
+
+
+def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
                                 summary: dict) -> dict[str, list[dict]]:
-    """Sélection éditoriale « sorties » (V2-56) : découverte des adresses RÉPUTÉES
-    (restaurant/bar/cafe) du secteur par Claude+web, UNE seule fois par run (couvre les
-    trois catégories), mémorisée sur `summary`. Chaque pick est géocodé par son adresse
-    (le lieu réputé a une adresse même absent d'OSM) + distances OSRM ; un pick non
-    géocodable est écarté et journalisé. Renvoie {code: [picks]}. Best-effort : tout
-    échec web est journalisé, le coût des essais comptabilisé, et renvoie {} (jamais un
-    job cassé). Cadence propre par logement (un vide n'est pas re-cherché)."""
+    """Sélection éditoriale « sorties » (V2-56) : DÉCOUVERTE web des adresses RÉPUTÉES
+    (restaurant/bar/cafe), UNE seule fois par run (couvre les trois catégories),
+    mémorisée sur `summary`. Renvoie {code: [pick BRUT]} — nom/catégorie/adresse/raison/
+    contacts/preuve, SANS position (le positionnement se fait au moment de la fusion
+    par catégorie : appariement de NOM contre OSM/Overture, puis géocodage de rue
+    strict — V2-56b). Best-effort : tout échec web journalisé, coût comptabilisé,
+    renvoie {}. Cadence propre par logement."""
     if "_editorial_picks" in summary:
         return summary["_editorial_picks"]
     property_id = prop["id"]
@@ -201,7 +209,8 @@ def _discover_editorial_sorties(conn, prop: dict, origin: tuple, ai, job_id: str
     today = _dt.date.today().isoformat()
     try:
         places, meta = claude_enrich.fetch_reputed_places(
-            prop["city"], prop["country_code"], ai, today=today)
+            prop["city"], prop["country_code"], ai, today=today,
+            lang=prop.get("default_lang") or "fr")
     except Exception as exc:  # noqa: BLE001 — best-effort (web/parse)
         log.warning("Sélection éditoriale (%s) non résolue : %s", prop["city"], exc)
         c = _record_failed_call_cost(conn, property_id, job_id, "reputed_sorties", exc)
@@ -215,58 +224,28 @@ def _discover_editorial_sorties(conn, prop: dict, origin: tuple, ai, job_id: str
     db.record_costs(conn, property_id, job_id, "anthropic", "reputed_sorties",
                     meta["attempts"])
     summary["cost_cts"] += meta["cost_cts"]
-    skipped_geo = 0
     for pl in places:
-        code = pl["category"]
-        try:
-            geo = geocode.geocode(street=pl["address"], city=prop["city"],
-                                  country_code=prop["country_code"], client=http_client)
-        except geocode.GeocodeError:
-            skipped_geo += 1
-            log.warning("Pick réputé « %s » sauté : adresse non géocodable (%s)",
-                        pl["name"], pl["address"])
-            continue
-        out.setdefault(code, []).append({
-            "name": pl["name"], "lat": geo["lat"], "lon": geo["lon"],
-            "address": pl["address"], "locality": geo.get("locality"),
-            "category": code, "source": "web",
-            "phone": pl.get("phone"), "website": pl.get("website"),
-            "opening_hours": None, "cuisine": None, "description_md": None,
-            "owner_comment": pl.get("reason") or None,
-            "source_ref": "web:reputed:" + _slug(pl["name"]),
-            "crow_m": overpass.haversine_m(origin[0], origin[1], geo["lat"], geo["lon"]),
-            "completion_meta": {"_editorial": {"source_url": pl.get("source_url"),
-                                               "verified_on": pl.get("verified_on")}},
-        })
-    all_picks = [p for lst in out.values() for p in lst]
-    if all_picks:
-        try:
-            distance.compute_distances(origin, all_picks, client=http_client)
-        except Exception as exc:  # noqa: BLE001 — les distances ne bloquent pas
-            log.warning("Distances picks éditoriaux non calculées : %s", exc)
-    summary["editorial_found"] = len(all_picks)
+        out.setdefault(pl["category"], []).append(pl)   # pick BRUT (positionné plus tard)
+    summary["editorial_found"] = len(places)
     db.job_step(conn, job_id, "reputed_sorties",
-                {"ok": True, "discovered": len(places), "geocoded": len(all_picks),
-                 "skipped_geocode": skipped_geo,
+                {"ok": True, "discovered": len(places),
                  "by_category": {k: len(v) for k, v in out.items()},
                  "cost_cts": round(meta["cost_cts"], 2)})
     conn.commit()
-    _progress(f"  ✓ sélection éditoriale : {len(all_picks)} pick(s) réputé(s) / "
-              f"{len(places)} trouvé(s)"
-              + (f", {skipped_geo} sans position" if skipped_geo else "")
-              + f" — {meta['cost_cts']:.2f} ct")
+    _progress(f"  ✓ sélection éditoriale : {len(places)} adresse(s) réputée(s) "
+              f"trouvée(s) — {meta['cost_cts']:.2f} ct")
     return out
 
 
-def _best_editorial_match(pk: dict, candidates: list[dict]) -> dict | None:
-    """Meilleur candidat « même lieu » (matcher V2-52 `same_place`) pour un pick, ou
-    None. Le plus proche à égalité de nom."""
-    best, best_d = None, None
+def _name_match(name: str, candidates: list[dict]) -> dict | None:
+    """Meilleur candidat par SIMILARITÉ DE NOM (Dice trigrammes ≥ seuil), SANS condition
+    de distance (V2-56b : la position du pick n'est pas fiable). None si rien d'assez
+    proche."""
+    best, best_s = None, 0.0
     for c in candidates:
-        if fusion.same_place(pk, c):
-            d = overpass.haversine_m(pk["lat"], pk["lon"], c["lat"], c["lon"])
-            if best_d is None or d < best_d:
-                best, best_d = c, d
+        s = fusion.name_similarity(name, c.get("name"))
+        if s >= _EDITORIAL_NAME_THR and s > best_s:
+            best, best_s = c, s
     return best
 
 
@@ -277,37 +256,102 @@ def _fill_editorial_contacts(target: dict, src: dict) -> None:
             target[f] = src[f]
 
 
-def _mark_editorial(poi: dict, pk: dict) -> None:
+def _mark_editorial(poi: dict, pk: dict, origin_tag: str) -> None:
     """Marque un POI comme pick éditorial (badge « réputé » + raison), sans écraser un
-    coup de cœur déjà présent."""
-    if not poi.get("owner_comment") and pk.get("owner_comment"):
-        poi["owner_comment"] = pk["owner_comment"]
+    coup de cœur déjà présent. `pk` = pick BRUT (porte `reason`/`source_url`)."""
+    if not poi.get("owner_comment") and pk.get("reason"):
+        poi["owner_comment"] = pk["reason"]
     meta = dict(poi.get("completion_meta") or {})
-    meta["_editorial"] = ((pk.get("completion_meta") or {}).get("_editorial")
-                          or {"origin": "match"})
+    meta["_editorial"] = {"source_url": pk.get("source_url"),
+                          "verified_on": pk.get("verified_on"), "origin": origin_tag}
     poi["completion_meta"] = meta
 
 
-def _merge_editorial_picks(pois: list[dict], picks: list[dict],
-                           ovt: list[dict] | None) -> tuple[list[dict], int]:
-    """Fusionne les picks éditoriaux (V2-56). Un pick apparié à un POI OSM/Overture
-    DÉJÀ présent le MARQUE (réputé + raison) et récupère ses contacts manquants — pas de
-    doublon. Sinon, un pick apparié à un Overture (hors liste) récupère ses contacts,
-    puis entre comme sa propre fiche géocodée. Renvoie `(pois, n_ajoutés)`."""
-    added = 0
-    for pk in picks:
-        m = _best_editorial_match(pk, pois)
+def _build_editorial_poi(pk: dict, code: str, lat: float, lon: float,
+                         locality, origin: tuple, origin_tag: str) -> dict:
+    """Construit un POI éditorial à une position FIABLE (base ou géocodage de rue)."""
+    return {
+        "name": pk["name"], "lat": lat, "lon": lon,
+        "address": pk.get("address"), "locality": locality,
+        "category": code, "source": "web",
+        "phone": pk.get("phone"), "website": pk.get("website"),
+        "opening_hours": None, "cuisine": None, "description_md": None,
+        "owner_comment": pk.get("reason") or None,
+        "source_ref": "web:reputed:" + _slug(pk["name"]),
+        "crow_m": overpass.haversine_m(origin[0], origin[1], lat, lon),
+        "completion_meta": {"_editorial": {"source_url": pk.get("source_url"),
+                                           "verified_on": pk.get("verified_on"),
+                                           "origin": origin_tag}},
+    }
+
+
+def _geocode_pick_strict(pk: dict, prop: dict, origin: tuple,
+                         http_client: httpx.Client | None) -> dict | None:
+    """Géocodage de rue STRICT d'un pick (V2-56b) : jamais le centroïde communal
+    (refuse `accuracy='city'`, règle des marchés) ni une position aberrante. None si
+    la rue ne se résout pas proprement → le pick TOMBE (jamais sept punaises empilées)."""
+    addr = (pk.get("address") or "").strip()
+    if not addr:
+        return None
+    try:
+        geo = geocode.geocode(street=addr, city=prop["city"],
+                              country_code=prop["country_code"], client=http_client)
+    except geocode.GeocodeError:
+        return None
+    if geo.get("accuracy") == "city":
+        return None
+    if overpass.haversine_m(origin[0], origin[1], geo["lat"], geo["lon"]) \
+            > _EDITORIAL_MAX_DIST_M:
+        return None
+    return geo
+
+
+def _merge_editorial_picks(prop: dict, code: str, pois: list[dict],
+                           ovt: list[dict] | None, raw_picks: list[dict],
+                           origin: tuple, http_client: httpx.Client | None, *,
+                           preferred_m: int,
+                           hard_cap: int | None) -> tuple[list[dict], int, int]:
+    """Positionne et fusionne les picks éditoriaux (V2-56b), cascade STRICTE :
+      1. APPARIEMENT PAR NOM contre l'OSM déjà moissonné (sans distance) → MARQUE la
+         fiche existante (réputé + raison) et complète ses contacts, position = base ;
+      2. sinon appariement par NOM contre Overture → position + contacts de la base ;
+      3. sinon géocodage de rue STRICT (jamais le centroïde) ;
+      4. sinon le pick TOMBE (jamais une punaise au mauvais endroit).
+    Les nouveaux picks reçoivent leurs distances puis le cap de distance famille F.
+    Renvoie `(pois, n_placés, n_écartés)`."""
+    matched = 0
+    skipped = 0
+    new_pois: list[dict] = []
+    for pk in raw_picks:
+        m = _name_match(pk["name"], pois)                    # 1. OSM moissonné
         if m is not None:
-            _mark_editorial(m, pk)
+            _mark_editorial(m, pk, "osm_match")
             _fill_editorial_contacts(m, pk)
+            matched += 1
             continue
-        ov = _best_editorial_match(pk, ovt) if ovt else None
-        if ov is not None:
-            _fill_editorial_contacts(pk, ov)
-        _mark_editorial(pk, pk)
-        pois.append(pk)
-        added += 1
-    return pois, added
+        ov = _name_match(pk["name"], ovt) if ovt else None    # 2. Overture
+        if ov is not None and ov.get("lat") is not None and ov.get("lon") is not None:
+            poi = _build_editorial_poi(pk, code, ov["lat"], ov["lon"],
+                                       ov.get("locality"), origin, "overture")
+            _fill_editorial_contacts(poi, ov)
+            new_pois.append(poi)
+            continue
+        geo = _geocode_pick_strict(pk, prop, origin, http_client)  # 3. rue stricte
+        if geo is None:                                            # 4. tombe
+            skipped += 1
+            log.warning("Pick réputé « %s » sauté : position non fiable (%s)",
+                        pk["name"], pk.get("address"))
+            continue
+        new_pois.append(_build_editorial_poi(
+            pk, code, geo["lat"], geo["lon"], geo.get("locality"), origin, "geocode"))
+    if new_pois:
+        try:
+            distance.compute_distances(origin, new_pois, client=http_client)
+        except Exception as exc:  # noqa: BLE001 — les distances ne bloquent pas
+            log.warning("Distances picks éditoriaux non calculées : %s", exc)
+        new_pois, _dropped = overpass.apply_drive_cap(new_pois, preferred_m, hard_cap)
+    pois.extend(new_pois)
+    return pois, matched + len(new_pois), skipped
 
 
 def _cap_guest_sorties(pois: list[dict], target: int) -> list[dict]:
@@ -448,7 +492,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                      "network_dropped": 0, "service_dropped": 0,
                      "service_qualified": 0,
                      "overture_added": 0, "overture_contacts": 0,
-                     "editorial_found": 0, "editorial_added": 0}
+                     "editorial_found": 0, "editorial_added": 0,
+                     "editorial_skipped": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -667,16 +712,17 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # ne changent pas (curation humaine). Le juge (guest) passe derrière.
                 guest_capped = False
                 if is_guest_sorties:
-                    picks = _discover_editorial_sorties(
-                        conn, prop, origin, ai, job_id, http_client, summary).get(code, [])
-                    if picks:
-                        # Cap de distance famille F sur les picks comme sur le reste.
-                        picks, _dropped = overpass.apply_drive_cap(
-                            picks, cat["default_radius_m"],
-                            overpass.target_for(code).hard_cap_drive_min)
-                        pois, n_ed = _merge_editorial_picks(pois, picks, ovt)
+                    raw = _discover_editorial_sorties(
+                        conn, prop, ai, job_id, summary).get(code, [])
+                    if raw:
+                        pois, n_ed, n_sk = _merge_editorial_picks(
+                            prop, code, pois, ovt, raw, origin, http_client,
+                            preferred_m=cat["default_radius_m"],
+                            hard_cap=overpass.target_for(code).hard_cap_drive_min)
                         summary["editorial_added"] = (
                             summary.get("editorial_added", 0) + n_ed)
+                        summary["editorial_skipped"] = (
+                            summary.get("editorial_skipped", 0) + n_sk)
                     pois = _cap_guest_sorties(pois, settings.guest_sorties_target(code))
                     guest_capped = True
                 # V2-52 : quand Overture a AUGMENTÉ la catégorie (atm, comblement),
