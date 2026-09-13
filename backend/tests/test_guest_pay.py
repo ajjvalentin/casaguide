@@ -21,6 +21,7 @@ from psycopg.rows import dict_row
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # backend/
 
 from api import billing_stripe, guest_guides, repo  # noqa: E402
+from api.routers import guest_pay  # noqa: E402
 from api.config import settings as api_settings  # noqa: E402
 from api.deps import get_mailer, get_stripe  # noqa: E402
 from api.main import app  # noqa: E402
@@ -279,6 +280,49 @@ def test_resend_delivers_then_rate_limits(pay):
     # E-mail inconnu → 200 constant, rien envoyé (anti-énumération).
     r3 = client.post("/api/guest-guides/resend", json={"email": "ghost@paytest.com"})
     assert r3.status_code == 200 and len(mailer.sent) == 2
+
+
+def test_offer_price_from_config(pay):
+    """V2-54 C : le prix de l'offre vient de la config (jamais codé en dur côté front)."""
+    client, _, _ = pay
+    r = client.get("/api/guest-guides/offer")
+    assert r.status_code == 200
+    j = r.json()
+    assert j["price_cts"] == api_settings.guest_guide_price_cts and j["currency"]
+
+
+def test_public_geocode_endpoint(pay, monkeypatch):
+    """V2-54 C : géocodage PUBLIC pré-checkout — found/mismatch/introuvable, throttle
+    neutralisé en test."""
+    client, _, _ = pay
+    monkeypatch.setattr(guest_pay, "_GEO_MIN_INTERVAL_S", 0)   # pas d'attente en test
+    monkeypatch.setattr(guest_pay._geocode, "geocode",
+                        lambda **kw: {"lat": 37.9, "lon": -0.7, "accuracy": "rooftop"})
+    r = client.post("/api/guest-guides/geocode",
+                    json={"city": "La Zenia", "country_code": "ES",
+                          "address_line1": "Calle X"})
+    assert r.status_code == 200 and r.json()["found"] is True
+    assert r.json()["mismatch"] is False and r.json()["lat"] == 37.9
+    # Mismatch V2-46 → drapeau.
+    monkeypatch.setattr(guest_pay._geocode, "geocode",
+                        lambda **kw: {"lat": 38.0, "lon": -0.9, "accuracy": "mismatch"})
+    assert client.post("/api/guest-guides/geocode",
+                       json={"city": "X", "country_code": "ES"}).json()["mismatch"] is True
+    # Introuvable → found=False (placement manuel côté tunnel).
+    monkeypatch.setattr(
+        guest_pay._geocode, "geocode",
+        lambda **kw: (_ for _ in ()).throw(guest_pay._geocode.GeocodeError("nope")))
+    assert client.post("/api/guest-guides/geocode",
+                       json={"city": "X", "country_code": "ES"}).json()["found"] is False
+
+
+def test_checkout_success_url_is_merci_page(pay):
+    """V2-54 C : le success_url pointe vers /#/voyageur/merci/{token} (corrige le défaut
+    recette B : l'acheteur atterrissait sur l'écran de connexion propriétaire)."""
+    client, gateway, _ = pay
+    out = _checkout(client, "url@paytest.com")
+    call = gateway.checkout_calls[0]
+    assert f"/#/voyageur/merci/{out['token']}" in call["success_url"]
 
 
 def test_checkout_503_without_stripe(pay):

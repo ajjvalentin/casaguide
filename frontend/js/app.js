@@ -15,6 +15,7 @@ import { el, icon, mount, clear, toast, refreshIcons } from "./ui.js";
 import { navigate } from "./nav.js";
 import { renderLogin } from "./views/login.js";
 import { renderForgot, renderReset, renderVerify } from "./views/reset.js";
+import { renderVoyageur } from "./views/voyageur.js";
 import { renderProperties } from "./views/properties.js";
 import { renderEditor } from "./views/editor.js";
 import { renderPois } from "./views/pois.js";
@@ -124,6 +125,14 @@ function renderRoute() {
   }
   if (hash.startsWith("#/verify/")) {
     return void renderVerify(appEl, decodeURIComponent(hash.slice("#/verify/".length)));
+  }
+  // Offre « Guide Voyageur » (V2-54 Mission C) : tunnel PUBLIC sans compte, jamais
+  // derrière la porte propriétaire (corrige le défaut recette B : l'acheteur
+  // atterrissait sur l'écran de connexion). Segments après « voyageur », query lue.
+  if (hash === "#/voyageur" || hash.startsWith("#/voyageur/") || hash.startsWith("#/voyageur?")) {
+    const seg = hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
+    const params = new URLSearchParams(hash.split("?")[1] || "");
+    return void renderVoyageur(appEl, seg.slice(1), params);
   }
 
   if (!getToken()) { renderLogin(appEl); return; }

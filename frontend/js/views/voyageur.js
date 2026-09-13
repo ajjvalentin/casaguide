@@ -1,0 +1,392 @@
+/* Offre « Guide Voyageur » (V2-54 Mission C) — tunnel PUBLIC, sans compte.
+
+   Routes (toutes publiques, cf. app.js, AVANT la porte propriétaire) :
+     #/voyageur                     → page de l'offre (prix lu de la config)
+     #/voyageur/adresse             → adresse + géocodage + AJUSTEMENT du point sur carte
+                                       → récapitulatif → Stripe Checkout
+     #/voyageur/merci/{token}       → paiement reçu ; polling ; lien + installation PWA
+     #/voyageur/reprise/{token}     → reprise après échec (ré-ajuste le point, sans repayer)
+     #/voyageur/renvoi              → « Retrouver mon guide » par e-mail
+
+   i18n FR/EN/ES (structure prête pour les 7) — chaînes locales à cette vue (le
+   back-office n'a pas de dictionnaire d'UI ; le guide livré est nativement 7 langues). */
+
+import { api, ApiError } from "../api.js";
+import { el, icon, mount, clear, toast, refreshIcons } from "../ui.js";
+import { navigate } from "../nav.js";
+import { redirect } from "../redirect.js";
+
+// ── i18n ─────────────────────────────────────────────────────────────────────
+const STRINGS = {
+  fr: {
+    offer_eyebrow: "Voyageurs", offer_title: "Le guide des environs de votre lieu de vacances",
+    offer_promise: "À vie · hors-ligne · 7 langues",
+    offer_desc: "Restaurants, plages, commerces, urgences — le guide complet du secteur de votre location, généré pour votre adresse.",
+    offer_cta: "Créer mon guide", offer_have: "J'ai déjà acheté un guide",
+    addr_title: "Où allez-vous séjourner ?",
+    addr_intro: "Saisissez l'adresse de votre location — vous ajusterez le point exact sur la carte.",
+    f_address: "Adresse (rue et numéro)", f_postal: "Code postal", f_city: "Ville / commune",
+    f_country: "Pays", f_email: "Votre e-mail",
+    locate: "Situer sur la carte",
+    map_hint: "Déplacez le point (ou touchez la carte) pour marquer précisément votre lieu de séjour.",
+    map_mismatch: "Emplacement incertain — vérifiez et déplacez le point sur votre location.",
+    map_notfound: "Adresse introuvable — placez le point manuellement sur la carte.",
+    recap: "Guide des environs de {city}", pay: "Payer {price}",
+    paying: "Redirection vers le paiement sécurisé…",
+    err_fields: "Renseignez l'adresse, la ville, le pays et un e-mail valide.",
+    err_locate: "Situez d'abord votre location sur la carte.",
+    merci_title: "Paiement reçu, merci !",
+    merci_prep: "Votre guide est en préparation (environ 10 minutes). Vous le recevrez par e-mail.",
+    merci_ready: "Votre guide est prêt !",
+    merci_open: "Ouvrir mon guide", merci_install: "Installer votre guide",
+    merci_install_hint: "Ouvrez le guide puis « Ajouter à l'écran d'accueil » pour l'avoir hors-ligne, à vie.",
+    merci_failed: "La préparation a rencontré un souci. Un e-mail vous permet de reprendre — sans repayer.",
+    merci_reprise: "Reprendre",
+    reprise_title: "Reprenons votre guide",
+    reprise_intro: "Votre paiement est acquis. Ajustez le point de votre lieu de séjour, nous relançons la génération (aucun nouveau paiement).",
+    reprise_cta: "Relancer la génération",
+    reprise_done: "C'est reparti ! Vous recevrez votre guide par e-mail sous peu.",
+    renvoi_title: "Retrouver mon guide",
+    renvoi_intro: "Saisissez l'e-mail utilisé lors de l'achat, nous vous renvoyons le lien de votre guide.",
+    renvoi_cta: "Me renvoyer le lien",
+    renvoi_done: "Si un guide est associé à cet e-mail, le lien vient de partir.",
+    back: "Retour", generic_err: "Une erreur est survenue. Réessayez.",
+  },
+  en: {
+    offer_eyebrow: "Travellers", offer_title: "The guide to the area around your holiday spot",
+    offer_promise: "For life · offline · 7 languages",
+    offer_desc: "Restaurants, beaches, shops, emergencies — the complete guide to your rental's area, generated for your address.",
+    offer_cta: "Create my guide", offer_have: "I already bought a guide",
+    addr_title: "Where are you staying?",
+    addr_intro: "Enter your rental's address — you'll fine-tune the exact point on the map.",
+    f_address: "Address (street and number)", f_postal: "Postcode", f_city: "Town / city",
+    f_country: "Country", f_email: "Your e-mail",
+    locate: "Locate on the map",
+    map_hint: "Drag the point (or tap the map) to mark exactly where you're staying.",
+    map_mismatch: "Location uncertain — check and move the point to your rental.",
+    map_notfound: "Address not found — place the point manually on the map.",
+    recap: "Guide to the area around {city}", pay: "Pay {price}",
+    paying: "Redirecting to secure payment…",
+    err_fields: "Enter the address, town, country and a valid e-mail.",
+    err_locate: "First locate your rental on the map.",
+    merci_title: "Payment received, thank you!",
+    merci_prep: "Your guide is being prepared (about 10 minutes). You'll receive it by e-mail.",
+    merci_ready: "Your guide is ready!",
+    merci_open: "Open my guide", merci_install: "Install your guide",
+    merci_install_hint: "Open the guide, then “Add to Home Screen” to keep it offline, for life.",
+    merci_failed: "Preparation hit a snag. An e-mail lets you resume — no new payment.",
+    merci_reprise: "Resume",
+    reprise_title: "Let's finish your guide",
+    reprise_intro: "Your payment is secured. Adjust the point of your stay and we'll restart generation (no new payment).",
+    reprise_cta: "Restart generation",
+    reprise_done: "Off we go! You'll receive your guide by e-mail shortly.",
+    renvoi_title: "Find my guide",
+    renvoi_intro: "Enter the e-mail you used at purchase and we'll resend your guide link.",
+    renvoi_cta: "Resend me the link",
+    renvoi_done: "If a guide is linked to this e-mail, the link is on its way.",
+    back: "Back", generic_err: "Something went wrong. Please try again.",
+  },
+  es: {
+    offer_eyebrow: "Viajeros", offer_title: "La guía de los alrededores de tu lugar de vacaciones",
+    offer_promise: "De por vida · sin conexión · 7 idiomas",
+    offer_desc: "Restaurantes, playas, comercios, emergencias — la guía completa de la zona de tu alojamiento, generada para tu dirección.",
+    offer_cta: "Crear mi guía", offer_have: "Ya he comprado una guía",
+    addr_title: "¿Dónde te vas a alojar?",
+    addr_intro: "Introduce la dirección de tu alojamiento — ajustarás el punto exacto en el mapa.",
+    f_address: "Dirección (calle y número)", f_postal: "Código postal", f_city: "Ciudad / municipio",
+    f_country: "País", f_email: "Tu correo electrónico",
+    locate: "Situar en el mapa",
+    map_hint: "Mueve el punto (o toca el mapa) para marcar exactamente dónde te alojas.",
+    map_mismatch: "Ubicación incierta — comprueba y mueve el punto a tu alojamiento.",
+    map_notfound: "Dirección no encontrada — coloca el punto manualmente en el mapa.",
+    recap: "Guía de los alrededores de {city}", pay: "Pagar {price}",
+    paying: "Redirigiendo al pago seguro…",
+    err_fields: "Indica la dirección, la ciudad, el país y un correo válido.",
+    err_locate: "Sitúa primero tu alojamiento en el mapa.",
+    merci_title: "¡Pago recibido, gracias!",
+    merci_prep: "Tu guía se está preparando (unos 10 minutos). La recibirás por correo electrónico.",
+    merci_ready: "¡Tu guía está lista!",
+    merci_open: "Abrir mi guía", merci_install: "Instalar tu guía",
+    merci_install_hint: "Abre la guía y pulsa “Añadir a pantalla de inicio” para tenerla sin conexión, de por vida.",
+    merci_failed: "La preparación tuvo un problema. Un correo te permite retomar — sin pagar de nuevo.",
+    merci_reprise: "Retomar",
+    reprise_title: "Terminemos tu guía",
+    reprise_intro: "Tu pago está asegurado. Ajusta el punto de tu alojamiento y reiniciamos la generación (sin nuevo pago).",
+    reprise_cta: "Reiniciar la generación",
+    reprise_done: "¡En marcha! Recibirás tu guía por correo en breve.",
+    renvoi_title: "Recuperar mi guía",
+    renvoi_intro: "Introduce el correo que usaste en la compra y te reenviamos el enlace de tu guía.",
+    renvoi_cta: "Reenviarme el enlace",
+    renvoi_done: "Si hay una guía asociada a este correo, el enlace acaba de salir.",
+    back: "Atrás", generic_err: "Ha ocurrido un error. Inténtalo de nuevo.",
+  },
+};
+
+let LANG = "fr";
+function resolveLang(params) {
+  const cand = (params.get("lang") || localStorage.getItem("casaguide:lang")
+    || (navigator.language || "fr").slice(0, 2)).toLowerCase();
+  LANG = ["fr", "en", "es"].includes(cand) ? cand : "fr";
+  return LANG;
+}
+function tr(key, subs) {
+  let s = (STRINGS[LANG] && STRINGS[LANG][key]) || STRINGS.fr[key] || key;
+  if (subs) for (const k in subs) s = s.replaceAll(`{${k}}`, subs[k]);
+  return s;
+}
+function money(cts, currency) {
+  try {
+    return new Intl.NumberFormat(LANG, { style: "currency", currency: (currency || "eur").toUpperCase() })
+      .format((cts || 0) / 100);
+  } catch (_) { return `${((cts || 0) / 100).toFixed(2)} €`; }
+}
+
+// ── Ossature plein-écran (identité, sans session) ────────────────────────────
+function shell(...children) {
+  return el("div", { class: "auth-wrap" },
+    el("div", { class: "card auth-card voyageur-card" },
+      el("a", { class: "brand", href: "#/voyageur" },
+        el("span", { class: "mark" }, icon("map-pinned", 20)), "Holaguia"),
+      ...children));
+}
+function backLink(hash) {
+  return el("a", { class: "muted-link", href: hash },
+    icon("arrow-left", 14), " ", tr("back"));
+}
+
+// ── Carte d'ajustement du point (Leaflet global sur le SPA) ──────────────────
+// Renvoie un getter () -> {lat, lon} ; `onSet(lat,lon)` notifié à chaque changement.
+function mountAdjustMap(container, { lat, lon }, onSet) {
+  if (!window.L) { container.textContent = "(carte indisponible)"; return () => null; }
+  const hasPoint = lat != null && lon != null;
+  let la = hasPoint ? lat : 40.0, lo = hasPoint ? lon : -3.7;
+  const map = window.L.map(container).setView([la, lo], hasPoint ? 16 : 5);
+  window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { attribution: "© OpenStreetMap", maxZoom: 19 }).addTo(map);
+  const marker = window.L.marker([la, lo], { draggable: true }).addTo(map);
+  const set = (a, o) => { la = a; lo = o; if (onSet) onSet(la, lo); };
+  marker.on("dragend", () => { const p = marker.getLatLng(); set(p.lat, p.lng); });
+  map.on("click", (e) => { marker.setLatLng(e.latlng); set(e.latlng.lat, e.latlng.lng); });
+  setTimeout(() => map.invalidateSize(), 80);
+  if (hasPoint && onSet) onSet(la, lo);
+  return () => ({ lat: la, lon: lo });
+}
+
+// ── Dispatcher ────────────────────────────────────────────────────────────────
+export function renderVoyageur(root, seg, params) {
+  resolveLang(params);
+  const step = seg[0] || "";
+  if (step === "adresse") return renderAdresse(root);
+  if (step === "merci") return renderMerci(root, seg[1]);
+  if (step === "reprise") return renderReprise(root, seg[1]);
+  if (step === "renvoi") return renderRenvoi(root);
+  return renderOffer(root);
+}
+
+// ── 1. Offre ──────────────────────────────────────────────────────────────────
+async function renderOffer(root) {
+  let price = "";
+  try { const o = await api.guestOffer(); price = money(o.price_cts, o.currency); }
+  catch (_) { /* prix indisponible : le CTA reste sans montant */ }
+  mount(root, shell(
+    el("p", { class: "eyebrow" }, tr("offer_eyebrow")),
+    el("h1", {}, tr("offer_title")),
+    el("p", { class: "voyageur-promise" }, tr("offer_promise")),
+    el("p", { class: "muted" }, tr("offer_desc")),
+    el("div", { class: "voyageur-price" }, price),
+    el("button", { class: "btn btn-primary btn-block",
+      onClick: () => navigate("#/voyageur/adresse") },
+      tr("offer_cta") + (price ? ` — ${price}` : "")),
+    el("a", { class: "muted-link center", href: "#/voyageur/renvoi" }, tr("offer_have")),
+  ));
+}
+
+// ── 2. Adresse + carte + récapitulatif → Checkout ────────────────────────────
+function renderAdresse(root) {
+  const fields = {
+    address_line1: el("input", { type: "text", autocomplete: "street-address" }),
+    postal_code: el("input", { type: "text", autocomplete: "postal-code" }),
+    city: el("input", { type: "text", required: true }),
+    country_code: el("input", { type: "text", value: "ES", maxlength: "2",
+      style: "text-transform:uppercase" }),
+    email: el("input", { type: "email", required: true, autocomplete: "email" }),
+  };
+  const errBox = el("div", { class: "errbox hidden" });
+  const mapWrap = el("div", { class: "voyageur-mapwrap hidden" });
+  const mapEl = el("div", { class: "voyageur-map" });
+  const mapMsg = el("p", { class: "muted small" });
+  const recap = el("div", { class: "voyageur-recap hidden" });
+  let getPoint = () => null;
+
+  const field = (key, label) =>
+    el("label", { class: "field" }, el("span", {}, label), fields[key]);
+
+  const locateBtn = el("button", { class: "btn btn-block", type: "button" }, tr("locate"));
+  const showErr = (m) => { errBox.textContent = m; errBox.classList.remove("hidden"); };
+  const hideErr = () => errBox.classList.add("hidden");
+
+  locateBtn.onclick = async () => {
+    hideErr();
+    const city = fields.city.value.trim();
+    const cc = fields.country_code.value.trim().toUpperCase();
+    const email = fields.email.value.trim();
+    if (!city || cc.length !== 2 || !/.+@.+\..+/.test(email)) {
+      return showErr(tr("err_fields"));
+    }
+    locateBtn.disabled = true;
+    let geo = { found: false };
+    try {
+      geo = await api.guestGeocode({ address_line1: fields.address_line1.value.trim() || null,
+        postal_code: fields.postal_code.value.trim() || null, city, country_code: cc });
+    } catch (_) { /* repli placement manuel */ }
+    locateBtn.disabled = false;
+    mapWrap.classList.remove("hidden");
+    clear(mapEl);
+    const start = geo.found ? { lat: geo.lat, lon: geo.lon } : { lat: null, lon: null };
+    getPoint = mountAdjustMap(mapEl, start, () => { recap.classList.remove("hidden"); });
+    mapMsg.textContent = !geo.found ? tr("map_notfound")
+      : (geo.mismatch || geo.accuracy === "city") ? tr("map_mismatch") : tr("map_hint");
+    // Récap + bouton payer.
+    clear(recap);
+    const payBtn = el("button", { class: "btn btn-primary btn-block", type: "button" },
+      tr("pay", { price: "" }).trim());
+    // Prix affiché sur le bouton (depuis la config).
+    api.guestOffer().then(o => { payBtn.textContent = tr("pay", { price: money(o.price_cts, o.currency) }); })
+      .catch(() => {});
+    payBtn.onclick = async () => {
+      const pt = getPoint();
+      if (!pt || pt.lat == null) return showErr(tr("err_locate"));
+      payBtn.disabled = true; payBtn.textContent = tr("paying");
+      try {
+        const r = await api.guestCheckout({
+          email, city, country_code: cc,
+          address_line1: fields.address_line1.value.trim() || null,
+          postal_code: fields.postal_code.value.trim() || null,
+          lat: pt.lat, lon: pt.lon, lang: LANG });
+        redirect(r.url);
+      } catch (e) {
+        payBtn.disabled = false;
+        showErr(e instanceof ApiError ? e.message : tr("generic_err"));
+      }
+    };
+    mount(recap,
+      el("h2", {}, tr("recap", { city })),
+      payBtn);
+    recap.classList.remove("hidden");
+    recap.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  mount(root, shell(
+    el("h1", {}, tr("addr_title")),
+    el("p", { class: "muted" }, tr("addr_intro")),
+    errBox,
+    field("address_line1", tr("f_address")),
+    el("div", { class: "field-row" },
+      field("postal_code", tr("f_postal")), field("city", tr("f_city"))),
+    el("div", { class: "field-row" },
+      field("country_code", tr("f_country")), field("email", tr("f_email"))),
+    locateBtn,
+    mapWrap,
+    backLink("#/voyageur"),
+  ));
+  mount(mapWrap, mapEl, mapMsg, recap);
+}
+
+// ── 3. Merci (polling + installation) ────────────────────────────────────────
+function renderMerci(root, token) {
+  const status = el("div", { class: "voyageur-status" });
+  mount(root, shell(el("h1", {}, tr("merci_title")), status));
+  if (!token) { status.textContent = tr("generic_err"); return; }
+
+  let stopped = false;
+  const preparing = () => mount(status,
+    el("div", { class: "spinner-inline" }, icon("loader", 22)),
+    el("p", { class: "muted" }, tr("merci_prep")));
+  preparing();
+
+  const ready = (order) => {
+    stopped = true;
+    const guideUrl = order.guide_url;
+    const openBtn = el("a", { class: "btn btn-primary btn-block", href: guideUrl },
+      tr("merci_open"));
+    const installBtn = el("a", { class: "btn btn-block", href: guideUrl },
+      icon("download", 16), " ", tr("merci_install"));
+    mount(status,
+      el("div", { class: "okbox" }, tr("merci_ready")),
+      openBtn, installBtn,
+      el("p", { class: "muted small" }, tr("merci_install_hint")));
+    refreshIcons();
+  };
+  const failed = () => {
+    stopped = true;
+    mount(status,
+      el("div", { class: "errbox" }, tr("merci_failed")),
+      el("a", { class: "btn btn-primary btn-block", href: `#/voyageur/reprise/${token}` },
+        tr("merci_reprise")));
+  };
+
+  const poll = async () => {
+    if (stopped) return;
+    try {
+      const o = await api.guestOrder(token);
+      if (o.status === "done" && o.guide_url) return ready(o);
+      if (o.status === "failed") return failed();
+    } catch (_) { /* transitoire : on re-tente */ }
+    if (!stopped) setTimeout(poll, 4000);
+  };
+  poll();
+}
+
+// ── 4. Reprise (ré-ajuste le point, sans repayer) ────────────────────────────
+function renderReprise(root, token) {
+  const errBox = el("div", { class: "errbox hidden" });
+  const okBox = el("div", { class: "okbox hidden" });
+  const mapEl = el("div", { class: "voyageur-map" });
+  let getPoint = () => null;
+  const cta = el("button", { class: "btn btn-primary btn-block", type: "button" },
+    tr("reprise_cta"));
+  cta.onclick = async () => {
+    const pt = getPoint();
+    cta.disabled = true;
+    try {
+      await api.guestRetry(token, pt && pt.lat != null ? { lat: pt.lat, lon: pt.lon } : {});
+      okBox.textContent = tr("reprise_done"); okBox.classList.remove("hidden");
+      errBox.classList.add("hidden"); cta.classList.add("hidden");
+    } catch (e) {
+      cta.disabled = false;
+      errBox.textContent = e instanceof ApiError ? e.message : tr("generic_err");
+      errBox.classList.remove("hidden");
+    }
+  };
+  mount(root, shell(
+    el("h1", {}, tr("reprise_title")),
+    el("p", { class: "muted" }, tr("reprise_intro")),
+    okBox, errBox, mapEl,
+    el("p", { class: "muted small" }, tr("map_hint")),
+    cta,
+  ));
+  getPoint = mountAdjustMap(mapEl, { lat: null, lon: null }, () => {});
+}
+
+// ── 5. Renvoi (« Retrouver mon guide ») ──────────────────────────────────────
+function renderRenvoi(root) {
+  const emailInput = el("input", { type: "email", required: true, autocomplete: "email" });
+  const okBox = el("div", { class: "okbox hidden" });
+  const btn = el("button", { class: "btn btn-primary btn-block", type: "submit" },
+    tr("renvoi_cta"));
+  const form = el("form", {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      btn.disabled = true;
+      try { await api.guestResend({ email: emailInput.value.trim() }); } catch (_) {}
+      okBox.textContent = tr("renvoi_done"); okBox.classList.remove("hidden");
+      form.classList.add("hidden");
+    },
+  }, el("label", { class: "field" }, el("span", {}, tr("f_email")), emailInput), btn);
+  mount(root, shell(
+    el("h1", {}, tr("renvoi_title")),
+    el("p", { class: "muted" }, tr("renvoi_intro")),
+    okBox, form,
+    backLink("#/voyageur"),
+  ));
+}

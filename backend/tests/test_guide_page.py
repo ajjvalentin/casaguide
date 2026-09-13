@@ -539,6 +539,30 @@ def test_reputed_editorial_pick_shows_badge_not_heart():
     assert "❤ Le préféré du proprio." in html2 and "Réputé" not in html2
 
 
+def test_guest_footer_blocks_b2b_and_holaquetal_bridge():
+    """V2-54 Mission C : le guide voyageur porte deux pieds — acquisition B2B (toujours)
+    et pont Holaquetal (seulement si l'URL est configurée, avec utm+commune). Absents
+    d'un guide propriétaire. Localisés (7 langues)."""
+    prop = _prop(city="Orihuela Costa")
+    html = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True,
+                                   base_url="https://holaguia.com",
+                                   holaquetal_url="https://holaquetalimmo.es")
+    assert "généré automatiquement" in html                     # B2B
+    assert "Vous cherchez un logement dans ce secteur" in html  # pont
+    assert "utm_source=holaguia" in html and "commune=Orihuela" in html
+    # Sans URL Holaquetal → pas de pont (jamais de lien mort), B2B présent.
+    html2 = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True)
+    assert "généré automatiquement" in html2
+    assert "Vous cherchez un logement" not in html2
+    # Guide propriétaire → aucun pied d'acquisition.
+    owner = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok")
+    assert "généré automatiquement" not in owner
+    # Localisation (EN).
+    en = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True,
+                                 lang="en")
+    assert "generated automatically" in en
+
+
 def test_guest_guide_render_is_amputated_to_around_and_emergency():
     """V2-54 : un guide voyageur ne rend QUE « Autour de vous » + « Urgences » — pas
     d'onglet Logement (donc pas de carte de situation, ni check-in/wifi/règles) et un

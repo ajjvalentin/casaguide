@@ -902,3 +902,25 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .pp-also-title>[data-lucide]{color:var(--sea);flex:none}
 .pp-also-sub{margin:0 0 8px;font-size:13.5px}
 @media (max-width:560px){ .pp-step{padding:15px 14px;gap:12px} .pp-title{font-size:17px} }
+
+/* ── Offre « Guide Voyageur » — tunnel public (V2-54 Mission C) ─────────────── */
+.voyageur-card h1 { font-size: 22px; margin: 12px 0 6px; }
+.voyageur-promise { color: var(--sea, #0E5A73); font-weight: 600; margin: 0 0 10px; }
+.voyageur-price { font-size: 28px; font-weight: 700; color: var(--ink, #1E2A32); margin: 10px 0; }
+.voyageur-mapwrap { margin-top: 14px; }
+.voyageur-map { height: 300px; border-radius: 10px; overflow: hidden; border: 1px solid #e3ded6; }
+.voyageur-recap { margin-top: 14px; }
+.voyageur-recap h2 { font-size: 18px; margin: 0 0 10px; }
+.voyageur-status { margin-top: 8px; }
+.voyageur-promo { max-width: 420px; margin: 16px auto 0; text-align: center;
+  border: 1px solid rgba(14,90,115,.18); background: rgba(14,90,115,.04); }
+.voyageur-promo .eyebrow { color: var(--sea, #0E5A73); }
+.field-row { display: flex; gap: 10px; }
+.field-row .field { flex: 1; }
+.muted-link { display: inline-flex; align-items: center; gap: 4px; color: var(--muted, #5B6B72);
+  font-size: 14px; text-decoration: none; margin-top: 12px; }
+.muted-link.center { justify-content: center; display: flex; }
+.small { font-size: 13px; }
+.spinner-inline { display: flex; justify-content: center; margin: 12px 0; color: var(--sea, #0E5A73); }
+.spinner-inline svg { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

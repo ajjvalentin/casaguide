@@ -11,9 +11,13 @@ Sans Stripe configuré, `/checkout` répond 503 (le reste de l'app est intact).
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
+
+from enrich import geocode as _geocode
 
 from .. import guest_guides, repo
 from ..config import settings
@@ -21,6 +25,12 @@ from ..deps import Conn, Mailer, Stripe
 
 log = logging.getLogger("casaguide.guest_pay")
 router = APIRouter(prefix="/api/guest-guides", tags=["guide-voyageur"])
+
+# Politesse Nominatim (1 req/s) pour le géocodage PUBLIC du tunnel : throttle global
+# best-effort (le client débounce déjà). Sérialise les appels sortants côté serveur.
+_GEO_LOCK = threading.Lock()
+_GEO_LAST = [0.0]
+_GEO_MIN_INTERVAL_S = 1.1
 
 
 def _public_base(request: Request) -> str:
@@ -74,7 +84,58 @@ class OkOut(BaseModel):
     ok: bool = True
 
 
+class OfferOut(BaseModel):
+    price_cts: int
+    currency: str
+
+
+class GeocodeIn(BaseModel):
+    address_line1: str | None = Field(default=None, max_length=250)
+    postal_code: str | None = Field(default=None, max_length=20)
+    city: str = Field(min_length=1, max_length=120)
+    country_code: str = Field(min_length=2, max_length=2)
+
+
+class GeocodeOut(BaseModel):
+    found: bool
+    lat: float | None = None
+    lon: float | None = None
+    accuracy: str | None = None     # rooftop | street | city | mismatch
+    mismatch: bool = False          # commune/CP incohérents (V2-46) → ajuster le point
+
+
 # ── Endpoints ───────────────────────────────────────────────────────────────
+
+@router.get("/offer", response_model=OfferOut)
+def offer():
+    """Prix de l'offre « Guide Voyageur » (lu de la config, jamais codé en dur côté
+    front) — la page des offres et le tunnel l'affichent depuis ici."""
+    return OfferOut(price_cts=settings.guest_guide_price_cts,
+                    currency=settings.guest_guide_currency)
+
+
+@router.post("/geocode", response_model=GeocodeOut)
+def geocode_address(payload: GeocodeIn):
+    """Géocodage PUBLIC pré-checkout (V2-54 C) : situe l'adresse pour que le vacancier
+    AJUSTE le point sur la carte avant de payer. `found=False` → placement manuel ;
+    `mismatch=True` ou `accuracy='city'` → invite à vérifier/déplacer le point. Le point
+    ajusté part au checkout (`accuracy='manual'`, pas de re-géocodage à la génération).
+    Throttlé (politesse Nominatim)."""
+    with _GEO_LOCK:
+        wait = _GEO_MIN_INTERVAL_S - (time.monotonic() - _GEO_LAST[0])
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            geo = _geocode.geocode(street=payload.address_line1,
+                                   postalcode=payload.postal_code, city=payload.city,
+                                   country_code=payload.country_code)
+        except _geocode.GeocodeError:
+            return GeocodeOut(found=False)
+        finally:
+            _GEO_LAST[0] = time.monotonic()
+    return GeocodeOut(found=True, lat=geo["lat"], lon=geo["lon"],
+                      accuracy=geo.get("accuracy"),
+                      mismatch=geo.get("accuracy") == "mismatch")
 
 @router.post("/checkout", response_model=CheckoutOut)
 def create_guest_checkout(payload: GuestCheckoutIn, conn: Conn, request: Request,
@@ -90,7 +151,7 @@ def create_guest_checkout(payload: GuestCheckoutIn, conn: Conn, request: Request
         address_line1=payload.address_line1, postal_code=payload.postal_code,
         region=payload.region, lat=payload.lat, lon=payload.lon)
     base = _public_base(request)
-    success_url = f"{base}/#/voyageur/livraison/{order['token']}"
+    success_url = f"{base}/#/voyageur/merci/{order['token']}"
     cancel_url = f"{base}/#/voyageur?annule=1"
     product_name = f"Guide Voyageur Holaguia — {payload.city}"
     session_id, url = gateway.create_guest_checkout_session(

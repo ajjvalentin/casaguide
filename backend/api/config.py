@@ -93,6 +93,11 @@ class ApiSettings:
     # mon guide »), en secondes.
     guest_resend_min_interval_s: int = int(
         os.getenv("CASAGUIDE_GUEST_RESEND_MIN_INTERVAL_S", "120"))
+    # Pont d'acquisition (V2-54 Mission C) : URL de la plateforme Holaquetal Immo vers
+    # laquelle le pied du guide voyageur invite « Vous cherchez un logement dans ce
+    # secteur ? » (paramètres utm_source=holaguia&commune=<commune> ajoutés). Vide →
+    # le bloc pont n'est PAS rendu (jamais de lien mort).
+    holaquetal_immo_url: str | None = os.getenv("CASAGUIDE_HOLAQUETAL_URL") or None
 
     @property
     def smtp_configured(self) -> bool:

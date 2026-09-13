@@ -25,6 +25,7 @@ import html
 import json
 import re
 import unicodedata
+import urllib.parse as _url
 from typing import Any
 
 from . import i18n as _i18n_mod
@@ -70,6 +71,60 @@ _UI7: dict[str, dict[str, str]] = {
     # V2-56 : badge d'un pick éditorial « réputé/incontournable » du secteur.
     "reputed": {"fr": "Réputé", "en": "Popular", "es": "Popular", "it": "Rinomato",
                 "de": "Beliebt", "nl": "Populair", "sq": "I njohur"},
+    # V2-54 Mission C : pieds de guide voyageur (acquisition B2B + pont Holaquetal).
+    "b2b_lead": {
+        "fr": "Ce guide a été généré automatiquement. Votre hôte pourrait vous offrir "
+              "bien mieux : un guide personnalisé du logement — arrivée, wifi, ses "
+              "adresses préférées.",
+        "en": "This guide was generated automatically. Your host could offer you much "
+              "more: a personalised guide to your accommodation — arrival, wifi, their "
+              "favourite spots.",
+        "es": "Esta guía se generó automáticamente. Tu anfitrión podría ofrecerte mucho "
+              "más: una guía personalizada del alojamiento — llegada, wifi, sus "
+              "direcciones favoritas.",
+        "de": "Dieser Reiseführer wurde automatisch erstellt. Ihr Gastgeber könnte "
+              "Ihnen viel mehr bieten: einen persönlichen Unterkunftsführer — Anreise, "
+              "WLAN, seine Lieblingsadressen.",
+        "nl": "Deze gids is automatisch gegenereerd. Je gastheer kan je veel meer "
+              "bieden: een persoonlijke gids voor je accommodatie — aankomst, wifi, "
+              "favoriete adressen.",
+        "it": "Questa guida è stata generata automaticamente. Il tuo host potrebbe "
+              "offrirti molto di più: una guida personalizzata dell'alloggio — arrivo, "
+              "wifi, i suoi indirizzi preferiti.",
+        "sq": "Ky udhëzues u krijua automatikisht. Mikpritësi juaj mund t'ju ofrojë "
+              "shumë më tepër: një udhëzues të personalizuar të akomodimit — mbërritja, "
+              "wifi, adresat e tij të preferuara."},
+    "b2b_link": {
+        "fr": "Découvrir l'offre pour les hôtes", "en": "See the offer for hosts",
+        "es": "Ver la oferta para anfitriones", "de": "Angebot für Gastgeber ansehen",
+        "nl": "Bekijk het aanbod voor gastheren", "it": "Scopri l'offerta per gli host",
+        "sq": "Shihni ofertën për mikpritësit"},
+    "bridge_lead": {
+        "fr": "Vous cherchez un logement dans ce secteur ?",
+        "en": "Looking for a place to stay in this area?",
+        "es": "¿Buscas alojamiento en esta zona?",
+        "de": "Suchen Sie eine Unterkunft in dieser Gegend?",
+        "nl": "Op zoek naar een verblijf in deze omgeving?",
+        "it": "Cerchi un alloggio in questa zona?",
+        "sq": "Po kërkoni një vend për të qëndruar në këtë zonë?"},
+    "bridge_link": {
+        "fr": "Voir les logements", "en": "Browse accommodation",
+        "es": "Ver alojamientos", "de": "Unterkünfte ansehen",
+        "nl": "Accommodaties bekijken", "it": "Vedi gli alloggi",
+        "sq": "Shiko akomodimet"},
+    # V2-54 Mission C : installation PWA (bouton natif + repli iOS) sur le guide guest.
+    "install_cta": {
+        "fr": "Installer l'application", "en": "Install the app",
+        "es": "Instalar la aplicación", "de": "App installieren",
+        "nl": "App installeren", "it": "Installa l'app", "sq": "Instalo aplikacionin"},
+    "install_ios": {
+        "fr": "Pour l'installer : appuyez sur Partager, puis « Sur l'écran d'accueil ».",
+        "en": "To install: tap Share, then “Add to Home Screen”.",
+        "es": "Para instalar: pulsa Compartir y luego “Añadir a pantalla de inicio”.",
+        "de": "Zum Installieren: auf Teilen tippen, dann „Zum Home-Bildschirm“.",
+        "nl": "Installeren: tik op Delen en dan “Zet op beginscherm”.",
+        "it": "Per installare: tocca Condividi, poi “Aggiungi a Home”.",
+        "sq": "Për ta instaluar: prek Ndaj, pastaj “Shto në ekranin bazë”."},
 }
 
 
@@ -1679,6 +1734,39 @@ def _watermark_html(lang: str) -> str:
             f'{_esc(_t(lang, "watermark"))}</a></div>')
 
 
+def _holaquetal_link(base: str, city: str | None) -> str:
+    """Lien du pont Holaquetal Immo (V2-54 C) avec suivi utm + commune."""
+    sep = "&" if "?" in base else "?"
+    q = _url.urlencode({"utm_source": "holaguia", "commune": city or ""})
+    return f"{base}{sep}{q}"
+
+
+def _guest_footer_blocks(lang: str, city: str | None, base_url: str,
+                         holaquetal_url: str) -> str:
+    """Deux pieds RÉSERVÉS au guide voyageur (V2-54 Mission C) : acquisition B2B (l'hôte
+    peut offrir mieux) + pont Holaquetal (chercher un logement dans le secteur). 7 langues
+    (_t7). Styles INLINE → SSR seul, aucun bump SW. Le pont n'apparaît que si l'URL est
+    configurée (jamais de lien mort)."""
+    box = ('margin:16px 0 0;padding:14px 16px;border:1px solid rgba(14,90,115,.18);'
+           'border-radius:10px;background:rgba(14,90,115,.04)')
+    link = 'color:var(--sea,#0E5A73);font-weight:600;text-decoration:none'
+    owner_url = (base_url or "https://holaguia.com").rstrip("/") + "/"
+    blocks = [
+        f'<section class="guest-cta" style="{box}">'
+        f'<p style="margin:0 0 8px">{_esc(_t7(lang, "b2b_lead"))}</p>'
+        f'<a href="{_esc(owner_url)}" style="{link}">{_esc(_t7(lang, "b2b_link"))} →</a>'
+        f'</section>'
+    ]
+    if holaquetal_url:
+        u = _holaquetal_link(holaquetal_url, city)
+        blocks.append(
+            f'<section class="guest-cta" style="{box}">'
+            f'<p style="margin:0 0 8px">{_esc(_t7(lang, "bridge_lead"))}</p>'
+            f'<a href="{_esc(u)}" target="_blank" rel="noopener" style="{link}">'
+            f'{_esc(_t7(lang, "bridge_link"))} →</a></section>')
+    return "".join(blocks)
+
+
 def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  area_facts: dict, token: str, lang: str = "fr", *,
                  base_url: str = "", og_image_url: str | None = None,
@@ -1686,7 +1774,7 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  ui_overlay: dict | None = None, variant: str = "house",
                  stay: dict | None = None, canonical_path: str | None = None,
                  manifest: bool = True, api_base: str | None = None,
-                 guest_guide: bool = False) -> str:
+                 guest_guide: bool = False, holaquetal_url: str = "") -> str:
     """Rend la page du guide dans `lang`. `ui_overlay` (V2-21a) = carte
     {clé: texte} des libellés statiques traduits pour une langue publiée
     supplémentaire (nl/de/it/sq…) ; vide pour FR/EN/ES (rendu depuis le code).
@@ -1717,7 +1805,8 @@ def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                                   canonical_path=canonical_path,
                                   manifest=manifest,
                                   api_base=api_base or f"/g/{token}",
-                                  guest_guide=guest_guide)
+                                  guest_guide=guest_guide,
+                                  holaquetal_url=holaquetal_url)
     finally:
         _i18n_mod.reset_overlay(_ov_tok)
 
@@ -1751,7 +1840,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                        variant: str = "house", stay: dict | None = None,
                        canonical_path: str | None = None,
                        manifest: bool = True, api_base: str = "",
-                       guest_guide: bool = False) -> str:
+                       guest_guide: bool = False, holaquetal_url: str = "") -> str:
     secrets_example = variant == "showcase"
     requests_enabled = variant != "showcase"
     # Invariant « sections vierges » (V2-07 volet 1bis) : une section virtuelle
@@ -1949,7 +2038,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # Guide voyageur (V2-54) : signale au client de poser un marqueur de carte
     # NEUTRE (point d'intérêt) au lieu du 🏠 « votre logement » — le vacancier n'est
     # pas encore sur place, la carte « Autour » est centrée sur l'adresse visée.
-    guest_guide_attr = ' data-guest-guide="1"' if guest_guide else ""
+    # Porte aussi les libellés d'installation PWA (7 langues) lus par app.js `initInstall`.
+    guest_guide_attr = (
+        f' data-guest-guide="1" data-install-cta="{_esc(_t7(lang, "install_cta"))}"'
+        f' data-install-ios="{_esc(_t7(lang, "install_ios"))}"' if guest_guide else "")
     # Le manifeste PWA n'existe que pour le lien maison (`/g/`, QR imprimé, à
     # vie) : installer une PWA depuis un lien de séjour qui meurt à J+7 la
     # casserait (volet 1bis, §3). `manifest=False` sur séjour ET vitrine.
@@ -1992,6 +2084,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
   </header>
   {tabs_nav}
   <main id="content">{"".join(panels_html)}</main>
+  {_guest_footer_blocks(lang, prop.get("city"), base_url, holaquetal_url) if guest_guide else ''}
   <footer>{_esc(_t(lang, "footer"))}{_watermark_html(lang) if watermark else ''}</footer>
 </div>
 {back_float}

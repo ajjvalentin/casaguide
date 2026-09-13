@@ -836,6 +836,68 @@ function initPwa() {
   });
 }
 
+// Installation PWA (V2-54 Mission C) — RÉSERVÉE au guide voyageur (data-guest-guide) :
+// bouton natif via beforeinstallprompt (Chrome/Android), repli iOS (Safari ne le
+// déclenche jamais → instructions « Sur l'écran d'accueil »). Libellés servis par le
+// SSR (data-install-*, 7 langues). N'altère jamais un guide propriétaire.
+let _deferredInstall = null;
+function initInstall() {
+  if (document.body.dataset.guestGuide !== "1") return;
+  if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) return;
+  const cta = document.body.dataset.installCta || "Installer";
+  const iosHint = document.body.dataset.installIos || "";
+
+  const bar = document.createElement("div");
+  bar.className = "install-bar";
+  bar.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:1200;padding:10px 14px;"
+    + "background:#0E5A73;color:#fff;display:none;align-items:center;justify-content:center;"
+    + "gap:10px;box-shadow:0 -2px 8px rgba(0,0,0,.2);font-size:15px";
+  const close = document.createElement("button");
+  close.textContent = "✕";
+  close.setAttribute("aria-label", "×");
+  close.style.cssText = "background:none;border:none;color:#fff;font-size:18px;cursor:pointer";
+  close.onclick = () => { bar.style.display = "none"; };
+  bar.appendChild(close);
+  document.body.appendChild(bar);
+
+  const showButton = () => {
+    bar.querySelectorAll(".ins-el").forEach((n) => n.remove());
+    const btn = document.createElement("button");
+    btn.className = "ins-el";
+    btn.textContent = "⤓ " + cta;
+    btn.style.cssText = "background:#fff;color:#0E5A73;border:none;border-radius:8px;"
+      + "padding:8px 16px;font-weight:600;cursor:pointer";
+    btn.onclick = async () => {
+      if (!_deferredInstall) return;
+      _deferredInstall.prompt();
+      try { await _deferredInstall.userChoice; } catch (_) { /* ignore */ }
+      _deferredInstall = null;
+      bar.style.display = "none";
+    };
+    bar.insertBefore(btn, close);
+    bar.style.display = "flex";
+  };
+  const showIos = () => {
+    if (!iosHint) return;
+    const span = document.createElement("span");
+    span.className = "ins-el";
+    span.textContent = iosHint;
+    bar.insertBefore(span, close);
+    bar.style.display = "flex";
+  };
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault(); _deferredInstall = e; showButton();
+  });
+  window.addEventListener("appinstalled", () => {
+    _deferredInstall = null; bar.style.display = "none";
+  });
+  // iOS Safari : pas d'événement → repli instructions (une seule fois).
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isSafari = isIos && !/crios|fxios/i.test(navigator.userAgent);
+  if (isSafari) showIos();
+}
+
 // ── Demander un service (V2-23b, §3.1) ───────────────────────────────────────
 // Les sections « sur demande » portent un bouton rendu côté serveur (`.svc-request`
 // avec ses libellés localisés en data-*). Ici on l'enrichit en petit formulaire :
@@ -929,3 +991,4 @@ initLightbox();
 initSecrets();
 initRequestService();
 initPwa();
+initInstall();

@@ -114,6 +114,13 @@ export const api = {
   listLanguages:   () => request("GET", "/languages", { auth: false }),
   // Plans & abonnement (V2-05a)
   listPlans:       () => request("GET", "/api/plans", { auth: false }),
+  // Offre « Guide Voyageur » (V2-54 Mission C) — tunnel PUBLIC, sans compte (auth:false).
+  guestOffer:      () => request("GET", "/api/guest-guides/offer", { auth: false }),
+  guestGeocode:    (b) => request("POST", "/api/guest-guides/geocode", { body: b, auth: false }),
+  guestCheckout:   (b) => request("POST", "/api/guest-guides/checkout", { body: b, auth: false }),
+  guestOrder:      (t) => request("GET", `/api/guest-guides/orders/${encodeURIComponent(t)}`, { auth: false }),
+  guestRetry:      (t, b) => request("POST", `/api/guest-guides/orders/${encodeURIComponent(t)}/retry`, { body: b, auth: false }),
+  guestResend:     (b) => request("POST", "/api/guest-guides/resend", { body: b, auth: false }),
   getSubscription: () => request("GET", "/api/subscription"),
   // Paiement Stripe (V2-05b) : renvoient une URL de redirection (Checkout / portail)
   startCheckout:   (plan) => request("POST", "/api/billing/checkout", { body: { plan } }),
