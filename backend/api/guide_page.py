@@ -36,9 +36,11 @@ from .poi_icons import category_icon_svg, category_rank
 # `Intl.DateTimeFormat(locale, {weekday:'long'})` — même source de vérité (CLDR),
 # donc SSR et client rendent le même mot. Aucune clé i18n, 7 langues gratuites.
 try:
+    from babel import Locale as _BabelLocale       # V2-59 : noms de pays localisés (CLDR)
     from babel.dates import format_date as _babel_format_date
     from babel.dates import format_time as _babel_format_time
 except Exception:  # pragma: no cover — Babel est une dépendance déclarée
+    _BabelLocale = None
     _babel_format_date = None
     _babel_format_time = None
 # 2024-01-01 est un LUNDI (ISO weekday 1) → jour n = pivot + (n-1) jours.
@@ -1734,6 +1736,52 @@ def _watermark_html(lang: str) -> str:
             f'{_esc(_t(lang, "watermark"))}</a></div>')
 
 
+def _country_name(cc: str, lang: str) -> str:
+    """Nom du pays dans `lang` (Babel/CLDR — l'équivalent des jours V2-33 pour les
+    territoires). Repli sur le code si Babel/la locale/le territoire manque."""
+    if not cc:
+        return ""
+    if _BabelLocale is not None:
+        try:
+            name = _BabelLocale.parse(lang).territories.get(cc)
+            if name:
+                return name
+        except Exception:  # noqa: BLE001 — locale inconnue → repli
+            pass
+    return cc
+
+
+def _flag_emoji(cc: str) -> str:
+    """Drapeau (indicateurs régionaux Unicode) depuis un code pays ISO 3166-1 alpha-2."""
+    cc = (cc or "").upper()
+    if len(cc) != 2 or not cc.isalpha():
+        return ""
+    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in cc)
+
+
+def _situation_line(prop: dict, lang: str) -> str:
+    """Ligne de SITUATION d'un guide voyageur (V2-59) : « <région>, <pays> <drapeau> »
+    — le titre porte déjà la commune. Région absente → « <pays> <drapeau> » (dégradation
+    propre). Source : région/pays DÉJÀ en base (aucun appel nouveau). 7 langues (le pays
+    par Babel ; séparateurs neutres)."""
+    cc = (prop.get("country_code") or "").upper()
+    country = _country_name(cc, lang)
+    region = (prop.get("region") or "").strip()
+    line = ", ".join(x for x in (region, country) if x)
+    flag = _flag_emoji(cc)
+    return (line + " " + flag).strip() if flag else line
+
+
+def _render_guest_situation() -> str:
+    """Bloc de situation (V2-59) en TÊTE de « Autour » d'un guide voyageur : carte de
+    quartier (composant V2-53, `#situ-map`) + MÉDAILLON pays (`#situ-medallion`) dans
+    le coin. Conteneurs vides, initialisés paresseusement par `app.js`."""
+    return ('<div class="situ-wrap">'
+            '<div class="situ-map" id="situ-map" aria-hidden="true"></div>'
+            '<div class="situ-medallion" id="situ-medallion" aria-hidden="true"></div>'
+            '</div>')
+
+
 def _holaquetal_link(base: str, city: str | None) -> str:
     """Lien du pont Holaquetal Immo (V2-54 C) avec suivi utm + commune."""
     sep = "&" if "?" in base else "?"
@@ -1848,8 +1896,15 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # Idempotent — le routeur a déjà élagué pour /data ; garde-fou pour un appel direct.
     sections = _prune_virtual_sections(sections, area_facts, lang)
     contact = prop.get("contact") or {}
-    name = _esc(prop.get("name") or _t(lang, "home"))
-    place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
+    # V2-59 : un guide voyageur se SITUE avant de lister. Le titre porte la commune
+    # (« La Zenia », plus jamais « Guide — … » orphelin) ; la ligne dessous dit la
+    # région/le pays (+ drapeau). Un guide propriétaire garde nom + « ville, région ».
+    if guest_guide:
+        name = _esc(prop.get("city") or prop.get("name") or _t(lang, "home"))
+        place = _situation_line(prop, lang)
+    else:
+        name = _esc(prop.get("name") or _t(lang, "home"))
+        place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
 
     # Trajets d'arrivée (M-14) : POI transport rendus en blocs dans A_arrival (et
     # retirés des listes ordinaires, anti-doublon). Repli en cartes si A_arrival
@@ -1953,6 +2008,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                                 _chapter_name(ch, lang))
         chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(chip_name)}</button>')
     around_inner: list[str] = []
+    # V2-59 : le guide voyageur se situe AVANT de lister — carte de quartier + médaillon
+    # pays en tête de « Autour », au-dessus des catégories (position stockée requise).
+    if guest_guide and prop.get("lat") is not None:
+        around_inner.append(_render_guest_situation())
     # Grille de services (V2-12) EN TÊTE de l'onglet, avant la carte : c'est la
     # navigation principale (sur mobile en plein soleil, une grille d'icônes bat
     # dix intitulés texte). La carte + les puces de filtre restent la couche
@@ -2010,7 +2069,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # partage porte le slug lisible (le token reste l'autorité). La vitrine (V2-23c)
     # surcharge par son propre chemin `/v/{token}` (jamais un `/g/…` qui ne
     # résoudrait pas).
-    plain_name = prop.get("name") or _t(lang, "home")
+    # V2-59 : pour un guide voyageur, le nom PUBLIC (titre HTML, og:title, partages
+    # WhatsApp) est la COMMUNE — jamais le « Guide — … » interne.
+    plain_name = (prop.get("city") if guest_guide else prop.get("name")) \
+        or _t(lang, "home")
     share_title = f"{plain_name} — {_t(lang, 'title_suffix')}"
     _path = canonical_path if canonical_path is not None else share_path(prop.get("name"), token)
     og_url = (base_url.rstrip("/") + _path) if base_url else ""

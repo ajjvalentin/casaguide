@@ -539,6 +539,33 @@ def test_reputed_editorial_pick_shows_badge_not_heart():
     assert "❤ Le préféré du proprio." in html2 and "Réputé" not in html2
 
 
+def test_guest_situation_header_title_and_country_line():
+    """V2-59 : un guide voyageur se SITUE — titre = commune (jamais « Guide — … »),
+    ligne de situation « région, pays drapeau » (Babel/CLDR 7 langues, dégradation si
+    région absente), carte de quartier + médaillon pays. Guide propriétaire inchangé."""
+    prop = _prop()  # city=Orihuela Costa, region=Alicante, country=ES
+    html = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True)
+    # Titre = commune (H1, <title>, og:title) — plus jamais le nom interne orphelin.
+    assert "<h1>Orihuela Costa</h1>" in html
+    assert "<title>Orihuela Costa —" in html
+    assert 'og:title" content="Orihuela Costa —' in html
+    # Ligne de situation : région + pays + drapeau.
+    assert "Alicante, Espagne 🇪🇸" in html
+    # Carte de situation + médaillon pays.
+    assert 'id="situ-map"' in html and 'id="situ-medallion"' in html
+    # 7 langues : SQ localise le pays (Babel).
+    assert "Spanjë" in guide_page.render_guide(prop, [], [], AREA_FACTS, "tok",
+                                               guest_guide=True, lang="sq")
+    # Région absente → « pays » seul (dégradation propre).
+    noreg = guide_page.render_guide(_prop(region=None), [], [], AREA_FACTS, "tok",
+                                    guest_guide=True)
+    assert "Espagne 🇪🇸" in noreg and "Alicante" not in noreg
+    # Guide PROPRIÉTAIRE : nom interne conservé, aucun bloc de situation guest.
+    owner = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok")
+    assert "<h1>Villa Test</h1>" in owner
+    assert "situ-medallion" not in owner
+
+
 def test_guest_footer_blocks_b2b_and_holaquetal_bridge():
     """V2-54 Mission C : le guide voyageur porte deux pieds — acquisition B2B (toujours)
     et pont Holaquetal (seulement si l'URL est configurée, avec utm+commune). Absents
@@ -583,9 +610,13 @@ def test_guest_guide_render_is_amputated_to_around_and_emergency():
     for key in ("around", "emergency"):
         assert f'data-tab="{key}"' in html and f'id="tab-{key}"' in html
     assert 'data-tab="home"' not in html and 'id="tab-home"' not in html
-    # « Autour de vous » est l'onglet actif par défaut ; aucune carte de situation.
+    # « Autour de vous » est l'onglet actif par défaut. La carte de situation V2-59
+    # vit désormais DANS « Autour » (en tête), plus dans un onglet Logement (absent).
     assert 'class="tab-panel tab-active" data-tab="around"' in html
-    assert 'id="situ-map"' not in html
+    assert 'id="tab-home"' not in html
+    situ_at = html.find('id="situ-map"')
+    around_at = html.find('id="tab-around"')
+    assert situ_at != -1 and situ_at > around_at   # dans le panneau « Autour »
     # Marqueur neutre signalé au client ; la valeur demeure (urgences + contenu Autour).
     assert 'data-guest-guide="1"' in html
     assert "112" in html and "La Marejada" in html

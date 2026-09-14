@@ -223,8 +223,12 @@ function initSituationMap() {
     if (built) return;
     built = true;
     try {
+      // V2-59 : un guide VOYAGEUR (data-guest-guide) situe le lieu avant de lister —
+      // vue quartier (z13), marqueur NEUTRE (📍), et un tap va à la carte principale
+      // (déjà dans « Autour »). Un guide propriétaire garde z15, 🏠, bascule d'onglet.
+      const guest = document.body.dataset.guestGuide === "1";
       const map = L.map(mapEl, { zoomControl: false })   // zoomControl = option de contrôle, sûre partout
-        .setView([P.lat, P.lon], 15);                    // zoom de QUARTIER (contexte, pas la parcelle)
+        .setView([P.lat, P.lon], guest ? 13 : 15);       // zoom de QUARTIER (contexte, pas la parcelle)
       for (const h of INTERACTION_HANDLERS) {
         if (map[h] && map[h].disable) map[h].disable();  // accès GARDÉ (tap absent en 1.9)
       }
@@ -237,17 +241,20 @@ function initSituationMap() {
       tiles.on("tileerror", () => { if (!navigator.onLine) showMapOffline(mapEl); });
       tiles.addTo(map);
       const marker = L.marker([P.lat, P.lon], {
-        icon: L.divIcon({ className: "", html: '<div class="home-pin">🏠</div>', iconAnchor: [13, 13] }),
+        icon: L.divIcon({ className: "", html: `<div class="home-pin">${guest ? "📍" : "🏠"}</div>`, iconAnchor: [13, 13] }),
         keyboard: false,
       }).addTo(map);
       // Bascule via l'API LEAFLET elle-même : un écouteur DOM concurrent était capturé
-      // par les handlers Leaflet (le tap ne basculait pas — recette 10/09). La carte ET
-      // le marqueur pointent vers « Autour de vous ».
-      const toAround = () => { if (window._activateTab) window._activateTab("around"); };
-      map.on("click", toAround);
-      marker.on("click", toAround);
+      // par les handlers Leaflet (le tap ne basculait pas — recette 10/09).
+      const go = guest
+        ? () => { const m = document.getElementById("map");
+            if (m) m.scrollIntoView({ behavior: "smooth", block: "center" }); }
+        : () => { if (window._activateTab) window._activateTab("around"); };
+      map.on("click", go);
+      marker.on("click", go);
       setTimeout(() => map.invalidateSize(), 80);
       window._situMap = map;
+      buildMedallion(P, go);   // V2-59 : médaillon pays (z5) dans le coin
     } catch (e) {
       // JAMAIS de silence (V2-53c) : trace explicite + dégradation propre (la boîte
       // reste neutre, l'adresse est affichée au-dessus). L'init morte de la mini-carte
@@ -263,6 +270,38 @@ function initSituationMap() {
     io.observe(mapEl);
   } else {
     build();   // repli (navigateurs sans IntersectionObserver) : construit d'emblée
+  }
+}
+
+// Médaillon PAYS (V2-59) : mini-carte z5 dans le coin de la carte de situation, le
+// point posé sur la péninsule (« ah, c'est en Espagne, sur la côte est »). Non
+// interactive (mêmes handlers coupés que la situation), hors-ligne propre (le
+// médaillon s'estompe, jamais de vignette cassée). Un tap suit la carte de situation.
+function buildMedallion(P, onTap) {
+  const medEl = document.getElementById("situ-medallion");
+  if (!medEl || !window.L || P.lat == null || P.lon == null) return;
+  try {
+    const m = L.map(medEl, { zoomControl: false, attributionControl: false })
+      .setView([P.lat, P.lon], 5);
+    for (const h of ["dragging", "scrollWheelZoom", "doubleClickZoom", "touchZoom",
+      "boxZoom", "keyboard", "tap"]) {
+      if (m[h] && m[h].disable) m[h].disable();
+    }
+    const T = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      { maxZoom: 19, errorTileUrl: T });
+    tiles.on("tileerror", () => { if (!navigator.onLine) medEl.style.opacity = "0.35"; });
+    tiles.addTo(m);
+    L.marker([P.lat, P.lon], {
+      icon: L.divIcon({ className: "", html: '<div class="med-dot"></div>', iconAnchor: [5, 5] }),
+      keyboard: false,
+    }).addTo(m);
+    if (onTap) m.on("click", onTap);
+    setTimeout(() => m.invalidateSize(), 90);
+    window._medMap = m;
+  } catch (e) {
+    console.error("[guide] médaillon pays : initialisation échouée", e);
+    medEl.style.display = "none";   // dégradation propre : jamais de cadre mort
   }
 }
 
@@ -375,9 +414,16 @@ function initTabs() {
   const tabs = [...document.querySelectorAll(".guide-tabs .tab[data-tab]")];
   const panels = [...document.querySelectorAll(".tab-panel[data-tab]")];
   if (!tabs.length || !panels.length) return;
+  // Onglet par défaut = celui que le SSR a marqué actif (V2-59). Un guide VOYAGEUR
+  // n'a PAS d'onglet « Logement » : imposer « home » masquait TOUS les panneaux à
+  // l'ouverture sans hash (QR, e-mail, démo → page vide, bug V2-54/58). On lit le
+  // panneau réellement présent, jamais un nom d'onglet supposé.
+  const hasPanel = (k) => panels.some((p) => p.dataset.tab === k);
+  const defaultTab = (panels.find((p) => p.classList.contains("tab-active"))
+                      || panels[0]).dataset.tab;
 
   function activate(tabKey, { push = true } = {}) {
-    if (!TAB_HASH[tabKey]) tabKey = "home";
+    if (!TAB_HASH[tabKey] || !hasPanel(tabKey)) tabKey = defaultTab;
     // Quitter « Autour » (tap d'onglet → pushState, pas de hashchange) doit lever
     // le mode filtré, sinon `body.cat-filtered` masquerait la barre d'urgences sur
     // les autres onglets (V2-12e). Sur #autour/{code}, applyHash a déjà posé le
@@ -448,7 +494,7 @@ function initTabs() {
     // Hors mode filtré (onglet fixe, grille #autour, deep-link de section nu) →
     // filterCode="" → grille + tous les blocs.
     setServiceFilter(filterCode);
-    activate(tabKey || "home", { push });
+    activate(tabKey || defaultTab, { push });
     if (filterCode) {
       // Mode filtré : un bloc = un écran → défilement remis EN HAUT (la grille et
       // les autres blocs ont disparu, le bloc choisi occupe l'écran).

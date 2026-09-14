@@ -155,6 +155,15 @@ html.js .tab-panel[data-tab="around"].fact-filtered > #map{display:none}
    bascule vers « Autour de vous ». Non interactive (pointeur = invite au tap). */
 .situ-map{position:relative;height:180px;border-radius:14px;border:1px solid var(--line);
   margin:12px 0 4px;background:#E9EEF0;cursor:pointer}
+/* V2-59 : situation du guide voyageur — carte de quartier + médaillon PAYS (z5) posé
+   dans le coin. Le médaillon est un frère absolu (jamais imbriqué dans la carte Leaflet). */
+.situ-wrap{position:relative;margin:4px 0 14px}
+.situ-wrap .situ-map{margin:0}
+.situ-medallion{position:absolute;bottom:10px;right:10px;width:92px;height:92px;
+  border-radius:10px;overflow:hidden;border:2px solid #fff;background:#E9EEF0;
+  box-shadow:0 2px 8px rgba(0,0,0,.28);z-index:500;cursor:pointer}
+.med-dot{width:10px;height:10px;border-radius:50%;background:#C62828;border:2px solid #fff;
+  box-shadow:0 0 0 1px rgba(0,0,0,.3)}
 /* Le défilement de page (touch) ne doit jamais être capturé par la mini-carte
    (V2-53b) : on autorise le pan vertical de la PAGE au-dessus d'elle. Spécificité
    renforcée (`.leaflet-container`, posée par Leaflet à l'init) pour primer sur la
