@@ -72,6 +72,9 @@ _UI7: dict[str, dict[str, str]] = {
                    "es": "Tu guía de estancia", "it": "La tua guida di soggiorno",
                    "de": "Ihr Aufenthaltsguide", "nl": "Uw verblijfsgids",
                    "sq": "Udhëzuesi juaj i qëndrimit"},
+    # V2-67 : bouton « écouter » du nom local (prononciation par l'appareil).
+    "listen": {"fr": "Écouter", "en": "Listen", "es": "Escuchar", "it": "Ascolta",
+               "de": "Anhören", "nl": "Beluisteren", "sq": "Dëgjo"},
     "nearest_of_network": {"fr": "station la plus proche", "en": "nearest station",
                            "es": "estación más cercana", "it": "stazione più vicina",
                            "de": "nächste Station", "nl": "dichtstbijzijnde station",
@@ -135,6 +138,12 @@ _UI7: dict[str, dict[str, str]] = {
         "es": "Crear otra guía", "de": "Einen weiteren Reiseführer erstellen",
         "nl": "Nog een gids maken", "it": "Crea un'altra guida",
         "sq": "Krijo një udhëzues tjetër"},
+    # V2-67 pièce 5 : 2e porte de sortie du pied du guide voyageur (annoncée V2-64).
+    "host_link": {
+        "fr": "Je suis hôte — créer mon espace", "en": "I'm a host — create my space",
+        "es": "Soy anfitrión — crear mi espacio", "de": "Ich bin Gastgeber — Bereich anlegen",
+        "nl": "Ik ben gastheer — mijn ruimte aanmaken", "it": "Sono un host — crea il mio spazio",
+        "sq": "Jam mikpritës — krijo hapësirën time"},
     # V2-54 Mission C : installation PWA (bouton natif + repli iOS) sur le guide guest.
     "install_cta": {
         "fr": "Installer l'application", "en": "Install the app",
@@ -180,6 +189,17 @@ def _t7(lang: str, key: str) -> str:
     puis le français — JAMAIS de fuite vers le français pour une langue offerte."""
     return (_i18n_mod.overlaid(_i18n_mod.ui_key(key))
             or _UI7[key].get(lang) or _UI7[key]["fr"])
+
+
+def _speak_lang(country_code: str | None) -> str | None:
+    """Étiquette BCP47 (« ja-JP », « el-GR », « ru-RU »…) pour faire PRONONCER le nom
+    local par l'appareil (V2-67, speechSynthesis). None pour un pays à écriture latine
+    (ou inconnu) → aucun bouton « écouter ». Réutilise la table pays→langue de la moisson
+    (V2-66) — une seule source de vérité."""
+    from enrich.overpass import country_language      # import différé (pas de cycle)
+    cc = (country_code or "").strip().upper()
+    lang = country_language(cc)
+    return f"{lang}-{cc}" if lang else None
 
 
 def og_eyebrow(lang: str | None) -> str:
@@ -956,15 +976,17 @@ def _copy_row(label: str, value: str, lang: str) -> str:
             f'<div class="cr-val" data-copy-value>{v}</div></div>')
 
 
-def _local_copy_row(value: str, lang: str) -> str:
+def _local_copy_row(value: str, lang: str, *, speakable: bool = False) -> str:
     """Valeur LOCALE (nom/adresse en écriture d'origine) + bouton Copier, compacte, à
     la taille des métadonnées (V2-66). Réutilise le composant M-19 : `.copy-btn[data-copy]`
     (câblé par `initCopy`) et `.copy-row`/`[data-copy-value]` (repli « sélectionner »). Les
     styles de BOÎTE de `.copy-row` sont neutralisés en INLINE → rendu discret, aucun CSS
-    nouveau, aucun bump de service worker (précédent V2-38 locality)."""
+    nouveau. `speakable` (V2-67) marque la ligne du NOM (`data-speak`) : `initSpeak` y
+    ajoute un bouton « écouter » côté client SI une voix de la langue existe (garde-fou)."""
     v = _esc(value)
+    speak_attr = " data-speak" if speakable else ""
     return (
-        '<div class="copy-row poi-local" '
+        f'<div class="copy-row poi-local"{speak_attr} '
         'style="background:none;border:0;border-radius:0;padding:0;margin:3px 0 0;'
         'display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
         '<span class="cr-val" data-copy-value '
@@ -978,14 +1000,14 @@ def _local_copy_row(value: str, lang: str) -> str:
 
 def _render_poi_local(p: dict, lang: str) -> str:
     """Nom (et adresse) LOCAUX en écriture d'origine, sous le nom affiché — pour MONTRER
-    au chauffeur (« 浅草寺 ») ou coller dans une app (V2-66). Rendus SEULEMENT s'ils
-    DIFFÈRENT du nom affiché : dans un pays latin, `name_local` est absent/égal → rien
+    au chauffeur (« 浅草寺 »), coller (V2-66) ou faire PRONONCER (V2-67). Rendus SEULEMENT
+    s'ils DIFFÈRENT du nom affiché : dans un pays latin, `name_local` est absent/égal → rien
     (aucune régression, La Zenia/Ardon inchangés). SSR seul."""
     disp = _poi_display_name(p, lang)
     rows: list[str] = []
     name_local = (p.get("name_local") or "").strip()
     if name_local and name_local != disp:
-        rows.append(_local_copy_row(name_local, lang))
+        rows.append(_local_copy_row(name_local, lang, speakable=True))
     addr_local = (p.get("addr_local") or "").strip()
     if addr_local:
         rows.append(_local_copy_row(addr_local, lang))
@@ -1944,13 +1966,17 @@ def _guest_footer_blocks(lang: str, city: str | None, base_url: str,
             f'<p style="margin:0 0 8px">{_esc(_t7(lang, "bridge_lead"))}</p>'
             f'<a href="{_esc(u)}" target="_blank" rel="noopener" style="{link}">'
             f'{_esc(_t7(lang, "bridge_link"))} →</a></section>')
-    # Porte de sortie « Créer un autre guide » (V2-64) : retour au tunnel public.
-    again_url = (base_url or "https://holaguia.com").rstrip("/") + "/#/voyageur"
+    # Portes de sortie (V2-64, complétées V2-67 p5) : DEUX portes parallèles — refaire un
+    # guide (tunnel public) ET « Je suis hôte » (espace propriétaire). La 2e manquait.
+    base = (base_url or "https://holaguia.com").rstrip("/")
+    again_url = base + "/#/voyageur"
     blocks.append(
         f'<section class="guest-cta" style="{box}">'
         f'<p style="margin:0 0 8px">{_esc(_t7(lang, "another_lead"))}</p>'
-        f'<a href="{_esc(again_url)}" style="{link}">'
-        f'{_esc(_t7(lang, "another_link"))} →</a></section>')
+        f'<a href="{_esc(again_url)}" style="{link};display:block">'
+        f'{_esc(_t7(lang, "another_link"))} →</a>'
+        f'<a href="{_esc(owner_url)}" style="{link};display:block;margin-top:8px">'
+        f'{_esc(_t7(lang, "host_link"))} →</a></section>')
     return "".join(blocks)
 
 
@@ -2301,6 +2327,12 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     guest_guide_attr = (
         f' data-guest-guide="1" data-install-cta="{_esc(_t7(lang, "install_cta"))}"'
         f' data-install-ios="{_esc(_t7(lang, "install_ios"))}"' if guest_guide else "")
+    # Prononciation du nom local (V2-67) : langue BCP47 du pays (« ja-JP »…) + libellé du
+    # bouton, lus par `app.js initSpeak`. Absents pour un pays à écriture latine → aucun
+    # bouton « écouter ». `initSpeak` n'affiche le bouton QUE si une voix existe (garde-fou).
+    _speak = _speak_lang(prop.get("country_code"))
+    speak_attr = (f' data-speak-lang="{_esc(_speak)}" data-listen="{_esc(_t7(lang, "listen"))}"'
+                  if _speak else "")
     # Le manifeste PWA n'existe que pour le lien maison (`/g/`, QR imprimé, à
     # vie) : installer une PWA depuis un lien de séjour qui meurt à J+7 la
     # casserait (volet 1bis, §3). `manifest=False` sur séjour ET vitrine.
@@ -2327,7 +2359,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}">
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}"{speak_attr}>
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">

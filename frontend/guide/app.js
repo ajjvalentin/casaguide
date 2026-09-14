@@ -765,6 +765,56 @@ function initCopy() {
   });
 }
 
+// ── Écouter le nom local (V2-67) ─────────────────────────────────────────────
+// Sur le nom local (V2-66), un bouton « écouter » fait PRONONCER le nom par l'appareil
+// (speechSynthesis, natif, hors ligne). Langue = pays du guide (`data-speak-lang`, ex.
+// « ja-JP »). GARDE-FOU (pièce 2) : le bouton n'apparaît QUE si une voix de cette langue
+// existe sur l'appareil — mieux vaut rien qu'un nom japonais lu par une voix française.
+// La vérification se fait à l'AFFICHAGE (pas au tap). Rien dans un pays latin (attribut
+// absent). Aucune dépendance, aucun réseau.
+function initSpeak() {
+  const lang = (document.body.dataset.speakLang || "").trim();
+  const synth = window.speechSynthesis;
+  if (!lang || !synth || typeof SpeechSynthesisUtterance === "undefined") return;
+  const label = document.body.dataset.listen || "Écouter";
+  const base = lang.split("-")[0].toLowerCase();
+
+  const build = () => {
+    const voices = synth.getVoices() || [];
+    const voice = voices.find(
+      (v) => (v.lang || "").toLowerCase().replace("_", "-").startsWith(base));
+    if (!voice) return false;                 // aucune voix → pas de bouton (garde-fou)
+    document.querySelectorAll(".poi-local[data-speak]").forEach((row) => {
+      if (row.querySelector(".speak-btn")) return;      // idempotent
+      const val = row.querySelector("[data-copy-value]");
+      const text = val ? val.textContent.trim() : "";
+      if (!text) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "speak-btn";
+      btn.setAttribute("aria-label", label);
+      btn.title = label;
+      btn.textContent = "🔊";
+      btn.addEventListener("click", () => {
+        try {
+          synth.cancel();                     // coupe une lecture en cours
+          const u = new SpeechSynthesisUtterance(text);
+          u.lang = lang;
+          u.voice = voice;
+          synth.speak(u);
+        } catch (_) { /* lecture impossible : sans effet */ }
+      });
+      row.appendChild(btn);
+    });
+    return true;
+  };
+
+  // Les voix peuvent charger de façon ASYNCHRONE : si vide, réessayer à voiceschanged.
+  if (!build() && "onvoiceschanged" in synth) {
+    synth.addEventListener("voiceschanged", build, { once: true });
+  }
+}
+
 function selectValue(btn) {
   const row = btn.closest(".copy-row");
   const val = row && row.querySelector("[data-copy-value]");
@@ -1136,6 +1186,7 @@ initCategoryLists();
 // construit sur le DOM SANS les secrets déchiffrés — ceux-ci arrivent après).
 initSearch();
 initCopy();
+initSpeak();
 initLightbox();
 initSecrets();
 initRequestService();

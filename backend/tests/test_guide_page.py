@@ -620,6 +620,8 @@ def test_guest_footer_blocks_b2b_and_holaquetal_bridge():
     assert "utm_source=holaguia" in html and "commune=Orihuela" in html
     # V2-64 : porte de sortie « Créer un autre guide » → retour au tunnel public.
     assert "Créer un autre guide" in html and "https://holaguia.com/#/voyageur" in html
+    # V2-67 pièce 5 : la 2e porte « Je suis hôte — créer mon espace » (manquait).
+    assert "Je suis hôte — créer mon espace" in html
     # Sans URL Holaquetal → pas de pont (jamais de lien mort), B2B présent.
     html2 = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True)
     assert "généré automatiquement" in html2
@@ -846,6 +848,26 @@ def test_poi_latin_name_shown_first_when_name_non_latin():
     # Le titre (h4) porte le nom LATIN ; l'original est en ligne locale copiable.
     assert "<h4>Minna no Panya" in html
     assert 'data-copy="みんなのぱんや"' in html and "poi-local" in html
+
+
+def test_speak_lang_and_marker_for_non_latin_country():
+    """V2-67 : un guide d'un pays non latin porte `data-speak-lang` (BCP47) + `data-listen`
+    sur le body, et la ligne du NOM local porte `data-speak` (cible du bouton « écouter »).
+    L'adresse locale n'est PAS speakable (le geste vise le nom)."""
+    pois = [_poi("Sensō-ji", "sight", "G", name_local="浅草寺",
+                 addr_local="東京都台東区浅草2-3-1")]
+    html = guide_page.render_guide(_prop(city="Tokyo", country_code="JP"), [], pois, {}, "tok")
+    assert 'data-speak-lang="ja-JP"' in html and 'data-listen="Écouter"' in html
+    # UNE seule ligne speakable (le nom) — jamais l'adresse (2 lignes locales au total).
+    assert html.count("poi-local") == 2
+    assert html.count('poi-local" data-speak') == 1
+
+
+def test_no_speak_lang_in_latin_country():
+    """V2-67 : pays à écriture latine → pas de `data-speak-lang` (aucun bouton écouter)."""
+    html = guide_page.render_guide(_prop(city="La Zenia", country_code="ES"), [],
+                                   [_poi("Mercadona", "supermarket", "C")], {}, "tok")
+    assert "data-speak-lang" not in html and "data-speak" not in html
 
 
 def test_poi_no_local_line_in_latin_country():

@@ -1,0 +1,113 @@
+<!doctype html>
+<!-- Harnais headless « écouter le nom local » (V2-67). Pilote le VRAI
+     /frontend/guide/app.js (initSpeak) sur un DOM fidèle au SSR : une ligne de NOM local
+     (.poi-local[data-speak]) + une ligne d'ADRESSE locale (.poi-local, non speakable),
+     body avec data-speak-lang="ja-JP" + data-listen. speechSynthesis est STUBÉ (voix ja
+     absente puis présente) pour vérifier : (1) GARDE-FOU — aucun bouton tant qu'aucune
+     voix de la langue n'existe ; (2) à l'arrivée d'une voix ja, un bouton « écouter »
+     apparaît SUR LE NOM seulement ; (3) le tap prononce le bon texte avec la bonne
+     langue/voix. On teste SUR L'ARBRE RENDU (leçon V2-18c). Verdict dans #result. -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>guide-speak-harness</title></head>
+<body data-api-base="/g/tok" data-lang="fr" data-speak-lang="ja-JP" data-listen="Écouter">
+<script>
+  // Hermétique : ni service worker, ni presse-papiers réel, ni carte.
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  try {
+    Object.defineProperty(navigator, "clipboard",
+      { value: { writeText: async () => {} }, configurable: true });
+  } catch (_) { /* repli suffit */ }
+  const realFetch = window.fetch.bind(window);
+  window.fetch = async (path, opts = {}) => realFetch(path, opts);
+
+  // Stub speechSynthesis : voix VIDES au départ (chargement asynchrone), captées ensuite.
+  const spoken = [];
+  let voices = [];
+  const listeners = {};
+  window.__spoken = spoken;
+  window.__setVoices = (v) => {
+    voices = v;
+    if (listeners.voiceschanged) listeners.voiceschanged();
+  };
+  const synthStub = {
+    onvoiceschanged: null,                 // présence → app.js s'abonne si vide
+    getVoices: () => voices,
+    speak: (u) => spoken.push(u),
+    cancel: () => {},
+    addEventListener: (ev, fn) => { listeners[ev] = fn; },
+  };
+  // `speechSynthesis` est un accesseur en lecture seule sur window → defineProperty
+  // (l'affectation directe serait silencieusement ignorée).
+  Object.defineProperty(window, "speechSynthesis", { value: synthStub, configurable: true });
+  Object.defineProperty(window, "SpeechSynthesisUtterance", {
+    value: function (text) { this.text = text; this.lang = ""; this.voice = null; },
+    configurable: true, writable: true });
+</script>
+
+<main>
+  <article class="poi-card">
+    <div class="poi-body">
+      <h4>Sensō-ji</h4>
+      <div class="copy-row poi-local" data-speak style="display:flex;gap:8px">
+        <span class="cr-val" data-copy-value>浅草寺</span>
+        <button class="copy-btn" type="button" data-copy="浅草寺" data-copied="Copié ✓">Copier</button>
+      </div>
+      <div class="copy-row poi-local" style="display:flex;gap:8px">
+        <span class="cr-val" data-copy-value>東京都台東区浅草2-3-1</span>
+        <button class="copy-btn" type="button" data-copy="X" data-copied="Copié ✓">Copier</button>
+      </div>
+    </div>
+  </article>
+</main>
+
+<pre id="result">PENDING</pre>
+
+<script id="guide-data" type="application/json">{"property":{"name":"Villa"},"pois":[]}</script>
+
+<script type="module">
+  const out = document.getElementById("result");
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  (async () => {
+    let step = "start";
+    const fail = (m) => { out.textContent = "FAIL[" + step + "]: " + m; };
+    try {
+      step = "import";
+      await import("/frontend/guide/app.js");
+      step = "imported";
+      await wait(30);
+      // (1) GARDE-FOU : aucune voix chargée → aucun bouton « écouter ».
+      step = "guard";
+      if (document.querySelector(".speak-btn")) return fail("bouton présent sans voix");
+
+      // (2) Voix japonaise arrive → un bouton apparaît SUR LE NOM (pas l'adresse).
+      step = "setVoices";
+      window.__setVoices([
+        { lang: "en-US", name: "English" },
+        { lang: "ja-JP", name: "Kyoko" },
+      ]);
+      await wait(30);
+      const rows = [...document.querySelectorAll(".poi-local")];
+      const nameRow = rows.find((r) => r.hasAttribute("data-speak"));
+      const addrRow = rows.find((r) => !r.hasAttribute("data-speak"));
+      const btns = document.querySelectorAll(".speak-btn");
+      if (btns.length !== 1) return fail("attendu 1 bouton, vu " + btns.length);
+      if (!nameRow.querySelector(".speak-btn")) return fail("bouton absent de la ligne du nom");
+      if (addrRow.querySelector(".speak-btn")) return fail("bouton présent sur l'adresse (interdit)");
+
+      // (3) Tap → prononce le bon texte, dans la bonne langue, avec la voix ja choisie.
+      nameRow.querySelector(".speak-btn").click();
+      await wait(10);
+      if (window.__spoken.length !== 1) return fail("speak non appelé");
+      const u = window.__spoken[0];
+      if (u.text !== "浅草寺") return fail("texte prononcé = " + u.text);
+      if (u.lang !== "ja-JP") return fail("lang = " + u.lang);
+      if (!u.voice || u.voice.lang !== "ja-JP") return fail("voix non japonaise");
+
+      out.textContent = "PASS";
+    } catch (e) {
+      fail((e && e.message) || String(e));
+    }
+  })();
+</script>
+</body>
+</html>
