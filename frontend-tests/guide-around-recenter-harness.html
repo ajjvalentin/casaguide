@@ -19,9 +19,12 @@
   try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
   window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
 
-  // Mock Leaflet : enregistre CHAQUE fitBounds (nb de points + villa incluse) et les
-  // marqueurs posés. La mini-carte de situation n'existe pas ici (pas de #situ-map).
+  // Mock Leaflet : enregistre CHAQUE fitBounds (nb de points + villa incluse + SUR
+  // QUELLE carte, par l'id du conteneur) et les marqueurs posés. Deux cartes vivent
+  // ici (V2-61) : « Autour » (#map) et « Urgences » (#emap) → on les distingue par
+  // `el.id`. La mini-carte de situation n'existe pas ici (pas de #situ-map).
   window.__fits = [];
+  window.__maps = {};
   const HOME = [37.9262, -0.7233];
   function mkMarker(ll, kind) {
     const m = { _ll: ll, _kind: kind, addTo(map) { map._layers.add(m); return m; },
@@ -29,20 +32,23 @@
     return m;
   }
   window.L = {
-    map() {
+    map(el) {
+      const elId = (el && el.id) || "";
       const map = {
+        _elId: elId,
         _layers: new Set(),
         setView() { return map; },
         fitBounds(b) {
           const hasHome = b.some((p) => Math.abs(p[0] - HOME[0]) < 1e-6 && Math.abs(p[1] - HOME[1]) < 1e-6);
-          window.__fits.push({ n: b.length, hasHome });
+          window.__fits.push({ n: b.length, hasHome, el: elId });
           return map;
         },
         invalidateSize() { return map; },
         removeLayer(m) { map._layers.delete(m); return map; },
         on() { return map; },
       };
-      window.__map = map;
+      window.__maps[elId] = map;
+      if (elId === "map" || !window.__map) window.__map = map;   // « Autour » = compat
       return map;
     },
     tileLayer() { return { on() { return this; }, addTo() { return this; } }; },
@@ -63,7 +69,7 @@
   </nav>
   <main>
     <section class="tab-panel tab-active" data-tab="home" id="tab-home" role="tabpanel">home</section>
-    <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
+    <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel"><div id="emap"></div>urgences</section>
     <section class="tab-panel" data-tab="around" id="tab-around" role="tabpanel">
       <nav class="svc-grid" id="autour" aria-label="Services"></nav>
       <div id="map"></div>
@@ -83,6 +89,10 @@
     { "name": "Marché lointain", "lat": 38.16, "lon": -0.96, "chapter": "F", "category_code": "market", "weekday": 6, "color": "#0E5A73", "category": "Marché" },
     { "name": "R2", "lat": 37.930, "lon": -0.722, "chapter": "F", "category_code": "restaurant", "color": "#0E5A73", "category": "Restaurant" },
     { "name": "S1", "lat": 37.931, "lon": -0.724, "chapter": "F", "category_code": "supermarket", "color": "#0E5A73", "category": "Supermarché" }
+  ],
+  "emergency": [
+    { "name": "Farmacia", "lat": 37.927, "lon": -0.724, "chapter": "D", "category_code": "pharmacy", "color": "#C62828", "category": "Pharmacie" },
+    { "name": "Hôpital", "lat": 37.933, "lon": -0.730, "chapter": "D", "category_code": "hospital", "color": "#C62828", "category": "Hôpital" }
   ]
 }</script>
 
@@ -124,6 +134,35 @@
     chk(window.__fits.length > before2, "recadrage AUSSI via la bascule mini-carte (_activateTab)");
     const f2 = window.__fits[window.__fits.length - 1];
     chk(f2.n === EXPECTED && f2.hasHome, "bascule : recadrage villa + tous les POI");
+
+    // ── Carte de l'onglet Urgences (V2-61) : même discipline V2-53e ──────────
+    // 3) CONTRÔLE NÉGATIF : tant qu'Urgences n'a JAMAIS été activé, sa carte n'est
+    //    pas construite (jamais de cadrage sur conteneur caché).
+    chk(!window.__maps.emap, "contrôle négatif : carte Urgences NON construite avant activation");
+    chk(window.__fits.every((f) => f.el !== "emap"), "contrôle négatif : aucun cadrage Urgences avant activation");
+
+    // 4) 1re activation d'Urgences → construction + cadrage sur logement + POI SANTÉ
+    //    UNIQUEMENT (les 4 POI « Autour » n'y figurent pas).
+    window._activateTab("emergency");
+    await wait(140);
+    chk(!!window.__maps.emap, "carte Urgences construite à la 1re activation");
+    chk([...window.__maps.emap._layers].filter((m) => m._kind === "poi").length === 2,
+      "2 marqueurs santé posés (pas les POI Autour)");
+    const eFits1 = window.__fits.filter((f) => f.el === "emap");
+    chk(eFits1.length > 0, "cadrage à la 1re activation d'Urgences");
+    const fe = eFits1[eFits1.length - 1];
+    chk(fe.n === 3 && fe.hasHome, "cadrage Urgences = logement + 2 POI santé");
+
+    // 5) Ré-activation → recadrage (invalidateSize + fitBounds), sans reconstruction.
+    window._activateTab("home");
+    await wait(60);
+    const beforeE = window.__fits.filter((f) => f.el === "emap").length;
+    const mapRef = window.__maps.emap;
+    window._activateTab("emergency");
+    await wait(140);
+    const afterE = window.__fits.filter((f) => f.el === "emap").length;
+    chk(afterE > beforeE, "recadrage à CHAQUE ré-activation d'Urgences");
+    chk(window.__maps.emap === mapRef, "ré-activation : même instance (pas de reconstruction)");
   } catch (e) {
     pass = false;
     log.push("✗ exception : " + (e && e.message ? e.message : e));

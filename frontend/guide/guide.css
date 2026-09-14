@@ -154,7 +154,10 @@ html.js .cat-filtered .cat.cat-off{display:none}
 html.js .tab-panel[data-tab="around"].fact-filtered > #map{display:none}
 
 /* ── Carte ───────────────────────────────────────────────────────────────── */
+/* `#emap` = carte de l'onglet Urgences (V2-61) : même composant que « Autour »,
+   en tête de l'onglet sous la barre SOS (marge basse pour respirer avant la santé). */
 #map{position:relative;height:320px;border-radius:14px;border:1px solid var(--line);margin:14px 0 4px;background:#E9EEF0}
+#emap{position:relative;height:300px;border-radius:14px;border:1px solid var(--line);margin:4px 0 16px;background:#E9EEF0}
 /* Carte de SITUATION du logement (onglet Logement, V2-53) : compacte, un tap
    bascule vers « Autour de vous ». Non interactive (pointeur = invite au tap). */
 .situ-map{position:relative;height:180px;border-radius:14px;border:1px solid var(--line);

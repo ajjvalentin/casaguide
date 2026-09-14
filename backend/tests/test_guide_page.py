@@ -734,11 +734,17 @@ def test_area_prompt_forbids_administrative_context_and_generalities():
 # ── V2-09 : trois espaces à onglets ──────────────────────────────────────────
 
 def _panel(html, key):
-    """Extrait le HTML du panneau d'onglet `key` (home|emergency|around)."""
+    """Extrait le HTML du panneau d'onglet `key` (home|emergency|around).
+
+    Fin du panneau = le panneau suivant, OU (dernier panneau) juste avant le JSON
+    `#guide-data` de fin de page — qui n'est jamais du contenu de panneau et porte
+    désormais le sous-ensemble Urgences (V2-61) : sans cette borne, `_panel(around)`
+    (dernier panneau) capturerait ce JSON et verrait les POI santé par erreur."""
     start = html.index(f'id="tab-{key}"')
     rest = html[start:]
-    nxt = rest.find('<section class="tab-panel', 1)
-    return rest if nxt == -1 else rest[:nxt]
+    cuts = [c for c in (rest.find('<section class="tab-panel', 1),
+                        rest.find('<script id="guide-data"')) if c != -1]
+    return rest[:min(cuts)] if cuts else rest
 
 
 def _poi(name, cat, ch, walk=5, comment=None, weekday=None, weekday_note=None,
@@ -1067,6 +1073,71 @@ def test_service_grid_is_head_of_around_before_map():
                     "around")
     assert '<nav class="svc-toc"' in around and '<div id="map"></div>' in around
     assert around.index('<nav class="svc-toc"') < around.index('<div id="map"></div>')
+
+
+def _guide_data(html):
+    """Extrait et parse le JSON `#guide-data` (property + pois + emergency)."""
+    import re, json
+    m = re.search(r'<script id="guide-data"[^>]*>(.*?)</script>', html, re.S)
+    return json.loads(m.group(1)) if m else {}
+
+
+def test_emergency_tab_has_map_with_only_emergency_pois():
+    """V2-61 — l'onglet Urgences porte SA carte (`#emap`), sous la barre SOS, cadrée
+    sur le logement + les POI de CET onglet (santé & sécurité, chap. D) uniquement ;
+    les POI « Autour » (commerces, restos) n'y sont pas."""
+    pois = [_poi("Mercadona", "supermarket", "C"),     # around
+            _poi("Farmacia Sol", "pharmacy", "D"),     # urgences
+            _poi("Hôpital Vega", "hospital", "D"),     # urgences
+            _poi("La Marejada", "restaurant", "F")]    # around
+    html = guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [], pois, {}, "tok")
+    emergency = _panel(html, "emergency")
+    around = _panel(html, "around")
+    # Conteneur de carte présent dans Urgences, distinct de la carte « Autour ».
+    assert '<div id="emap"></div>' in emergency
+    assert '<div id="emap"></div>' not in around and '<div id="map"></div>' in around
+    # Le sous-ensemble Urgences du JSON ne contient QUE les POI santé/sécurité (chap. D).
+    data = _guide_data(html)
+    emerg_names = {p["name"] for p in data["emergency"]}
+    assert emerg_names == {"Farmacia Sol", "Hôpital Vega"}
+    assert all(p["chapter"] == "D" for p in data["emergency"])
+    # Les commerces/restos restent dans la carte « Autour », jamais dans Urgences.
+    around_names = {p["name"] for p in data["pois"]}
+    assert "La Marejada" in around_names and "Mercadona" in around_names
+    assert "Farmacia Sol" not in around_names
+
+
+def test_emergency_map_carries_colour_and_distance_like_around():
+    """V2-61 — mêmes champs de rendu que « Autour » (pastille map_color, distances)."""
+    pois = [_poi("Farmacia Sol", "pharmacy", "D", walk=6)]
+    data = _guide_data(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [], pois, {}, "tok"))
+    p = data["emergency"][0]
+    assert p["color"] == "#0E5A73" and p["walk_min"] == 6 and p["category_code"] == "pharmacy"
+
+
+def test_emergency_map_absent_without_emergency_pois():
+    """V2-61 — pas de POI santé/sécurité → pas de carte Urgences (une épingle maison
+    seule dans Urgences n'aide pas ; on ne l'affiche que s'il y a un lieu à cadrer)."""
+    html = guide_page.render_guide(_prop(lat=37.9, lon=-0.74),
+                                   [_section("D_safety", "D", {"fields": []})], [], {}, "tok")
+    assert '<div id="emap"></div>' not in html
+    assert _guide_data(html)["emergency"] == []
+
+
+def test_emergency_map_absent_without_home_coords():
+    """V2-61 — logement non situé → aucune carte (ni Autour ni Urgences)."""
+    pois = [_poi("Farmacia Sol", "pharmacy", "D")]
+    html = guide_page.render_guide(_prop(lat=None, lon=None), [], pois, {}, "tok")
+    assert '<div id="emap"></div>' not in html
+
+
+def test_emergency_map_present_in_guest_guide():
+    """V2-61 — périmètre guest ET propriétaires : le guide voyageur (amputé) a aussi
+    sa carte d'urgences."""
+    pois = [_poi("Farmacia Sol", "pharmacy", "D")]
+    html = guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [], pois, {}, "tok",
+                                   guest_guide=True)
+    assert '<div id="emap"></div>' in _panel(html, "emergency")
 
 
 def test_service_grid_grouped_by_family_in_section_order_with_family_colours():

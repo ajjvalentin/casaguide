@@ -1999,28 +1999,47 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
             if blk:
                 panels[tab].append(blk)
 
-    # Urgences : barre SOS EN GRAND + santé (chap. D, déjà réparti) + numéros utiles.
+    # Forme de carte d'un POI (partagée par « Autour » et « Urgences », V2-61) :
+    # nom localisé, coordonnées, couleur de pastille (map_color), catégorie localisée,
+    # distances/mode/téléphone et le jour de marché (badge localisé côté client).
+    def _map_poi(p: dict) -> dict:
+        return {"name": _poi_display_name(p, lang), "lat": p["lat"], "lon": p["lon"],
+                "chapter": p["chapter"], "category_code": p["category_code"],
+                "color": p.get("map_color"),
+                "category": _seed_label(lang, _i18n_mod.poi_category_key(p["category_code"]),
+                                        p.get("category_name"), p["category_code"]),
+                "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
+                "travel_mode": p.get("travel_mode"), "phone": p.get("phone"),
+                # Jour du marché (V2-33) : le client rend le badge localisé (Intl)
+                # dans les popups de la carte, aligné sur le SSR (Babel/CLDR).
+                "weekday": p.get("weekday"), "weekday_note": p.get("weekday_note")}
+
+    home_has_coords = prop.get("lat") is not None and prop.get("lon") is not None
+
+    # Urgences : barre SOS EN GRAND + carte (V2-61) + santé (chap. D) + numéros.
+    # La carte d'urgences ne montre QUE les POI de cet onglet (santé & sécurité :
+    # hôpitaux, pharmacies, médecins, police, vétérinaire — chap. D via `_POI_TAB`).
+    emergency_pois = [p for p in pois if _POI_TAB.get(p["chapter"], "home") == "emergency"]
+    emergency_map_pois = [p for p in emergency_pois
+                          if p.get("lat") is not None and p.get("lon") is not None]
     big_sos = _render_sos(area_facts, big=True, lang=lang)
     numbers = _render_numbers(area_facts, _CHAPTER_COLORS["I"], lang)
-    emergency_inner = (([big_sos] if big_sos else []) + panels["emergency"]
-                       + ([numbers] if numbers else []))
+    # Carte SOUS la barre SOS, au-dessus des sections santé : là où localiser compte
+    # le plus. Émise seulement si le logement est situé ET qu'il y a un lieu médical
+    # à cadrer (sinon une épingle maison seule dans « Urgences » n'aide pas).
+    emap_html = ('<div id="emap"></div>'
+                 if home_has_coords and emergency_map_pois else "")
+    emergency_inner = (([big_sos] if big_sos else []) + ([emap_html] if emap_html else [])
+                       + panels["emergency"] + ([numbers] if numbers else []))
 
     # Autour de vous : carte + puces de filtre (bâties sur les POI de cet espace).
     around_pois = [p for p in pois if _POI_TAB.get(p["chapter"], "home") == "around"]
     map_data = {
         "property": {"name": prop.get("name"), "lat": prop.get("lat"), "lon": prop.get("lon")},
-        "pois": [{"name": _poi_display_name(p, lang), "lat": p["lat"], "lon": p["lon"],
-                  "chapter": p["chapter"], "category_code": p["category_code"],
-                  "color": p.get("map_color"),
-                  "category": _seed_label(lang, _i18n_mod.poi_category_key(p["category_code"]),
-                                          p.get("category_name"), p["category_code"]),
-                  "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
-                  "travel_mode": p.get("travel_mode"), "phone": p.get("phone"),
-                  # Jour du marché (V2-33) : le client rend le badge localisé (Intl)
-                  # dans les popups de la carte, aligné sur le SSR (Babel/CLDR).
-                  "weekday": p.get("weekday"), "weekday_note": p.get("weekday_note")}
-                 for p in around_pois
+        "pois": [_map_poi(p) for p in around_pois
                  if p.get("lat") is not None and p.get("lon") is not None],
+        # Sous-ensemble Urgences (V2-61) : lu par `initEmergencyMap` côté client.
+        "emergency": [_map_poi(p) for p in emergency_map_pois],
     }
     data_json = json.dumps(map_data, ensure_ascii=False).replace("</", "<\\/")
     has_map = map_data["property"]["lat"] is not None

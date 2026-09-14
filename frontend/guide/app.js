@@ -58,6 +58,32 @@ function weekdayLabel(n) {
 // filtrer par catégorie (mode filtré) ou par chapitre (puces) sans les recréer.
 let allMarkers = [];      // marqueurs POI (jamais le logement)
 let allBounds = null;     // cadrage d'origine (logement + tous les POI)
+
+// Marqueur POI partagé par les cartes « Autour » et « Urgences » (V2-61) : pastille
+// à la COULEUR de la catégorie (map_color, = pastille de la carte) + popup (nom,
+// catégorie, distance, jour de marché, téléphone, itinéraire). Ne l'ajoute PAS à une
+// carte (l'appelant décide) ; tague catégorie/chapitre pour le filtrage « Autour ».
+function makePoiMarker(p) {
+  const m = L.circleMarker([p.lat, p.lon], {
+    radius: 7, weight: 2, color: "#fff", fillColor: p.color || "#0E5A73", fillOpacity: 0.95,
+  });
+  const dist = fmtDist(p);
+  let html = `<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.category || "")}`;
+  if (dist) html += ` · ${dist}`;
+  // Jour du marché (V2-33) : badge localisé dans la popup, aligné sur le SSR.
+  if (p.category_code === "market" && p.weekday) {
+    const day = weekdayLabel(p.weekday);
+    const note = (p.weekday_note || "").trim();
+    if (day) html += `<br>📅 <b>${escapeHtml(day)}</b>${note ? " · " + escapeHtml(note) : ""}`;
+  }
+  if (p.phone) html += `<br>📞 <a href="tel:${tel(p.phone)}">${escapeHtml(p.phone)}</a>`;
+  html += `<br><a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">Itinéraire ↗</a>`;
+  m.bindPopup(html);
+  m._catCode = p.category_code || "";
+  m._chapter = p.chapter || "";
+  return m;
+}
+
 function initMap() {
   const mapEl = document.getElementById("map");
   const P = GUIDE.property || {};
@@ -91,23 +117,7 @@ function initMap() {
     // inattendu) ne doit JAMAIS avorter la boucle et faire disparaître TOUS les suivants
     // (recette Ballarin v38 : 1 seul marqueur au lieu de ~126). Journalisé, jamais avalé.
     try {
-      const m = L.circleMarker([p.lat, p.lon], {
-        radius: 7, weight: 2, color: "#fff", fillColor: p.color || "#0E5A73", fillOpacity: 0.95,
-      });
-      const dist = fmtDist(p);
-      let html = `<b>${escapeHtml(p.name)}</b><br>${escapeHtml(p.category || "")}`;
-      if (dist) html += ` · ${dist}`;
-      // Jour du marché (V2-33) : badge localisé dans la popup, aligné sur le SSR.
-      if (p.category_code === "market" && p.weekday) {
-        const day = weekdayLabel(p.weekday);
-        const note = (p.weekday_note || "").trim();
-        if (day) html += `<br>📅 <b>${escapeHtml(day)}</b>${note ? " · " + escapeHtml(note) : ""}`;
-      }
-      if (p.phone) html += `<br>📞 <a href="tel:${tel(p.phone)}">${escapeHtml(p.phone)}</a>`;
-      html += `<br><a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">Itinéraire ↗</a>`;
-      m.bindPopup(html);
-      m._catCode = p.category_code || "";
-      m._chapter = p.chapter || "";
+      const m = makePoiMarker(p);
       m.addTo(map);
       allMarkers.push(m);
       bounds.push([p.lat, p.lon]);
@@ -199,6 +209,77 @@ function fitAll() {
 
 // Guide voyageur (V2-54) : signalé par le SSR sur le <body> (data-guest-guide).
 function isGuestGuide() { return document.body.dataset.guestGuide === "1"; }
+
+// ── Carte de l'onglet Urgences (V2-61) ───────────────────────────────────────
+// Urgences était le seul onglet SANS carte — là où localiser compte le plus
+// (pharmacie de garde, hôpital, police). Même grammaire que « Autour » (pastilles
+// colorées, popups, itinéraire, épingle du logement), limitée aux POI de CET onglet
+// (santé & sécurité, `GUIDE.emergency`). TROISIÈME instance Leaflet → discipline
+// V2-53e : construite à la PREMIÈRE activation de l'onglet (conteneur VISIBLE →
+// cadrage juste, jamais sur un conteneur 0×0), puis invalidateSize + recadrage à
+// CHAQUE activation. `initEmergencyMap` n'expose qu'un BÂTISSEUR paresseux
+// (`window._buildEmergencyMap`) appelé par `activate("emergency")` — un seul point
+// d'entrée (onglet direct, hash, retour arrière) comme `recenterAround` pour « Autour ».
+let emapMarkers = [];
+let emapBounds = null;
+function fitEmergency() {
+  const map = window._emapMap;
+  if (!map) return;
+  map.invalidateSize();
+  if (emapBounds && emapBounds.length > 1) {
+    map.fitBounds(emapBounds, { padding: [30, 30], maxZoom: 15 });
+  } else {
+    const P = GUIDE.property || {};
+    if (P.lat != null && P.lon != null) map.setView([P.lat, P.lon], 14);
+  }
+}
+function initEmergencyMap() {
+  const mapEl = document.getElementById("emap");
+  const P = GUIDE.property || {};
+  if (!mapEl || !window.L || P.lat == null || P.lon == null) {
+    window._buildEmergencyMap = () => {};   // pas de carte d'urgences : no-op
+    return;
+  }
+  let map = null;
+  const build = () => {
+    if (map) { fitEmergency(); return; }   // déjà construit → recadrage seul (V2-53e)
+    try {
+      map = L.map(mapEl, { scrollWheelZoom: false }).setView([P.lat, P.lon], 14);
+      const TRANSPARENT_TILE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+      const tiles = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        { attribution: "© OpenStreetMap", maxZoom: 19, errorTileUrl: TRANSPARENT_TILE });
+      tiles.on("tileerror", () => { if (!navigator.onLine) showMapOffline(mapEl); });
+      tiles.addTo(map);
+      // Épingle du logement : NEUTRE (📍) pour un guide voyageur, 🏠 sinon — comme « Autour ».
+      L.marker([P.lat, P.lon], {
+        icon: L.divIcon({ className: "", iconAnchor: [13, 13],
+          html: `<div class="home-pin">${isGuestGuide() ? "📍" : "🏠"}</div>` }),
+        keyboard: false,
+      }).addTo(map);
+      const bounds = [[P.lat, P.lon]];
+      emapMarkers = [];
+      for (const p of GUIDE.emergency || []) {
+        // Résilience par POI (V2-53d) : un point illisible n'avorte jamais la boucle.
+        try {
+          const m = makePoiMarker(p);
+          m.addTo(map);
+          emapMarkers.push(m);
+          bounds.push([p.lat, p.lon]);
+        } catch (e) {
+          console.error("[guide] POI urgences ignoré :", (p && p.name) || "?", e);
+        }
+      }
+      emapBounds = bounds;
+      window._emapMap = map;
+      // Conteneur désormais visible (activation) → cadrage juste, après un tour de
+      // boucle pour la mise en page finale (même précaution que « Autour »).
+      setTimeout(fitEmergency, 60);
+    } catch (e) {
+      console.error("[guide] carte Urgences : initialisation échouée", e);
+    }
+  };
+  window._buildEmergencyMap = build;
+}
 
 // ── Carte de SITUATION du logement (onglet Logement, V2-53) ───────────────────
 // Aperçu compact de l'emplacement, sous l'adresse/GPS. Instance dédiée
@@ -452,6 +533,11 @@ function initTabs() {
     // Idem carte de situation à l'ouverture de l'onglet Logement (V2-53).
     if (tabKey === "home" && window._situMap) {
       setTimeout(() => window._situMap.invalidateSize(), 30);
+    }
+    // Carte de l'onglet Urgences (V2-61) : construite à la 1re activation (conteneur
+    // visible → cadrage juste), puis invalidateSize + recadrage à chaque retour.
+    if (tabKey === "emergency" && window._buildEmergencyMap) {
+      setTimeout(window._buildEmergencyMap, 30);
     }
     updateLangHash();
   }
@@ -1025,6 +1111,8 @@ function escapeHtml(s) {
 initLang();
 initMap();
 initSituationMap();
+initEmergencyMap();   // V2-61 : enregistre le bâtisseur paresseux (aucune carte tant
+                      // que l'onglet Urgences n'est pas activé — discipline V2-53e)
 initTabs();
 initChips();
 initBackToServices();
