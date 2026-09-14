@@ -791,13 +791,14 @@ def _panel(html, key):
 
 
 def _poi(name, cat, ch, walk=5, comment=None, weekday=None, weekday_note=None,
-         locality=None):
+         locality=None, name_local=None, addr_local=None):
     return {"id": name, "name": name, "category_code": cat, "chapter": ch,
             "category_name": {"fr": cat}, "map_color": "#0E5A73",
             "lat": 37.9, "lon": -0.74, "walk_min": walk, "dist_walk_m": walk * 70,
             "drive_min": None, "owner_comment": comment, "description_md": None,
             "opening_hours": None, "phone": None, "website": None, "cuisine": None,
-            "weekday": weekday, "weekday_note": weekday_note, "locality": locality}
+            "weekday": weekday, "weekday_note": weekday_note, "locality": locality,
+            "name_local": name_local, "addr_local": addr_local}
 
 
 def test_poi_locality_shown_only_when_different_from_home_commune():
@@ -816,6 +817,39 @@ def test_poi_locality_shown_only_when_different_from_home_commune():
     assert "· ardon" not in html and "· Ardon" not in html
     # Un seul badge de localité au total (seule « Vétroz » diffère).
     assert html.count('class="poi-loc"') == 1
+
+
+def test_poi_local_name_shown_copyable_for_non_latin():
+    """V2-66 — le nom local (écriture d'origine) s'affiche sous le nom affiché, copiable
+    (composant M-19 `.copy-btn[data-copy]`), pour montrer au chauffeur. L'adresse locale
+    de même. Rien pour un lieu sans nom local (pays latin)."""
+    pois = [
+        _poi("Sensō-ji", "sight", "G", name_local="浅草寺",
+             addr_local="東京都台東区浅草2-3-1"),
+        _poi("Mercadona", "supermarket", "C"),   # latin : aucun nom local
+    ]
+    html = guide_page.render_guide(_prop(city="Tokyo"), [], pois, {}, "tok")
+    # Nom local rendu, copiable (data-copy = la valeur native), sous le nom.
+    assert "浅草寺" in html
+    assert 'data-copy="浅草寺"' in html and 'class="copy-btn"' in html
+    assert "東京都台東区浅草2-3-1" in html         # adresse locale copiable aussi
+    # Aucune ligne locale pour le lieu latin (pas de bouton copier surnuméraire).
+    assert html.count('class="copy-btn"') == 2   # nom + adresse du seul POI japonais
+
+
+def test_poi_no_local_line_in_latin_country():
+    """V2-66 — non-régression : sans nom local, aucune ligne/bouton supplémentaire
+    (La Zenia, Ardon inchangés)."""
+    pois = [_poi("Mercadona", "supermarket", "C"), _poi("La Marejada", "restaurant", "F")]
+    html = guide_page.render_guide(_prop(city="La Zenia"), [], pois, {}, "tok")
+    assert "copy-btn" not in html and "poi-local" not in html
+
+
+def test_poi_local_name_not_shown_when_equal_to_display():
+    """V2-66 — garde-fou : si le nom local égale le nom affiché, rien (jamais de doublon)."""
+    pois = [_poi("浅草寺", "sight", "G", name_local="浅草寺")]
+    html = guide_page.render_guide(_prop(city="Tokyo"), [], pois, {}, "tok")
+    assert "poi-local" not in html and "copy-btn" not in html
 
 
 def test_three_tabs_present_and_labelled():

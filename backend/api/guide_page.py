@@ -956,6 +956,42 @@ def _copy_row(label: str, value: str, lang: str) -> str:
             f'<div class="cr-val" data-copy-value>{v}</div></div>')
 
 
+def _local_copy_row(value: str, lang: str) -> str:
+    """Valeur LOCALE (nom/adresse en écriture d'origine) + bouton Copier, compacte, à
+    la taille des métadonnées (V2-66). Réutilise le composant M-19 : `.copy-btn[data-copy]`
+    (câblé par `initCopy`) et `.copy-row`/`[data-copy-value]` (repli « sélectionner »). Les
+    styles de BOÎTE de `.copy-row` sont neutralisés en INLINE → rendu discret, aucun CSS
+    nouveau, aucun bump de service worker (précédent V2-38 locality)."""
+    v = _esc(value)
+    return (
+        '<div class="copy-row poi-local" '
+        'style="background:none;border:0;border-radius:0;padding:0;margin:3px 0 0;'
+        'display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        '<span class="cr-val" data-copy-value '
+        'style="margin:0;font-size:14px;color:var(--muted);word-break:break-word">'
+        f'{v}</span>'
+        f'<button class="copy-btn" type="button" data-copy="{v}" '
+        'style="padding:2px 9px;font-size:11.5px" '
+        f'data-copied="{_esc(_t(lang, "copied"))}">{_esc(_t(lang, "copy"))}</button>'
+        '</div>')
+
+
+def _render_poi_local(p: dict, lang: str) -> str:
+    """Nom (et adresse) LOCAUX en écriture d'origine, sous le nom affiché — pour MONTRER
+    au chauffeur (« 浅草寺 ») ou coller dans une app (V2-66). Rendus SEULEMENT s'ils
+    DIFFÈRENT du nom affiché : dans un pays latin, `name_local` est absent/égal → rien
+    (aucune régression, La Zenia/Ardon inchangés). SSR seul."""
+    disp = _poi_display_name(p, lang)
+    rows: list[str] = []
+    name_local = (p.get("name_local") or "").strip()
+    if name_local and name_local != disp:
+        rows.append(_local_copy_row(name_local, lang))
+    addr_local = (p.get("addr_local") or "").strip()
+    if addr_local:
+        rows.append(_local_copy_row(addr_local, lang))
+    return "".join(rows)
+
+
 def _render_arrival_meta(prop: dict, lang: str = "fr") -> str:
     rows: list[str] = []
     address = _address_string(prop)
@@ -1247,10 +1283,13 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # Itinéraire (V2-24) : Google Maps / Waze / Apple Maps sur TOUS les POI
             # géolocalisés (remplace l'ancien lien Google unique).
             nav_html = _itinerary_links(p.get("lat"), p.get("lon"), lang)
+            # Nom/adresse LOCAUX en écriture d'origine (V2-66) : sous le nom, copiables —
+            # à montrer au chauffeur. Rien dans les pays latins (nom local == affiché).
+            local_html = _render_poi_local(p, lang)
             cards.append(
                 f'<div class="poi-card"{cuisine_attr} style="border-left-color:{color}">'
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
-                f'<div class="poi-body"><h4>{_esc(_poi_display_name(p, lang))}{loc_html}{cuisine_tag}</h4>{day_html}{comment}'
+                f'<div class="poi-body"><h4>{_esc(_poi_display_name(p, lang))}{loc_html}{cuisine_tag}</h4>{local_html}{day_html}{comment}'
                 f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}{nav_html}</div></div>')
         n = len(lst)
         head = f'<h4 class="cat-title">{cat_name} · {n}</h4>'

@@ -120,9 +120,25 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                    -- pour un suggested ; intouché pour une fiche arbitrée (invariant 1 —
                    -- un coup de cœur SAISI par le propriétaire survit).
                    owner_comment = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.owner_comment, pois.owner_comment) ELSE pois.owner_comment END,
-                   -- Preuve de découverte web (V2-44 volet 2) : complétée sans jamais
-                   -- s'effacer (COALESCE) pour un suggested ; intouchée si arbitré.
-                   completion_meta = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.completion_meta, pois.completion_meta) ELSE pois.completion_meta END,
+                   -- completion_meta : FUSION (jamais un remplacement) pour préserver
+                   -- ce que les étapes suivantes y accumulent (`_judge`, `_web`,
+                   -- `_nearest_of_network`, complétions). Un suggested prend les clés
+                   -- de la moisson (EXCLUDED gagne). Une fiche RETENUE ne se fait
+                   -- COMPLÉTER (jamais écraser) que les clés ABSENTES (pois gagne) —
+                   -- même exception étroite que `locality` (V2-38bis) : le nom LOCAL
+                   -- V2-66 (`_name_local`, métadonnée OSM) doit atteindre le guide, qui
+                   -- n'affiche que les fiches retenues, sans jamais toucher au contenu.
+                   -- `NULLIF(…, '{}')` : rien des deux côtés → reste NULL (aucune
+                   -- pollution de la colonne, comportement historique préservé).
+                   completion_meta = CASE
+                       WHEN pois.status = 'suggested'
+                           THEN NULLIF(COALESCE(pois.completion_meta, '{}'::jsonb)
+                                || COALESCE(EXCLUDED.completion_meta, '{}'::jsonb),
+                                '{}'::jsonb)
+                       ELSE NULLIF(COALESCE(EXCLUDED.completion_meta, '{}'::jsonb)
+                                || COALESCE(pois.completion_meta, '{}'::jsonb),
+                                '{}'::jsonb)
+                   END,
                    dist_walk_m = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.dist_walk_m ELSE pois.dist_walk_m END,
                    walk_min = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.walk_min ELSE pois.walk_min END,
                    dist_drive_m = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.dist_drive_m ELSE pois.dist_drive_m END,

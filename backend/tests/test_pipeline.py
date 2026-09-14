@@ -868,6 +868,57 @@ def test_retained_fiche_gains_null_locality_but_all_else_untouched(property_id,
     assert got["name"] == "La Marejada" and got["category_code"] == "restaurant"
 
 
+def test_upsert_merges_completion_meta_and_fills_retained(property_id):
+    """V2-66 — completion_meta est FUSIONNÉ, jamais remplacé : (1) un suggested re-moissonné
+    garde ce que le juge y a accumulé (_judge) tout en recevant le nom local ; (2) une fiche
+    RETENUE (approved) à meta NULL GAGNE le nom local au re-run (le guide n'affiche que les
+    retenues), le nom du champ `name` restant intouché (invariant 1)."""
+    from enrich import db as edb
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        # (1) moisson initiale : suggested + nom local.
+        edb.upsert_pois(conn, property_id, "sight", [{
+            "name": "Sensō-ji", "lat": 35.71, "lon": 139.79, "source": "osm",
+            "source_ref": "node/loc1", "completion_meta": {"_name_local": "浅草寺"}}])
+        # le juge accumule _judge PAR FUSION (comme en prod).
+        conn.execute(
+            "UPDATE pois SET completion_meta = completion_meta || "
+            "'{\"_judge\": {\"verdict\": \"accept\"}}'::jsonb "
+            "WHERE property_id=%s AND source_ref='node/loc1'", (property_id,))
+        conn.commit()
+        # re-moisson : le suggested garde _judge ET son nom local (fusion, pas écrasement).
+        edb.upsert_pois(conn, property_id, "sight", [{
+            "name": "Sensō-ji", "lat": 35.71, "lon": 139.79, "source": "osm",
+            "source_ref": "node/loc1", "completion_meta": {"_name_local": "浅草寺"}}])
+        conn.commit()
+        row = conn.execute(
+            "SELECT completion_meta FROM pois WHERE property_id=%s AND "
+            "source_ref='node/loc1'", (property_id,)).fetchone()
+        assert row["completion_meta"]["_name_local"] == "浅草寺"
+        assert row["completion_meta"]["_judge"]["verdict"] == "accept"   # préservé
+
+        # (2) fiche RETENUE (approved) à meta NULL → gagne le nom local au re-run.
+        edb.upsert_pois(conn, property_id, "sight", [{
+            "name": "Tokyo Tower", "lat": 35.65, "lon": 139.74, "source": "osm",
+            "source_ref": "node/loc2"}])
+        conn.execute("UPDATE pois SET status='approved', completion_meta=NULL "
+                     "WHERE property_id=%s AND source_ref='node/loc2'", (property_id,))
+        conn.commit()
+        edb.upsert_pois(conn, property_id, "sight", [{
+            "name": "Tokyo Tower JP", "lat": 35.65, "lon": 139.74, "source": "osm",
+            "source_ref": "node/loc2",
+            "completion_meta": {"_name_local": "東京タワー"}}])
+        conn.commit()
+        r2 = conn.execute(
+            "SELECT name, status, completion_meta FROM pois WHERE property_id=%s AND "
+            "source_ref='node/loc2'", (property_id,)).fetchone()
+        assert r2["status"] == "approved"
+        assert r2["completion_meta"]["_name_local"] == "東京タワー"   # RETENUE comblée
+        assert r2["name"] == "Tokyo Tower"                            # `name` INTOUCHÉ (inv. 1)
+        conn.execute("DELETE FROM pois WHERE property_id=%s AND source_ref IN "
+                     "('node/loc1','node/loc2')", (property_id,))
+        conn.commit()
+
+
 # ── V2-35 : script ops de recensement des descriptions de remplissage ─────────
 
 def test_ops_list_filler_descriptions_is_read_only(property_id):

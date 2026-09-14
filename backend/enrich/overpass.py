@@ -645,9 +645,99 @@ def _post_overpass(client: httpx.Client, query: str,
     raise last_error or RuntimeError("Aucun serveur Overpass joignable")
 
 
-def _element_to_poi(el: dict, lat0: float, lon0: float) -> dict | None:
+# Nom local pour montrer au chauffeur (V2-66) : langue « du pays » (tag `name:<lang>`)
+# des principaux pays à écriture NON latine. Sert à retrouver le nom en écriture
+# d'origine quand le nom affiché (OSM `name`) est en latin. Les pays latins n'y
+# figurent pas : leur nom local == nom affiché → rien ne s'affiche (aucune régression).
+_COUNTRY_LANG = {
+    "JP": "ja", "CN": "zh", "TW": "zh", "HK": "zh", "MO": "zh", "KR": "ko",
+    "TH": "th", "LA": "lo", "KH": "km", "MM": "my", "LK": "si", "BD": "bn",
+    "NP": "ne", "IN": "hi", "PK": "ur", "IR": "fa", "AF": "fa",
+    "RU": "ru", "UA": "uk", "BY": "be", "BG": "bg", "MK": "mk", "RS": "sr",
+    "GR": "el", "GE": "ka", "AM": "hy", "IL": "he",
+    "SA": "ar", "AE": "ar", "EG": "ar", "QA": "ar", "KW": "ar", "BH": "ar",
+    "OM": "ar", "JO": "ar", "LB": "ar", "IQ": "ar", "SY": "ar", "MA": "ar",
+    "TN": "ar", "DZ": "ar", "LY": "ar", "YE": "ar",
+    "KZ": "kk", "KG": "ky", "TJ": "tg", "MN": "mn",
+}
+
+
+def country_language(country_code: str | None) -> str | None:
+    """Code de langue « du pays » (tag OSM `name:<lang>`) pour retrouver le nom local
+    en écriture non latine (V2-66). None pour un pays à écriture latine (ou inconnu) :
+    rien n'est capté, aucune régression."""
+    return _COUNTRY_LANG.get((country_code or "").strip().upper())
+
+
+def _is_non_latin(s: str) -> bool:
+    """Vrai si `s` porte au moins une lettre hors écriture LATINE (CJK, cyrillique,
+    arabe, thaï…). Sert à ne montrer le nom local que là où il apporte quelque chose :
+    une écriture non latine que le voyageur ne peut ni lire ni retaper (V2-66)."""
+    for ch in s:
+        if ch.isalpha():
+            try:
+                if "LATIN" not in unicodedata.name(ch):
+                    return True
+            except ValueError:
+                return True   # caractère sans nom Unicode → non latin
+    return False
+
+
+def _script_of(s: str) -> str | None:
+    """Étiquette courte de l'écriture d'une chaîne non latine (« cjk », « cyrillic »,
+    « arabic »…), déduite du premier caractère non latin. Métadonnée indicative."""
+    for ch in s:
+        if ch.isalpha():
+            try:
+                nm = unicodedata.name(ch)
+            except ValueError:
+                continue
+            if "LATIN" in nm:
+                continue
+            head = nm.split()[0]
+            return "cjk" if head == "CJK" else head.lower()
+    return None
+
+
+def _local_name_meta(tags: dict, disp: str, country_lang: str | None) -> dict:
+    """Nom (et adresse) LOCAUX en écriture d'origine, à montrer au chauffeur (V2-66).
+
+    Renvoie un fragment de `completion_meta` (`_name_local`/`_name_script`/`_addr_local`)
+    — vide si rien à montrer. On ne capte QUE ce qui DIFFÈRE du nom affiché ET est en
+    écriture non latine : dans un pays latin (nom == affiché, ou variantes latines),
+    le fragment est vide → aucune ligne supplémentaire (invariant « pas de régression »).
+
+    Priorité au tag `name:<langue du pays>` (ex. `name:ja`) ; à défaut, toute variante
+    `name:*` non latine (ordre déterministe). Le champ `name` n'est jamais touché."""
+    meta: dict = {}
+    # Candidats de nom : langue du pays d'abord, puis les autres name:* (déterministe).
+    keys: list[str] = []
+    if country_lang:
+        keys.append(f"name:{country_lang}")
+    keys += sorted(k for k in tags
+                   if k.startswith("name:") and k not in keys)
+    for k in keys:
+        v = (tags.get(k) or "").strip()
+        if v and v != disp and _is_non_latin(v):
+            meta["_name_local"] = v
+            script = _script_of(v)
+            if script:
+                meta["_name_script"] = script
+            break
+    # Adresse locale (le chauffeur la lit vraiment) : `addr:full` en écriture d'origine.
+    addr_full = (tags.get("addr:full") or "").strip()
+    if addr_full and _is_non_latin(addr_full):
+        meta["_addr_local"] = addr_full
+    return meta
+
+
+def _element_to_poi(el: dict, lat0: float, lon0: float,
+                    country_lang: str | None = None) -> dict | None:
     """Transforme un élément Overpass en POI. Conserve les tags (`_tags`) pour la
-    re-ventilation par catégorie ; ils sont retirés par `_finalize`."""
+    re-ventilation par catégorie ; ils sont retirés par `_finalize`.
+
+    `country_lang` (V2-66) : langue du pays → capture le nom/adresse LOCAUX (écriture
+    d'origine) dans `completion_meta`, sans toucher au champ `name`."""
     tags = el.get("tags", {})
     name = tags.get("name")
     if not name:
@@ -660,7 +750,7 @@ def _element_to_poi(el: dict, lat0: float, lon0: float) -> dict | None:
         " ".join(filter(None, [tags.get("addr:housenumber"), tags.get("addr:street")])),
         tags.get("addr:city"),
     ])) or None
-    return {
+    poi = {
         "name": name,
         "lat": float(lat),
         "lon": float(lon),
@@ -677,6 +767,11 @@ def _element_to_poi(el: dict, lat0: float, lon0: float) -> dict | None:
         "crow_m": haversine_m(lat0, lon0, float(lat), float(lon)),
         "_tags": tags,
     }
+    # Nom/adresse locaux (V2-66) : stockés en completion_meta, jamais dans `name`.
+    local = _local_name_meta(tags, name, country_lang)
+    if local:
+        poi["completion_meta"] = local
+    return poi
 
 
 def _norm_cuisine(raw: str | None) -> str | None:
@@ -749,7 +844,8 @@ def _bucket_radius(radius_m: int) -> int:
 # ── API publique ─────────────────────────────────────────────────────────────
 
 def fetch_category(category: str, lat: float, lon: float, radius_m: int,
-                   client: httpx.Client | None = None) -> list[dict]:
+                   client: httpx.Client | None = None,
+                   country_lang: str | None = None) -> list[dict]:
     """POI d'une catégorie, filtrés/cohérents, triés par distance, plafonnés.
 
     Conservé pour compat/tests ; le pipeline utilise `fetch_grouped`."""
@@ -760,7 +856,7 @@ def fetch_category(category: str, lat: float, lon: float, radius_m: int,
     try:
         query = _build_query(CATEGORY_SELECTORS[category], lat, lon, radius_m)
         elements = _post_overpass(client, query)
-        parsed = (_element_to_poi(el, lat, lon) for el in elements)
+        parsed = (_element_to_poi(el, lat, lon, country_lang) for el in elements)
         matched = [p for p in parsed
                    if p and not is_generic_name(p["name"])  # V2-44 : noms génériques
                    and category_matches(category, p["_tags"])]
@@ -774,6 +870,7 @@ def fetch_category(category: str, lat: float, lon: float, radius_m: int,
 
 def _run_buckets(client: httpx.Client, codes: list[str],
                  query_radius: dict[str, int], lat: float, lon: float,
+                 country_lang: str | None = None,
                  ) -> tuple[dict[str, list[dict]], dict[str, str], int]:
     """Interroge Overpass pour `codes`, groupés par palier de rayon selon
     `query_radius[code]` (une requête par palier, union de sélecteurs). Renvoie
@@ -811,7 +908,7 @@ def _run_buckets(client: httpx.Client, codes: list[str],
 
         parsed: list[dict] = []
         for el in elements:
-            p = _element_to_poi(el, lat, lon)
+            p = _element_to_poi(el, lat, lon, country_lang)
             if p is None:
                 continue
             if is_generic_name(p["name"]):   # V2-44 : nom générique de type -> rejeté
@@ -829,6 +926,7 @@ def _run_buckets(client: httpx.Client, codes: list[str],
 
 def fetch_grouped(categories: list[dict], lat: float, lon: float,
                   client: httpx.Client | None = None,
+                  country_lang: str | None = None,
                   ) -> tuple[dict[str, list[dict]], dict[str, str], dict]:
     """Récupère les POI de plusieurs catégories, ADAPTÉ à la ruralité (V2-44).
 
@@ -861,7 +959,8 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
     client = client or httpx.Client(timeout=settings.overpass_timeout_s + 5)
     try:
         # ── Passe 1 : rayon de PRÉFÉRENCE (historique) ──────────────────────
-        m1, failures, generic = _run_buckets(client, codes, pref_of, lat, lon)
+        m1, failures, generic = _run_buckets(client, codes, pref_of, lat, lon,
+                                             country_lang)
         for code in codes:
             reduced, n = _reduce_category(code, m1.get(code, []))   # V2-47
             network_dropped += n
@@ -873,7 +972,8 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
                      and max_of[c] > pref_of[c]
                      and len(results[c]) < target_for(c).min_results]
         if deficient:
-            m2, f2, g2 = _run_buckets(client, deficient, max_of, lat, lon)
+            m2, f2, g2 = _run_buckets(client, deficient, max_of, lat, lon,
+                                      country_lang)
             generic += g2
             for code in deficient:
                 if code in f2:

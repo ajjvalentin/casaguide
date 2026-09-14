@@ -1614,7 +1614,10 @@ def guide_pois(conn, property_id: str) -> list[dict]:
                   p.status,
                   jsonb_exists(p.completion_meta, '_nearest_of_network')
                       AS nearest_of_network,
-                  jsonb_exists(p.completion_meta, '_editorial') AS editorial
+                  jsonb_exists(p.completion_meta, '_editorial') AS editorial,
+                  p.completion_meta->>'_name_local' AS name_local,
+                  p.completion_meta->>'_name_script' AS name_script,
+                  p.completion_meta->>'_addr_local' AS addr_local
            FROM pois p
            JOIN poi_categories c ON c.code = p.category_code
            WHERE p.property_id = %s AND p.status IN ('approved', 'edited')

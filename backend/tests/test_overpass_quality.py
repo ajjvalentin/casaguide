@@ -209,6 +209,66 @@ def test_element_to_poi_carries_cuisine():
     assert overpass._element_to_poi(el2, LAT, LON)["cuisine"] is None
 
 
+# ── V2-66 : nom LOCAL (écriture d'origine) pour montrer au chauffeur ──────────
+
+def test_country_language_maps_non_latin_only():
+    assert overpass.country_language("JP") == "ja"
+    assert overpass.country_language("jp") == "ja"      # casse indifférente
+    assert overpass.country_language("RU") == "ru"
+    # Pays latin ou inconnu → None (rien ne sera capté, aucune régression).
+    assert overpass.country_language("ES") is None
+    assert overpass.country_language("FR") is None
+    assert overpass.country_language(None) is None
+
+
+def test_is_non_latin_detects_scripts():
+    assert overpass._is_non_latin("浅草寺") is True          # CJK
+    assert overpass._is_non_latin("Москва") is True          # cyrillique
+    assert overpass._is_non_latin("Sensō-ji") is False       # latin étendu (macron)
+    assert overpass._is_non_latin("Mercadona") is False
+    assert overpass._is_non_latin("123 - Café") is False     # chiffres/ponctuation
+
+
+def test_element_to_poi_captures_local_name_when_display_is_latin():
+    """Tokyo : `name` latin (Sensō-ji), `name:ja` natif → nom local capté en
+    completion_meta, SANS toucher au champ `name`. Adresse locale (`addr:full`) aussi."""
+    el = {"type": "node", "id": 1, "lat": LAT, "lon": LON,
+          "tags": {"name": "Sensō-ji", "name:ja": "浅草寺",
+                   "name:en": "Senso-ji Temple", "tourism": "attraction",
+                   "addr:full": "東京都台東区浅草2-3-1"}}
+    poi = overpass._element_to_poi(el, LAT, LON, "ja")
+    assert poi["name"] == "Sensō-ji"                          # champ name INCHANGÉ
+    meta = poi["completion_meta"]
+    assert meta["_name_local"] == "浅草寺" and meta["_name_script"] == "cjk"
+    assert meta["_addr_local"] == "東京都台東区浅草2-3-1"
+
+
+def test_element_to_poi_no_local_when_name_already_native():
+    """`name` déjà en écriture d'origine (pas de variante latine à contraster) → aucun
+    nom local (le nom affiché est déjà montrable au chauffeur)."""
+    el = {"type": "node", "id": 2, "lat": LAT, "lon": LON,
+          "tags": {"name": "浅草寺", "tourism": "attraction"}}
+    assert "completion_meta" not in overpass._element_to_poi(el, LAT, LON, "ja")
+
+
+def test_element_to_poi_no_local_in_latin_country():
+    """Pays latin (country_lang None) : aucune capture, même avec un name:es présent →
+    zéro ligne supplémentaire (La Zenia/Ardon inchangés)."""
+    el = {"type": "node", "id": 3, "lat": LAT, "lon": LON,
+          "tags": {"name": "Mercadona", "name:es": "Mercadona", "shop": "supermarket"}}
+    assert "completion_meta" not in overpass._element_to_poi(el, LAT, LON, None)
+
+
+def test_element_to_poi_prefers_country_language_among_scripts():
+    """Plusieurs variantes non latines : la langue DU PAYS gagne (ja pour le Japon,
+    jamais ko/zh d'un POI japonais)."""
+    el = {"type": "node", "id": 4, "lat": LAT, "lon": LON,
+          "tags": {"name": "Tokyo Tower", "name:ja": "東京タワー",
+                   "name:ko": "도쿄 타워", "name:zh": "東京鐵塔", "tourism": "attraction"}}
+    assert overpass._element_to_poi(el, LAT, LON, "ja")["completion_meta"]["_name_local"] \
+        == "東京タワー"
+
+
 # ── V2-44 : rayons adaptatifs (ruralité) ─────────────────────────────────────
 
 def _sm(name: str, dlat: float) -> dict:

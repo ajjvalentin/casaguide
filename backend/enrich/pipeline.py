@@ -588,7 +588,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                       if (not only_categories or c["code"] in only_categories)
                       and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
             grouped, failed_categories, harvest = overpass.fetch_grouped(
-                wanted, origin[0], origin[1], client=http_client)
+                wanted, origin[0], origin[1], client=http_client,
+                # Nom local pour le chauffeur (V2-66) : langue du pays → capture du
+                # nom/adresse en écriture d'origine (JP → name:ja…), non latin uniquement.
+                country_lang=overpass.country_language(prop.get("country_code")))
 
             # ── V2-52 volet 1 : acquisition Overture (une seule extraction bbox) ──
             # Décision de sources (benchmark 2026-09-09) : OSM le factuel, Overture le
@@ -1226,7 +1229,8 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
             wanted = [c for c in all_cats if c["code"] in categories
                       and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
             grouped, failed, _harvest = overpass.fetch_grouped(
-                wanted, origin[0], origin[1], client=http_client)
+                wanted, origin[0], origin[1], client=http_client,
+                country_lang=overpass.country_language(prop.get("country_code")))
 
             editorial: list[dict] = []
             for cat in wanted:
