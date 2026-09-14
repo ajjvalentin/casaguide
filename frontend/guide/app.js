@@ -525,7 +525,9 @@ function updateLangHash() {
 // on garantit l'onglet actif + le défilement doux, et on révèle un bouton
 // flottant discret pendant le défilement dans « Autour de vous ».
 function initBackToServices() {
-  const grid = document.querySelector(".svc-grid");
+  // V2-60 : le sommaire est désormais un conteneur `.svc-toc` (blocs par famille) ;
+  // on défile vers lui (repli `.svc-grid` pour un rendu ancien resté en cache).
+  const grid = document.querySelector(".svc-toc, .svc-grid");
   const links = [...document.querySelectorAll(".back-services")];
   if (!grid || !links.length) return;
   const aroundHash = "#" + TAB_HASH.around;

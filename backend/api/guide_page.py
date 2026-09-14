@@ -1226,7 +1226,7 @@ _SERVICE_FACT_TYPES = ("food_delivery",)
 
 
 def _service_fact_tiles(sections: list[dict], area_facts: dict,
-                        lang: str = "fr") -> list[tuple[int, str]]:
+                        lang: str = "fr") -> list[tuple[str, int, str]]:
     """Tuiles de service adossées à un **fait de zone** (V2-07 volet 1bis).
 
     Pour chaque section qui déclare un fait de `_SERVICE_FACT_TYPES` **non vide**
@@ -1244,8 +1244,10 @@ def _service_fact_tiles(sections: list[dict], area_facts: dict,
     seule à l'écran + « Retour aux services ». Généricité : tout futur fait de zone
     doté d'une tuile hérite du comportement sans nouveau code.
 
-    Retourne des couples `(rang, html)` pour s'intercaler dans l'ordre du seed."""
-    tiles: list[tuple[int, str]] = []
+    Retourne des triplets `(chapitre, rang, html)` : le chapitre regroupe la tuile
+    dans le bloc de famille (V2-60, sommaire par familles), le rang l'ordonne dans
+    la famille (ordre d'utilité du seed)."""
+    tiles: list[tuple[str, int, str]] = []
     for s in sections:
         declared = (s.get("field_schema") or {}).get("area_facts") or []
         for ft in declared:
@@ -1255,11 +1257,12 @@ def _service_fact_tiles(sections: list[dict], area_facts: dict,
             if not render or not render(area_facts.get(ft) or {}, lang):
                 continue  # fait absent/vide → pas de tuile (miroir de l'encart)
             code = s.get("code") or ""
+            chapter = s.get("chapter", "") or ""
             name = _esc(_section_title(s, lang))   # V2-42 : la tuile suit le titre affiché
             icon = category_icon_svg(ft, s.get("icon"))
             count = len((area_facts.get(ft) or {}).get("platforms") or [])
-            color = _esc(_CHAPTER_COLORS.get(s.get("chapter", ""), "#0E5A73"))
-            tiles.append((category_rank(ft),
+            color = _esc(_CHAPTER_COLORS.get(chapter, "#0E5A73"))
+            tiles.append((chapter, category_rank(ft),
                 f'<a class="svc-tile" href="#{_esc(code)}" data-fact="{_esc(code)}" '
                 f'style="--svc-accent:{color}" '
                 f'aria-label="{name} : {count}">'
@@ -1270,49 +1273,72 @@ def _service_fact_tiles(sections: list[dict], area_facts: dict,
 
 
 def _render_service_grid(pois: list[dict], lang: str = "fr",
-                         fact_tiles: list[tuple[int, str]] | None = None) -> str:
-    """Grille de pictogrammes en tête de « Autour de vous » (V2-12).
+                         fact_tiles: list[tuple[str, int, str]] | None = None) -> str:
+    """Sommaire par familles en tête de « Autour de vous » (V2-12, refondu V2-60).
 
-    Une tuile par catégorie ayant ≥1 POI retenu : grande icône du seed
-    (`poi_categories.icon`, rendue en SVG inline par `poi_icons`), nom localisé
-    et compte. C'est la **navigation principale** de l'onglet : chaque tuile est
-    un lien d'ancre `#autour/{code}` vers le bloc de la catégorie (dont l'`id`
-    est justement `autour/{code}`) → fonctionne même sans JS ; l'enrichissement
-    client (app.js) résout l'onglet + le défilement doux + le retour arrière.
+    La grille plate de V2-12 devient une **table des matières groupée par famille**
+    (chapitre) : chaque famille est un bloc titré (libellé de chapitre localisé,
+    même intitulé que les puces de filtre) coiffé d'un accent à la **couleur de la
+    famille** — la MÊME que les pastilles de la carte (`_CHAPTER_COLORS`, alignée
+    sur `poi_categories.map_color`) → cohérence carte ↔ sommaire ↔ sections.
 
-    `fact_tiles` (V2-07 volet 1bis) = tuiles adossées à un fait de zone (ex.
-    livraison de repas), déjà rendues, avec leur rang pour s'intercaler dans
-    l'ordre du seed. Elles pointent une **section** (`#{code}`), pas une catégorie.
+    Les **blocs** paraissent dans l'ordre des sections (`_CHAPTER_ORDER`) ; à
+    l'intérieur d'une famille, les tuiles suivent l'**ordre d'utilité fixe du seed**
+    (`poi_icons.category_rank`, identique dans les 7 langues, jamais alphabétique).
 
-    Ordre : celui du seed (`poi_icons.category_rank`), cohérent avec le reste du
-    guide. Aucune tuile si aucun POI ni fait (repli : rien, la carte/les listes
-    suffisent)."""
+    Chaque tuile reste ce qu'elle était (V2-12/V2-07) : une grande icône du seed,
+    le nom localisé, le compte, et surtout **la même ancre/comportement** — lien
+    `#autour/{code}` (`data-cat`) pour une catégorie, `#{code}` (`data-fact`) pour
+    une section de fait de zone. app.js filtre PUIS positionne exactement comme
+    avant ; sans JS, l'ancre native défile au bloc. `fact_tiles` = triplets
+    `(chapitre, rang, html)` déjà rendus (V2-07 volet 1bis).
+
+    Aucune tuile si aucun POI ni fait (repli : rien, la carte/les listes suffisent)."""
     if not pois and not fact_tiles:
         return ""
     groups: dict[str, list[dict]] = {}
     for p in pois:
         groups.setdefault(p["category_code"], []).append(p)
-    ranked: list[tuple[int, str]] = list(fact_tiles or [])
+    # (chapitre, rang, html) pour TOUTES les tuiles — catégories ET faits de zone.
+    entries: list[tuple[str, int, str]] = list(fact_tiles or [])
     for code, lst in groups.items():
+        chapter = lst[0].get("chapter", "") or ""
         name = _esc(_seed_label(lang, _i18n_mod.poi_category_key(code),
                                 lst[0].get("category_name"), code))
         icon = category_icon_svg(code, lst[0].get("category_icon"))
         count = len(lst)
         color = _esc(lst[0].get("map_color") or "#0E5A73")
-        ranked.append((category_rank(code),
+        entries.append((chapter, category_rank(code),
             f'<a class="svc-tile" href="#{_TAB_HASH["around"]}/{_esc(code)}" '
             f'data-cat="{_esc(code)}" style="--svc-accent:{color}" '
             f'aria-label="{name} : {count}">'
             f'<span class="svc-ic">{icon}</span>'
             f'<span class="svc-name">{name}</span>'
             f'<span class="svc-count">{count}</span></a>'))
-    tiles = [html for _, html in sorted(ranked, key=lambda rh: rh[0])]
-    # id = « autour » (V2-27) : cible du retour aux services. Comme les liens de
-    # retour pointent `#autour`, le navigateur défile nativement jusqu'à la grille
-    # (sans JS) ; le hash reste propre (`#autour`, l'onglet), historique cohérent.
-    return (f'<nav class="svc-grid" id="{_TAB_HASH["around"]}" '
+    # Regroupement par famille, dans l'ordre des sections (_CHAPTER_ORDER en tête,
+    # tout chapitre hors registre — improbable — en fin, jamais perdu).
+    by_ch: dict[str, list[tuple[int, str]]] = {}
+    for chapter, rank, html in entries:
+        by_ch.setdefault(chapter, []).append((rank, html))
+    order = [c for c in _CHAPTER_ORDER if c in by_ch]
+    order += [c for c in by_ch if c not in _CHAPTER_ORDER]
+    blocks: list[str] = []
+    for chapter in order:
+        tiles = [html for _, html in sorted(by_ch[chapter], key=lambda rh: rh[0])]
+        title = _esc(_seed_label(lang, _i18n_mod.chapter_tab_key(chapter, "around"),
+                                 _CHAPTER_TAB_NAMES.get((chapter, "around")),
+                                 _chapter_name(chapter, lang)))
+        color = _esc(_CHAPTER_COLORS.get(chapter, "#0E5A73"))
+        blocks.append(
+            f'<section class="svc-group" style="--fam:{color}">'
+            f'<h3 class="svc-group-title">{title}</h3>'
+            f'<div class="svc-grid">{"".join(tiles)}</div></section>')
+    # id = « autour » (V2-27) porté par le CONTENEUR : cible du retour aux services
+    # (les liens `#autour` défilent nativement jusqu'au sommaire) ; le hash reste
+    # propre (`#autour`, l'onglet), historique cohérent.
+    return (f'<nav class="svc-toc" id="{_TAB_HASH["around"]}" '
             f'aria-label="{_esc(_t(lang, "services_grid"))}">'
-            f'{"".join(tiles)}</nav>')
+            f'{"".join(blocks)}</nav>')
 
 
 def _render_cuisine_chips(restaurants: list[dict], lang: str) -> str:

@@ -194,9 +194,10 @@ def test_cuisine_filter_chips_and_tags_localised():
 def test_back_to_services_link_in_each_around_category_and_floating_button():
     pois = [_resto("Trattoria", "italian", 5), _resto("El Puerto", "seafood", 8)]
     html = guide_page.render_guide(_prop(), [], pois, {}, "tok")
-    # La grille porte l'ancre de retour (id = « autour ») : cible du retour, natif
-    # sans JS (défilement vers la grille), hash propre (#autour).
-    assert 'class="svc-grid" id="autour"' in html
+    # Le sommaire porte l'ancre de retour (id = « autour ») : cible du retour, natif
+    # sans JS (défilement vers le sommaire), hash propre (#autour). V2-60 : conteneur
+    # `.svc-toc` (blocs par famille), les grilles vivent à l'intérieur.
+    assert 'class="svc-toc" id="autour"' in html
     # Chaque catégorie « Autour de vous » se termine par un retour aux services.
     assert 'class="back-services" href="#autour"' in html
     assert "Retour aux services" in html
@@ -984,9 +985,9 @@ def test_single_page_no_new_routes_hashes_are_fixed():
 # ── V2-12 : grille de pictogrammes (navigation principale d'« Autour de vous ») ─
 
 def _grid(html):
-    """Extrait le HTML de la grille de services, ou '' si absente."""
+    """Extrait le HTML du sommaire de services (V2-60 : conteneur `.svc-toc`), ou ''."""
     import re
-    m = re.search(r'<nav class="svc-grid".*?</nav>', html, re.S)
+    m = re.search(r'<nav class="svc-toc".*?</nav>', html, re.S)
     return m.group(0) if m else ""
 
 
@@ -1056,16 +1057,53 @@ def test_service_grid_absent_when_no_around_pois():
     """Pas de POI « autour » → pas de grille (repli : carte/listes suffisent)."""
     html = guide_page.render_guide(_prop(), [_section("B_wifi", "B", {"fields": []})],
                                    [], {}, "tok")
-    assert '<nav class="svc-grid"' not in html
+    assert '<nav class="svc-toc"' not in html
 
 
 def test_service_grid_is_head_of_around_before_map():
-    """La grille est en TÊTE de l'onglet, avant la carte (navigation principale)."""
+    """Le sommaire est en TÊTE de l'onglet, avant la carte (navigation principale)."""
     pois = [_poi("Mercadona", "supermarket", "C")]
     around = _panel(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [], pois, {}, "tok"),
                     "around")
-    assert '<nav class="svc-grid"' in around and '<div id="map"></div>' in around
-    assert around.index('<nav class="svc-grid"') < around.index('<div id="map"></div>')
+    assert '<nav class="svc-toc"' in around and '<div id="map"></div>' in around
+    assert around.index('<nav class="svc-toc"') < around.index('<div id="map"></div>')
+
+
+def test_service_grid_grouped_by_family_in_section_order_with_family_colours():
+    """V2-60 — le sommaire est GROUPÉ par famille : un bloc titré par chapitre, dans
+    l'ordre des sections, accent à la couleur de la famille (= pastilles de la carte),
+    tuiles dans l'ordre d'utilité du seed à l'intérieur de chaque famille."""
+    pois = [
+        _poi("Cinéma", "sight", "G"),          # famille G (Activités & tourisme)
+        _poi("Le Bar", "bar", "F"),            # famille F, rang seed après restaurant
+        _poi("La Marejada", "restaurant", "F"),# famille F, rang seed avant bar
+        _poi("Mercadona", "supermarket", "C"), # famille C (Commerces & services)
+    ]
+    grid = _grid(guide_page.render_guide(_prop(), [], pois, {}, "tok"))
+    assert grid
+    # Trois blocs de famille, chacun titré et coloré à la couleur du chapitre.
+    assert grid.count('<section class="svc-group"') == 3
+    assert '--fam:#2E7D32' in grid          # C = vert (comme la pastille carte)
+    assert '--fam:#EF6C00' in grid          # F = orange
+    assert '--fam:#0277BD' in grid          # G = bleu
+    # Titres de famille localisés (mêmes intitulés « autour » que les puces de filtre).
+    assert '>Commerces &amp; services<' in grid
+    assert '>Restaurants &amp; sorties<' in grid
+    assert '>Activités &amp; tourisme<' in grid
+    # Blocs dans l'ORDRE DES SECTIONS (C avant F avant G).
+    assert grid.index("Commerces") < grid.index("Restaurants") < grid.index("Activités")
+    # Ordre d'utilité du seed DANS la famille F : restaurant avant bar (jamais alpha).
+    assert grid.index('data-cat="restaurant"') < grid.index('data-cat="bar"')
+    # Les tuiles gardent ancre + comportement (data-cat = mode filtré catégorie).
+    assert 'href="#autour/supermarket"' in grid and 'data-cat="supermarket"' in grid
+
+
+def test_service_grid_family_title_localised_en():
+    """V2-60 — les titres de famille suivent la langue du guide (repli propre)."""
+    pois = [_poi("Mercadona", "supermarket", "C"), _poi("La Marejada", "restaurant", "F")]
+    grid = _grid(guide_page.render_guide(_prop(), [], pois, {}, "tok", lang="en"))
+    assert '>Shops &amp; services<' in grid and '>Dining &amp; going out<' in grid
+    assert "Commerces" not in grid and "Restaurants &amp; sorties" not in grid
 
 
 # ── Jour du marché (V2-33 volet 1) ───────────────────────────────────────────

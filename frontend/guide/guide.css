@@ -132,6 +132,10 @@ html.js .back-float.show{display:inline-flex}
    à un tap — info de sécurité jamais retirée ailleurs).
    Amélioration progressive : sans JS la classe `cat-filtered` n'est jamais posée,
    tout reste visible (ancres natives → défilement simple, comportement d'origine). */
+/* V2-60 : le sommaire est un conteneur `.svc-toc` ; `.svc-grid` reste ciblé en
+   direct-child pour une page ANCIENNE encore en cache (grille plate) servie avec
+   la NOUVELLE feuille (rollout/hors-ligne) → le mode filtré la masque quand même. */
+html.js .tab-panel[data-tab="around"].cat-filtered > .svc-toc,
 html.js .tab-panel[data-tab="around"].cat-filtered > .svc-grid,
 html.js .tab-panel[data-tab="around"].cat-filtered > .chips{display:none}
 html.js body.cat-filtered .guide-head .sos{display:none}
@@ -185,12 +189,28 @@ html.js .tab-panel[data-tab="around"].fact-filtered > #map{display:none}
       padding:6px 14px;font:inherit;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;flex:none}
 .chip.on{background:var(--sea);border-color:var(--sea);color:#fff}
 
-/* ── Grille de services (V2-12) : navigation principale d'« Autour de vous » ─
-   En tête de l'onglet, avant la carte. Tuiles tactiles généreuses (mobile-first),
-   grande icône du seed (SVG inline), nom localisé et compte. Chaque tuile est un
-   lien d'ancre vers le bloc de la catégorie (`#autour/{code}`). */
+/* ── Sommaire de services (V2-12, refondu en table des matières V2-60) ────────
+   En tête de l'onglet « Autour de vous », avant la carte. La grille plate devient
+   un SOMMAIRE GROUPÉ PAR FAMILLE : chaque famille (chapitre) est un bloc titré,
+   accent à la couleur de la famille (= pastilles de la carte), tuiles dans l'ordre
+   d'utilité du seed. Blocs dans l'ordre des sections. Chaque tuile reste un lien
+   d'ancre (`#autour/{code}` catégorie, `#{code}` fait de zone) : icône du seed,
+   nom localisé, compte. */
+.svc-toc{margin:4px 0 16px;scroll-margin-top:64px}
+.svc-group{margin:0 0 18px}
+.svc-group:last-child{margin-bottom:4px}
+/* Titre de famille : accent à la COULEUR DE LA FAMILLE (--fam, alignée sur les
+   pastilles de la carte) → cohérence carte ↔ sommaire ↔ sections. */
+.svc-group-title{font-size:12.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.045em;color:var(--fam,var(--sea));margin:0 0 9px;
+  padding-left:10px;border-left:3px solid var(--fam,var(--sea))}
+/* `scroll-margin-top` gardé aussi sur `.svc-grid` : décale l'ancre `#autour` d'une
+   page ANCIENNE en cache (grille plate `#autour`) sous la barre d'onglets collante. */
 .svc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));
-  gap:10px;margin:4px 0 16px;scroll-margin-top:64px}
+  gap:10px;margin:0;scroll-margin-top:64px}
+/* Densité mobile (V2-60) : deux colonnes sous 430 px — tuiles plus généreuses,
+   sommaire scannable au pouce sans écrasement des libellés en 7 langues. */
+@media (max-width:430px){.svc-grid{grid-template-columns:repeat(2,1fr)}}
 .svc-tile{display:flex;flex-direction:column;align-items:center;gap:7px;text-align:center;
   padding:14px 8px 12px;min-height:96px;background:var(--shell);border:1px solid var(--line);
   border-radius:14px;color:var(--ink);transition:transform .12s,box-shadow .12s,border-color .12s}
