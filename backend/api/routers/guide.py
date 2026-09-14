@@ -471,8 +471,17 @@ def public_og_image(guide_token: str, conn: Conn):
     if not prop:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Guide introuvable")
-    place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
-    png = og_image.build_og_image(prop["name"], subtitle=place)
+    # V2-62 : la vignette de partage d'un guide VOYAGEUR (guest) porte la COMMUNE,
+    # jamais le nom interne « Guide — … » / « Démo — … » (même principe que le titre
+    # HTML V2-59). Sous-titre = région seule (la commune est déjà le titre → pas de
+    # redite). Un guide propriétaire garde son nom + « ville, région ».
+    if prop.get("guest_guide"):
+        title = prop.get("city") or prop["name"]
+        subtitle = prop.get("region") or ""
+    else:
+        title = prop["name"]
+        subtitle = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
+    png = og_image.build_og_image(title, subtitle=subtitle)
     return Response(content=png, media_type="image/png",
                     headers=_public_headers())
 

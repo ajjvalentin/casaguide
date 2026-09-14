@@ -127,6 +127,29 @@ _UI7: dict[str, dict[str, str]] = {
         "nl": "Installeren: tik op Delen en dan “Zet op beginscherm”.",
         "it": "Per installare: tocca Condividi, poi “Aggiungi a Home”.",
         "sq": "Për ta instaluar: prek Ndaj, pastaj “Shto në ekranin bazë”."},
+    # V2-62 : métadonnées de partage d'un GUIDE VOYAGEUR (guest). Le wording
+    # propriétaire (« Guide du logement », « arrivée, wifi… ») ment sur un guide qui
+    # n'a ni arrivée ni wifi. Suffixe de titre + description VÉRIDIQUES, 7 langues,
+    # suivant `lang` comme og:locale (acquis V2-51b). `{place}` = « <lieu>, <pays> ».
+    "share_title_suffix_guest": {
+        "fr": "Guide de séjour", "en": "Stay guide", "es": "Guía de estancia",
+        "it": "Guida di soggiorno", "de": "Reiseführer",
+        "nl": "Verblijfsgids", "sq": "Udhëzues qëndrimi"},
+    "share_desc_guest": {
+        "fr": "Le guide des environs : restaurants, plages, commerces, urgences — "
+              "{place}. Hors-ligne, 7 langues.",
+        "en": "The guide to the area: restaurants, beaches, shops, emergencies — "
+              "{place}. Offline, 7 languages.",
+        "es": "La guía de los alrededores: restaurantes, playas, comercios, urgencias — "
+              "{place}. Sin conexión, 7 idiomas.",
+        "it": "La guida della zona: ristoranti, spiagge, negozi, emergenze — "
+              "{place}. Offline, 7 lingue.",
+        "de": "Der Guide für die Umgebung: Restaurants, Strände, Geschäfte, Notfälle — "
+              "{place}. Offline, 7 Sprachen.",
+        "nl": "De gids voor de omgeving: restaurants, stranden, winkels, noodgevallen — "
+              "{place}. Offline, 7 talen.",
+        "sq": "Udhëzuesi i zonës: restorante, plazhe, dyqane, urgjenca — "
+              "{place}. Jashtë linje, 7 gjuhë."},
 }
 
 
@@ -2118,10 +2141,22 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # WhatsApp) est la COMMUNE — jamais le « Guide — … » interne.
     plain_name = (prop.get("city") if guest_guide else prop.get("name")) \
         or _t(lang, "home")
-    share_title = f"{plain_name} — {_t(lang, 'title_suffix')}"
+    # V2-62 : les métadonnées de partage disent le VRAI produit. Un guide voyageur
+    # (guest) n'a ni arrivée ni wifi → suffixe « Guide de séjour » (jamais « du
+    # logement ») et description véridique (environs), localisés 7 langues (_t7).
+    # Un guide propriétaire garde le wording actuel (juste pour lui).
+    if guest_guide:
+        share_suffix = _t7(lang, "share_title_suffix_guest")
+        _place = ", ".join(x for x in [prop.get("city"),
+                 _country_name(prop.get("country_code") or "", lang)] if x)
+        share_desc = _t7(lang, "share_desc_guest").replace("{place}", _place)
+    else:
+        share_suffix = _t(lang, "title_suffix")
+        share_desc = _t(lang, "share_desc")
+    share_title = f"{plain_name} — {share_suffix}"
     _path = canonical_path if canonical_path is not None else share_path(prop.get("name"), token)
     og_url = (base_url.rstrip("/") + _path) if base_url else ""
-    og_html = _og_tags(title=share_title, desc=_t(lang, "share_desc"),
+    og_html = _og_tags(title=share_title, desc=share_desc,
                        url=og_url, image=og_image_url,
                        locale=_OG_LOCALE.get(lang, "fr_FR"))
 
@@ -2163,7 +2198,8 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#0E5A73">
 <script>document.documentElement.className += " js";</script>
-<title>{name} — {_esc(_t(lang, "title_suffix"))}</title>
+<title>{_esc(share_title)}</title>
+<meta name="description" content="{_esc(share_desc)}">
 {og_html}
 {manifest_link}
 <link rel="apple-touch-icon" href="/guide/icon-192.png">

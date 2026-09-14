@@ -567,6 +567,46 @@ def test_guest_situation_header_title_and_country_line():
     assert "situ-medallion" not in owner
 
 
+def test_guest_share_metadata_says_true_product():
+    """V2-62 : les métadonnées de partage d'un guide voyageur (guest) disent le VRAI
+    produit — « Guide de séjour » (jamais « du logement »), description des ENVIRONS
+    (sans arrivée/wifi) + `<meta name=description>`, localisées 7 langues (_t7,
+    suivant `lang` comme og:locale). Un guide propriétaire garde son wording."""
+    prop = _prop()  # city=Orihuela Costa, region=Alicante, country=ES
+    html = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True)
+    # Titre / og:title : « … — Guide de séjour », JAMAIS « du logement ».
+    assert "<title>Orihuela Costa — Guide de séjour</title>" in html
+    assert 'og:title" content="Orihuela Costa — Guide de séjour"' in html
+    assert "Guide du logement" not in html
+    # Description VÉRIDIQUE (environs, hors-ligne), avec « <lieu>, <pays> » ; jamais
+    # le wording propriétaire (arrivée/wifi).
+    assert 'og:description" content="Le guide des environs' in html
+    assert "Orihuela Costa, Espagne. Hors-ligne, 7 langues." in html
+    # Jamais la description PROPRIÉTAIRE (« Tout pour votre séjour : arrivée, wifi… »).
+    # NB : le pied B2B mentionne « arrivée, wifi » à dessein (l'offre de l'hôte) →
+    # on cible le marqueur de la DESCRIPTION owner, pas la sous-chaîne isolée.
+    assert 'Tout pour votre séjour' not in html
+    # `<meta name="description">` présent, même wording.
+    assert '<meta name="description" content="Le guide des environs' in html
+    # EN : suit `lang` (comme og:locale, acquis V2-51b).
+    en = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True,
+                                 lang="en")
+    assert "<title>Orihuela Costa — Stay guide</title>" in en
+    assert 'og:description" content="The guide to the area' in en
+    assert "Orihuela Costa, Spain. Offline, 7 languages." in en
+
+
+def test_owner_share_metadata_unchanged():
+    """V2-62 : un guide PROPRIÉTAIRE garde « Guide du logement » + la description
+    séjour (juste pour lui) ; le `<meta name=description>` reprend ce wording."""
+    html = guide_page.render_guide(_prop(), [], [], AREA_FACTS, "tok")  # name=Villa Test
+    assert "<title>Villa Test — Guide du logement</title>" in html
+    assert 'og:title" content="Villa Test — Guide du logement"' in html
+    assert 'og:description" content="Tout pour votre séjour' in html
+    assert '<meta name="description" content="Tout pour votre séjour' in html
+    assert "Guide de séjour" not in html
+
+
 def test_guest_footer_blocks_b2b_and_holaquetal_bridge():
     """V2-54 Mission C : le guide voyageur porte deux pieds — acquisition B2B (toujours)
     et pont Holaquetal (seulement si l'URL est configurée, avec utm+commune). Absents
