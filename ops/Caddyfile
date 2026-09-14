@@ -68,6 +68,16 @@ holaguia.com {
 
 	reverse_proxy 127.0.0.1:8000
 	import securite
+
+	# V2-58b — la vitrine encadre ses PROPRES guides dans le téléphone du héros :
+	# X-Frame-Options DENY (posé par `securite`) refuse cette iframe MÊME-ORIGINE.
+	# Pour les seules pages de guide /g/*, on remplace DENY par SAMEORIGIN + son
+	# équivalent moderne (CSP frame-ancestors 'self'). Le reste (SPA, admin) garde
+	# DENY. Placé APRÈS `import securite` → l'override gagne pour /g/*.
+	@guidepage path /g/*
+	header @guidepage X-Frame-Options SAMEORIGIN
+	header @guidepage Content-Security-Policy "frame-ancestors 'self'"
+
 	log {
 		output file /var/log/caddy/access.log
 		format json

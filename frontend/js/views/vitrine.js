@@ -117,6 +117,35 @@ function money(cts, currency) {
   } catch (_) { return "2,90 €"; }
 }
 
+/* Aperçu du vrai guide démo dans le téléphone du héros, avec REPLI GRACIEUX (V2-58b) :
+   si l'iframe même-origine est refusée (X-Frame-Options d'un environnement mal
+   configuré) ou ne charge pas, on affiche le motif signature + un lien plein écran —
+   plus jamais d'icône cassée, quel que soit l'environnement. */
+function mountDemoInPhone(slot, url, tr) {
+  const f = document.createElement("iframe");
+  f.src = url; f.loading = "lazy"; f.title = "Démo";
+  let settled = false;
+  const fallback = () => {
+    if (settled) return; settled = true;
+    const dots = document.createElement("div"); dots.className = "vt-dots";
+    const a = document.createElement("a");
+    a.className = "vt-phone-fallback"; a.href = url; a.target = "_blank";
+    a.rel = "noopener"; a.textContent = tr("demo_open");
+    slot.replaceChildren(dots, a);
+  };
+  f.addEventListener("error", fallback);
+  f.addEventListener("load", () => {
+    // Même origine : un cadre refusé (X-Frame-Options) laisse le corps VIDE.
+    try {
+      const doc = f.contentDocument;
+      if (!doc || !doc.body || doc.body.childElementCount === 0) return fallback();
+      settled = true;  // le vrai guide s'affiche
+    } catch (_) { fallback(); }
+  });
+  setTimeout(() => { if (!settled) fallback(); }, 6000);  // filet (charge lente/mute)
+  slot.replaceChildren(f);
+}
+
 export function renderVitrine(root, params) {
   const lang = pickLang(params);
   const tr = translator(S, lang);
@@ -215,9 +244,7 @@ export function renderVitrine(root, params) {
     const url = `/g/${encodeURIComponent(d.token)}`;
     // UN SEUL iframe (le téléphone du héros = le vrai guide démo, chargé en paresseux) :
     // la section « Démo vivante » n'ajoute qu'un lien plein écran → LCP léger.
-    const f = document.createElement("iframe");
-    f.src = url; f.loading = "lazy"; f.title = "Démo";
-    phone.querySelector(".vt-phone-slot").replaceChildren(f);
+    mountDemoInPhone(phone.querySelector(".vt-phone-slot"), url, tr);
     demoFrame.replaceChildren(
       el("a", { class: "btn btn-primary vt-demo-open", href: url, target: "_blank",
         rel: "noopener" }, tr("demo_open")));

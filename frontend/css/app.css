@@ -1051,3 +1051,9 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
   .vt-section { padding: 28px 16px; }
   .vt-title { font-size: 26px; }
 }
+
+/* Repli du téléphone démo (V2-58b) : lien centré sur le motif signature */
+.vt-phone-slot { position: relative; }
+.vt-phone-fallback { position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; text-align: center; padding: 20px; color: #fff; font-weight: 600;
+  background: rgba(14,90,115,.55); }
