@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,9 +16,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from enrich import db as enrich_db
 
-from . import repo
+from . import guest_guides, repo
 from .assets import RevalidatingStaticFiles, asset_version, versioned
 from .config import missing_production_config, settings
+from .deps import build_mailer
 from .routers import (auth, billing, calendars, enrich, guest_pay, guide, help,
                       languages, media, pois, properties, send, share)
 
@@ -71,6 +73,27 @@ async def lifespan(app: FastAPI):
         conn.commit()
     if n:
         log.warning("%d job(s) d'enrichissement orphelin(s) requalifié(s) en failed.", n)
+
+    # Chien de garde des commandes voyageur (V2-64) : une commande PAYÉE restée
+    # 'generating' n'a pas de tâche de fond vivante (les BackgroundTasks ne survivent
+    # pas au redémarrage — cause typique : restart de déploiement en pleine génération).
+    # Au démarrage TOUTE commande orpheline est reprise (seuil 0) et sa génération est
+    # RELANCÉE en thread → aucune commande payée ne reste sur une roue éternelle. Une
+    # commande 'generating' bloquée signifie toujours un processus mort (une erreur de
+    # pipeline passe la commande en 'failed'), donc la relance est sûre et ne boucle pas.
+    try:
+        with enrich_db.connect() as conn:
+            recovered = guest_guides.recover_stuck_orders(
+                conn, mailer=build_mailer(),
+                base_url=settings.public_base_url or "https://holaguia.com",
+                older_than_s=0,
+                spawn=lambda fn: threading.Thread(target=fn, daemon=True).start())
+        if recovered:
+            log.warning("%d commande(s) voyageur orpheline(s) : génération relancée.",
+                        recovered)
+    except Exception:  # noqa: BLE001 — le démarrage ne doit jamais échouer sur la reprise
+        log.warning("Chien de garde des commandes voyageur : reprise au démarrage "
+                    "échouée (sera retentée par le timer périodique).", exc_info=True)
     yield
 
 

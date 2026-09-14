@@ -618,13 +618,16 @@ def test_guest_footer_blocks_b2b_and_holaquetal_bridge():
     assert "généré automatiquement" in html                     # B2B
     assert "Vous cherchez un logement dans ce secteur" in html  # pont
     assert "utm_source=holaguia" in html and "commune=Orihuela" in html
+    # V2-64 : porte de sortie « Créer un autre guide » → retour au tunnel public.
+    assert "Créer un autre guide" in html and "https://holaguia.com/#/voyageur" in html
     # Sans URL Holaquetal → pas de pont (jamais de lien mort), B2B présent.
     html2 = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True)
     assert "généré automatiquement" in html2
     assert "Vous cherchez un logement" not in html2
-    # Guide propriétaire → aucun pied d'acquisition.
+    # Guide propriétaire → aucun pied d'acquisition (ni B2B ni porte de sortie V2-64).
     owner = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok")
     assert "généré automatiquement" not in owner
+    assert "Créer un autre guide" not in owner
     # Localisation (EN).
     en = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True,
                                  lang="en")

@@ -1,0 +1,14 @@
+# Déclencheur du chien de garde des commandes voyageur Holaguia — V2-64
+# Toutes les 5 minutes : une commande payée bloquée doit être reprise vite (le client
+# attend). Le seuil d'ancienneté (45 min par défaut) évite de reprendre une commande
+# encore en cours ; c'est la CADENCE de vérification, pas le seuil.
+[Unit]
+Description=Chien de garde des commandes voyageur Holaguia (toutes les 5 min)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

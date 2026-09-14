@@ -1,0 +1,25 @@
+# Chien de garde des commandes voyageur Holaguia — V2-64 (backstop périodique)
+# Déclenché par casaguide-recover-orders.timer (toutes les ~5 min). Reprend toute
+# commande PAYÉE bloquée (paid/generating) dont la tâche de fond est morte et relance
+# sa génération. Le démarrage de l'app fait déjà la reprise immédiate (lifespan) ;
+# ce timer couvre le cas d'une tâche morte SANS redémarrage.
+# Installé automatiquement par deploy.sh (sync_units). Installation manuelle :
+#   sudo cp /opt/casaguide/ops/casaguide-recover-orders.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-recover-orders.timer
+#   (vérifier : systemctl list-timers | grep recover-orders ; test manuel :
+#    sudo -u casaguide /opt/casaguide/.venv/bin/python \
+#        /opt/casaguide/ops/recover_orders.py --dry-run)
+[Unit]
+Description=Chien de garde des commandes voyageur Holaguia
+After=postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+User=casaguide
+Group=casaguide
+# EnvironmentFile facultatif : le script charge aussi backend/.env lui-même (OPS-1) —
+# il y lit ANTHROPIC_API_KEY (la relance exécute le pipeline) et la config SMTP.
+EnvironmentFile=-/opt/casaguide/backend/.env
+WorkingDirectory=/opt/casaguide/backend
+ExecStart=/opt/casaguide/.venv/bin/python /opt/casaguide/ops/recover_orders.py

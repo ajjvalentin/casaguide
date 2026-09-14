@@ -36,12 +36,14 @@ const STRINGS = {
     err_fields: "Renseignez l'adresse, la ville, le pays et un e-mail valide.",
     err_locate: "Situez d'abord votre location sur la carte.",
     merci_title: "Paiement reçu, merci !",
-    merci_prep: "Votre guide est en préparation (environ 10 minutes). Vous le recevrez par e-mail.",
+    merci_prep: "Votre guide est en préparation. Vous le recevrez aussi par e-mail dès qu'il est prêt.",
+    merci_slow: "La préparation peut prendre 20 à 30 minutes selon la région. Votre guide arrivera par e-mail — vous pouvez fermer cette page en toute tranquillité.",
     merci_ready: "Votre guide est prêt !",
     merci_open: "Ouvrir mon guide", merci_install: "Installer votre guide",
     merci_install_hint: "Ouvrez le guide puis « Ajouter à l'écran d'accueil » pour l'avoir hors-ligne, à vie.",
     merci_failed: "La préparation a rencontré un souci. Un e-mail vous permet de reprendre — sans repayer.",
     merci_reprise: "Reprendre",
+    exit_another: "Créer un autre guide", exit_host: "Je suis hôte — créer mon espace",
     reprise_title: "Reprenons votre guide",
     reprise_intro: "Votre paiement est acquis. Ajustez le point de votre lieu de séjour, nous relançons la génération (aucun nouveau paiement).",
     reprise_cta: "Relancer la génération",
@@ -70,12 +72,14 @@ const STRINGS = {
     err_fields: "Enter the address, town, country and a valid e-mail.",
     err_locate: "First locate your rental on the map.",
     merci_title: "Payment received, thank you!",
-    merci_prep: "Your guide is being prepared (about 10 minutes). You'll receive it by e-mail.",
+    merci_prep: "Your guide is being prepared. You'll also receive it by e-mail as soon as it's ready.",
+    merci_slow: "Preparation can take 20 to 30 minutes depending on the area. Your guide will arrive by e-mail — you can safely close this page.",
     merci_ready: "Your guide is ready!",
     merci_open: "Open my guide", merci_install: "Install your guide",
     merci_install_hint: "Open the guide, then “Add to Home Screen” to keep it offline, for life.",
     merci_failed: "Preparation hit a snag. An e-mail lets you resume — no new payment.",
     merci_reprise: "Resume",
+    exit_another: "Create another guide", exit_host: "I'm a host — create my space",
     reprise_title: "Let's finish your guide",
     reprise_intro: "Your payment is secured. Adjust the point of your stay and we'll restart generation (no new payment).",
     reprise_cta: "Restart generation",
@@ -104,12 +108,14 @@ const STRINGS = {
     err_fields: "Indica la dirección, la ciudad, el país y un correo válido.",
     err_locate: "Sitúa primero tu alojamiento en el mapa.",
     merci_title: "¡Pago recibido, gracias!",
-    merci_prep: "Tu guía se está preparando (unos 10 minutos). La recibirás por correo electrónico.",
+    merci_prep: "Tu guía se está preparando. También la recibirás por correo electrónico en cuanto esté lista.",
+    merci_slow: "La preparación puede tardar de 20 a 30 minutos según la zona. Tu guía llegará por correo — puedes cerrar esta página con tranquilidad.",
     merci_ready: "¡Tu guía está lista!",
     merci_open: "Abrir mi guía", merci_install: "Instalar tu guía",
     merci_install_hint: "Abre la guía y pulsa “Añadir a pantalla de inicio” para tenerla sin conexión, de por vida.",
     merci_failed: "La preparación tuvo un problema. Un correo te permite retomar — sin pagar de nuevo.",
     merci_reprise: "Retomar",
+    exit_another: "Crear otra guía", exit_host: "Soy anfitrión — crear mi espacio",
     reprise_title: "Terminemos tu guía",
     reprise_intro: "Tu pago está asegurado. Ajusta el punto de tu alojamiento y reiniciamos la generación (sin nuevo pago).",
     reprise_cta: "Reiniciar la generación",
@@ -152,6 +158,15 @@ function shell(...children) {
 function backLink(hash) {
   return el("a", { class: "muted-link", href: hash },
     icon("arrow-left", 14), " ", tr("back"));
+}
+// Portes de sortie (V2-64) : depuis la page merci (et le pied du parcours), toujours un
+// chemin — refaire un guide voyageur, ou passer côté hôte (créer son espace).
+function exitDoors() {
+  return el("div", { class: "voyageur-exits" },
+    el("a", { class: "muted-link", href: "#/voyageur" },
+      icon("plus", 14), " ", tr("exit_another")),
+    el("a", { class: "muted-link", href: "#/login" },
+      icon("home", 14), " ", tr("exit_host")));
 }
 
 // ── Carte d'ajustement du point (Leaflet global sur le SPA) ──────────────────
@@ -295,14 +310,25 @@ function renderAdresse(root) {
 // ── 3. Merci (polling + installation) ────────────────────────────────────────
 function renderMerci(root, token) {
   const status = el("div", { class: "voyageur-status" });
-  mount(root, shell(el("h1", {}, tr("merci_title")), status));
+  // Portes de sortie TOUJOURS présentes (V2-64) : quel que soit l'état, l'utilisateur
+  // n'est jamais bloqué sur cette page.
+  mount(root, shell(el("h1", {}, tr("merci_title")), status, exitDoors()));
+  refreshIcons();
   if (!token) { status.textContent = tr("generic_err"); return; }
 
   let stopped = false;
-  const preparing = () => mount(status,
-    el("div", { class: "spinner-inline" }, icon("loader", 22)),
-    el("p", { class: "muted" }, tr("merci_prep")));
-  preparing();
+  let shownSlow = false;
+  const startedAt = Date.now();
+  // Au-delà de ce délai, message honnête (20-30 min selon la région, arrive par e-mail,
+  // « vous pouvez fermer la page ») — l'ancien « ~10 minutes » était faux hors zones denses.
+  const SLOW_AFTER_MS = 12 * 60 * 1000;
+  const preparing = (slow) => {
+    mount(status,
+      el("div", { class: "spinner-inline" }, icon("loader", 22)),
+      el("p", { class: "muted" }, tr(slow ? "merci_slow" : "merci_prep")));
+    refreshIcons();
+  };
+  preparing(false);
 
   const ready = (order) => {
     stopped = true;
@@ -325,6 +351,10 @@ function renderMerci(root, token) {
         tr("merci_reprise")));
   };
 
+  // La page CONCLUT toujours : 'done' → arrêt du polling + lien du guide ; 'failed' →
+  // lien de reprise ; au-delà de N minutes → message honnête, on ralentit le polling mais
+  // on continue (si la génération aboutit encore, on affiche le guide). Le backend garantit
+  // par ailleurs qu'aucune commande payée ne reste orpheline (chien de garde V2-64).
   const poll = async () => {
     if (stopped) return;
     try {
@@ -332,7 +362,12 @@ function renderMerci(root, token) {
       if (o.status === "done" && o.guide_url) return ready(o);
       if (o.status === "failed") return failed();
     } catch (_) { /* transitoire : on re-tente */ }
-    if (!stopped) setTimeout(poll, 4000);
+    if (stopped) return;
+    if (!shownSlow && Date.now() - startedAt > SLOW_AFTER_MS) {
+      shownSlow = true;
+      preparing(true);
+    }
+    setTimeout(poll, shownSlow ? 15000 : 4000);
   };
   poll();
 }

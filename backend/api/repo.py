@@ -659,6 +659,34 @@ def lock_guest_order_for_generation(conn, order_id: str) -> bool:
         (order_id,)).fetchone() is not None
 
 
+def touch_guest_order_generating(conn, order_id: str) -> None:
+    """Battement de cœur (V2-64) : rafraîchit `updated_at` d'une commande EN COURS de
+    génération. C'est ce qui distingue « lente » de « morte » — le chien de garde ne
+    reprend qu'une commande dont `updated_at` a cessé d'avancer. N'agit que sur une
+    commande encore `generating` (une commande finie entre-temps n'est jamais touchée)."""
+    conn.execute(
+        "UPDATE guest_guide_orders SET updated_at=now() "
+        "WHERE id=%s AND status='generating'", (order_id,))
+
+
+def reclaim_stuck_guest_orders(conn, older_than_s: int) -> list[dict]:
+    """Chien de garde (V2-64) : ramène à `paid` toute commande PAYÉE orpheline — restée
+    `paid` (tâche jamais partie) ou `generating` (tâche morte en vol, typiquement tuée
+    par un redémarrage de déploiement) dont `updated_at` dépasse `older_than_s`. Atomique
+    (`UPDATE … RETURNING`) → à plusieurs processus/workers, chaque commande n'est reprise
+    qu'UNE fois (verrouillage de ligne). `older_than_s=0` = TOUTES (cas du démarrage : après
+    un redémarrage, AUCUNE tâche de fond n'a survécu, donc tout `generating` est orphelin —
+    même logique que `fail_orphan_running_jobs`). Ramenées à `paid`, ces commandes sont de
+    nouveau éligibles au verrou `lock_guest_order_for_generation` (relance de la génération).
+    N'effacent JAMAIS une commande `done`/`failed` (livrée ou déjà en reprise assistée)."""
+    return conn.execute(
+        f"""UPDATE guest_guide_orders SET status='paid', updated_at=now()
+             WHERE status IN ('paid', 'generating')
+               AND updated_at < now() - make_interval(secs => %s)
+            RETURNING {_GUEST_ORDER_COLS}""",
+        (older_than_s,)).fetchall()
+
+
 def update_guest_order_point(conn, order_id: str, *, lat: float, lon: float,
                              address_line1: str | None = None) -> None:
     """Reprise (V2-54 §3) : le vacancier a ajusté le point après un échec géocodage.

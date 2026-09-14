@@ -108,6 +108,15 @@ printf 'CASAGUIDE_ASSET_VERSION=%s\n' "$SHA" > "$BACKEND/.env.deploy"
 log "version des assets = $SHA"
 
 # 5. Redémarrage du service (sudoers autorise ce restart sans mot de passe)
+#    ⚠ Ce restart est un `systemctl restart` FRANC : il n'attend PAS la fin des
+#    tâches de fond (BackgroundTasks) en vol. Une génération de guide voyageur en
+#    cours au moment du restart est donc TUÉE (cause de l'incident Remaufens 14/09,
+#    commande figée en 'generating'). C'est ACCEPTÉ car le chien de garde des
+#    commandes (V2-64) RATTRAPE au démarrage suivant : le lifespan de l'app reprend
+#    TOUTE commande payée orpheline (statut 'generating'/'paid') et RELANCE sa
+#    génération (aucune commande payée ne reste sur une roue éternelle). Un backstop
+#    périodique (casaguide-recover-orders.timer) couvre en plus le cas d'une tâche
+#    morte SANS redémarrage. Voir docs/deploiement.md §2ter.
 log "restart $SERVICE"
 sudo systemctl restart "$SERVICE"
 

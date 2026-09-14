@@ -255,6 +255,109 @@ def test_retry_after_failure_regenerates_without_payment(pay):
     assert len(mailer.sent) == 1   # livraison
 
 
+# ── Chien de garde des commandes orphelines (V2-64) ──────────────────────────
+
+def _set_status(order_id: str, status: str, *, updated_ago_s: int = 0) -> None:
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            "UPDATE guest_guide_orders SET status=%s, paid_at=now(), "
+            "updated_at=now() - make_interval(secs => %s) WHERE id=%s",
+            (status, updated_ago_s, order_id))
+        conn.commit()
+
+
+def _recover(mailer, *, older_than_s: int, spawn=lambda fn: fn()) -> int:
+    with psycopg.connect(settings.db_dsn, row_factory=dict_row) as conn:
+        return guest_guides.recover_stuck_orders(
+            conn, mailer=mailer, base_url="https://holaguia.test",
+            older_than_s=older_than_s, spawn=spawn)
+
+
+def test_watchdog_recovers_stuck_generating_order(pay):
+    """V2-64 — une commande PAYÉE figée en 'generating' (tâche de fond tuée, ex. restart
+    de déploiement en pleine génération) est reprise par le chien de garde : génération
+    relancée, guide livré par e-mail. Le client ne reste jamais sur une roue éternelle."""
+    client, _, mailer = pay
+    out = _checkout(client, "stuck@paytest.com")
+    _set_status(str(_order_by_token(out["token"])["id"]),
+                "generating", updated_ago_s=7200)      # figée depuis 2 h
+    n = _recover(mailer, older_than_s=2700)             # backstop périodique (45 min)
+    assert n == 1
+    done = _order_by_token(out["token"])
+    assert done["status"] == "done" and done["guide_token"]
+    assert len(mailer.sent) == 1 and mailer.sent[0][0] == "stuck@paytest.com"
+
+
+def test_watchdog_ignores_fresh_generating_order(pay):
+    """V2-64 — une commande VRAIMENT en cours (updated_at récent grâce au battement de
+    cœur) n'est PAS reprise par le backstop périodique : « lente » ≠ « morte »."""
+    client, _, mailer = pay
+    out = _checkout(client, "fresh@paytest.com")
+    _set_status(str(_order_by_token(out["token"])["id"]),
+                "generating", updated_ago_s=60)         # battement récent
+    assert _recover(mailer, older_than_s=2700) == 0
+    assert _order_by_token(out["token"])["status"] == "generating"   # intacte
+    assert mailer.sent == []
+
+
+def test_watchdog_startup_recovers_all_generating_regardless_of_age(pay):
+    """V2-64 — au DÉMARRAGE (seuil 0), toute commande 'generating' est orpheline (aucune
+    tâche de fond ne survit à un redémarrage) → reprise même récente. Idem une commande
+    'paid' jamais partie (tâche perdue entre le commit et l'enqueue)."""
+    client, _, mailer = pay
+    out = _checkout(client, "boot@paytest.com")
+    _set_status(str(_order_by_token(out["token"])["id"]),
+                "generating", updated_ago_s=30)
+    assert _recover(mailer, older_than_s=0) == 1
+    assert _order_by_token(out["token"])["status"] == "done"
+
+
+def test_watchdog_double_spawn_generates_once(pay):
+    """V2-64 — le verrou atomique de génération empêche toute double génération, même si
+    la reprise est lancée deux fois (app au démarrage ET timer périodique en même temps)."""
+    client, _, mailer = pay
+    out = _checkout(client, "once@paytest.com")
+    _set_status(str(_order_by_token(out["token"])["id"]),
+                "generating", updated_ago_s=7200)
+    _recover(mailer, older_than_s=2700, spawn=lambda fn: (fn(), fn()))   # double appel
+    assert _order_by_token(out["token"])["status"] == "done"
+    assert len(_CREATED_PROPS) == 1     # UNE seule génération (le verrou tranche)
+    assert len(mailer.sent) == 1
+
+
+def test_watchdog_leaves_done_and_failed_untouched(pay):
+    """V2-64 — le chien de garde ne touche jamais une commande livrée ('done') ni une
+    déjà en reprise assistée ('failed') : il ne reprend que les orphelines payées."""
+    client, _, mailer = pay
+    out = _checkout(client, "done@paytest.com")
+    _set_status(str(_order_by_token(out["token"])["id"]),
+                "done", updated_ago_s=7200)
+    assert _recover(mailer, older_than_s=0) == 0
+    assert _order_by_token(out["token"])["status"] == "done"
+    assert mailer.sent == []
+
+
+def test_heartbeat_touches_only_generating(pay):
+    """V2-64 — le battement de cœur (`touch_guest_order_generating`) rafraîchit updated_at
+    UNIQUEMENT pour une commande 'generating' : une commande finie/en attente n'est jamais
+    ré-horodatée à tort (sinon on masquerait une orpheline)."""
+    client, _, _ = pay
+    oid = str(_order_by_token(_checkout(client, "beat@paytest.com")["token"])["id"])
+    with psycopg.connect(settings.db_dsn, row_factory=dict_row) as conn:
+        # 'paid' → intact (statut ≠ generating).
+        _set_status(oid, "paid", updated_ago_s=3600)
+        before = repo.get_guest_order(conn, oid)["updated_at"]
+        repo.touch_guest_order_generating(conn, oid)
+        conn.commit()
+        assert repo.get_guest_order(conn, oid)["updated_at"] == before
+        # 'generating' → rafraîchi.
+        _set_status(oid, "generating", updated_ago_s=3600)
+        old = repo.get_guest_order(conn, oid)["updated_at"]
+        repo.touch_guest_order_generating(conn, oid)
+        conn.commit()
+        assert repo.get_guest_order(conn, oid)["updated_at"] > old
+
+
 def test_resend_delivers_then_rate_limits(pay):
     client, _, mailer = pay
     # Prépare une commande LIVRÉE.

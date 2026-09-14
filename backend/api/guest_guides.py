@@ -13,6 +13,7 @@ modules `enrich.*`. Le paiement, la collecte d'e-mail et le tunnel sont hors pé
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from enrich import db, geocode, pipeline, translate
 from enrich.settings import settings
@@ -62,7 +63,8 @@ def generate_guest_guide(*, city: str, country_code: str,
                          region: str | None = None, name: str | None = None,
                          email: str | None = None, ip: str | None = None,
                          use_claude: bool = True, do_translate: bool = True,
-                         enforce_limits: bool = True) -> dict:
+                         enforce_limits: bool = True,
+                         heartbeat: "Callable[[], None] | None" = None) -> dict:
     """Génère (ou ressert depuis le cache) un guide voyageur. Renvoie
     `{"property": <row publiée>, "cached": bool, "summary": <résumé pipeline|None>}`.
 
@@ -72,7 +74,11 @@ def generate_guest_guide(*, city: str, country_code: str,
     max_age_days` est resservi (marge pure) ; (3) création de la fiche guest + commit ;
     (4) `pipeline.run_with_retries` (juge auto + publication en interne) ; (5)
     `translate.run` best-effort → 7 langues. Lève `GuestGuideError`/`GuestGuideMismatch`
-    sur refus métier."""
+    sur refus métier.
+
+    `heartbeat` (V2-64) : appelé à chaque étape lourde pour horodater la commande en
+    cours (distinguer « lente » de « morte » ; no-op par défaut hors fulfillment)."""
+    beat = heartbeat or (lambda: None)
     with db.connect() as conn:
         # Un ACHAT payé génère toujours (le paiement EST le gate) → `enforce_limits`
         # False côté fulfillment ; les limites e-mail/IP protègent l'entrée gratuite.
@@ -112,10 +118,12 @@ def generate_guest_guide(*, city: str, country_code: str,
         repo.record_guest_generation(conn, email, ip, property_id)
         conn.commit()
 
+    beat()  # fiche créée : la commande entre dans la phase longue (V2-64)
     # (4) Enrichissement complet — le pipeline JUGE, PUBLIE et RE-TENTE en interne
     # les paliers Overpass échoués (M-18 `run_with_retries`, plancher de qualité V2-57).
     summary = pipeline.run_with_retries(
         property_id, use_claude=use_claude, trigger="guest")
+    beat()  # moisson terminée, avant la traduction (V2-64)
 
     # (5) Traduction 7 langues avec UNE REPRISE avant publication (V2-57) : la
     # traduction est all-or-nothing et échouait parfois sans trace (guide FR seul).
@@ -232,13 +240,25 @@ def fulfill_order_bg(order_id: str, mailer, base_url: str) -> None:
         conn.commit()
     if order is None:
         return
+
+    def _beat() -> None:
+        """Battement de cœur (V2-64) : horodate la commande à chaque étape lourde, sur
+        une connexion propre (la génération n'en garde aucune ouverte). Best-effort."""
+        try:
+            with db.connect() as c:
+                repo.touch_guest_order_generating(c, order_id)
+                c.commit()
+        except Exception:  # noqa: BLE001 — un battement raté ne fait jamais échouer la génération
+            log.debug("Battement de cœur commande %s ignoré.", order_id, exc_info=True)
+
     try:
         res = generate_guest_guide(
             city=order["city"], country_code=order["country_code"],
             lat=order["lat"], lon=order["lon"], address=order["address_line1"],
             postal_code=order["postal_code"], region=order["region"],
             email=order["email"], ip=order["ip"],
-            use_claude=True, do_translate=True, enforce_limits=False)
+            use_claude=True, do_translate=True, enforce_limits=False,
+            heartbeat=_beat)
     except Exception as exc:  # noqa: BLE001 — mismatch/pipeline : jamais de re-paiement
         log.warning("Génération guide voyageur (commande %s) échouée : %s",
                     order_id, exc)
@@ -276,6 +296,31 @@ def retry_paid_order(order: dict, background, mailer, *, base_url: str,
                                           address_line1=address)
         conn.commit()
     background.add_task(fulfill_order_bg, str(order["id"]), mailer, base_url)
+
+
+def recover_stuck_orders(conn, *, mailer, base_url: str, older_than_s: int,
+                         spawn: Callable[[Callable[[], None]], None]) -> int:
+    """Chien de garde des commandes voyageur (V2-64) : reprend toute commande PAYÉE
+    orpheline (tâche de fond morte — cause typique : redémarrage de déploiement en
+    pleine génération) et RELANCE sa génération. Renvoie le nombre de commandes reprises.
+
+    Sûreté de la relance : une commande bloquée en `generating` signifie TOUJOURS un
+    processus mort — une erreur du pipeline est rattrapée et passe la commande en
+    `failed` (jamais bloquée). La relance ne peut donc pas boucler sur un pipeline
+    fautif. Le verrou atomique `lock_guest_order_for_generation` (dans `fulfill_order_bg`)
+    garantit qu'une même commande n'est jamais générée deux fois, même si `spawn` est
+    appelé en double.
+
+    `spawn(fn)` exécute la reprise : un thread au démarrage de l'app (non bloquant), un
+    appel synchrone dans le script ops périodique. `older_than_s=0` au démarrage (toute
+    commande `generating` est alors orpheline) ; un seuil (ex. 45 min) en périodique."""
+    orders = repo.reclaim_stuck_guest_orders(conn, older_than_s)
+    conn.commit()
+    for order in orders:
+        oid = str(order["id"])
+        log.warning("Commande voyageur %s orpheline → génération relancée.", oid)
+        spawn(lambda oid=oid: fulfill_order_bg(oid, mailer, base_url))
+    return len(orders)
 
 
 def resend_guide(conn, email: str, *, mailer, base_url: str) -> None:

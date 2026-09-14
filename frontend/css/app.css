@@ -914,6 +914,10 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .voyageur-recap { margin-top: 14px; }
 .voyageur-recap h2 { font-size: 18px; margin: 0 0 10px; }
 .voyageur-status { margin-top: 8px; }
+/* Portes de sortie de la page merci (V2-64) : deux liens discrets, séparés d'un filet. */
+.voyageur-exits { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 18px;
+  padding-top: 14px; border-top: 1px solid var(--line, #e7e0d4); }
+.voyageur-exits .muted-link { margin-top: 0; }
 .voyageur-promo { max-width: 420px; margin: 16px auto 0; text-align: center;
   border: 1px solid rgba(14,90,115,.18); background: rgba(14,90,115,.04); }
 .voyageur-promo .eyebrow { color: var(--sea, #0E5A73); }

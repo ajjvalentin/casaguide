@@ -120,6 +120,21 @@ _UI7: dict[str, dict[str, str]] = {
         "es": "Ver alojamientos", "de": "Unterkünfte ansehen",
         "nl": "Accommodaties bekijken", "it": "Vedi gli alloggi",
         "sq": "Shiko akomodimet"},
+    # V2-64 : porte de sortie du pied du guide voyageur — refaire un guide pour un
+    # autre lieu de séjour (retour au tunnel public /#/voyageur).
+    "another_lead": {
+        "fr": "Un autre séjour en vue ?",
+        "en": "Another trip coming up?",
+        "es": "¿Otro viaje a la vista?",
+        "de": "Steht eine weitere Reise an?",
+        "nl": "Nog een reis op komst?",
+        "it": "Un altro viaggio in vista?",
+        "sq": "Një udhëtim tjetër në horizont?"},
+    "another_link": {
+        "fr": "Créer un autre guide", "en": "Create another guide",
+        "es": "Crear otra guía", "de": "Einen weiteren Reiseführer erstellen",
+        "nl": "Nog een gids maken", "it": "Crea un'altra guida",
+        "sq": "Krijo një udhëzues tjetër"},
     # V2-54 Mission C : installation PWA (bouton natif + repli iOS) sur le guide guest.
     "install_cta": {
         "fr": "Installer l'application", "en": "Install the app",
@@ -1886,6 +1901,13 @@ def _guest_footer_blocks(lang: str, city: str | None, base_url: str,
             f'<p style="margin:0 0 8px">{_esc(_t7(lang, "bridge_lead"))}</p>'
             f'<a href="{_esc(u)}" target="_blank" rel="noopener" style="{link}">'
             f'{_esc(_t7(lang, "bridge_link"))} →</a></section>')
+    # Porte de sortie « Créer un autre guide » (V2-64) : retour au tunnel public.
+    again_url = (base_url or "https://holaguia.com").rstrip("/") + "/#/voyageur"
+    blocks.append(
+        f'<section class="guest-cta" style="{box}">'
+        f'<p style="margin:0 0 8px">{_esc(_t7(lang, "another_lead"))}</p>'
+        f'<a href="{_esc(again_url)}" style="{link}">'
+        f'{_esc(_t7(lang, "another_link"))} →</a></section>')
     return "".join(blocks)
 
 

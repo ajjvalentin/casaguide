@@ -249,6 +249,31 @@ sudo -u casaguide /opt/casaguide/.venv/bin/python \
 sur tout l'existant (DEFAULT TRUE) — **pas de rattrapage post-migration** (§2bis).
 Vérifier ensuite `journalctl -u casaguide-send-guides`.
 
+### 1.14 Chien de garde des commandes voyageur (V2-64)
+
+Timer systemd **toutes les 5 min** qui reprend toute commande voyageur PAYÉE restée
+bloquée (`ops/recover_orders.py` → relance de la génération). C'est le **backstop
+périodique** du chien de garde ; la reprise **immédiate** au redémarrage est faite par
+l'app elle-même (lifespan). `deploy.sh` **installe et active ce timer
+automatiquement** (`sync_units`) — l'installation manuelle n'est utile qu'en
+provisionnement initial ou si `sync_units` n'a pas de sudo non-interactif :
+
+```bash
+sudo cp /opt/casaguide/ops/casaguide-recover-orders.service /etc/systemd/system/
+sudo cp /opt/casaguide/ops/casaguide-recover-orders.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now casaguide-recover-orders.timer
+sudo systemctl list-timers casaguide-recover-orders.timer --no-pager
+# Test à blanc (liste les commandes reprenables sans rien relancer) :
+sudo -u casaguide /opt/casaguide/.venv/bin/python \
+    /opt/casaguide/ops/recover_orders.py --dry-run
+```
+
+Seuil d'ancienneté : `CASAGUIDE_GUEST_RECOVER_STALE_S` (45 min par défaut) — au-delà,
+une commande `paid`/`generating` est considérée orpheline. C'est bien au-delà de toute
+étape de génération (battement de cœur `updated_at` à chaque étape) → jamais de reprise
+d'une commande réellement en cours.
+
 ---
 
 ## 2. Déploiement courant (à chaque mise à jour)
@@ -308,6 +333,29 @@ retouchés ; l'apport Overture arrive au prochain (ré)enrichissement). Recette 
 enrichir une fiche jetable urbaine (distributeurs = banques nommées avec téléphone)
 et une fiche rurale (une catégorie vide au run OSM seul est comblée). Le benchmark
 lecture seule reste `ops/source_benchmark.py`.
+
+### 2quater. Déploiement pendant une génération de guide voyageur (V2-64)
+
+`deploy.sh` fait un `systemctl restart casaguide` **franc** : il n'attend pas la fin
+des tâches de fond en vol. Une **génération de guide voyageur** (achat payant) en cours
+au moment du restart est donc **tuée** — c'est la cause de l'incident Remaufens (14/09 :
+commande figée en `generating`, client sur une roue éternelle, aucun e-mail).
+
+C'est **acceptable** parce qu'un **chien de garde** rattrape :
+
+1. **Au démarrage** (lifespan de l'app) : TOUTE commande payée orpheline (`generating`
+   ou `paid`) est reprise **immédiatement** et sa génération **relancée** (les
+   `BackgroundTasks` ne survivent pas au restart → après un reboot, tout `generating`
+   est par définition orphelin). C'est le rattrapage du cas « restart de déploiement ».
+2. **Périodiquement** (`casaguide-recover-orders.timer`, §1.14) : backstop pour une
+   tâche morte **sans** redémarrage — reprend au-delà du seuil d'ancienneté.
+
+La relance est **sûre** : une commande bloquée en `generating` signifie toujours un
+processus mort (une **erreur** de pipeline est rattrapée et passe la commande en
+`failed`, jamais bloquée), donc relancer ne boucle jamais sur un pipeline fautif. Le
+**verrou atomique** de génération garantit qu'une commande n'est jamais générée deux
+fois (app + timer). Rien à faire à la main ; vérifier au besoin
+`journalctl -u casaguide | grep orpheline` et `journalctl -u casaguide-recover-orders`.
 
 ---
 
