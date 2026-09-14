@@ -1616,6 +1616,7 @@ def guide_pois(conn, property_id: str) -> list[dict]:
                       AS nearest_of_network,
                   jsonb_exists(p.completion_meta, '_editorial') AS editorial,
                   p.completion_meta->>'_name_local' AS name_local,
+                  p.completion_meta->>'_name_latin' AS name_latin,
                   p.completion_meta->>'_name_script' AS name_script,
                   p.completion_meta->>'_addr_local' AS addr_local
            FROM pois p

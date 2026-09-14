@@ -910,6 +910,11 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .voyageur-promise { color: var(--sea, #0E5A73); font-weight: 600; margin: 0 0 10px; }
 .voyageur-price { font-size: 28px; font-weight: 700; color: var(--ink, #1E2A32); margin: 10px 0; }
 .voyageur-mapwrap { margin-top: 14px; }
+/* Choix de quartier (V2-68) : puces cliquables pour ancrer un guide de grande ville. */
+.voyageur-hoods { margin-bottom: 10px; }
+.voyageur-hoods .hood-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.voyageur-hoods .hood-chip { width: auto; padding: 6px 14px; font-size: 14px; }
+.voyageur-hoods .hood-chip.on { background: var(--sea, #0E5A73); color: #fff; border-color: var(--sea, #0E5A73); }
 .voyageur-map { height: 300px; border-radius: 10px; overflow: hidden; border: 1px solid #e3ded6; }
 .voyageur-recap { margin-top: 14px; }
 .voyageur-recap h2 { font-size: 18px; margin: 0 0 10px; }

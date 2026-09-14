@@ -122,3 +122,18 @@ def test_guest_guides_excluded_from_owner_listings_and_quota(conn):
     listed_ids = {str(p["id"]) for p in repo.list_properties(c, sys_id)}
     assert str(prop["id"]) not in listed_ids
     assert repo.count_properties(c, sys_id) == 0
+
+
+# ── V2-68 pièce 1 : refus d'un ancrage imprécis (garde script ops) ────────────
+
+def test_generate_refuses_imprecise_anchor(monkeypatch):
+    """V2-68 p1 : sans point fourni, un géocodage imprécis (centroïde administratif
+    « Tokyo » → accuracy 'city') fait REFUSER la génération (GuestGuideError) — jamais un
+    guide creux. Garde côté script ops ET backstop du webhook. Un point (lat/lon) ne
+    passe jamais par ce chemin."""
+    from api import guest_guides
+    monkeypatch.setattr(guest_guides.geocode, "geocode",
+                        lambda **kw: {"lat": 35.6, "lon": 139.7, "accuracy": "city",
+                                      "mismatch": None})
+    with pytest.raises(guest_guides.GuestGuideError):
+        guest_guides.generate_guest_guide(city="Tokyo", country_code="JP")

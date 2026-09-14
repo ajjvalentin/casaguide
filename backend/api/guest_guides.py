@@ -23,6 +23,22 @@ from .config import settings as api_settings
 
 log = logging.getLogger("casaguide.guest_guides")
 
+# Plancher vital (V2-68 p4) : catégories dont l'absence TOTALE en zone urbaine trahit un
+# mauvais ancrage. Une seule d'entre elles présente suffit à livrer (le plus proche).
+_VITAL_CATEGORIES = ("hospital", "pharmacy", "police")
+
+
+def _vital_floor_ok(summary: dict | None) -> bool:
+    """Le guide a-t-il de quoi être livré (V2-68 p4) ? En zone URBAINE (`dense`), il faut
+    au moins UN lieu vital proche (hôpital, pharmacie ou police) ; sinon l'ancrage est
+    mauvais (centroïde administratif) et on préfère inviter à ajuster le point plutôt que
+    livrer un guide creux. Hors zone dense (rural) : jamais bloquant (dégradation douce,
+    V2-57). `summary=None` (guide resservi du cache) : déjà validé → OK."""
+    if not summary or not summary.get("dense"):
+        return True
+    cats = summary.get("categories") or {}
+    return any(cats.get(c, 0) > 0 for c in _VITAL_CATEGORIES)
+
 
 class GuestGuideError(Exception):
     """Génération refusée (motif métier, message FR prêt à afficher)."""
@@ -94,6 +110,15 @@ def generate_guest_guide(*, city: str, country_code: str,
                 msg = (mm.message_fr() if mm is not None
                        else "commune/code postal incohérents avec la saisie")
                 raise GuestGuideMismatch(msg, mismatch=mm)
+            # V2-68 p1 : un ancrage trop imprécis (centroïde administratif « Tokyo »
+            # sans rue) produit un guide vague — on REFUSE plutôt que de générer creux.
+            # Garde côté script ops ET backstop du webhook (jamais contournable). Un point
+            # ajusté (lat/lon fournis) est `manual` → toujours accepté.
+            if not geocode.is_precise_enough(geo["accuracy"]):
+                raise GuestGuideError(
+                    "imprecise_location",
+                    "Adresse trop imprécise : indiquez votre rue ou ajustez le point "
+                    "sur votre lieu de séjour.")
             lat, lon, accuracy = geo["lat"], geo["lon"], geo["accuracy"]
         else:
             accuracy = "manual"
@@ -251,6 +276,18 @@ def fulfill_order_bg(order_id: str, mailer, base_url: str) -> None:
         except Exception:  # noqa: BLE001 — un battement raté ne fait jamais échouer la génération
             log.debug("Battement de cœur commande %s ignoré.", order_id, exc_info=True)
 
+    def _fail_and_offer_retry(reason: str) -> None:
+        """Marque la commande 'failed' + e-mail de reprise (ajuster le point, sans
+        re-paiement). Chemin commun à l'échec de génération ET au plancher vital (p4)."""
+        log.warning("Guide voyageur (commande %s) non livré : %s", order_id, reason)
+        with db.connect() as conn:
+            repo.fail_guest_order(conn, order_id, reason)
+            conn.commit()
+        retry_url = f"{base_url.rstrip('/')}/#/voyageur/reprise/{order['token']}"
+        _send_bg_safe(mailer, order["email"],
+                      emails.guide_retry_email(retry_url=retry_url,
+                                               lang=order["lang"]))
+
     try:
         res = generate_guest_guide(
             city=order["city"], country_code=order["country_code"],
@@ -260,15 +297,15 @@ def fulfill_order_bg(order_id: str, mailer, base_url: str) -> None:
             use_claude=True, do_translate=True, enforce_limits=False,
             heartbeat=_beat)
     except Exception as exc:  # noqa: BLE001 — mismatch/pipeline : jamais de re-paiement
-        log.warning("Génération guide voyageur (commande %s) échouée : %s",
-                    order_id, exc)
-        with db.connect() as conn:
-            repo.fail_guest_order(conn, order_id, f"{type(exc).__name__}: {exc}")
-            conn.commit()
-        retry_url = f"{base_url.rstrip('/')}/#/voyageur/reprise/{order['token']}"
-        _send_bg_safe(mailer, order["email"],
-                      emails.guide_retry_email(retry_url=retry_url,
-                                               lang=order["lang"]))
+        _fail_and_offer_retry(f"{type(exc).__name__}: {exc}")
+        return
+    # PLANCHER VITAL (V2-68 p4, durcit V2-57) : en zone URBAINE, un guide sans AUCUN
+    # hôpital/pharmacie/police proche trahit un mauvais ancrage (centroïde administratif,
+    # cas Tokyo) → on ne LIVRE PAS un guide creux, on invite à ajuster le point. Jamais
+    # bloquant en rural (le plus proche peut être loin ; dégradation douce, doctrine V2-57).
+    if not _vital_floor_ok(res.get("summary")):
+        _fail_and_offer_retry("plancher vital : zone urbaine sans hôpital/pharmacie/"
+                              "police proche (ancrage à préciser)")
         return
     token = (res.get("property") or {}).get("guide_token")
     pid = (res.get("property") or {}).get("id")

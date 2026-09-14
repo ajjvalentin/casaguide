@@ -148,6 +148,41 @@ def geocode_address(payload: GeocodeIn):
                       accuracy=geo.get("accuracy"),
                       mismatch=geo.get("accuracy") == "mismatch")
 
+
+class NeighborhoodOut(BaseModel):
+    name: str
+    lat: float
+    lon: float
+
+
+@router.post("/neighborhoods", response_model=list[NeighborhoodOut])
+def neighborhoods(payload: GeocodeIn):
+    """Quartiers NOMMÉS d'une grande ville (V2-68 p2) : quand le géocodage ne rend qu'un
+    centroïde (accuracy 'city'), le tunnel propose d'ancrer le guide sur un quartier
+    (Shibuya, Asakusa…) plutôt qu'une préfecture muette. Liste vide pour une petite
+    commune sans quartier (le tunnel retombe sur l'ajustement du point). Throttlé."""
+    from enrich import overpass as _overpass
+    with _GEO_LOCK:
+        wait = _GEO_MIN_INTERVAL_S - (time.monotonic() - _GEO_LAST[0])
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            geo = _geocode.geocode(street=payload.address_line1,
+                                   postalcode=payload.postal_code, city=payload.city,
+                                   country_code=payload.country_code)
+        except _geocode.GeocodeError:
+            return []
+        finally:
+            _GEO_LAST[0] = time.monotonic()
+    try:
+        places = _overpass.nearby_neighborhoods(geo["lat"], geo["lon"])
+    except Exception:  # noqa: BLE001 — best-effort : pas de quartiers → ajustement du point
+        log.info("Quartiers non résolus pour %s (%s).", payload.city,
+                 payload.country_code, exc_info=True)
+        return []
+    return [NeighborhoodOut(name=p["name"], lat=p["lat"], lon=p["lon"]) for p in places]
+
+
 @router.post("/checkout", response_model=CheckoutOut)
 def create_guest_checkout(payload: GuestCheckoutIn, conn: Conn, request: Request,
                           gateway: Stripe):
@@ -156,6 +191,23 @@ def create_guest_checkout(payload: GuestCheckoutIn, conn: Conn, request: Request
     if gateway is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
                             "Paiement indisponible pour le moment.")
+    # SEUIL DE PRÉCISION AVANT PAIEMENT (V2-68 p1) : sans point ajusté, on situe et on
+    # REFUSE un ancrage trop vague (centroïde administratif) — jamais un guide invendable.
+    # Le tunnel envoie un point ajusté (accepté) ; cette garde couvre les appels directs
+    # et le script ops (« jamais contournable »).
+    if payload.lat is None or payload.lon is None:
+        try:
+            geo = _geocode.geocode(street=payload.address_line1,
+                                   postalcode=payload.postal_code, city=payload.city,
+                                   country_code=payload.country_code)
+        except _geocode.GeocodeError:
+            geo = None
+        if geo is None or not _geocode.is_precise_enough(geo.get("accuracy")):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "imprecise_location",
+                        "message": "Indiquez votre rue ou déplacez le point sur votre "
+                                   "lieu de séjour."})
     order = repo.create_guest_order(
         conn, email=str(payload.email), lang=payload.lang, ip=_client_ip(request),
         city=payload.city, country_code=payload.country_code,

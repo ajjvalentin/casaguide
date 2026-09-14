@@ -273,6 +273,65 @@ def _recover(mailer, *, older_than_s: int, spawn=lambda fn: fn()) -> int:
             older_than_s=older_than_s, spawn=spawn)
 
 
+def test_vital_floor_fails_urban_guide_without_vitals(pay, monkeypatch):
+    """V2-68 p4 : en zone URBAINE (dense) sans hôpital/pharmacie/police, on ne livre pas
+    un guide creux → commande 'failed' + e-mail de reprise (jamais 'done')."""
+    client, _, mailer = pay
+
+    def _hollow(**kw):
+        res = _stub_generate(**kw)
+        res["summary"] = {"pois": 40, "dense": True,
+                          "categories": {"restaurant": 8, "bar": 8, "cafe": 8}}
+        return res
+    monkeypatch.setattr(guest_guides, "generate_guest_guide", _hollow)
+
+    out = _checkout(client, "hollow@paytest.com")
+    order = _order_by_token(out["token"])
+    _webhook(client, _completed_event("evt_g1", order["stripe_session_id"],
+                                      str(order["id"])))
+    failed = _order_by_token(out["token"])
+    assert failed["status"] == "failed"                      # jamais 'done'
+    assert len(mailer.sent) == 1                             # e-mail de REPRISE
+    assert "reprise" in mailer.sent[0][1].text.lower() or \
+           "ajuster" in mailer.sent[0][1].text.lower()
+
+
+def test_vital_floor_ok_when_one_vital_present(pay, monkeypatch):
+    """V2-68 p4 : une seule catégorie vitale présente suffit → livraison normale."""
+    client, _, mailer = pay
+
+    def _with_pharmacy(**kw):
+        res = _stub_generate(**kw)
+        res["summary"] = {"pois": 40, "dense": True,
+                          "categories": {"restaurant": 8, "pharmacy": 2}}
+        return res
+    monkeypatch.setattr(guest_guides, "generate_guest_guide", _with_pharmacy)
+
+    out = _checkout(client, "hasvital@paytest.com")
+    order = _order_by_token(out["token"])
+    _webhook(client, _completed_event("evt_g1", order["stripe_session_id"],
+                                      str(order["id"])))
+    assert _order_by_token(out["token"])["status"] == "done"
+
+
+def test_vital_floor_not_applied_in_rural(pay, monkeypatch):
+    """V2-68 p4 : hors zone dense (rural), l'absence de vitaux ne bloque JAMAIS (le plus
+    proche peut être loin ; dégradation douce, V2-57)."""
+    client, _, _ = pay
+
+    def _rural(**kw):
+        res = _stub_generate(**kw)
+        res["summary"] = {"pois": 5, "dense": False, "categories": {"restaurant": 2}}
+        return res
+    monkeypatch.setattr(guest_guides, "generate_guest_guide", _rural)
+
+    out = _checkout(client, "rural@paytest.com")
+    order = _order_by_token(out["token"])
+    _webhook(client, _completed_event("evt_g1", order["stripe_session_id"],
+                                      str(order["id"])))
+    assert _order_by_token(out["token"])["status"] == "done"
+
+
 def test_watchdog_recovers_stuck_generating_order(pay):
     """V2-64 — une commande PAYÉE figée en 'generating' (tâche de fond tuée, ex. restart
     de déploiement en pleine génération) est reprise par le chien de garde : génération
@@ -424,6 +483,61 @@ def test_public_geocode_endpoint(pay, monkeypatch):
         lambda **kw: (_ for _ in ()).throw(guest_pay._geocode.GeocodeError("nope")))
     assert client.post("/api/guest-guides/geocode",
                        json={"city": "X", "country_code": "ES"}).json()["found"] is False
+
+
+def test_checkout_refuses_imprecise_location_without_point(pay, monkeypatch):
+    """V2-68 p1 : sans point ajusté, un ancrage trop vague (accuracy 'city') est REFUSÉ
+    (422 imprecise_location) — jamais de paiement pour un guide invendable."""
+    client, _, _ = pay
+    monkeypatch.setattr(guest_pay._geocode, "geocode",
+                        lambda **kw: {"lat": 35.6, "lon": 139.7, "accuracy": "city"})
+    r = client.post("/api/guest-guides/checkout",
+                    json={"email": "vague@paytest.com", "city": "Tokyo",
+                          "country_code": "JP", "lang": "fr"})   # PAS de lat/lon
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "imprecise_location"
+
+
+def test_checkout_allows_precise_location_without_point(pay, monkeypatch):
+    """V2-68 p1 : une rue précise (accuracy 'street') passe sans point manuel."""
+    client, _, _ = pay
+    monkeypatch.setattr(guest_pay._geocode, "geocode",
+                        lambda **kw: {"lat": 35.66, "lon": 139.70, "accuracy": "street"})
+    r = client.post("/api/guest-guides/checkout",
+                    json={"email": "precise@paytest.com", "city": "Tokyo",
+                          "country_code": "JP", "address_line1": "1-2-3 Shibuya",
+                          "lang": "fr"})
+    assert r.status_code == 200 and r.json()["url"]
+
+
+def test_checkout_with_adjusted_point_skips_precision_garde(pay):
+    """V2-68 p1 : un point ajusté (lat/lon fournis) est toujours accepté (le tunnel a
+    fait le travail) — la garde ne re-géocode pas."""
+    client, _, _ = pay
+    out = _checkout(client, "adjusted@paytest.com")   # _checkout envoie lat/lon
+    assert out["token"]
+
+
+def test_neighborhoods_endpoint(pay, monkeypatch):
+    """V2-68 p2 : quartiers d'une grande ville, servis pour le choix d'ancrage."""
+    client, _, _ = pay
+    monkeypatch.setattr(guest_pay, "_GEO_MIN_INTERVAL_S", 0)
+    monkeypatch.setattr(guest_pay._geocode, "geocode",
+                        lambda **kw: {"lat": 35.68, "lon": 139.76, "accuracy": "city"})
+    from enrich import overpass
+    monkeypatch.setattr(overpass, "nearby_neighborhoods",
+                        lambda lat, lon, **kw: [{"name": "Shibuya", "lat": 35.66, "lon": 139.70},
+                                                {"name": "Ginza", "lat": 35.67, "lon": 139.76}])
+    r = client.post("/api/guest-guides/neighborhoods",
+                    json={"city": "Tokyo", "country_code": "JP"})
+    assert r.status_code == 200
+    assert [h["name"] for h in r.json()] == ["Shibuya", "Ginza"]
+    # Ville introuvable → liste vide (le tunnel retombe sur l'ajustement du point).
+    monkeypatch.setattr(
+        guest_pay._geocode, "geocode",
+        lambda **kw: (_ for _ in ()).throw(guest_pay._geocode.GeocodeError("nope")))
+    assert client.post("/api/guest-guides/neighborhoods",
+                       json={"city": "Nulle", "country_code": "JP"}).json() == []
 
 
 def test_checkout_success_url_is_merci_page(pay):

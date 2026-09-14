@@ -1618,8 +1618,12 @@ _NEAREST_SUFFIX_RE = re.compile(r"\s*\(\s*station la plus proche\s*\)\s*$", re.I
 def _poi_display_name(p: dict, lang: str) -> str:
     """Nom d'affichage d'un POI (V2-51b) : si c'est le survivant d'un réseau (marqueur
     `nearest_of_network` OU ancien nom portant le suffixe français figé), on affiche le
-    nom NU + le suffixe « station la plus proche » LOCALISÉ. Sinon le nom tel quel."""
-    name = (p.get("name") or "").strip()
+    nom NU + le suffixe « station la plus proche » LOCALISÉ. Sinon le nom tel quel.
+
+    V2-68 pièce 5 : quand le nom principal est en écriture NON latine et qu'un nom LATIN
+    lisible existe (`name_latin`), on l'affiche EN PREMIER (le voyageur ne peut ni lire ni
+    prononcer みんなのぱんや) ; l'original passe en 2e ligne (`_render_poi_local`)."""
+    name = (p.get("name_latin") or p.get("name") or "").strip()
     nu = _NEAREST_SUFFIX_RE.sub("", name).strip()
     is_network = bool(p.get("nearest_of_network")) or nu != name
     if is_network and nu:

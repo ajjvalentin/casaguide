@@ -31,6 +31,19 @@ _ACCURACY = {
 }
 
 
+# Précisions ACCEPTABLES pour ancrer un guide voyageur (V2-68 p1). Une précision
+# « city » (centroïde administratif) ou « mismatch » (commune incohérente) produit un
+# guide vague (POI jusqu'à 60 km, catégories vitales en échec de palier à Tokyo) → le
+# tunnel/API exige alors une rue ou un point ajusté. `manual` = point posé à la main.
+_PRECISE_ACCURACY = frozenset({"rooftop", "street", "manual"})
+
+
+def is_precise_enough(accuracy: str | None) -> bool:
+    """Vrai si la précision de géocodage suffit à ancrer un guide (rue/quartier/point
+    manuel). Faux pour « city »/« mismatch »/None → il faut préciser (V2-68 p1)."""
+    return accuracy in _PRECISE_ACCURACY
+
+
 class GeocodeError(Exception):
     pass
 

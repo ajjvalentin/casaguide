@@ -31,6 +31,8 @@ const STRINGS = {
     map_hint: "Déplacez le point (ou touchez la carte) pour marquer précisément votre lieu de séjour.",
     map_mismatch: "Emplacement incertain — vérifiez et déplacez le point sur votre location.",
     map_notfound: "Adresse introuvable — placez le point manuellement sur la carte.",
+    need_precise: "Indiquez votre rue ou déplacez le point sur votre lieu de séjour.",
+    choose_area: "Grande ville : choisissez votre quartier de séjour.",
     recap: "Guide des environs de {city}", pay: "Payer {price}",
     paying: "Redirection vers le paiement sécurisé…",
     err_fields: "Renseignez l'adresse, la ville, le pays et un e-mail valide.",
@@ -67,6 +69,8 @@ const STRINGS = {
     map_hint: "Drag the point (or tap the map) to mark exactly where you're staying.",
     map_mismatch: "Location uncertain — check and move the point to your rental.",
     map_notfound: "Address not found — place the point manually on the map.",
+    need_precise: "Enter your street or move the point to where you're staying.",
+    choose_area: "Large city: choose the district where you're staying.",
     recap: "Guide to the area around {city}", pay: "Pay {price}",
     paying: "Redirecting to secure payment…",
     err_fields: "Enter the address, town, country and a valid e-mail.",
@@ -103,6 +107,8 @@ const STRINGS = {
     map_hint: "Mueve el punto (o toca el mapa) para marcar exactamente dónde te alojas.",
     map_mismatch: "Ubicación incierta — comprueba y mueve el punto a tu alojamiento.",
     map_notfound: "Dirección no encontrada — coloca el punto manualmente en el mapa.",
+    need_precise: "Indica tu calle o mueve el punto a tu lugar de alojamiento.",
+    choose_area: "Ciudad grande: elige el barrio donde te alojas.",
     recap: "Guía de los alrededores de {city}", pay: "Pagar {price}",
     paying: "Redirigiendo al pago seguro…",
     err_fields: "Indica la dirección, la ciudad, el país y un correo válido.",
@@ -228,6 +234,7 @@ function renderAdresse(root) {
   };
   const errBox = el("div", { class: "errbox hidden" });
   const mapWrap = el("div", { class: "voyageur-mapwrap hidden" });
+  const hoodsBox = el("div", { class: "voyageur-hoods hidden" });
   const mapEl = el("div", { class: "voyageur-map" });
   const mapMsg = el("p", { class: "muted small" });
   const recap = el("div", { class: "voyageur-recap hidden" });
@@ -248,35 +255,83 @@ function renderAdresse(root) {
     if (!city || cc.length !== 2 || !/.+@.+\..+/.test(email)) {
       return showErr(tr("err_fields"));
     }
+    const addr1 = fields.address_line1.value.trim() || null;
+    const pc = fields.postal_code.value.trim() || null;
     locateBtn.disabled = true;
     let geo = { found: false };
     try {
-      geo = await api.guestGeocode({ address_line1: fields.address_line1.value.trim() || null,
-        postal_code: fields.postal_code.value.trim() || null, city, country_code: cc });
+      geo = await api.guestGeocode({ address_line1: addr1, postal_code: pc, city, country_code: cc });
     } catch (_) { /* repli placement manuel */ }
+    // Précision (V2-68 p1) : rue/quartier OK ; « city »/mismatch/introuvable = imprécis
+    // → on IMPOSE un ancrage (choix de quartier pour une grande ville, sinon ajustement).
+    const precise = geo.found && (geo.accuracy === "rooftop" || geo.accuracy === "street");
+    let hoods = [];
+    if (!precise && geo.found) {
+      try { hoods = await api.guestNeighborhoods({ address_line1: addr1, postal_code: pc, city, country_code: cc }); }
+      catch (_) { hoods = []; }
+    }
     locateBtn.disabled = false;
+
+    // État d'ancrage : un point est « validé » s'il est PRÉCIS, ou AJUSTÉ à la main, ou
+    // un quartier CHOISI. `anchorCity` porte le quartier retenu (titre « Shibuya »).
+    let anchored = precise;
+    let anchorCity = city;
     mapWrap.classList.remove("hidden");
     clear(mapEl);
     const start = geo.found ? { lat: geo.lat, lon: geo.lon } : { lat: null, lon: null };
-    getPoint = mountAdjustMap(mapEl, start, () => { recap.classList.remove("hidden"); });
-    mapMsg.textContent = !geo.found ? tr("map_notfound")
-      : (geo.mismatch || geo.accuracy === "city") ? tr("map_mismatch") : tr("map_hint");
-    // Récap + bouton payer.
-    clear(recap);
+    getPoint = mountAdjustMap(mapEl, start, () => { anchored = true; syncPay(); });
+
     const payBtn = el("button", { class: "btn btn-primary btn-block", type: "button" },
       tr("pay", { price: "" }).trim());
-    // Prix affiché sur le bouton (depuis la config).
-    api.guestOffer().then(o => { payBtn.textContent = tr("pay", { price: money(o.price_cts, o.currency) }); })
+    let priceLabel = tr("pay", { price: "" }).trim();
+    api.guestOffer().then(o => { priceLabel = tr("pay", { price: money(o.price_cts, o.currency) }); syncPay(); })
       .catch(() => {});
+    const syncPay = () => {
+      payBtn.disabled = !anchored;
+      payBtn.textContent = priceLabel;
+    };
+
+    // Message + choix de quartier selon la précision.
+    clear(hoodsBox);
+    if (precise) {
+      hoodsBox.classList.add("hidden");
+      mapMsg.textContent = tr("map_hint");
+    } else if (hoods.length) {
+      // Grande ville : boutons de quartier (ancrage précis en un tap).
+      mapMsg.textContent = tr("need_precise");
+      hoodsBox.appendChild(el("p", { class: "muted small" }, tr("choose_area")));
+      const chips = el("div", { class: "hood-chips" });
+      hoods.forEach((h) => {
+        const b = el("button", { class: "btn hood-chip", type: "button" }, h.name);
+        b.onclick = () => {
+          getPoint = mountAdjustMap(mapEl, { lat: h.lat, lon: h.lon }, () => { anchored = true; syncPay(); });
+          anchorCity = h.name;              // le guide s'ancre et se titre sur le quartier
+          anchored = true;
+          [...chips.children].forEach((c) => c.classList.remove("on"));
+          b.classList.add("on");
+          recap.querySelector("h2") && (recap.querySelector("h2").textContent = tr("recap", { city: anchorCity }));
+          mapMsg.textContent = tr("map_hint");
+          syncPay();
+        };
+        chips.appendChild(b);
+      });
+      hoodsBox.appendChild(chips);
+      hoodsBox.classList.remove("hidden");
+    } else {
+      // Ville imprécise sans quartier (petite commune) : ajustement du point imposé.
+      hoodsBox.classList.add("hidden");
+      mapMsg.textContent = geo.found ? tr("need_precise") : tr("map_notfound");
+    }
+
     payBtn.onclick = async () => {
       const pt = getPoint();
-      if (!pt || pt.lat == null) return showErr(tr("err_locate"));
+      if (!anchored || !pt || pt.lat == null) return showErr(tr("err_locate"));
       payBtn.disabled = true; payBtn.textContent = tr("paying");
       try {
         const r = await api.guestCheckout({
-          email, city, country_code: cc,
-          address_line1: fields.address_line1.value.trim() || null,
-          postal_code: fields.postal_code.value.trim() || null,
+          email, city: anchorCity, country_code: cc,
+          address_line1: addr1, postal_code: pc,
+          region: anchorCity !== city ? city : null,   // quartier choisi → ville en région
           lat: pt.lat, lon: pt.lon, lang: LANG });
         redirect(r.url);
       } catch (e) {
@@ -284,10 +339,10 @@ function renderAdresse(root) {
         showErr(e instanceof ApiError ? e.message : tr("generic_err"));
       }
     };
-    mount(recap,
-      el("h2", {}, tr("recap", { city })),
-      payBtn);
+    clear(recap);
+    mount(recap, el("h2", {}, tr("recap", { city: anchorCity })), payBtn);
     recap.classList.remove("hidden");
+    syncPay();
     recap.scrollIntoView({ behavior: "smooth", block: "nearest" });
   };
 
@@ -304,7 +359,7 @@ function renderAdresse(root) {
     mapWrap,
     backLink("#/voyageur"),
   ));
-  mount(mapWrap, mapEl, mapMsg, recap);
+  mount(mapWrap, hoodsBox, mapEl, mapMsg, recap);
 }
 
 // ── 3. Merci (polling + installation) ────────────────────────────────────────

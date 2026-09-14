@@ -134,3 +134,14 @@ def test_audit_flags_only_the_incoherent_property():
     findings = A.audit(props, reverse)
     assert [f["name"] for f in findings] == ["CASA MURCIA"]
     assert findings[0]["result_locality"] == "Torre-Pacheco"
+
+
+# ── V2-68 pièce 1 : seuil de précision d'ancrage ──────────────────────────────
+
+def test_is_precise_enough():
+    """Rue/quartier/point manuel = assez précis pour ancrer un guide ; centroïde
+    administratif (« city »), commune incohérente (« mismatch ») ou None = non."""
+    for ok in ("rooftop", "street", "manual"):
+        assert geocode.is_precise_enough(ok) is True
+    for bad in ("city", "mismatch", None, ""):
+        assert geocode.is_precise_enough(bad) is False

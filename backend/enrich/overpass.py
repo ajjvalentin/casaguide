@@ -125,6 +125,17 @@ CLAUDE_ONLY_CATEGORIES: set[str] = set()
 # réduit fortement le nombre de requêtes Overpass.
 _RADIUS_BUCKETS = (2000, 5000, 10000, 25000, 100000)
 
+# Rayons ADAPTÉS À LA DENSITÉ (V2-68 pièce 3). Les rayons du seed sont calibrés pour le
+# RURAL (hôpital 25 km, sight 20 km…) ; le 1er palier GROUPE leurs sélecteurs en UNE
+# requête — sur une mégapole, ce scan à 25 km sature Overpass (406/timeout) → paliers en
+# échec → catégories vitales vides (constat Tokyo). On COMMENCE PETIT (`_DENSE_START_M`,
+# là où les POI abondent) et on n'escalade au rayon max du seed QUE les catégories encore
+# déficientes — escalade CIBLÉE, pauvre en sélecteurs, qui ne sature pas (et retrouve un
+# aéroport lointain). La densité (`_DENSE_THRESHOLD` POI au 1er palier) ne sert qu'au
+# plancher vital à la publication (p4).
+_DENSE_START_M = 5000      # rayon du 1er palier (plafonné à la préférence du seed)
+_DENSE_THRESHOLD = 50      # nb de POI au 1er palier au-delà duquel la zone est « dense »
+
 # Tags qui disqualifient un POI quelle que soit la catégorie demandée.
 _DISQUALIFYING_TAGS: list[tuple[str, str]] = [
     ("shop", "estate_agent"),   # agence immobilière (constatée taggée marketplace)
@@ -699,36 +710,66 @@ def _script_of(s: str) -> str | None:
     return None
 
 
-def _local_name_meta(tags: dict, disp: str, country_lang: str | None) -> dict:
-    """Nom (et adresse) LOCAUX en écriture d'origine, à montrer au chauffeur (V2-66).
-
-    Renvoie un fragment de `completion_meta` (`_name_local`/`_name_script`/`_addr_local`)
-    — vide si rien à montrer. On ne capte QUE ce qui DIFFÈRE du nom affiché ET est en
-    écriture non latine : dans un pays latin (nom == affiché, ou variantes latines),
-    le fragment est vide → aucune ligne supplémentaire (invariant « pas de régression »).
-
-    Priorité au tag `name:<langue du pays>` (ex. `name:ja`) ; à défaut, toute variante
-    `name:*` non latine (ordre déterministe). Le champ `name` n'est jamais touché."""
-    meta: dict = {}
-    # Candidats de nom : langue du pays d'abord, puis les autres name:* (déterministe).
+def _pick_non_latin(tags: dict, disp: str, country_lang: str | None) -> str | None:
+    """Meilleure variante de nom en écriture NON latine qui DIFFÈRE du nom affiché
+    (V2-66). Priorité à la langue du pays (`name:ja`…), puis toute autre `name:*` non
+    latine (ordre déterministe). None si aucune (ou dans un pays latin)."""
     keys: list[str] = []
     if country_lang:
         keys.append(f"name:{country_lang}")
-    keys += sorted(k for k in tags
-                   if k.startswith("name:") and k not in keys)
+    keys += sorted(k for k in tags if k.startswith("name:") and k not in keys)
     for k in keys:
         v = (tags.get(k) or "").strip()
         if v and v != disp and _is_non_latin(v):
-            meta["_name_local"] = v
-            script = _script_of(v)
-            if script:
-                meta["_name_script"] = script
-            break
+            return v
+    return None
+
+
+def _pick_latin(tags: dict, disp: str) -> str | None:
+    """Meilleur nom LATIN, lisible par le voyageur (V2-68 pièce 5), quand le nom
+    affiché est en écriture non latine. Priorité : `int_name`, `name:en`, puis les
+    romanisations explicites (`name:<x>-Latn`), puis toute autre `name:*` latine.
+    None si aucun nom latin n'existe (le local restera seul en tête)."""
+    ordered: list[str] = ["int_name", "name:en"]
+    latn = sorted(k for k in tags if k.startswith("name:") and k.endswith("-Latn"))
+    other = sorted(k for k in tags
+                   if k.startswith("name:") and k not in latn and k != "name:en")
+    for k in ordered + latn + other:
+        v = (tags.get(k) or "").strip()
+        if v and v != disp and not _is_non_latin(v):
+            return v
+    return None
+
+
+def _local_name_meta(tags: dict, disp: str, country_lang: str | None) -> dict:
+    """Noms/adresse en écriture d'origine, pour le voyageur (V2-66 + V2-68 pièce 5).
+
+    Renvoie un fragment de `completion_meta` — vide dans un pays latin (aucune
+    régression). Deux cas, selon l'écriture du nom AFFICHÉ (OSM `name`) :
+
+    · nom affiché LATIN (« Sensō-ji ») → `_name_local` = variante non latine (« 浅草寺 »)
+      montrée EN SECOND, copiable (V2-66) ;
+    · nom affiché NON LATIN (« みんなのぱんや ») → `_name_latin` = nom latin lisible mis
+      EN TÊTE (V2-68 p5) et `_name_local` = l'original, montré en second (copiable /
+      prononçable V2-67). Sans nom latin disponible, l'original reste seul en tête
+      (aucun fragment). Le champ `name` n'est JAMAIS touché."""
+    meta: dict = {}
+    if _is_non_latin(disp):
+        latin = _pick_latin(tags, disp)
+        if latin:                       # nom latin lisible → il passe en tête
+            meta["_name_latin"] = latin
+            meta["_name_local"] = disp
+            meta["_name_script"] = _script_of(disp) or ""
+    else:
+        local = _pick_non_latin(tags, disp, country_lang)
+        if local:
+            meta["_name_local"] = local
+            meta["_name_script"] = _script_of(local) or ""
     # Adresse locale (le chauffeur la lit vraiment) : `addr:full` en écriture d'origine.
     addr_full = (tags.get("addr:full") or "").strip()
     if addr_full and _is_non_latin(addr_full):
         meta["_addr_local"] = addr_full
-    return meta
+    return {k: v for k, v in meta.items() if v}   # jamais un `_name_script` vide
 
 
 def _element_to_poi(el: dict, lat0: float, lon0: float,
@@ -924,6 +965,47 @@ def _run_buckets(client: httpx.Client, codes: list[str],
     return matched, failures, generic_dropped
 
 
+def nearby_neighborhoods(lat: float, lon: float,
+                         client: httpx.Client | None = None,
+                         radius_m: int = 8000, limit: int = 6) -> list[dict]:
+    """Quartiers NOMMÉS autour d'un point (V2-68 pièce 2) : nœuds OSM `place` =
+    suburb/city_district/neighbourhood/quarter, dans `radius_m`, triés par distance,
+    plafonnés à `limit`. Sert le CHOIX DE QUARTIERS quand le lieu est une grande ville
+    (« Shibuya, Ginza, Asakusa… » plutôt qu'un centroïde de préfecture muet). Une petite
+    commune sans quartier → liste vide (le tunnel retombe sur l'ajustement du point).
+    Renvoie `[{name, lat, lon}]`. Best-effort : réutilise `_post_overpass` (miroirs +
+    backoff) ; jamais bloquant."""
+    query = (f"[out:json][timeout:{settings.overpass_timeout_s}];"
+             f'(node["place"~"^(suburb|city_district|neighbourhood|quarter)$"]'
+             f"(around:{radius_m},{lat},{lon}););out center 80;")
+    own_client = client is None
+    client = client or httpx.Client(timeout=settings.overpass_timeout_s + 5)
+    try:
+        els = _post_overpass(client, query)
+    finally:
+        if own_client:
+            client.close()
+    out: list[dict] = []
+    for el in els:
+        name = (el.get("tags", {}).get("name") or "").strip()
+        plat = el.get("lat") or el.get("center", {}).get("lat")
+        plon = el.get("lon") or el.get("center", {}).get("lon")
+        if not name or plat is None or plon is None:
+            continue
+        out.append({"name": name, "lat": float(plat), "lon": float(plon),
+                    "crow_m": haversine_m(lat, lon, float(plat), float(plon))})
+    out.sort(key=lambda p: p["crow_m"])
+    # Dédoublonne par nom (une mégapole répète parfois un quartier en plusieurs nœuds).
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for p in out:
+        key = p["name"].lower()
+        if key not in seen:
+            seen.add(key)
+            uniq.append({"name": p["name"], "lat": p["lat"], "lon": p["lon"]})
+    return uniq[:limit]
+
+
 def fetch_grouped(categories: list[dict], lat: float, lon: float,
                   client: httpx.Client | None = None,
                   country_lang: str | None = None,
@@ -958,36 +1040,67 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
     own_client = client is None
     client = client or httpx.Client(timeout=settings.overpass_timeout_s + 5)
     try:
-        # ── Passe 1 : rayon de PRÉFÉRENCE (historique) ──────────────────────
-        m1, failures, generic = _run_buckets(client, codes, pref_of, lat, lon,
+        # ── Passe 1 : rayon de DÉPART, PLAFONNÉ (dense-first, V2-68 p3) ──────
+        # On commence petit (`min(pref, _DENSE_START_M)`) : en zone dense la préférence
+        # est déjà pleine sans saturer Overpass ; en rural on escaladera.
+        # On plafonne le 1er palier à `_DENSE_START_M`, SAUF les catégories « lointaines »
+        # par nature (aéroport, ≥ `overpass_far_bucket_m`) : leur sélecteur est RARE (aucune
+        # saturation même à 100 km) et elles ont déjà leur palier + timeout dédiés (M-18) —
+        # les rétrécir imposerait une escalade inutile pour un lieu jamais proche.
+        start_of = {c: (pref_of[c] if pref_of[c] >= settings.overpass_far_bucket_m
+                        else min(pref_of[c], _DENSE_START_M)) for c in codes}
+        m1, failures, generic = _run_buckets(client, codes, start_of, lat, lon,
                                              country_lang)
+        # `dropped_of` par catégorie (V2-68) : l'escalade REMPLACE le résultat d'une
+        # catégorie → son compte de réductions doit remplacer, jamais s'additionner
+        # (sinon double comptage des mêmes fiches re-moissonnées).
+        dropped_of: dict[str, int] = {}
         for code in codes:
             reduced, n = _reduce_category(code, m1.get(code, []))   # V2-47
-            network_dropped += n
+            dropped_of[code] = n
             results[code] = _finalize(reduced, settings.max_pois_per_category)
 
-        # ── Passe 2 : ESCALADE ciblée (rural), MIN_RESULTS par catégorie (V2-44 v3) ─
+        # ── Densité déduite du 1er palier (V2-68 p3) ────────────────────────
+        # Beaucoup de POI proches ⇒ zone urbaine. Ne sert PLUS à plafonner l'escalade
+        # (une catégorie déficiente s'escalade à son rayon max du seed — l'escalade est
+        # CIBLÉE et donc pauvre en sélecteurs, jamais le scan-mégapole du 1er palier
+        # groupé qui saturait Overpass ; un aéroport à 60 km reste trouvable). La densité
+        # ne pilote QUE le plancher vital à la publication (p4, via les stats).
+        # Densité sur les comptes BRUTS du 1er palier (avant plafond par catégorie) : une
+        # seule catégorie foisonnante (200 restos à 5 km) suffit à trahir l'urbain.
+        dense = sum(len(m1.get(c, [])) for c in codes) >= _DENSE_THRESHOLD
+
+        # ── Passe 2 : ESCALADE ciblée, MIN_RESULTS par catégorie (V2-44 v3) ─
         deficient = [c for c in codes
                      if c not in failures
-                     and max_of[c] > pref_of[c]
+                     and max_of[c] > start_of[c]
                      and len(results[c]) < target_for(c).min_results]
         if deficient:
-            m2, f2, g2 = _run_buckets(client, deficient, max_of, lat, lon,
-                                      country_lang)
-            generic += g2
+            esc_of = {c: max_of[c] for c in deficient}
+            m2, f2, _g2 = _run_buckets(client, deficient, esc_of, lat, lon,
+                                       country_lang)
+            # `_g2` (génériques du 2e palier) NON additionné : ce sont en quasi-totalité
+            # les mêmes éléments re-moissonnés qu'en passe 1 (déjà comptés) — l'ajouter
+            # double-compterait. Le stat reste la mesure de la passe comprehensive (1).
             for code in deficient:
                 if code in f2:
                     continue  # escalade en échec : on garde le résultat de la passe 1
                 reduced, n = _reduce_category(code, m2.get(code, []))   # V2-47
-                network_dropped += n
+                dropped_of[code] = n                                    # REMPLACE (pas +=)
+                # « préféré » = rayon de PRÉFÉRENCE du seed (pas le petit rayon de départ) :
+                # on garde tout ce qui est dans la préférence, on complète au-delà jusqu'à
+                # MIN_RESULTS (V2-44). Le seuil de DÉPART (`start_of`) ne servait qu'au 1er
+                # palier ; l'escalade raisonne sur l'intention du seed.
                 results[code] = _select_adaptive(
                     reduced, pref_of[code],
                     target_for(code).min_results, settings.max_pois_per_category)
 
         _dedup_health_categories(results)
+        network_dropped = sum(dropped_of.values())
         empty = [c for c in codes if not results.get(c) and c not in failures]
         return results, failures, {"generic_dropped": generic,
-                                   "network_dropped": network_dropped, "empty": empty}
+                                   "network_dropped": network_dropped,
+                                   "empty": empty, "dense": dense}
     finally:
         if own_client:
             client.close()

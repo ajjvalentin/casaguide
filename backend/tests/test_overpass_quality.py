@@ -251,6 +251,28 @@ def test_element_to_poi_no_local_when_name_already_native():
     assert "completion_meta" not in overpass._element_to_poi(el, LAT, LON, "ja")
 
 
+def test_element_to_poi_latin_first_when_name_is_non_latin():
+    """V2-68 pièce 5 : nom principal NON latin (« みんなのぱんや ») + nom latin dispo
+    (`name:en`/`int_name`) → `_name_latin` (mis en tête au rendu) + `_name_local` (original
+    en 2e ligne). Sans nom latin, rien (l'original reste seul en tête)."""
+    el = {"type": "node", "id": 1, "lat": LAT, "lon": LON,
+          "tags": {"name": "みんなのぱんや", "name:en": "Minna no Panya",
+                   "shop": "bakery"}}
+    meta = overpass._element_to_poi(el, LAT, LON, "ja")["completion_meta"]
+    assert meta["_name_latin"] == "Minna no Panya"
+    assert meta["_name_local"] == "みんなのぱんや"
+    # int_name prioritaire sur name:en.
+    el2 = {"type": "node", "id": 2, "lat": LAT, "lon": LON,
+           "tags": {"name": "東京タワー", "int_name": "Tokyo Tower",
+                    "name:en": "TOKYO TOWER (en)", "tourism": "attraction"}}
+    assert overpass._element_to_poi(el2, LAT, LON, "ja")["completion_meta"]["_name_latin"] \
+        == "Tokyo Tower"
+    # Non latin SANS aucun nom latin → aucun fragment (reste seul en tête).
+    el3 = {"type": "node", "id": 3, "lat": LAT, "lon": LON,
+           "tags": {"name": "みんなのぱんや", "shop": "bakery"}}
+    assert "completion_meta" not in overpass._element_to_poi(el3, LAT, LON, "ja")
+
+
 def test_element_to_poi_no_local_in_latin_country():
     """Pays latin (country_lang None) : aucune capture, même avec un name:es présent →
     zéro ligne supplémentaire (La Zenia/Ardon inchangés)."""
@@ -319,6 +341,46 @@ def test_adaptive_radius_byte_identical_in_dense_zone():
     assert [p["name"] for p in results["supermarket"]] == \
         ["D05", "D10", "D15", "D20", "D25"]
     assert len(calls) == 1                        # préférence pleine → pas de 2e passe
+
+
+def test_dense_first_flag_and_no_saturating_first_pass():
+    """V2-68 pièce 3 : beaucoup de POI au 1er palier (petit rayon) ⇒ `stats['dense']`
+    True, et le 1er palier ne part JAMAIS au rayon max du seed (anti-saturation Tokyo).
+    La zone dense est remplie sans escalade."""
+    settings.politeness_delay_s = 0
+    els = [_sm(f"S{i}", 0.002 + 0.0004 * i) for i in range(60)]   # 60 POINTS tous < 5 km
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler(els, '"shop"="supermarket"', calls)))
+    # Rayon de préférence RURAL (25 km) : sans dense-first, le 1er palier scannerait 25 km.
+    cats = [{"code": "supermarket", "default_radius_m": 25000, "max_radius_m": 25000}]
+    _results, _failures, stats = overpass.fetch_grouped(cats, LAT, LON, client=client)
+    client.close()
+    assert stats["dense"] is True               # densité déduite du 1er palier
+    assert len(calls) == 1                       # rempli au 1er palier → aucune escalade
+
+
+def test_nearby_neighborhoods_named_and_sorted():
+    """V2-68 pièce 2 : quartiers nommés autour d'un point, triés par distance, dédupliqués,
+    plafonnés. Un nœud sans nom est ignoré."""
+    settings.politeness_delay_s = 0
+    els = [
+        {"type": "node", "id": 1, "lat": LAT + 0.02, "lon": LON,
+         "tags": {"place": "suburb", "name": "Shibuya"}},
+        {"type": "node", "id": 2, "lat": LAT + 0.005, "lon": LON,
+         "tags": {"place": "quarter", "name": "Ginza"}},          # plus proche
+        {"type": "node", "id": 3, "lat": LAT + 0.05, "lon": LON,
+         "tags": {"place": "neighbourhood"}},                     # sans nom → ignoré
+        {"type": "node", "id": 4, "lat": LAT + 0.006, "lon": LON,
+         "tags": {"place": "suburb", "name": "Ginza"}},           # doublon de nom
+    ]
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler(els, '"place"', calls)))
+    hoods = overpass.nearby_neighborhoods(LAT, LON, client=client)
+    client.close()
+    assert [h["name"] for h in hoods] == ["Ginza", "Shibuya"]     # proche d'abord, dédup
+    assert all("crow_m" not in h for h in hoods)                  # sortie propre
 
 
 def test_no_max_radius_means_no_escalation():

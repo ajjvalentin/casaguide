@@ -794,6 +794,9 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             summary["empty_categories"] = empty_categories
             summary["generic_dropped"] = harvest.get("generic_dropped", 0)
             summary["network_dropped"] = harvest.get("network_dropped", 0)
+            # Densité déduite de la moisson (V2-68 p3) : sert au PLANCHER VITAL (p4) —
+            # une zone urbaine sans hôpital/pharmacie/police proche = mauvais ancrage.
+            summary["dense"] = bool(harvest.get("dense"))
             db.job_step(conn, job_id, "overpass",
                         {"ok": not failed_categories or summary["pois"] > 0,
                          "pois": summary["pois"],

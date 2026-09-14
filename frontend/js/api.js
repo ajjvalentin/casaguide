@@ -118,6 +118,7 @@ export const api = {
   guestOffer:      () => request("GET", "/api/guest-guides/offer", { auth: false }),
   guestDemo:       () => request("GET", "/api/guest-guides/demo", { auth: false }),
   guestGeocode:    (b) => request("POST", "/api/guest-guides/geocode", { body: b, auth: false }),
+  guestNeighborhoods: (b) => request("POST", "/api/guest-guides/neighborhoods", { body: b, auth: false }),
   guestCheckout:   (b) => request("POST", "/api/guest-guides/checkout", { body: b, auth: false }),
   guestOrder:      (t) => request("GET", `/api/guest-guides/orders/${encodeURIComponent(t)}`, { auth: false }),
   guestRetry:      (t, b) => request("POST", `/api/guest-guides/orders/${encodeURIComponent(t)}/retry`, { body: b, auth: false }),

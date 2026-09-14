@@ -791,14 +791,14 @@ def _panel(html, key):
 
 
 def _poi(name, cat, ch, walk=5, comment=None, weekday=None, weekday_note=None,
-         locality=None, name_local=None, addr_local=None):
+         locality=None, name_local=None, addr_local=None, name_latin=None):
     return {"id": name, "name": name, "category_code": cat, "chapter": ch,
             "category_name": {"fr": cat}, "map_color": "#0E5A73",
             "lat": 37.9, "lon": -0.74, "walk_min": walk, "dist_walk_m": walk * 70,
             "drive_min": None, "owner_comment": comment, "description_md": None,
             "opening_hours": None, "phone": None, "website": None, "cuisine": None,
             "weekday": weekday, "weekday_note": weekday_note, "locality": locality,
-            "name_local": name_local, "addr_local": addr_local}
+            "name_local": name_local, "addr_local": addr_local, "name_latin": name_latin}
 
 
 def test_poi_locality_shown_only_when_different_from_home_commune():
@@ -835,6 +835,17 @@ def test_poi_local_name_shown_copyable_for_non_latin():
     assert "東京都台東区浅草2-3-1" in html         # adresse locale copiable aussi
     # Aucune ligne locale pour le lieu latin (pas de bouton copier surnuméraire).
     assert html.count('class="copy-btn"') == 2   # nom + adresse du seul POI japonais
+
+
+def test_poi_latin_name_shown_first_when_name_non_latin():
+    """V2-68 pièce 5 : nom principal NON latin + nom latin dispo → le LATIN est en tête
+    (h4, lisible par le voyageur) et l'original passe en 2e ligne copiable."""
+    pois = [_poi("みんなのぱんや", "bakery", "C", name_latin="Minna no Panya",
+                 name_local="みんなのぱんや")]
+    html = guide_page.render_guide(_prop(city="Tokyo"), [], pois, {}, "tok")
+    # Le titre (h4) porte le nom LATIN ; l'original est en ligne locale copiable.
+    assert "<h4>Minna no Panya" in html
+    assert 'data-copy="みんなのぱんや"' in html and "poi-local" in html
 
 
 def test_poi_no_local_line_in_latin_country():
