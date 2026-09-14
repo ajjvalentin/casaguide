@@ -16,6 +16,7 @@ import { navigate } from "./nav.js";
 import { renderLogin } from "./views/login.js";
 import { renderForgot, renderReset, renderVerify } from "./views/reset.js";
 import { renderVoyageur } from "./views/voyageur.js";
+import { renderVitrine } from "./views/vitrine.js";
 import { renderProperties } from "./views/properties.js";
 import { renderEditor } from "./views/editor.js";
 import { renderPois } from "./views/pois.js";
@@ -135,7 +136,17 @@ function renderRoute() {
     return void renderVoyageur(appEl, seg.slice(1), params);
   }
 
-  if (!getToken()) { renderLogin(appEl); return; }
+  if (!getToken()) {
+    // Vitrine = ACCUEIL public (V2-58) : la connexion quitte le centre. La racine
+    // (ou #/accueil) montre la page marketing ; #/login sert le formulaire ; tout
+    // autre chemin logged-out (deep link vers l'espace propriétaire) → connexion.
+    if (hash === "#/login") { renderLogin(appEl); return; }
+    if (hash === "" || hash === "#" || hash === "#/" || hash.startsWith("#/accueil")) {
+      const params = new URLSearchParams(hash.split("?")[1] || "");
+      return void renderVitrine(appEl, params);
+    }
+    renderLogin(appEl); return;
+  }
 
   const view = ensureShell();
   // On retire une éventuelle query (`?checkout=success`, V2-05b) avant de router :

@@ -114,6 +114,17 @@ def offer():
                     currency=settings.guest_guide_currency)
 
 
+class DemoOut(BaseModel):
+    token: str | None = None
+
+
+@router.get("/demo", response_model=DemoOut)
+def demo(conn: Conn):
+    """Token du guide de DÉMONSTRATION vivant (V2-58) — la vitrine y branche son
+    iframe/lien. `token=null` si la démo n'est pas encore générée (bloc masqué)."""
+    return DemoOut(token=repo.get_demo_guide_token(conn))
+
+
 @router.post("/geocode", response_model=GeocodeOut)
 def geocode_address(payload: GeocodeIn):
     """Géocodage PUBLIC pré-checkout (V2-54 C) : situe l'adresse pour que le vacancier

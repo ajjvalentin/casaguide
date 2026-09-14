@@ -166,25 +166,12 @@ export function renderLogin(root) {
       "Espace propriétaire — vos guides d'accueil"),
     tabs, form);
 
-  // Offre « Voyageurs » (V2-54 Mission C) — troisième offre, visible du visiteur :
-  // le guide des environs d'un lieu de vacances, achat unique, sans compte. Prix lu
-  // de la config (jamais en dur). Distincte de l'espace propriétaire ci-dessus.
-  const priceSpan = el("span", { class: "voyageur-price-inline" }, "");
-  api.guestOffer().then((o) => {
-    try {
-      priceSpan.textContent = " — " + new Intl.NumberFormat("fr", {
-        style: "currency", currency: (o.currency || "eur").toUpperCase() })
-        .format((o.price_cts || 0) / 100);
-    } catch (_) { /* prix indisponible : lien sans montant */ }
-  }).catch(() => {});
-  const voyageurCard = el("div", { class: "card voyageur-promo" },
-    el("p", { class: "eyebrow" }, "Voyageurs"),
-    el("p", {}, "Vous partez en vacances ? Obtenez le guide des environs de votre "
-      + "location — restaurants, plages, commerces, urgences. À vie, hors-ligne, 7 langues."),
-    el("a", { class: "btn btn-primary btn-block", href: "#/voyageur" },
-      "Créer le guide de mon séjour", priceSpan));
+  // La connexion est SOBRE (V2-58) : l'offre voyageur et le marketing vivent sur la
+  // vitrine (#/accueil). Un simple retour vers l'accueil pour le visiteur égaré.
+  const backHome = el("p", { class: "muted auth-alt" },
+    el("a", { href: "#/accueil" }, "← Retour à l'accueil"));
 
-  mount(root, el("div", { class: "auth-wrap" }, card, voyageurCard));
+  mount(root, el("div", { class: "auth-wrap" }, card, backHome));
   switchMode("login");
   emailF.input.focus();
 }

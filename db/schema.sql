@@ -130,6 +130,9 @@ CREATE TABLE properties (
     -- publiée automatiquement, servie amputée (Autour + Urgences). Exclue des
     -- listings/quotas propriétaires. FALSE = fiche propriétaire normale.
     guest_guide      BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Guide de DÉMONSTRATION de la vitrine (V2-58) : un guest_guide dédié, exclu du
+    -- cache anti-abus, régénérable. Jamais un guide client.
+    demo             BOOLEAN NOT NULL DEFAULT FALSE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );

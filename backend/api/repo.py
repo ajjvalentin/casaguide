@@ -499,7 +499,8 @@ def create_guest_property(conn, *, name: str, city: str, country_code: str,
                           lat: float, lon: float, address_line1: str | None = None,
                           postal_code: str | None = None, region: str | None = None,
                           default_lang: str = "fr",
-                          geocode_accuracy: str = "manual") -> dict:
+                          geocode_accuracy: str = "manual",
+                          demo: bool = False) -> dict:
     """Crée une fiche GUIDE VOYAGEUR (V2-54) : possédée par l'owner système,
     `guest_guide=TRUE`, position DÉJÀ connue (le point est ajusté dans le tunnel →
     `geom` posé directement, `geocode_source='manual'`). Ne sème NI secrets NI
@@ -511,13 +512,13 @@ def create_guest_property(conn, *, name: str, city: str, country_code: str,
     row = conn.execute(
         f"""INSERT INTO properties
               (owner_id, name, address_line1, postal_code, city, region,
-               country_code, default_lang, guest_guide,
+               country_code, default_lang, guest_guide, demo,
                geom, geocode_source, geocode_accuracy)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE,
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s,
                     ST_SetSRID(ST_MakePoint(%s, %s), 4326), 'manual', %s)
             RETURNING {_PROP_COLS}""",
         (owner_id, name, address_line1 or city, postal_code, city, region,
-         country_code.upper(), default_lang, lon, lat, geocode_accuracy),
+         country_code.upper(), default_lang, demo, lon, lat, geocode_accuracy),
     ).fetchone()
     return row
 
@@ -529,7 +530,7 @@ def find_recent_guest_guide_near(conn, lat: float, lon: float,
     nouveau lien vers le même contenu, marge pure). Le plus proche d'abord. None sinon."""
     return conn.execute(
         f"""SELECT {_PROP_COLS} FROM properties
-            WHERE guest_guide AND status = 'published' AND geom IS NOT NULL
+            WHERE guest_guide AND NOT demo AND status = 'published' AND geom IS NOT NULL
               AND created_at > now() - make_interval(days => %s)
               AND ST_DWithin(geom::geography,
                              ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
@@ -537,6 +538,16 @@ def find_recent_guest_guide_near(conn, lat: float, lon: float,
             LIMIT 1""",
         (days, lon, lat, radius_m, lon, lat),
     ).fetchone()
+
+
+def get_demo_guide_token(conn) -> str | None:
+    """Token du guide de DÉMONSTRATION publié (V2-58) pour l'iframe/le lien de la
+    vitrine. None si la démo n'a pas encore été créée (le bloc démo se masque)."""
+    row = conn.execute(
+        "SELECT guide_token FROM properties "
+        "WHERE demo AND guest_guide AND status = 'published' "
+        "ORDER BY created_at LIMIT 1").fetchone()
+    return row["guide_token"] if row else None
 
 
 def record_guest_generation(conn, email: str | None, ip: str | None,

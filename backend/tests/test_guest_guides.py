@@ -70,6 +70,30 @@ def test_cache_resurfaces_recent_nearby_guide(conn):
     assert repo.find_recent_guest_guide_near(c, LAT, LON, 100, 30) is None
 
 
+def test_demo_guide_is_flagged_excluded_from_cache_and_resolvable(conn):
+    """V2-58 : le guide de DÉMO (guest_guide + demo) n'est JAMAIS resservi comme cache
+    d'un achat réel voisin, et son token est résolu pour la vitrine."""
+    c, created = conn
+    c.execute("DELETE FROM properties WHERE demo")   # départ propre (déterminisme)
+    c.commit()
+    demo = repo.create_guest_property(c, name="Démo — La Zenia", city="La Zenia",
+                                      country_code="ES", lat=LAT, lon=LON, demo=True)
+    created.append(str(demo["id"]))
+    c.execute("UPDATE properties SET status='published' WHERE id=%s", (demo["id"],))
+    c.commit()
+    # Marquée demo en base.
+    assert c.execute("SELECT demo FROM properties WHERE id=%s",
+                     (demo["id"],)).fetchone()["demo"] is True
+    # Exclue du cache anti-abus (une commande réelle au même point ne la reçoit jamais).
+    assert repo.find_recent_guest_guide_near(c, LAT, LON, 100, 30) is None
+    # Résoluble pour la vitrine.
+    assert repo.get_demo_guide_token(c) == demo["guide_token"]
+    # Une vraie fiche (non-demo) au même point EST, elle, resservie.
+    real = _make_guest(c, created)
+    hit = repo.find_recent_guest_guide_near(c, LAT, LON, 100, 30)
+    assert hit is not None and str(hit["id"]) == str(real["id"])
+
+
 def test_cache_ignores_unpublished_guides(conn):
     c, created = conn
     prop = _make_guest(c, created, publish=False)  # brouillon (génération en cours)

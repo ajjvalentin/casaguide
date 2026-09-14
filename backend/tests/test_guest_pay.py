@@ -291,6 +291,13 @@ def test_offer_price_from_config(pay):
     assert j["price_cts"] == api_settings.guest_guide_price_cts and j["currency"]
 
 
+def test_demo_endpoint_shape(pay):
+    """V2-58 : l'endpoint démo répond toujours (token ou null si non générée)."""
+    client, _, _ = pay
+    r = client.get("/api/guest-guides/demo")
+    assert r.status_code == 200 and "token" in r.json()
+
+
 def test_public_geocode_endpoint(pay, monkeypatch):
     """V2-54 C : géocodage PUBLIC pré-checkout — found/mismatch/introuvable, throttle
     neutralisé en test."""

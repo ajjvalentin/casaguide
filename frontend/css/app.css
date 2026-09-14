@@ -9,6 +9,8 @@
   --sea:#0E5A73; --sea-dark:#0A4658; --line:#E7E0D4; --line-soft:#F1ECE2;
   --ok:#2E7D32; --prog:#EF6C00; --todo:#90A4AE; --alert:#C62828; --lock:#5E35B1;
   --sand-hi:#FFF6E5; --sand-hi-line:#F0E2C0; --sand-hi-ink:#7A5A12;
+  /* Accent chaud soleil/terracotta — le lien de famille avec Holaquetal Immo (V2-58) */
+  --terra:#E0913B; --terra-dark:#C8792A;
   --radius:12px; --radius-lg:16px;
   --shadow:0 1px 2px rgba(30,42,50,.05), 0 6px 20px rgba(30,42,50,.06);
   --shadow-pop:0 10px 40px rgba(30,42,50,.18);
@@ -924,3 +926,128 @@ hr.soft{border:none;border-top:1px solid var(--line-soft);margin:16px 0}
 .spinner-inline { display: flex; justify-content: center; margin: 12px 0; color: var(--sea, #0E5A73); }
 .spinner-inline svg { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ══ Vitrine holaguia.com (V2-58) — crème/vert/terracotta, mobile-first ══════ */
+.vitrine { color: var(--ink); }
+.vitrine .btn-primary { background: var(--sea); border-color: var(--sea); color: #fff; }
+.vitrine .btn-primary:hover { background: var(--sea-dark); }
+
+/* Barre supérieure : la connexion quitte le centre → haut-droite */
+.vt-top { display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; position: sticky; top: 0; z-index: 20;
+  background: rgba(250,247,242,.9); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line-soft); }
+.vt-brand { display: inline-flex; align-items: center; gap: 8px; font-family: "Fraunces", serif;
+  font-weight: 700; font-size: 20px; color: var(--ink); }
+.vt-brand .mark { display: inline-flex; color: var(--sea); }
+.vt-topnav { display: flex; align-items: center; gap: 14px; }
+.vt-langs { display: flex; gap: 2px; }
+.vt-lang { background: none; border: none; color: var(--muted); font-weight: 600; font-size: 13px;
+  padding: 4px 6px; cursor: pointer; border-radius: 6px; }
+.vt-lang.on { color: var(--sea); background: rgba(14,90,115,.08); }
+.vt-login { display: inline-flex; align-items: center; gap: 5px; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 20px; padding: 7px 14px; font-weight: 600; font-size: 14px; }
+
+/* Héros : dégradé chaud + constellation de pastilles (motif signature) */
+.vt-hero { padding: 40px 20px 30px; text-align: center;
+  background:
+    radial-gradient(circle at 18% 22%, rgba(224,145,59,.12), transparent 40%),
+    radial-gradient(circle at 82% 12%, rgba(14,90,115,.10), transparent 45%),
+    radial-gradient(1.5px 1.5px at 20% 60%, rgba(14,90,115,.35) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 70% 30%, rgba(224,145,59,.5) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 45% 80%, rgba(198,40,40,.35) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 88% 66%, rgba(46,125,50,.4) 50%, transparent 51%),
+    linear-gradient(180deg, #FFF6E9, var(--sand)); }
+.vt-eyebrow { text-transform: uppercase; letter-spacing: .08em; font-size: 12px; font-weight: 700;
+  color: var(--terra-dark); margin: 0 0 8px; }
+.vt-eyebrow.center, .vt-h2.center { text-align: center; }
+.vt-title { font-family: "Fraunces", serif; font-weight: 600; font-size: 30px; line-height: 1.15;
+  color: var(--ink); margin: 0 0 12px; }
+.vt-sub { font-size: 17px; color: var(--muted); margin: 0 auto 20px; max-width: 30em; }
+.vt-cta-row { display: flex; flex-direction: column; gap: 10px; max-width: 360px; margin: 0 auto; }
+.vt-cta { justify-content: center; font-size: 16px; padding: 12px 18px; }
+.vt-cta-accent { background: var(--terra); border-color: var(--terra); color: #fff; }
+.vt-cta-accent:hover { background: var(--terra-dark); border-color: var(--terra-dark); }
+
+/* Téléphone démo (mockup) */
+.vt-phone { width: 240px; margin: 28px auto 0; border: 10px solid #263238; border-radius: 34px;
+  overflow: hidden; box-shadow: 0 16px 40px rgba(0,0,0,.18); background: var(--sand); }
+.vt-phone-slot { width: 100%; aspect-ratio: 9/18; overflow: hidden; }
+.vt-phone-slot iframe { width: 100%; height: 100%; border: 0; }
+.vt-dots { width: 100%; height: 100%;
+  background:
+    radial-gradient(3px 3px at 30% 25%, var(--sea) 50%, transparent 51%),
+    radial-gradient(3px 3px at 62% 40%, var(--terra) 50%, transparent 51%),
+    radial-gradient(3px 3px at 44% 62%, #C62828 50%, transparent 51%),
+    radial-gradient(3px 3px at 74% 74%, #2E7D32 50%, transparent 51%),
+    linear-gradient(180deg, #FFF6E9, var(--sand)); }
+
+/* Sections */
+.vt-section { padding: 34px 20px; max-width: 980px; margin: 0 auto; }
+.vt-h2 { font-family: "Fraunces", serif; font-weight: 600; font-size: 24px; color: var(--ink);
+  margin: 0 0 18px; }
+
+/* Deux portes */
+.vt-doors { display: grid; gap: 16px; }
+.vt-door { border: 1px solid var(--line); border-radius: 14px; padding: 20px; background: var(--shell); }
+.vt-door.traveler { border-color: var(--terra); background: #FFF9F1; }
+.vt-door-tag { display: inline-block; font-weight: 700; font-size: 13px; color: var(--terra-dark);
+  background: rgba(224,145,59,.12); border-radius: 20px; padding: 3px 12px; margin: 0 0 8px; }
+.vt-door.host .vt-door-tag { color: var(--sea); background: rgba(14,90,115,.08); }
+.vt-door h3 { font-family: "Fraunces", serif; font-size: 20px; margin: 0 0 8px; }
+.vt-door-desc { color: var(--muted); margin: 0 0 16px; }
+.vt-door.traveler .vt-door-cta { background: var(--terra); border-color: var(--terra); color: #fff; }
+.vt-door.host .vt-door-cta { background: var(--sea); border-color: var(--sea); color: #fff; }
+
+/* Démo vivante */
+.vt-demo { text-align: center; }
+.vt-demo-sub { color: var(--muted); max-width: 34em; margin: 0 auto 18px; }
+.vt-demo-frame { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.vt-demo-frame iframe { width: 100%; max-width: 380px; height: 560px; border: 1px solid var(--line);
+  border-radius: 14px; background: var(--sand); }
+.vt-demo-open { justify-content: center; }
+
+/* Comment ça marche */
+.vt-how { display: grid; gap: 20px; }
+.vt-how-col h3 { font-family: "Fraunces", serif; font-size: 18px; margin: 0 0 10px; }
+.vt-steps { list-style: none; padding: 0; margin: 0; }
+.vt-steps li { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; color: var(--ink); }
+.vt-step-n { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--terra);
+  color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
+
+/* Différenciateurs */
+.vt-diffs { background: rgba(14,90,115,.05); border-radius: 16px; }
+.vt-diff-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; }
+.vt-diff { display: inline-flex; align-items: center; gap: 8px; background: var(--shell);
+  border: 1px solid var(--line); border-radius: 22px; padding: 9px 16px; font-weight: 600; font-size: 14px; }
+.vt-diff svg { color: var(--sea); }
+
+/* Pied */
+.vt-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px;
+  padding: 22px 20px; max-width: 980px; margin: 0 auto; color: var(--muted); font-size: 13px;
+  border-top: 1px solid var(--line-soft); }
+
+/* Desktop : héros deux colonnes, grilles à 2 colonnes */
+@media (min-width: 760px) {
+  .vt-hero { display: grid; grid-template-columns: 1.1fr .9fr; align-items: center; text-align: left;
+    gap: 24px; padding: 56px 40px; max-width: 1080px; margin: 0 auto; }
+  .vt-sub { margin-left: 0; }
+  .vt-cta-row { flex-direction: row; margin: 0; }
+  .vt-phone { margin: 0 auto; }
+  .vt-title { font-size: 40px; }
+  .vt-doors, .vt-how { grid-template-columns: 1fr 1fr; }
+}
+
+/* Vitrine — robustesse mobile (V2-58) : la barre supérieure doit tenir < 375px */
+.vitrine { overflow-x: hidden; }
+.vt-cta { white-space: normal; text-align: center; }
+@media (max-width: 430px) {
+  .vt-brand { font-size: 17px; gap: 6px; }
+  .vt-topnav { gap: 8px; }
+  .vt-langs { gap: 0; }
+  .vt-lang { padding: 4px 4px; font-size: 12px; }
+  .vt-login { padding: 6px 10px; font-size: 13px; gap: 4px; }
+  .vt-top { padding: 12px 14px; }
+  .vt-hero { padding: 32px 16px 22px; }
+  .vt-section { padding: 28px 16px; }
+  .vt-title { font-size: 26px; }
+}
