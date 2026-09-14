@@ -55,6 +55,13 @@
       renderVoyageur(app, ["adresse"], new URLSearchParams("lang=fr"));
       await wait(20);
 
+      // (0) V2-69 : l'étape adresse ne présuppose pas une réservation.
+      const screen = app.textContent;
+      if (!/Quel lieu voulez-vous explorer/.test(screen)) return fail("titre V2-69 absent");
+      if (!/Adresse ou lieu/.test(screen)) return fail("libellé « Adresse ou lieu » absent");
+      if (/location|séjourner|votre location/i.test(screen))
+        return fail("mention imposant une réservation dans l'écran adresse");
+
       // Saisie : ville seule (Tokyo), pays JP, e-mail — pas de rue.
       const inputFor = (lbl) => {
         const l = [...app.querySelectorAll("label.field")]
