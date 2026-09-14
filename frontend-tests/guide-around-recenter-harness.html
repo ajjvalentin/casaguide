@@ -91,8 +91,9 @@
     { "name": "S1", "lat": 37.931, "lon": -0.724, "chapter": "F", "category_code": "supermarket", "color": "#0E5A73", "category": "Supermarché" }
   ],
   "emergency": [
-    { "name": "Farmacia", "lat": 37.927, "lon": -0.724, "chapter": "D", "category_code": "pharmacy", "color": "#C62828", "category": "Pharmacie" },
-    { "name": "Hôpital", "lat": 37.933, "lon": -0.730, "chapter": "D", "category_code": "hospital", "color": "#C62828", "category": "Hôpital" }
+    { "name": "Farmacia", "lat": 37.927, "lon": -0.724, "chapter": "D", "category_code": "pharmacy", "color": "#C62828", "category": "Pharmacie", "dist_m": 300 },
+    { "name": "Hôpital", "lat": 37.933, "lon": -0.730, "chapter": "D", "category_code": "hospital", "color": "#C62828", "category": "Hôpital", "dist_m": 900 },
+    { "name": "Clinique lointaine", "lat": 38.16, "lon": -0.96, "chapter": "D", "category_code": "hospital", "color": "#C62828", "category": "Hôpital", "dist_m": 42000 }
   ]
 }</script>
 
@@ -142,16 +143,19 @@
     chk(window.__fits.every((f) => f.el !== "emap"), "contrôle négatif : aucun cadrage Urgences avant activation");
 
     // 4) 1re activation d'Urgences → construction + cadrage sur logement + POI SANTÉ
-    //    UNIQUEMENT (les 4 POI « Autour » n'y figurent pas).
+    //    UNIQUEMENT (les 4 POI « Autour » n'y figurent pas). V2-63 : les 3 lieux santé
+    //    (dont la clinique lointaine à 42 km) sont POSÉS sur la carte…
     window._activateTab("emergency");
     await wait(140);
     chk(!!window.__maps.emap, "carte Urgences construite à la 1re activation");
-    chk([...window.__maps.emap._layers].filter((m) => m._kind === "poi").length === 2,
-      "2 marqueurs santé posés (pas les POI Autour)");
+    chk([...window.__maps.emap._layers].filter((m) => m._kind === "poi").length === 3,
+      "3 marqueurs santé posés (pas les POI Autour ; la clinique lointaine reste sur la carte)");
     const eFits1 = window.__fits.filter((f) => f.el === "emap");
     chk(eFits1.length > 0, "cadrage à la 1re activation d'Urgences");
     const fe = eFits1[eFits1.length - 1];
-    chk(fe.n === 3 && fe.hasHome, "cadrage Urgences = logement + 2 POI santé");
+    // …mais le CADRAGE (V2-63) ne part QUE du rayon utile : logement + 2 lieux proches,
+    // la clinique à 42 km ne commande jamais la vue initiale.
+    chk(fe.n === 3 && fe.hasHome, "cadrage Urgences = logement + 2 POI PROCHES (lointain exclu du cadrage)");
 
     // 5) Ré-activation → recadrage (invalidateSize + fitBounds), sans reconstruction.
     window._activateTab("home");

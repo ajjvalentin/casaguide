@@ -221,16 +221,32 @@ function isGuestGuide() { return document.body.dataset.guestGuide === "1"; }
 // (`window._buildEmergencyMap`) appelé par `activate("emergency")` — un seul point
 // d'entrée (onglet direct, hash, retour arrière) comme `recenterAround` pour « Autour ».
 let emapMarkers = [];
-let emapBounds = null;
+// Rayon utile de CADRAGE de la carte des urgences (V2-63) : dans l'urgence on
+// cherche le proche, pas la province. Le cadrage initial ne s'appuie que sur les
+// lieux santé/sécurité dans ce rayon (les plus lointains restent sur la carte —
+// dé-zoom possible — mais ne commandent pas la vue). Repli sur le plus proche si
+// aucun POI n'est dans le rayon (cas alpin : distances naturellement plus grandes).
+const EMAP_FIT_RADIUS_M = 12000;
 function fitEmergency() {
   const map = window._emapMap;
   if (!map) return;
   map.invalidateSize();
-  if (emapBounds && emapBounds.length > 1) {
-    map.fitBounds(emapBounds, { padding: [30, 30], maxZoom: 15 });
-  } else {
-    const P = GUIDE.property || {};
-    if (P.lat != null && P.lon != null) map.setView([P.lat, P.lon], 14);
+  const P = GUIDE.property || {};
+  const pts = [];
+  if (P.lat != null && P.lon != null) pts.push([P.lat, P.lon]);
+  const located = (GUIDE.emergency || []).filter((p) => p.lat != null && p.lon != null);
+  let near = located.filter((p) => p.dist_m != null && p.dist_m <= EMAP_FIT_RADIUS_M);
+  if (!near.length && located.length) {
+    // Repli : le plus proche existant (rayon utile vide, cf. Ardon alpin).
+    const withDist = located.filter((p) => p.dist_m != null)
+      .sort((a, b) => a.dist_m - b.dist_m);
+    near = withDist.length ? [withDist[0]] : [located[0]];
+  }
+  for (const p of near) pts.push([p.lat, p.lon]);
+  if (pts.length > 1) {
+    map.fitBounds(pts, { padding: [30, 30], maxZoom: 15 });
+  } else if (P.lat != null && P.lon != null) {
+    map.setView([P.lat, P.lon], 14);
   }
 }
 function initEmergencyMap() {
@@ -256,7 +272,6 @@ function initEmergencyMap() {
           html: `<div class="home-pin">${isGuestGuide() ? "📍" : "🏠"}</div>` }),
         keyboard: false,
       }).addTo(map);
-      const bounds = [[P.lat, P.lon]];
       emapMarkers = [];
       for (const p of GUIDE.emergency || []) {
         // Résilience par POI (V2-53d) : un point illisible n'avorte jamais la boucle.
@@ -264,12 +279,10 @@ function initEmergencyMap() {
           const m = makePoiMarker(p);
           m.addTo(map);
           emapMarkers.push(m);
-          bounds.push([p.lat, p.lon]);
         } catch (e) {
           console.error("[guide] POI urgences ignoré :", (p && p.name) || "?", e);
         }
       }
-      emapBounds = bounds;
       window._emapMap = map;
       // Conteneur désormais visible (activation) → cadrage juste, après un tour de
       // boucle pour la mise en page finale (même précaution que « Autour »).

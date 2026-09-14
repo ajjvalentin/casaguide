@@ -1180,6 +1180,46 @@ def test_emergency_map_present_in_guest_guide():
     assert '<div id="emap"></div>' in _panel(html, "emergency")
 
 
+def test_emergency_map_caps_pins_per_category_keeping_nearest():
+    """V2-63 — la carte des urgences plafonne les pastilles par catégorie santé/
+    sécurité (le proche d'abord) : 8 médecins → les 4 PLUS PROCHES seulement. Les
+    listes SSR gardent tout (repli V2-09), seul le rendu carte plafonne."""
+    # walk croissant = distance croissante (`_poi` pose dist_walk_m = walk*70).
+    pois = [_poi(f"Médecin {i}", "doctor", "D", walk=i) for i in range(1, 9)]
+    data = _guide_data(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [],
+                                               pois, {}, "tok"))
+    names = [p["name"] for p in data["emergency"]]
+    assert len(names) == 4                                    # doctor plafonné à 4
+    assert set(names) == {"Médecin 1", "Médecin 2", "Médecin 3", "Médecin 4"}
+    # La liste SSR (section santé) n'est PAS plafonnée : les 8 y figurent.
+    emergency = _panel(html_all := guide_page.render_guide(
+        _prop(lat=37.9, lon=-0.74), [_section("D_health", "D", {"fields": []})],
+        pois, {}, "tok"), "emergency")
+    for i in range(1, 9):
+        assert f"Médecin {i}" in emergency
+
+
+def test_emergency_map_carries_dist_m_for_client_framing():
+    """V2-63 — chaque POI d'urgence porte `dist_m` (mètres, trajet routier sinon à
+    pied) : le client cadre la vue initiale sur le rayon utile (`fitEmergency`)."""
+    pois = [_poi("Farmacia Sol", "pharmacy", "D", walk=6)]   # dist_walk_m = 420
+    data = _guide_data(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [],
+                                               pois, {}, "tok"))
+    assert data["emergency"][0]["dist_m"] == 420
+
+
+def test_emergency_map_cap_is_per_category_not_global():
+    """V2-63 — le plafond est PAR catégorie : un hôpital lointain unique survit à
+    côté de médecins/pharmacies nombreux (aucune perte des hôpitaux majeurs)."""
+    pois = ([_poi(f"Médecin {i}", "doctor", "D", walk=i) for i in range(1, 9)]
+            + [_poi("Hôpital Vega", "hospital", "D", walk=200)])   # loin mais gardé
+    data = _guide_data(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [],
+                                               pois, {}, "tok"))
+    names = {p["name"] for p in data["emergency"]}
+    assert "Hôpital Vega" in names               # le seul hôpital survit malgré la distance
+    assert len([n for n in names if n.startswith("Médecin")]) == 4
+
+
 def test_service_grid_grouped_by_family_in_section_order_with_family_colours():
     """V2-60 — le sommaire est GROUPÉ par famille : un bloc titré par chapitre, dans
     l'ordre des sections, accent à la couleur de la famille (= pastilles de la carte),

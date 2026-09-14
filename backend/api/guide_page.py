@@ -218,6 +218,18 @@ _CHAPTER_TAB_NAMES: dict[tuple[str, str], dict[str, str]] = {
 # aéroports/gares — hub d'arrivée fréquent là où il n'y a pas de gare ferroviaire.
 _TRANSPORT_CATEGORIES = {"airport", "train_station", "bus_station"}
 
+# Carte des urgences : « le proche d'abord » (V2-63). Dans l'urgence on cherche le
+# lieu voisin, pas la province — une carte de 33 pastilles cadrée jusqu'à 45 km est
+# illisible. On garde les N plus proches par catégorie de santé/sécurité (tri par
+# distance) pour les PASTILLES de la carte ; les listes SSR gardent tout (repli V2-09).
+# Le CADRAGE initial se concentre en plus sur le rayon utile, côté client (`fitEmergency`).
+# Source unique, configurable ici (hôpital plafonné bas mais rayon large : le plus
+# proche + les urgences 24 h).
+_EMERGENCY_MAP_CAPS = {
+    "hospital": 3, "doctor": 4, "pharmacy": 5, "veterinary": 3, "police": 3,
+}
+_EMERGENCY_MAP_CAP_DEFAULT = 4
+
 # Noms de chapitre localisés (M-09). Le français reste la source/repli.
 _CHAPTER_NAMES: dict[str, dict[str, str]] = {
     "fr": {"A": "Arrivée & départ", "B": "Le logement", "C": "Vie pratique",
@@ -1864,6 +1876,29 @@ def _guest_footer_blocks(lang: str, city: str | None, base_url: str,
     return "".join(blocks)
 
 
+def _poi_dist_m(p: dict) -> int | None:
+    """Distance utile d'un POI en mètres (V2-63) : trajet routier de préférence,
+    sinon à pied. Sert au plafonnement et au cadrage de la carte des urgences."""
+    d = p.get("dist_drive_m")
+    return p.get("dist_walk_m") if d is None else d
+
+
+def _cap_emergency_map_pois(pois: list[dict]) -> list[dict]:
+    """Garde les N plus proches par catégorie de santé/sécurité pour les pastilles
+    de la carte des urgences (V2-63) — lisibilité : dans l'urgence on veut le proche,
+    pas 33 pastilles jusqu'à la province. Tri par distance (distance inconnue en
+    dernier). Les listes SSR gardent TOUT (repli V2-09) ; seul le rendu carte plafonne."""
+    by_cat: dict[str, list[dict]] = {}
+    for p in pois:
+        by_cat.setdefault(p["category_code"], []).append(p)
+    kept: list[dict] = []
+    for code, group in by_cat.items():
+        cap = _EMERGENCY_MAP_CAPS.get(code, _EMERGENCY_MAP_CAP_DEFAULT)
+        group.sort(key=lambda q: (_poi_dist_m(q) is None, _poi_dist_m(q) or 0))
+        kept.extend(group[:cap])
+    return kept
+
+
 def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  area_facts: dict, token: str, lang: str = "fr", *,
                  base_url: str = "", og_image_url: str | None = None,
@@ -2032,6 +2067,9 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                 "category": _seed_label(lang, _i18n_mod.poi_category_key(p["category_code"]),
                                         p.get("category_name"), p["category_code"]),
                 "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
+                # Distance utile en mètres (V2-63) : cadrage « le proche d'abord »
+                # de la carte des urgences côté client (`fitEmergency`).
+                "dist_m": _poi_dist_m(p),
                 "travel_mode": p.get("travel_mode"), "phone": p.get("phone"),
                 # Jour du marché (V2-33) : le client rend le badge localisé (Intl)
                 # dans les popups de la carte, aligné sur le SSR (Babel/CLDR).
@@ -2043,8 +2081,9 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # La carte d'urgences ne montre QUE les POI de cet onglet (santé & sécurité :
     # hôpitaux, pharmacies, médecins, police, vétérinaire — chap. D via `_POI_TAB`).
     emergency_pois = [p for p in pois if _POI_TAB.get(p["chapter"], "home") == "emergency"]
-    emergency_map_pois = [p for p in emergency_pois
-                          if p.get("lat") is not None and p.get("lon") is not None]
+    emergency_map_pois = _cap_emergency_map_pois(
+        [p for p in emergency_pois
+         if p.get("lat") is not None and p.get("lon") is not None])
     big_sos = _render_sos(area_facts, big=True, lang=lang)
     numbers = _render_numbers(area_facts, _CHAPTER_COLORS["I"], lang)
     # Carte SOUS la barre SOS, au-dessus des sections santé : là où localiser compte
