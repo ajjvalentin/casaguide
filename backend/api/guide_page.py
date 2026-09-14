@@ -66,6 +66,12 @@ _UI7: dict[str, dict[str, str]] = {
                          "sq": "Orari orientues"},
     "hours_closed": {"fr": "fermé", "en": "closed", "es": "cerrado", "it": "chiuso",
                      "de": "geschlossen", "nl": "gesloten", "sq": "mbyllur"},
+    # V2-62b : sur-titre de la vignette de partage (og:image). Peint en capitales
+    # par `build_og_image` → la vignette suit la langue du lien partagé.
+    "og_eyebrow": {"fr": "Votre guide de séjour", "en": "Your stay guide",
+                   "es": "Tu guía de estancia", "it": "La tua guida di soggiorno",
+                   "de": "Ihr Aufenthaltsguide", "nl": "Uw verblijfsgids",
+                   "sq": "Udhëzuesi juaj i qëndrimit"},
     "nearest_of_network": {"fr": "station la plus proche", "en": "nearest station",
                            "es": "estación más cercana", "it": "stazione più vicina",
                            "de": "nächste Station", "nl": "dichtstbijzijnde station",
@@ -159,6 +165,13 @@ def _t7(lang: str, key: str) -> str:
     puis le français — JAMAIS de fuite vers le français pour une langue offerte."""
     return (_i18n_mod.overlaid(_i18n_mod.ui_key(key))
             or _UI7[key].get(lang) or _UI7[key]["fr"])
+
+
+def og_eyebrow(lang: str | None) -> str:
+    """Sur-titre localisé de la vignette de partage (V2-62b), en CAPITALES — mêmes
+    7 langues que le reste du guide (repli FR pour une langue inconnue). Appelé par
+    les endpoints `…/og-image.png?lang=` : la vignette suit la langue du lien."""
+    return _t7(lang or "fr", "og_eyebrow").upper()
 
 # ── Couleurs de chapitre (alignées sur frontend/js/constants.js) ─────────────
 _CHAPTER_COLORS: dict[str, str] = {

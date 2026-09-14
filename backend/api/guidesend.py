@@ -84,12 +84,17 @@ def stay_natural_lang(conn, prop: dict, booking: dict) -> str:
     return gl if gl in offered_langs(conn, prop) else (prop.get("default_lang") or "fr")
 
 
-def target_image_url(conn, prop: dict, base: str, api_base: str) -> str:
+def target_image_url(conn, prop: dict, base: str, api_base: str,
+                     lang: str | None = None) -> str:
     """Vignette de la cible pour l'email : la **photo de couverture** désignée
     d'abord (V2-30, si servable), sinon la première photo du logement, sinon
     l'image de marque générée. URL absolue servie via le préfixe de la cible
     (`/b/…` ou `/v/…`) — jamais un `/g/{guide_token}` (le token éternel ne fuite
-    pas)."""
+    pas).
+
+    V2-62b : l'email est localisé → la vignette de marque (repli) porte `?lang=`
+    pour que son sur-titre suive la langue de l'email (une photo est indépendante
+    de la langue → pas de query)."""
     media = repo.guide_media(conn, str(prop["id"]))
     cover_id = prop.get("cover_media_id")
     if cover_id:
@@ -99,7 +104,8 @@ def target_image_url(conn, prop: dict, base: str, api_base: str) -> str:
     for m in media:
         if m["kind"] == "photo":
             return f"{base}{api_base}/media/{m['id']}"
-    return f"{base}{api_base}/og-image.png"
+    suffix = f"?lang={lang}" if lang else ""
+    return f"{base}{api_base}/og-image.png{suffix}"
 
 
 def link(base: str, api_base: str, lang: str, natural: str) -> str:
@@ -135,7 +141,8 @@ def build_stay_email(conn, prop: dict, booking: dict, *, token: str, base: str,
         guest_name=(first_name[0] if first_name else None),
         start=booking["starts_on"].strftime("%d/%m"),
         end=booking["ends_on"].strftime("%d/%m"),
-        url=url, image_url=target_image_url(conn, prop, base, api_base), lang=lang))
+        url=url, image_url=target_image_url(conn, prop, base, api_base, lang),
+        lang=lang))
 
 
 # ── Automatisation J-7 : exécution contre la base (cœur testable) ────────────

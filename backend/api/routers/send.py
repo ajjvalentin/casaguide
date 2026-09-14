@@ -112,7 +112,7 @@ def send_guide(payload: SendGuideIn, conn: Conn, owner: CurrentOwner,
         email = guidesend.build_localized(
             conn, lang, lambda: emails.guide_showcase_email(
                 property_name=prop["name"], url=url,
-                image_url=guidesend.target_image_url(conn, prop, base, api_base),
+                image_url=guidesend.target_image_url(conn, prop, base, api_base, lang),
                 lang=lang))
         booking_id = None
 

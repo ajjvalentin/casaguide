@@ -2583,6 +2583,43 @@ def test_og_image_is_generated_png(client):
     assert client.get(f"/g/{token}/og-image.png").status_code == 404
 
 
+def test_og_image_follows_page_language(client):
+    """V2-62b — la vignette de partage suit la langue du lien partagé.
+    (1) sur-titre peint dans la langue (`og_eyebrow`, 7 langues + repli FR) ;
+    (2) la balise og:image porte `?lang=` = langue de la PAGE (pas la défaut) ;
+    (3) l'endpoint honore `?lang=` → PNG valide au CONTENU différent par langue ;
+    (4) la clé de cache HTTP est l'URL (query comprise) → une langue scrapée ne
+        fige jamais les autres (vignette générée, jamais un fichier partagé)."""
+    from api import guide_page as gp
+    # (1) sur-titre auto-suffisant en code (l'endpoint n'a pas d'overlay i18n).
+    assert gp.og_eyebrow("es") == "TU GUÍA DE ESTANCIA"
+    assert gp.og_eyebrow("en") == "YOUR STAY GUIDE"
+    assert gp.og_eyebrow("fr") == "VOTRE GUIDE DE SÉJOUR"
+    assert gp.og_eyebrow("xx") == gp.og_eyebrow(None) == gp.og_eyebrow("fr")  # repli FR
+
+    owner = register(client)
+    set_owner_plan(owner["email"], "pro")            # multilingue (langs)
+    prop = make_property(client, owner["headers"])
+    pid, token = prop["id"], prop["guide_token"]
+    _publish_guide_with_content(client, owner["headers"], pid)  # published_langs = en, es
+
+    # (2) la balise og:image porte la langue de la page — jamais la défaut sur ?lang=es.
+    fr_page = client.get(f"/g/{token}")
+    assert f"/g/{token}/og-image.png?lang=fr" in fr_page.text
+    es_page = client.get(f"/g/{token}?lang=es")
+    assert f"/g/{token}/og-image.png?lang=es" in es_page.text
+    assert f"/g/{token}/og-image.png?lang=fr" not in es_page.text
+
+    # (3) l'endpoint honore ?lang= : PNG valide, contenu DIFFÉRENT (sur-titre peint).
+    img_fr = client.get(f"/g/{token}/og-image.png?lang=fr")
+    img_es = client.get(f"/g/{token}/og-image.png?lang=es")
+    assert img_fr.status_code == img_es.status_code == 200
+    assert img_fr.content[:8] == img_es.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert img_fr.content != img_es.content           # langue → vignette différente
+    # (4) sans lang → repli FR (identique à ?lang=fr) : cache par URL, pas de gel.
+    assert client.get(f"/g/{token}/og-image.png").content == img_fr.content
+
+
 # ── Langue du QR PDF (M-26) ──────────────────────────────────────────────────
 
 def test_guide_poster_localised(client):

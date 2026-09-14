@@ -283,7 +283,11 @@ def _render_guide_html(conn, prop_row: dict, request: Request,
     base = _base_url(request)
     photo = _first_photo_path(sections, property_media, public_token,
                               prop_row.get("cover_media_id"))
-    og_image_url = base + (photo or f"{api_base}/og-image.png")
+    # V2-62b : la vignette de marque (repli sans photo) suit la langue de la PAGE →
+    # la balise og:image porte `?lang=` (sinon les scrapers ne demanderaient que la
+    # version par défaut, sur-titre français sur un lien ?lang=es). Une vraie photo
+    # est indépendante de la langue → pas de query.
+    og_image_url = base + (photo or f"{api_base}/og-image.png?lang={effective}")
     # Marque blanche (V2-05a) : le plan gratuit affiche un pied de page discret
     # « Créé avec Holaguia » ; les plans payants ne l'ont pas (features.watermark).
     # Résolu par le `guide_token` du logement (jamais exposé au client sur `/b/`).
@@ -448,24 +452,31 @@ def public_stay_media(stay_token: str, media_id: str, conn: Conn):
 
 
 @router.get("/b/{stay_token}/og-image.png")
-def public_stay_og_image(stay_token: str, conn: Conn):
+def public_stay_og_image(stay_token: str, conn: Conn, lang: str | None = None):
     """Image de marque 1200×630 du séjour (aucune photo). 404 si token mort — le
-    `guide_token` ne transite jamais par la vignette de partage du séjour."""
+    `guide_token` ne transite jamais par la vignette de partage du séjour.
+
+    V2-62b : le sur-titre suit la langue du lien (`?lang=`). La clé de cache HTTP
+    inclut la query → une langue scrapée ne fige jamais les autres (vignette générée
+    à chaque requête, jamais un fichier partagé entre langues)."""
     loaded = _load_stay(conn, stay_token)
     if not loaded:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Introuvable")
     _stay, prop = loaded
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
-    png = og_image.build_og_image(prop["name"], subtitle=place)
+    png = og_image.build_og_image(prop["name"], subtitle=place,
+                                  eyebrow=guide_page.og_eyebrow(lang))
     return Response(content=png, media_type="image/png",
                     headers=_public_headers())
 
 
 @router.get("/g/{guide_token}/og-image.png")
-def public_og_image(guide_token: str, conn: Conn):
+def public_og_image(guide_token: str, conn: Conn, lang: str | None = None):
     """Image de marque 1200×630 pour les liens de partage (M-25), servie quand
-    le logement n'a aucune photo. 404 propre si le guide n'est pas publié."""
+    le logement n'a aucune photo. 404 propre si le guide n'est pas publié.
+
+    V2-62b : le sur-titre suit la langue du lien (`?lang=`)."""
     token = _real_token(guide_token)
     prop = repo.get_published_property_by_token(conn, token)
     if not prop:
@@ -481,7 +492,8 @@ def public_og_image(guide_token: str, conn: Conn):
     else:
         title = prop["name"]
         subtitle = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
-    png = og_image.build_og_image(title, subtitle=subtitle)
+    png = og_image.build_og_image(title, subtitle=subtitle,
+                                  eyebrow=guide_page.og_eyebrow(lang))
     return Response(content=png, media_type="image/png",
                     headers=_public_headers())
 
@@ -509,7 +521,8 @@ def public_showcase_page(showcase_token: str, conn: Conn, request: Request,
     base = _base_url(request)
     photo = _first_photo_path(sections, property_media, showcase_token,
                               prop.get("cover_media_id"))
-    og_image_url = base + (photo or f"/v/{showcase_token}/og-image.png")
+    # V2-62b : la vignette de marque suit la langue de la page (cf. guide/séjour).
+    og_image_url = base + (photo or f"/v/{showcase_token}/og-image.png?lang={effective}")
     ui_overlay = repo.ui_translations(conn, effective)
     # Watermark : même règle que le guide (plan gratuit → marque « Créé avec
     # Holaguia »), résolu par le propriétaire du logement de la vitrine.
@@ -525,14 +538,17 @@ def public_showcase_page(showcase_token: str, conn: Conn, request: Request,
 
 
 @router.get("/v/{showcase_token}/og-image.png")
-def showcase_og_image(showcase_token: str, conn: Conn):
-    """Image de marque de la vitrine (aucune photo). 404 si non publié."""
+def showcase_og_image(showcase_token: str, conn: Conn, lang: str | None = None):
+    """Image de marque de la vitrine (aucune photo). 404 si non publié.
+
+    V2-62b : le sur-titre suit la langue du lien (`?lang=`)."""
     prop = repo.get_property_by_showcase_token(conn, showcase_token)
     if not prop:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Introuvable")
     place = ", ".join(x for x in [prop.get("city"), prop.get("region")] if x)
-    png = og_image.build_og_image(prop["name"], subtitle=place)
+    png = og_image.build_og_image(prop["name"], subtitle=place,
+                                  eyebrow=guide_page.og_eyebrow(lang))
     return Response(content=png, media_type="image/png",
                     headers=_public_headers())
 
