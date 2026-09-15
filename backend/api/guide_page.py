@@ -2441,29 +2441,27 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                                 _chapter_name(ch, lang))
         chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(chip_name)}</button>')
     around_inner: list[str] = []
-    # Grille de services (V2-12) EN TÊTE de l'onglet, avant la carte : c'est la
-    # navigation principale (sur mobile en plein soleil, une grille d'icônes bat
-    # dix intitulés texte). La carte + les puces de filtre restent la couche
-    # d'exploration en dessous, les listes le niveau 2.
-    # Tuiles de service adossées à un fait de zone (V2-07 volet 1bis) : la
-    # livraison de repas n'a pas de POI → sans tuile, aucune porte d'entrée dans
-    # la grille. Rendue au même rang et dans la même grammaire que les catégories,
-    # elle mène (ancre `#{code}`) à sa section et son encart. Le fait vide → aucune
-    # tuile (miroir de « pas d'encart »).
-    fact_tiles = _service_fact_tiles(sections, area_facts, lang)
-    grid_html = _render_service_grid(around_card_pois, lang, fact_tiles=fact_tiles)
-    if grid_html:
-        around_inner.append(grid_html)
+    # Ordre de l'onglet (V2-72b) : onglets → CARTE → sommaire → sections. Le voyageur
+    # voit la carte AVANT la liste (recette réelle) ; elle situe d'un coup d'œil. La
+    # grille de services et les puces de filtre suivent, les listes en dessous.
     if has_map:
         # V2-72 : UNE seule carte dans « Autour ». Pour un guide voyageur, le MÉDAILLON
         # pays (V2-59, situer le pays d'un coup d'œil) est posé DANS la carte principale
         # (coin) au lieu d'une 2e carte de situation redondante — `#situ-medallion` enfant
         # de `#map` : il se cache avec elle en mode filtré (`.fact-filtered > #map`), et
-        # `initMedallion` (app.js) l'initialise. Un guide propriétaire garde sa carte de
+        # `initMedallion` (app.js) l'initialise. Étant EN TÊTE (V2-72b), il est dans le
+        # viewport au chargement → son IntersectionObserver déclenche (fini le médaillon
+        # bâti « sous le pli », jamais vu). Un guide propriétaire garde sa carte de
         # situation dans l'onglet « Logement » (inchangée), sans médaillon ici.
         medallion = ('<div class="situ-medallion" id="situ-medallion" aria-hidden="true">'
                      '</div>' if guest_guide and prop.get("lat") is not None else '')
         around_inner.append(f'<div id="map">{medallion}</div>')
+    # Grille de services (V2-12) : navigation principale (sur mobile, une grille d'icônes
+    # bat dix intitulés). Tuiles adossées à un fait de zone (V2-07 volet 1bis) incluses.
+    fact_tiles = _service_fact_tiles(sections, area_facts, lang)
+    grid_html = _render_service_grid(around_card_pois, lang, fact_tiles=fact_tiles)
+    if grid_html:
+        around_inner.append(grid_html)
     if around_chapters:
         around_inner.append(
             f'<nav class="chips" aria-label="{_esc(_t(lang, "filter"))}">{"".join(chips)}</nav>')

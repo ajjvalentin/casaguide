@@ -152,6 +152,7 @@ function initMap() {
 // chemins d'entrée (onglet direct, bascule mini-carte) passent par `activate` → un seul
 // point de vérité.
 function recenterAround() {
+  ensureMedallion();   // V2-72b : garantit le médaillon quand « Autour » devient visible
   const map = window._guideMap;
   if (!map) return;
   map.invalidateSize();
@@ -400,22 +401,29 @@ function buildMedallion(P, onTap) {
 }
 
 // V2-72 : médaillon pays posé DANS la carte principale « Autour » (guide voyageur) — une
-// seule carte, plus de doublon avec la carte de situation. Bâti PARESSEUSEMENT (le conteneur
-// vit dans l'onglet « Autour », masqué au chargement → 0×0 ; on attend sa visibilité).
-// Pour un guide propriétaire, `#situ-medallion` n'existe pas ici → no-op (sa carte de
-// situation reste dans « Logement »). Ne re-bâtit jamais (`window._medMap`).
+// seule carte, plus de doublon avec la carte de situation. Bâti à la PREMIÈRE VISIBILITÉ
+// RÉELLE (discipline V2-53e), jamais sur un conteneur caché. Décoratif (aucun tap). No-op
+// pour un guide propriétaire (`#situ-medallion` absent ici) ou si déjà bâti (`_medMap`).
+function ensureMedallion() {
+  if (window._medMap) return;
+  const medEl = document.getElementById("situ-medallion");
+  const P = GUIDE.property || {};
+  if (medEl && window.L && P.lat != null && P.lon != null) buildMedallion(P, null);
+}
+
 function initMedallion() {
   const medEl = document.getElementById("situ-medallion");
   const P = GUIDE.property || {};
   if (!medEl || window._medMap || !window.L || P.lat == null || P.lon == null) return;
-  const build = () => { if (!window._medMap) buildMedallion(P, null); };  // décoratif : aucun tap
+  // La carte est EN TÊTE (V2-72b) → généralement dans le viewport au chargement : l'IO
+  // déclenche seul. `recenterAround` couvre en plus le retour sur l'onglet.
   if ("IntersectionObserver" in window) {
     const io = new IntersectionObserver((es) => {
-      if (es.some((e) => e.isIntersecting)) { build(); io.disconnect(); }
+      if (es.some((e) => e.isIntersecting)) { ensureMedallion(); io.disconnect(); }
     });
     io.observe(medEl);
   } else {
-    build();
+    ensureMedallion();
   }
 }
 

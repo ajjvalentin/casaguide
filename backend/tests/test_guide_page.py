@@ -1248,13 +1248,14 @@ def test_service_grid_absent_when_no_around_pois():
     assert '<nav class="svc-toc"' not in html
 
 
-def test_service_grid_is_head_of_around_before_map():
-    """Le sommaire est en TÊTE de l'onglet, avant la carte (navigation principale)."""
+def test_map_is_head_of_around_before_summary():
+    """V2-72b : la CARTE est en tête de l'onglet « Autour », le sommaire dessous — le
+    voyageur voit la carte AVANT la liste (ordre onglets → carte → sommaire → sections)."""
     pois = [_poi("Mercadona", "supermarket", "C")]
     around = _panel(guide_page.render_guide(_prop(lat=37.9, lon=-0.74), [], pois, {}, "tok"),
                     "around")
-    assert '<nav class="svc-toc"' in around and '<div id="map"></div>' in around
-    assert around.index('<nav class="svc-toc"') < around.index('<div id="map"></div>')
+    assert '<nav class="svc-toc"' in around and '<div id="map">' in around
+    assert around.index('<div id="map">') < around.index('<nav class="svc-toc"')
 
 
 def _guide_data(html):

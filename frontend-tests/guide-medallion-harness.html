@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- Harnais headless du MÉDAILLON pays DANS la carte « Autour » (V2-72b). Pilote le VRAI
+     /frontend/guide/app.js (initMap + initMedallion) sur le DOM du guide voyageur : la
+     carte EN TÊTE de « Autour » (onglet actif au chargement), `#situ-medallion` enfant de
+     `#map`. Vérifie que le médaillon EST construit (un conteneur Leaflet apparaît dedans) —
+     le bug V2-72 était qu'il restait vide (sous le pli → IntersectionObserver muet).
+     Leaflet est stubé : `L.map(el)` marque son conteneur `.leaflet-container`. Verdict
+     dans #result. Hors frontend/. -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>guide-medallion-harness</title>
+<style>html.js .tab-panel:not(.tab-active){display:none}</style>
+<script>
+  document.documentElement.className = "js";
+  // Stub Leaflet : L.map(el) « prend » le conteneur (classe .leaflet-container, comme le
+  // vrai Leaflet) → on peut vérifier qu'un médaillon a bien été bâti dans #situ-medallion.
+  window.__mapEls = [];
+  window.L = {
+    map(el) {
+      if (el && el.classList) el.classList.add("leaflet-container");
+      window.__mapEls.push((el && el.id) || "");
+      const m = { setView() { return m; }, on() { return m; }, invalidateSize() { return m; },
+                  fitBounds() { return m; }, removeLayer() { return m; } };
+      return m;
+    },
+    tileLayer() { return { on() { return this; }, addTo() { return this; } }; },
+    divIcon() { return {}; },
+    marker(ll) { return { addTo() { return this; }, bindPopup() { return this; },
+                          on() { return this; }, getLatLng() { return { lat: ll[0], lng: ll[1] }; } }; },
+    circleMarker(ll) { return { addTo() { return this; }, on() { return this; },
+                               getLatLng() { return { lat: ll[0], lng: ll[1] }; } }; },
+  };
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+</script>
+</head>
+<body data-token="tok" data-api-base="/g/tok" data-lang="fr" data-default-lang="fr" data-guest-guide="1">
+<div class="wrap">
+  <nav class="guide-tabs" role="tablist">
+    <button class="tab on" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="true">Autour</button>
+    <button class="tab" role="tab" data-tab="emergency" id="tabbtn-emergency" aria-controls="tab-emergency" aria-selected="false">Urgences</button>
+  </nav>
+  <main>
+    <!-- V2-72b : carte EN TÊTE, médaillon enfant de #map -->
+    <section class="tab-panel tab-active" data-tab="around" id="tab-around" role="tabpanel">
+      <div id="map"><div class="situ-medallion" id="situ-medallion" aria-hidden="true"></div></div>
+      <nav class="svc-toc" id="autour" aria-label="Services"></nav>
+    </section>
+    <section class="tab-panel" data-tab="emergency" id="tab-emergency" role="tabpanel">urgences</section>
+  </main>
+</div>
+<pre id="result">PENDING</pre>
+<script id="guide-data" type="application/json">{"property":{"name":"V","lat":45.30,"lon":-0.86},"pois":[],"emergency":[]}</script>
+<script type="module">
+  const out = document.getElementById("result");
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  (async () => {
+    try {
+      await import("/frontend/guide/app.js");
+      await wait(80);   // laisse l'IntersectionObserver / le lazy build se déclencher
+      const med = document.getElementById("situ-medallion");
+      // La carte principale doit être bâtie…
+      if (!document.getElementById("map").classList.contains("leaflet-container"))
+        return void (out.textContent = "FAIL: carte principale non bâtie");
+      // …ET le médaillon DANS elle (le cœur du correctif V2-72b).
+      if (!med.classList.contains("leaflet-container"))
+        return void (out.textContent = "FAIL: médaillon non bâti (aucun conteneur Leaflet)");
+      out.textContent = "PASS";
+    } catch (e) {
+      out.textContent = "FAIL: " + ((e && e.message) || e);
+    }
+  })();
+</script>
+</body>
+</html>
