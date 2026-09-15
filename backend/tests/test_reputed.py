@@ -56,6 +56,19 @@ def test_keeps_valid_places_with_category_and_reason():
     assert meta["cost_cts"] >= 0
 
 
+def test_keeps_local_name_when_provided():
+    """V2-66b : le nom en écriture d'origine (`name_local`) est porté quand fourni ;
+    absent/vide → non porté (pays latin)."""
+    out, _ = _fetch([
+        {"name": "Kyubey", "name_local": "銀座 久兵衛", "category": "restaurant",
+         "address": "Ginza, Tokyo", "reason": "Sushi.", "source_url": "https://x.example"},
+        {"name": "Casa Manolo", "category": "restaurant", "address": "Av 2",
+         "reason": "Arroces.", "source_url": "https://y.example"},
+    ])
+    assert out[0]["name_local"] == "銀座 久兵衛"
+    assert "name_local" not in out[1]                     # absent → non porté
+
+
 def test_rejects_without_proof_or_unknown_category():
     out, _ = _fetch([
         {"name": "Sans preuve", "category": "bar", "address": "Rue X"},   # pas de source

@@ -198,6 +198,7 @@ CREATE TABLE editorial_picks (
     phone         TEXT,
     website       TEXT,
     locality      TEXT,
+    name_local    TEXT,                         -- nom en écriture d'origine (V2-66b)
     first_seen    TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen     TIMESTAMPTZ NOT NULL DEFAULT now()
 );

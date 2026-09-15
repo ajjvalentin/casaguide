@@ -264,12 +264,22 @@ def _mark_editorial(poi: dict, pk: dict, origin_tag: str) -> None:
     meta = dict(poi.get("completion_meta") or {})
     meta["_editorial"] = {"source_url": pk.get("source_url"),
                           "verified_on": pk.get("verified_on"), "origin": origin_tag}
+    # V2-66b cas (a) : si la fiche OSM appariée n'a pas de nom local (OSM sans name:<lang>)
+    # mais que la mémoire de secteur en connaît un, le compléter (jamais l'écraser).
+    if not meta.get("_name_local"):
+        meta.update(overpass.local_meta_from(poi.get("name") or "", pk.get("name_local")))
     poi["completion_meta"] = meta
 
 
 def _build_editorial_poi(pk: dict, code: str, lat: float, lon: float,
                          locality, origin: tuple, origin_tag: str) -> dict:
-    """Construit un POI éditorial à une position FIABLE (base ou géocodage de rue)."""
+    """Construit un POI éditorial à une position FIABLE (base ou géocodage de rue).
+    V2-66b cas (a) : reporte le nom LOCAL (`pk['name_local']`, écriture d'origine) en
+    `completion_meta._name_local` — le nom affiché (web) est latin, l'original passe donc
+    en 2e ligne copiable/prononçable (V2-66 cas A)."""
+    meta = {"_editorial": {"source_url": pk.get("source_url"),
+                           "verified_on": pk.get("verified_on"), "origin": origin_tag}}
+    meta.update(overpass.local_meta_from(pk["name"], pk.get("name_local")))
     return {
         "name": pk["name"], "lat": lat, "lon": lon,
         "address": pk.get("address"), "locality": locality,
@@ -279,9 +289,7 @@ def _build_editorial_poi(pk: dict, code: str, lat: float, lon: float,
         "owner_comment": pk.get("reason") or None,
         "source_ref": "web:reputed:" + _slug(pk["name"]),
         "crow_m": overpass.haversine_m(origin[0], origin[1], lat, lon),
-        "completion_meta": {"_editorial": {"source_url": pk.get("source_url"),
-                                           "verified_on": pk.get("verified_on"),
-                                           "origin": origin_tag}},
+        "completion_meta": meta,
     }
 
 
@@ -312,17 +320,20 @@ def _position_pick(pk: dict, pois: list[dict], ovt: list[dict] | None,
     """Position FIABLE d'un pick, cascade STRICTE (V2-56b) : appariement par NOM contre
     l'OSM moissonné PUIS Overture (sans distance — la position du pick n'est pas fiable,
     celle de la base fait foi), sinon géocodage de rue STRICT (jamais le centroïde).
-    Renvoie `(lat, lon, locality, phone_base, website_base)` ou None (le pick tombe)."""
+    Renvoie `(lat, lon, locality, phone_base, website_base, name_local)` ou None (le pick
+    tombe). `name_local` (V2-66b cas a) = nom en écriture d'origine de la fiche OSM appariée
+    (elle porte `completion_meta._name_local`) ; None hors appariement OSM."""
     m = _name_match(pk["name"], pois)                     # 1. OSM moissonné
     if m is not None:
-        return m["lat"], m["lon"], m.get("locality"), m.get("phone"), m.get("website")
-    ov = _name_match(pk["name"], ovt) if ovt else None    # 2. Overture
+        local = (m.get("completion_meta") or {}).get("_name_local")
+        return m["lat"], m["lon"], m.get("locality"), m.get("phone"), m.get("website"), local
+    ov = _name_match(pk["name"], ovt) if ovt else None    # 2. Overture (pas de nom local)
     if ov is not None and ov.get("lat") is not None and ov.get("lon") is not None:
         return (ov["lat"], ov["lon"], ov.get("locality"),
-                ov.get("phone"), ov.get("website"))
+                ov.get("phone"), ov.get("website"), None)
     geo = _geocode_pick_strict(pk, prop, origin, http_client)   # 3. rue stricte
     if geo is not None:
-        return geo["lat"], geo["lon"], geo.get("locality"), None, None
+        return geo["lat"], geo["lon"], geo.get("locality"), None, None, None
     return None                                            # 4. tombe
 
 
@@ -341,14 +352,17 @@ def _memorize_fresh_picks(conn, prop: dict, code: str, pois: list[dict],
             log.warning("Pick réputé « %s » sauté : position non fiable (%s)",
                         pk["name"], pk.get("address"))
             continue
-        lat, lon, locality, base_phone, base_web = pos
+        lat, lon, locality, base_phone, base_web, base_local = pos
+        # Nom local (V2-66b cas a) : celui de la fiche OSM appariée d'abord (vrai nom OSM),
+        # sinon celui fourni par la recherche web (le modèle connaît 銀座 久兵衛).
+        name_local = base_local or (pk.get("name_local") or None)
         db.upsert_editorial_pick(
             conn, country_code=prop["country_code"], city=prop["city"],
             city_norm=city_norm, name=pk["name"], name_norm=dedup._norm(pk["name"]),
             category=code, reason=pk.get("reason"), source_url=pk.get("source_url"),
             verified_on=pk.get("verified_on"), lat=lat, lon=lon, locality=locality,
             phone=pk.get("phone") or base_phone,
-            website=pk.get("website") or base_web)
+            website=pk.get("website") or base_web, name_local=name_local)
     return skipped
 
 

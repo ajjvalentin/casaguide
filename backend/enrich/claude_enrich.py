@@ -886,7 +886,10 @@ beach clubs branchés ont souvent leur PROPRE SITE (par ex. un « Brown's Cockta
 Bar » → browns-cocktailbar.com). Cherche aussi « [type] {city} instagram / tripadvisor ».
 
 Pour chaque adresse retenue, fournis :
-- `name` : le nom exact du lieu ;
+- `name` : le nom exact du lieu, en écriture LATINE (translittéré/romanisé si besoin) ;
+- `name_local` : le nom du lieu dans l'écriture LOCALE du pays (ex. « 銀座 久兵衛 » au
+  Japon, « Ταβέρνα » en Grèce) SI le pays n'utilise pas l'alphabet latin ; sinon "".
+  C'est ce nom que le voyageur montrera au chauffeur ;
 - `category` : « restaurant », « bar » ou « cafe » (choisis le plus juste ; un beach
   club / cocktail bar = « bar ») ;
 - `address` : l'adresse postale la plus COMPLÈTE possible (rue + numéro + quartier +
@@ -906,7 +909,8 @@ RÈGLES STRICTES :
 Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
 {{
   "places": [
-    {{"name": "...", "category": "restaurant", "address": "rue et numéro, quartier, commune",
+    {{"name": "...", "name_local": "", "category": "restaurant",
+      "address": "rue et numéro, quartier, commune",
       "reason": "...", "phone": "...", "website": "...",
       "source_url": "https://...", "verified_on": "{today}"}}
   ]
@@ -952,6 +956,9 @@ def fetch_reputed_places(city: str, country_code: str,
         entry: dict = {"name": name, "category": category, "address": address,
                        "reason": _s("reason"), "source_url": source_url,
                        "verified_on": _s("verified_on") or today}
+        name_local = _s("name_local")   # V2-66b : nom en écriture d'origine (pays non latins)
+        if name_local:
+            entry["name_local"] = name_local
         phone, website = _s("phone"), _s("website")
         if phone:
             entry["phone"] = phone

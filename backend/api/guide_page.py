@@ -998,16 +998,37 @@ def _local_copy_row(value: str, lang: str, *, speakable: bool = False) -> str:
         '</div>')
 
 
+def _is_non_latin(s: str) -> bool:
+    """Vrai si `s` porte au moins une lettre hors écriture LATINE (CJK, cyrillique,
+    arabe, thaï…). Miroir de `overpass._is_non_latin` — sert au cas (b) de V2-66b."""
+    for ch in s:
+        if ch.isalpha():
+            try:
+                if "LATIN" not in unicodedata.name(ch):
+                    return True
+            except ValueError:
+                return True
+    return False
+
+
 def _render_poi_local(p: dict, lang: str) -> str:
     """Nom (et adresse) LOCAUX en écriture d'origine, sous le nom affiché — pour MONTRER
-    au chauffeur (« 浅草寺 »), coller (V2-66) ou faire PRONONCER (V2-67). Rendus SEULEMENT
-    s'ils DIFFÈRENT du nom affiché : dans un pays latin, `name_local` est absent/égal → rien
-    (aucune régression, La Zenia/Ardon inchangés). SSR seul."""
+    au chauffeur (« 浅草寺 »), coller (V2-66) ou faire PRONONCER (V2-67). SSR seul.
+
+    Deux cas produisent une ligne locale :
+      · `name_local` DIFFÉRENT du nom affiché (V2-66 : nom latin en tête, original dessous) ;
+      · V2-66b cas (b) — le nom AFFICHÉ est lui-même en écriture NON latine et il n'existe
+        aucune variante latine : c'est CE nom qu'on montrera au chauffeur → on offre quand
+        même copie + 🔊 dessus (sinon aucun bouton, alors que c'est le cas le plus utile).
+    Pays latin (`name_local` absent, nom affiché latin) → rien (aucune régression)."""
     disp = _poi_display_name(p, lang)
     rows: list[str] = []
     name_local = (p.get("name_local") or "").strip()
+    raw = (p.get("name") or "").strip()
     if name_local and name_local != disp:
         rows.append(_local_copy_row(name_local, lang, speakable=True))
+    elif not name_local and not (p.get("name_latin") or "").strip() and _is_non_latin(raw):
+        rows.append(_local_copy_row(raw, lang, speakable=True))     # cas (b)
     addr_local = (p.get("addr_local") or "").strip()
     if addr_local:
         rows.append(_local_copy_row(addr_local, lang))

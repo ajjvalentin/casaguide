@@ -482,10 +482,10 @@ def test_position_pick_cascade_never_centroid(monkeypatch):
                 "locality": "La Zenia"}
     monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
 
-    # (1) name-match OSM → position + contacts de la base.
+    # (1) name-match OSM → position + contacts de la base (+ nom local, None ici : V2-66b).
     assert pipeline._position_pick({"name": "Casa Manolo", "address": "Av X"},
                                    osm, None, prop, origin, None) == \
-        (37.905, -0.752, None, "+34 111", None)
+        (37.905, -0.752, None, "+34 111", None, None)
     # (2) sans appariement, géocode 'city' → None (JAMAIS le centroïde).
     assert pipeline._position_pick({"name": "Bar Centroïde", "address": "Calle Y"},
                                    osm, None, prop, origin, None) is None
@@ -493,6 +493,11 @@ def test_position_pick_cascade_never_centroid(monkeypatch):
     pos = pipeline._position_pick({"name": "Bien Placé", "address": "Calle Z 5"},
                                   osm, None, prop, origin, None)
     assert pos[:3] == (37.906, -0.753, "La Zenia")
+    # (4) V2-66b cas (a) : la fiche OSM appariée porte un nom LOCAL → il remonte (6e champ).
+    osm_jp = [{"name": "Kyubey", "lat": 35.67, "lon": 139.76,
+               "completion_meta": {"_name_local": "久兵衛"}}]
+    assert pipeline._position_pick({"name": "Kyubey", "address": "Ginza"},
+                                   osm_jp, None, prop, origin, None)[5] == "久兵衛"
 
 
 def test_sector_editorial_memory_accumulates_and_dedups():
@@ -529,6 +534,38 @@ def test_sector_editorial_memory_accumulates_and_dedups():
     assert resto[0]["reason"] == "Arroces (maj)"                # raison rafraîchie
     assert resto[0]["lat"] == pytest.approx(37.921)            # position rafraîchie
     assert [r["name"] for r in bars] == ["Brown's Cocktail Bar"]
+
+
+def test_editorial_pick_local_name_round_trip_and_poi(monkeypatch):
+    """V2-66b cas (a) : le nom LOCAL d'un pick éditorial est mémorisé (editorial_picks)
+    puis reporté en `completion_meta._name_local` du POI matérialisé — restaurants/bars
+    japonais éditoriaux portent leur nom d'origine (et donc leur 🔊)."""
+    from enrich import db as edb
+    SECT = "testsector66b"
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        conn.execute("DELETE FROM editorial_picks WHERE city_norm=%s", (SECT,))
+        edb.upsert_editorial_pick(
+            conn, country_code="JP", city="Tokyo", city_norm=SECT,
+            name="Kyubey", name_norm="kyubey", category="restaurant",
+            reason="Sushi d'exception au Ginza", source_url="u", verified_on="2026-09-15",
+            lat=35.671, lon=139.763, phone=None, website=None, locality="Ginza",
+            name_local="銀座 久兵衛")
+        conn.commit()
+        mem = edb.sector_editorial_picks(conn, "JP", SECT, "restaurant", 90)
+        conn.execute("DELETE FROM editorial_picks WHERE city_norm=%s", (SECT,))
+        conn.commit()
+    assert mem and mem[0]["name_local"] == "銀座 久兵衛"        # round-trip DB
+    # Matérialisation en POI : le nom latin reste le nom affiché, l'original va en meta.
+    poi = pipeline._build_editorial_poi(mem[0], "restaurant", mem[0]["lat"], mem[0]["lon"],
+                                        mem[0].get("locality"), (35.68, 139.76), "sector_memory")
+    assert poi["name"] == "Kyubey"
+    assert poi["completion_meta"]["_name_local"] == "銀座 久兵衛"
+    assert poi["completion_meta"]["_name_script"] == "cjk"
+    # Pays latin : aucun nom local même si un name_local latin traînait (aucune régression).
+    poi_es = pipeline._build_editorial_poi(
+        {"name": "Casa Manolo", "name_local": "Casa Manolo", "address": None},
+        "restaurant", 37.9, -0.7, None, (37.9, -0.7), "sector_memory")
+    assert "_name_local" not in poi_es["completion_meta"]
 
 
 def test_second_run_inherits_first_run_editorial_picks(http_client):

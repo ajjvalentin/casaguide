@@ -741,6 +741,21 @@ def _pick_latin(tags: dict, disp: str) -> str | None:
     return None
 
 
+def local_meta_from(display: str, local: str | None) -> dict:
+    """Fragment `completion_meta` {`_name_local`, `_name_script`} pour un nom LOCAL fourni
+    HORS OSM (pick éditorial issu de la recherche web, V2-66b cas (a)). On ne retient que
+    ce qui apporte quelque chose : un nom local en écriture NON latine, différent du nom
+    affiché. Sinon `{}` (aucune régression en pays latin). Miroir de `_local_name_meta`."""
+    loc = (local or "").strip()
+    if not loc or loc == (display or "").strip() or not _is_non_latin(loc):
+        return {}
+    meta = {"_name_local": loc}
+    script = _script_of(loc)
+    if script:
+        meta["_name_script"] = script
+    return meta
+
+
 def _local_name_meta(tags: dict, disp: str, country_lang: str | None) -> dict:
     """Noms/adresse en écriture d'origine, pour le voyageur (V2-66 + V2-68 pièce 5).
 

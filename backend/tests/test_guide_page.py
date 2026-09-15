@@ -870,6 +870,16 @@ def test_no_speak_lang_in_latin_country():
     assert "data-speak-lang" not in html and "data-speak" not in html
 
 
+def test_poi_non_latin_primary_gets_copy_and_speak_without_latin():
+    """V2-66b cas (b) : un nom principal en écriture NON latine SANS variante latine
+    (restaurant japonais nommé seulement en japonais) porte quand même copie + 🔊 sur
+    ce nom (c'est lui qu'on montre au chauffeur) — avant, aucun bloc n'apparaissait."""
+    pois = [_poi("鮨 さいとう", "restaurant", "F")]   # name_local absent, name_latin absent
+    html = guide_page.render_guide(_prop(city="Tokyo", country_code="JP"), [], pois, {}, "tok")
+    assert "poi-local" in html and 'data-copy="鮨 さいとう"' in html
+    assert html.count('poi-local" data-speak') == 1     # ligne speakable = le nom lui-même
+
+
 def test_poi_no_local_line_in_latin_country():
     """V2-66 — non-régression : sans nom local, aucune ligne/bouton supplémentaire
     (La Zenia, Ardon inchangés)."""
