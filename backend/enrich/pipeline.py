@@ -1144,6 +1144,42 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                               f"{overpass._short(str(mk_exc))} "
                               f"({c:.2f} ct comptabilisé)")
 
+                # 4f. Activités du secteur (V2-71) : passe web « que fait-on ici ? »,
+                # mutualisée par commune (area_fact), best-effort SAVEPOINT (patron
+                # food_delivery). Preuve ou rien ; liste vide = résultat valide.
+                if not db.area_fact_fresh(conn, prop["country_code"], prop["city"],
+                                          claude_enrich.ACTIVITIES_FACT_TYPE,
+                                          settings.activities_max_age_days):
+                    try:
+                        with conn.transaction():
+                            act, meta = claude_enrich.fetch_activities(
+                                prop["city"], prop["country_code"], ai,
+                                lang=prop.get("default_lang") or "fr")
+                            n_act = len(act[claude_enrich.ACTIVITIES_FACT_TYPE]["activities"])
+                            db.upsert_area_facts(conn, prop["country_code"],
+                                                 prop["city"], act,
+                                                 source=settings.anthropic_model)
+                            db.record_costs(conn, property_id, job_id, "anthropic",
+                                            "activities", meta["attempts"])
+                            summary["cost_cts"] += meta["cost_cts"]
+                            db.job_step(conn, job_id, "activities",
+                                        {"ok": True, "activities": n_act,
+                                         "cost_cts": round(meta["cost_cts"], 2)})
+                        _progress(f"  ✓ activités du secteur : {n_act} — "
+                                  f"{meta['cost_cts']:.2f} ct")
+                    except Exception as ac_exc:  # noqa: BLE001 — best-effort
+                        log.warning("Activités (%s) non résolues : %s",
+                                    prop["city"], ac_exc)
+                        c = _record_failed_call_cost(conn, property_id, job_id,
+                                                     "activities", ac_exc)
+                        summary["cost_cts"] += c
+                        db.job_step(conn, job_id, "activities",
+                                    {"ok": False, "error": overpass._short(str(ac_exc)),
+                                     "cost_cts": round(c, 2)})
+                        conn.commit()
+                        _progress(f"  ⚠ activités non résolues : "
+                                  f"{overpass._short(str(ac_exc))}")
+
                 db.job_step(conn, job_id, "claude",
                             {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})
             else:

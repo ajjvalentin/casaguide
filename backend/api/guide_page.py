@@ -75,6 +75,11 @@ _UI7: dict[str, dict[str, str]] = {
     # V2-67 : bouton « écouter » du nom local (prononciation par l'appareil).
     "listen": {"fr": "Écouter", "en": "Listen", "es": "Escuchar", "it": "Ascolta",
                "de": "Anhören", "nl": "Beluisteren", "sq": "Dëgjo"},
+    # V2-71 : titre de l'encart « activités du secteur » (surf, randonnée…).
+    "activities_title": {"fr": "Activités du secteur", "en": "Activities in the area",
+                         "es": "Actividades de la zona", "it": "Attività della zona",
+                         "de": "Aktivitäten in der Umgebung", "nl": "Activiteiten in de buurt",
+                         "sq": "Aktivitete në zonë"},
     "nearest_of_network": {"fr": "station la plus proche", "en": "nearest station",
                            "es": "estación más cercana", "it": "stazione più vicina",
                            "de": "nächste Station", "nl": "dichtstbijzijnde station",
@@ -492,7 +497,89 @@ _CUISINE_LABELS: dict[str, dict[str, str]] = {
     "regional": {"fr": "Régional", "en": "Regional", "es": "Regional"},
 }
 
+# Sous-types sport/loisir (V2-71) : puce comme les cuisines, libellés EN DUR 7 langues
+# (fr, en, es, it, de, nl, sq). Valeur inconnue → repli embelli (underscores → espaces).
+_SUBTYPE_LABELS: dict[str, dict[str, str]] = {
+    "soccer": {"fr": "Football", "en": "Football", "es": "Fútbol", "it": "Calcio",
+               "de": "Fußball", "nl": "Voetbal", "sq": "Futboll"},
+    "tennis": {"fr": "Tennis", "en": "Tennis", "es": "Tenis", "it": "Tennis",
+               "de": "Tennis", "nl": "Tennis", "sq": "Tenis"},
+    "padel": {"fr": "Padel", "en": "Padel", "es": "Pádel", "it": "Padel",
+              "de": "Padel", "nl": "Padel", "sq": "Padel"},
+    "basketball": {"fr": "Basket", "en": "Basketball", "es": "Baloncesto", "it": "Basket",
+                   "de": "Basketball", "nl": "Basketbal", "sq": "Basketboll"},
+    "volleyball": {"fr": "Volley", "en": "Volleyball", "es": "Voleibol", "it": "Pallavolo",
+                   "de": "Volleyball", "nl": "Volleybal", "sq": "Volejboll"},
+    "swimming": {"fr": "Natation", "en": "Swimming", "es": "Natación", "it": "Nuoto",
+                 "de": "Schwimmen", "nl": "Zwemmen", "sq": "Not"},
+    "swimming_pool": {"fr": "Piscine", "en": "Swimming pool", "es": "Piscina",
+                      "it": "Piscina", "de": "Schwimmbad", "nl": "Zwembad", "sq": "Pishinë"},
+    "fitness": {"fr": "Fitness", "en": "Fitness", "es": "Fitness", "it": "Fitness",
+                "de": "Fitness", "nl": "Fitness", "sq": "Fitnes"},
+    "fitness_centre": {"fr": "Salle de sport", "en": "Gym", "es": "Gimnasio",
+                       "it": "Palestra", "de": "Fitnessstudio", "nl": "Sportschool",
+                       "sq": "Palestër"},
+    "fitness_station": {"fr": "Agrès de plein air", "en": "Outdoor gym",
+                        "es": "Gimnasio al aire libre", "it": "Palestra all'aperto",
+                        "de": "Outdoor-Fitness", "nl": "Buitengym", "sq": "Palestër jashtë"},
+    "climbing": {"fr": "Escalade", "en": "Climbing", "es": "Escalada", "it": "Arrampicata",
+                 "de": "Klettern", "nl": "Klimmen", "sq": "Ngjitje"},
+    "golf": {"fr": "Golf", "en": "Golf", "es": "Golf", "it": "Golf", "de": "Golf",
+             "nl": "Golf", "sq": "Golf"},
+    "golf_course": {"fr": "Golf", "en": "Golf course", "es": "Campo de golf",
+                    "it": "Campo da golf", "de": "Golfplatz", "nl": "Golfbaan",
+                    "sq": "Fushë golfi"},
+    "horse_riding": {"fr": "Équitation", "en": "Horse riding", "es": "Equitación",
+                     "it": "Equitazione", "de": "Reiten", "nl": "Paardrijden",
+                     "sq": "Kalërim"},
+    "equestrian": {"fr": "Équitation", "en": "Horse riding", "es": "Equitación",
+                   "it": "Equitazione", "de": "Reiten", "nl": "Paardrijden",
+                   "sq": "Kalërim"},
+    "cycling": {"fr": "Vélo", "en": "Cycling", "es": "Ciclismo", "it": "Ciclismo",
+                "de": "Radfahren", "nl": "Wielrennen", "sq": "Çiklizëm"},
+    "athletics": {"fr": "Athlétisme", "en": "Athletics", "es": "Atletismo",
+                  "it": "Atletica", "de": "Leichtathletik", "nl": "Atletiek",
+                  "sq": "Atletikë"},
+    "multi": {"fr": "Multisport", "en": "Multi-sport", "es": "Multideporte",
+              "it": "Multisport", "de": "Mehrsport", "nl": "Multisport", "sq": "Shumësport"},
+    "pitch": {"fr": "Terrain de sport", "en": "Sports pitch", "es": "Cancha deportiva",
+              "it": "Campo sportivo", "de": "Sportplatz", "nl": "Sportveld",
+              "sq": "Fushë sportive"},
+    "sports_centre": {"fr": "Complexe sportif", "en": "Sports centre",
+                      "es": "Centro deportivo", "it": "Centro sportivo",
+                      "de": "Sportzentrum", "nl": "Sportcentrum", "sq": "Qendër sportive"},
+    "stadium": {"fr": "Stade", "en": "Stadium", "es": "Estadio", "it": "Stadio",
+                "de": "Stadion", "nl": "Stadion", "sq": "Stadium"},
+    "track": {"fr": "Piste d'athlétisme", "en": "Running track", "es": "Pista de atletismo",
+              "it": "Pista di atletica", "de": "Laufbahn", "nl": "Atletiekbaan",
+              "sq": "Pistë vrapimi"},
+    "water_park": {"fr": "Parc aquatique", "en": "Water park", "es": "Parque acuático",
+                   "it": "Parco acquatico", "de": "Wasserpark", "nl": "Waterpark",
+                   "sq": "Park ujor"},
+    "playground": {"fr": "Aire de jeux", "en": "Playground", "es": "Parque infantil",
+                   "it": "Parco giochi", "de": "Spielplatz", "nl": "Speeltuin",
+                   "sq": "Shesh lojërash"},
+    "ice_rink": {"fr": "Patinoire", "en": "Ice rink", "es": "Pista de hielo",
+                 "it": "Pista di ghiaccio", "de": "Eisbahn", "nl": "IJsbaan",
+                 "sq": "Pistë akulli"},
+    "marina": {"fr": "Port de plaisance", "en": "Marina", "es": "Puerto deportivo",
+               "it": "Porto turistico", "de": "Yachthafen", "nl": "Jachthaven",
+               "sq": "Marinë"},
+    "beach_resort": {"fr": "Complexe balnéaire", "en": "Beach resort",
+                     "es": "Complejo de playa", "it": "Stabilimento balneare",
+                     "de": "Strandbad", "nl": "Strandresort", "sq": "Resort plazhi"},
+}
+
 _esc = html.escape
+
+
+def _subtype_label(value: str, lang: str = "fr") -> str:
+    """Libellé localisé d'un sous-type sport/loisir (V2-71), 7 langues EN DUR ; repli
+    embelli (underscores → espaces, capitalisé) pour une valeur inconnue."""
+    d = _SUBTYPE_LABELS.get(value)
+    if d:
+        return d.get(lang) or d.get("fr") or value
+    return value.replace("_", " ").strip().capitalize()
 
 
 def _cuisine_label(value: str, lang: str = "fr") -> str:
@@ -1294,6 +1381,11 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             cuisine_attr = f' data-cuisine="{_esc(cuisine)}"' if is_resto else ""
             cuisine_tag = (f'<span class="cuisine-tag">{_esc(_cuisine_label(cuisine, lang))}</span>'
                            if is_resto and cuisine else "")
+            # Sous-type sport/loisir (V2-71) : puce comme la cuisine (même classe, aucun
+            # CSS neuf → aucun bump SW), pour dire la discipline/le type de lieu.
+            subtype = (p.get("subtype") or "").strip().lower()
+            subtype_tag = (f'<span class="cuisine-tag">{_esc(_subtype_label(subtype, lang))}</span>'
+                           if subtype and code in ("sport", "family_activity") else "")
             # Commune / localité (V2-38) : discrète, à côté du nom (« · Vétroz »), même
             # séparateur/ton muet que la mention d'horaires. Anti-bruit ASSUMÉ : affichée
             # UNIQUEMENT si elle DIFFÈRE de la commune du logement (comparaison normalisée
@@ -1334,7 +1426,7 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             cards.append(
                 f'<div class="poi-card"{cuisine_attr} style="border-left-color:{color}">'
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
-                f'<div class="poi-body"><h4>{_esc(_poi_display_name(p, lang))}{loc_html}{cuisine_tag}</h4>{local_html}{day_html}{comment}'
+                f'<div class="poi-body"><h4>{_esc(_poi_display_name(p, lang))}{loc_html}{cuisine_tag}{subtype_tag}</h4>{local_html}{day_html}{comment}'
                 f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}{nav_html}</div></div>')
         n = len(lst)
         head = f'<h4 class="cat-title">{cat_name} · {n}</h4>'
@@ -1766,6 +1858,32 @@ def _fact_food_delivery(fd: dict, lang: str) -> str:
     note_html = f'<p class="fnote">{_esc(note)}</p>' if note else ""
     return (f'<div class="facts food-delivery">'
             f'<div class="poi-nav">{"".join(items)}</div>{note_html}</div>')
+
+
+def _fact_activities(act: dict, lang: str) -> str:
+    """Encart « Activités du secteur » (V2-71) — STANDALONE (pas adossé à une section) :
+    les activités sans lieu propre (surf, randonnée…), avec l'endroit et la saison, et un
+    lien de preuve. Rien si vide (liste vide = résultat valide). Réutilise `.facts` et
+    l'icône de lien externe → aucun CSS neuf, aucun bump SW."""
+    items = [a for a in (act.get("activities") or [])
+             if isinstance(a, dict) and (a.get("activity") or "").strip()]
+    if not items:
+        return ""
+    rows: list[str] = []
+    for a in items:
+        name = _esc((a.get("activity") or "").strip())
+        where = (a.get("where") or "").strip()
+        season = (a.get("season") or "").strip()
+        detail = " · ".join(x for x in [where, season] if x)
+        line = f"<b>{name}</b>" + (f' — {_esc(detail)}' if detail else "")
+        url = (a.get("source_url") or "").strip()
+        if url.lower().startswith(("http://", "https://")):
+            line += (f' <a class="route-link" href="{_esc(url)}" target="_blank" '
+                     f'rel="noopener nofollow" aria-label="{name}">{_EXT_LINK_ICON}</a>')
+        rows.append(f"<li>{line}</li>")
+    return (f'<section class="facts activities">'
+            f'<b class="tt">{_esc(_t7(lang, "activities_title"))}</b>'
+            f'<ul>{"".join(rows)}</ul></section>')
 
 
 # Renderers d'encart par type de fait, adossés à une section (M-17). Les
@@ -2265,6 +2383,11 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
         around_inner.append(
             f'<nav class="chips" aria-label="{_esc(_t(lang, "filter"))}">{"".join(chips)}</nav>')
     around_inner += panels["around"]
+    # Activités du secteur (V2-71) : encart STANDALONE (pas adossé à une section) — les
+    # activités sans lieu propre (surf, randonnée…). Rien si vide. En fin d'onglet « Autour ».
+    activities_html = _fact_activities(area_facts.get("activities") or {}, lang)
+    if activities_html:
+        around_inner.append(activities_html)
     # Bouton flottant « Retour aux services » (V2-27) : rendu SSR mais masqué par
     # défaut (bonus JS) — app.js le révèle quand on défile dans « Autour de vous ».
     # N'a de sens que s'il y a une grille (POI en cartes ou tuile de fait de zone).

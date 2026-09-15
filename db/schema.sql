@@ -523,6 +523,7 @@ CREATE TABLE pois (
     opening_hours  TEXT,                           -- format OSM ou texte libre
     price_level    SMALLINT,                       -- 1-4, optionnel
     cuisine        TEXT,                            -- type de cuisine (tag OSM normalisé, M-16)
+    subtype        TEXT,                            -- sous-type sport/loisir (OSM sport|leisure), V2-71
     weekday        SMALLINT CHECK (weekday BETWEEN 1 AND 7),  -- jour du marché (1=lundi ISO), V2-33
     weekday_note   TEXT,                            -- précision du jour (« été seulement »…), V2-33
     completion_meta JSONB,                          -- provenance de la complétion auto (tel/site/horaires), V2-07 volet 2

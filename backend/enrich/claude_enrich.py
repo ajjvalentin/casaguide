@@ -156,13 +156,20 @@ commune QUE si elle t'y est donnée (ou figure dans le nom du POI). SANS localit
 fournie, n'indique AUCUN lieu — ni « à {city} » (la commune du LOGEMENT, pas
 forcément celle du POI), ni aucune autre.
 
+SPORT & LOISIR (V2-71) : pour un lieu de sport ou d'activité, dis en priorité LA
+DISCIPLINE (football, tennis, natation, padel, escalade…), si l'accès est PUBLIC ou
+RÉSERVÉ aux clubs/licenciés, et la NATURE du lieu (complexe couvert, stade, terrain
+municipal, piscine). Un champ « sous-type : … » (ex. soccer, swimming_pool,
+sports_centre) t'aide à identifier la discipline/le type — appuie-toi dessus. Si tu
+ignores le sport pratiqué, renvoie "" plutôt qu'une phrase creuse.
+
 Contraintes factuelles : n'invente ni distance, ni horaire, ni prix, ni note, ni
 anecdote.
 
 Réponds UNIQUEMENT avec un objet JSON valide, la valeur étant la description OU une
 chaîne vide : {{"<ref>": "description ou \\"\\"", ...}}
 
-Points d'intérêt (ref, nom, catégorie[, localité]) :
+Points d'intérêt (ref, nom, catégorie[, sous-type][, localité]) :
 {poi_list}
 """
 
@@ -248,7 +255,10 @@ def describe_pois(pois: list[dict], city: str, country_code: str,
     for p in pois:
         loc = (p.get("locality") or "").strip()
         loc_txt = f' — localité : {loc}' if loc else ""
-        lines.append(f'- ref "{p["source_ref"]}" : {p["name"]} ({p["category"]}){loc_txt}')
+        sub = (p.get("subtype") or "").strip()
+        sub_txt = f' — sous-type : {sub}' if sub else ""   # V2-71 : aide à nommer le sport
+        lines.append(
+            f'- ref "{p["source_ref"]}" : {p["name"]} ({p["category"]}){sub_txt}{loc_txt}')
     poi_list = "\n".join(lines)
     data, meta = _ask_json(
         client, _POI_PROMPT.format(city=city, country_code=country_code, poi_list=poi_list),
@@ -1104,6 +1114,77 @@ def fetch_markets(city: str, country_code: str, client: anthropic.Anthropic,
             entry["lat"], entry["lon"] = lat, lon
         clean.append(entry)
     return {MARKET_FACT_TYPE: {"markets": clean}}, meta
+
+
+# ── Activités du secteur : « que fait-on ici ? » (V2-71) ──────────────────────
+# Les activités SANS lieu propre (surf, plongée, randonnée, vélo, kayak, via ferrata…)
+# sont le cœur des vacances mais n'apparaissent nulle part (ni OSM ni carte). Passe web
+# dédiée, mutualisée par commune (area_fact), preuve ou rien comme la réputation.
+ACTIVITIES_FACT_TYPE = "activities"
+
+_ACTIVITIES_PROMPT = """\
+Tu prépares l'encart « Activités du secteur » du guide d'un lieu de vacances situé à
+{city} ({country_code}). Rôle : lister les ACTIVITÉS de plein air / sportives / nature
+qu'on vient y PRATIQUER — surtout celles SANS établissement propre (surf, plongée,
+randonnée, VTT, kayak, paddle, via ferrata, ski, escalade, plongée en apnée, voile…).
+
+MÉTHODE : recherche web. Ne retiens QUE ce qui a une PREUVE en ligne récente (office de
+tourisme, guide, prestataire local, presse). Pour chaque activité :
+- `activity` : le nom de l'activité, EN {lang_name} (« Surf », « Randonnée », « Plongée ») ;
+- `where` : OÙ on la pratique, en {lang_name} et le plus PRÉCIS possible (« plage de La
+  Zenia », « massif du Montgó », « calanque de Sormiou ») — jamais vague ;
+- `season` : la saison/période si pertinente, en {lang_name} (« toute l'année », « été »,
+  « décembre à avril ») sinon "" ;
+- `source_url` : l'URL de la preuve ; `verified_on` : « {today} ».
+
+RÈGLES STRICTES :
+- PREUVE OU RIEN : pas de source vérifiable → écartée. N'invente JAMAIS.
+- Une liste VIDE est un résultat parfaitement valide.
+- Reste dans le secteur de {city} et ses environs immédiats. Pas de prose de remplissage.
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
+{{
+  "activities": [
+    {{"activity": "Surf", "where": "plage de …", "season": "toute l'année",
+      "source_url": "https://...", "verified_on": "{today}"}}
+  ]
+}}
+"""
+
+
+def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
+                     today: str | None = None, lang: str = "fr") -> tuple[dict, dict]:
+    """Activités du secteur (V2-71), vérifiées par recherche web. Retourne
+    ({ACTIVITIES_FACT_TYPE: {"activities": [...]}}, méta coût). Chaque activité retenue
+    porte `activity`, `where`, `season`, `source_url`, `verified_on`. **PREUVE OU RIEN**
+    (sans source → écartée). **Liste vide valide.** Réponse malformée → ValueError."""
+    today = today or _dt.date.today().isoformat()
+    lang_name = _REPUTED_LANG_NAMES.get(lang, "français")
+    data, meta = _ask_web_search_json(
+        client, _ACTIVITIES_PROMPT.format(city=city, country_code=country_code,
+                                          today=today, lang_name=lang_name),
+        city=city, country_code=country_code,
+        max_searches=settings.activities_max_searches,
+        max_tokens=settings.activities_max_tokens)
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    activities = data.get("activities")
+    if not isinstance(activities, list):
+        raise ValueError("Réponse IA invalide : 'activities' doit être une liste.")
+    clean: list[dict] = []
+    for a in activities:
+        if not isinstance(a, dict):
+            continue
+        def _s(key: str) -> str:
+            v = a.get(key)
+            return v.strip() if isinstance(v, str) else ""
+        name = _s("activity")
+        source_url = _s("source_url")
+        if not (name and source_url):
+            continue  # preuve ou rien
+        clean.append({"activity": name, "where": _s("where"), "season": _s("season"),
+                      "source_url": source_url, "verified_on": _s("verified_on") or today})
+    return {ACTIVITIES_FACT_TYPE: {"activities": clean}}, meta
 
 
 # ── Déduplication des marchés (pure — testée sans base ni réseau) ─────────────

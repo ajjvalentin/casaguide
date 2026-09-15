@@ -107,7 +107,7 @@ class FakeMessages:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
                  describe_malformed=False, rentals=None, service_qualifications=None,
-                 reputed_places=None):
+                 reputed_places=None, activities=None):
         self._service_qualifications = service_qualifications
         # V2-56 : sélection éditoriale « sorties » (réputés) — deux incontournables
         # par défaut (le cas La Zenia : absents d'OSM), avec contacts + raison.
@@ -128,6 +128,13 @@ class FakeMessages:
         self.describe_malformed = describe_malformed
         self.food_delivery_calls = 0
         self.market_calls = 0
+        self.activities_calls = 0
+        # V2-71 : activités du secteur (une crédible avec preuve par défaut).
+        self.activities = ([{"activity": "Surf", "where": "plage de La Zenia",
+                             "season": "toute l'année",
+                             "source_url": "https://turismo.example/surf",
+                             "verified_on": "2026-09-15"}]
+                           if activities is None else activities)
         self.rental_calls = 0
         self.rentals_malformed = rentals == "malformed"   # V2-44 volet 2 : JSON malformé
         self.rentals = [] if self.rentals_malformed else (rentals or [])
@@ -189,6 +196,10 @@ class FakeMessages:
         if "LIEUX DE SERVICE" in prompt:  # complétion tel/site/horaires (volet 2)
             assert tools and tools[0]["type"] == "web_search_20250305"
             return _web_reply(json.dumps(self.service_completions))
+        if "ACTIVITÉS de plein air" in prompt:  # activités du secteur (V2-71)
+            self.activities_calls += 1
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            return _web_reply(json.dumps({"activities": self.activities}))
         if '"platforms"' in prompt:  # prompt livraison de repas (recherche web)
             self.food_delivery_calls += 1
             assert tools and tools[0]["type"] == "web_search_20250305"
@@ -358,8 +369,10 @@ def test_full_pipeline(property_id, http_client):
         # + 'markets' : la DÉCOUVERTE des marchés est mutualisée par commune (V2-07
         # volet 3), mise en cache area_facts comme la livraison de repas.
         assert set(facts) == {"emergency_numbers", "waste_rules", "noise_rules",
-                              "food_delivery", "markets"}
+                              "food_delivery", "markets", "activities"}
         assert facts["markets"]["markets"][0]["weekday"] == 6
+        # V2-71 : activités du secteur découvertes (surf) — area_fact mutualisé.
+        assert facts["activities"]["activities"][0]["activity"] == "Surf"
         # Plateformes de livraison résolues par zone (nom de marque local + preuve).
         assert facts["food_delivery"]["platforms"][0]["name"] == "Glovo"
         assert facts["food_delivery"]["platforms"][0]["url"].startswith("https://")
@@ -373,7 +386,8 @@ def test_full_pipeline(property_id, http_client):
         steps = job["steps"]
         assert all(steps[s]["ok"] for s in
                    ("geocode", "overpass", "distances", "area_facts", "describe_pois",
-                    "food_delivery", "babysitter", "markets", "claude"))
+                    "food_delivery", "babysitter", "markets", "activities", "claude"))
+        assert steps["activities"]["activities"] == 1            # compteur (V2-71)
         assert steps["food_delivery"]["platforms"] == 1          # compteur
         assert steps["babysitter"]["created"] == 1               # compteur
         assert steps["markets"]["discovered"] == 1 and steps["markets"]["created"] == 1
@@ -385,7 +399,7 @@ def test_full_pipeline(property_id, http_client):
         # + baby-sitting + marchés (volets 2/3). Pas de 'service_complete' : sur un
         # run neuf tous les POI sont 'suggested', la complétion ne vise que les retenus.
         assert ops == {"area_facts", "describe_pois", "food_delivery", "babysitter",
-                       "markets"}
+                       "markets", "activities"}
 
 
 def test_guest_guide_is_auto_judged_and_published(guest_property_id, http_client):
@@ -1552,8 +1566,9 @@ def test_food_delivery_malformed_rejected_without_write(property_id, http_client
         facts = {r["fact_type"] for r in conn.execute(
             "SELECT fact_type FROM area_facts WHERE country_code='ES' "
             "AND admin_area='Orihuela Costa'")}
-        # 'markets' présent (mutualisé) ; PAS de 'food_delivery' (rejeté sans écriture).
-        assert facts == {"emergency_numbers", "waste_rules", "noise_rules", "markets"}
+        # 'markets'/'activities' présents (mutualisés) ; PAS de 'food_delivery' (rejeté).
+        assert facts == {"emergency_numbers", "waste_rules", "noise_rules",
+                         "markets", "activities"}
         fd_costs = conn.execute(
             "SELECT count(*) c FROM api_costs WHERE job_id=%s AND operation='food_delivery'",
             (result["job_id"],)).fetchone()["c"]

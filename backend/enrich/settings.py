@@ -211,6 +211,12 @@ class Settings:
     reputed_max_searches: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_SEARCHES", "8"))
     reputed_max_age_days: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_AGE_DAYS", "90"))
     reputed_max_tokens: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_TOKENS", "4000"))
+    # Activités du secteur (V2-71) : passe web « que fait-on ici ? » (surf, plongée,
+    # randonnée, kayak, via ferrata…) — les activités SANS lieu propre, cœur des vacances,
+    # que ni OSM ni la carte ne montrent. Mutualisée par commune (area_fact), cadence propre.
+    activities_max_searches: int = int(os.getenv("CASAGUIDE_ACTIVITIES_MAX_SEARCHES", "6"))
+    activities_max_age_days: int = int(os.getenv("CASAGUIDE_ACTIVITIES_MAX_AGE_DAYS", "90"))
+    activities_max_tokens: int = int(os.getenv("CASAGUIDE_ACTIVITIES_MAX_TOKENS", "4000"))
     # Cibles ENRICHIES par catégorie pour un guide voyageur (un touriste veut du
     # choix) : proximité (socle OSM/Overture) + picks éditoriaux. Jamais en dur
     # (invariant 8) — surchargeable « restaurant:10,bar:8,cafe:6 ».
@@ -222,8 +228,10 @@ class Settings:
         plafond global si la catégorie n'est pas dans la table)."""
         return self.guest_sorties_targets.get(code, self.max_pois_per_category)
 
-    # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial)
-    describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity", "market")
+    # Catégories décrites par l'IA (coût maîtrisé : uniquement l'éditorial). V2-71 : `sport`
+    # ajouté — sans description, « Cosec Les Lesques » ne dit ni la discipline ni l'accès.
+    describe_categories: tuple = ("restaurant", "beach", "sight", "family_activity",
+                                  "market", "sport")
 
 
 settings = Settings()

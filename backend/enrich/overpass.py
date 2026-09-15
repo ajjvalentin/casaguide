@@ -818,6 +818,7 @@ def _element_to_poi(el: dict, lat0: float, lon0: float,
         "website": tags.get("website") or tags.get("contact:website"),
         "opening_hours": tags.get("opening_hours"),
         "cuisine": _norm_cuisine(tags.get("cuisine")),  # M-16 : type de cuisine
+        "subtype": _norm_subtype(tags),                 # V2-71 : sport/type de lieu de loisir
         "source": "osm",
         "source_ref": f'{el.get("type", "node")}/{el.get("id")}',
         "crow_m": haversine_m(lat0, lon0, float(lat), float(lon)),
@@ -845,6 +846,27 @@ def _norm_cuisine(raw: str | None) -> str | None:
     if not first or len(first.split()) > 3:
         return None
     return first
+
+
+# Types de lieu de LOISIR (tag OSM `leisure`) retenus comme sous-type quand aucun
+# tag `sport` n'est présent (V2-71). Exclut le générique `park` (pas un sous-type utile).
+_SUBTYPE_LEISURE = frozenset({
+    "sports_centre", "pitch", "swimming_pool", "stadium", "fitness_centre",
+    "fitness_station", "water_park", "track", "golf_course", "playground",
+    "horse_riding", "climbing", "beach_resort", "ice_rink", "marina",
+})
+
+
+def _norm_subtype(tags: dict) -> str | None:
+    """Sous-type d'un lieu de SPORT/LOISIR (V2-71) : discipline OSM `sport` (soccer,
+    tennis, swimming, padel…) en priorité, sinon type de lieu `leisure` connu
+    (sports_centre, pitch, swimming_pool, stadium…). Multi-valué `;` → premier terme,
+    minuscules ; forme bornée (≤ 3 mots) comme la cuisine. None si rien d'utile."""
+    sp = (tags.get("sport") or "").split(";")[0].strip().lower()
+    if sp and len(sp.split()) <= 3:
+        return sp
+    lz = (tags.get("leisure") or "").strip().lower()
+    return lz if lz in _SUBTYPE_LEISURE else None
 
 
 def _sort_key(p: dict) -> tuple[int, int]:

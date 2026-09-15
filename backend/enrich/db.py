@@ -82,14 +82,14 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
     for p in pois:
         conn.execute(
             """INSERT INTO pois (property_id, category_code, name, geom, address,
-                                 locality, phone, website, opening_hours, cuisine,
+                                 locality, phone, website, opening_hours, cuisine, subtype,
                                  description_md, owner_comment, completion_meta,
                                  dist_walk_m, walk_min, dist_drive_m, drive_min,
                                  source, source_ref, fetched_at, status)
                VALUES (%(pid)s, %(cat)s, %(name)s,
                        ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
                        %(address)s, %(locality)s, %(phone)s, %(website)s,
-                       %(opening_hours)s, %(cuisine)s, %(description_md)s,
+                       %(opening_hours)s, %(cuisine)s, %(subtype)s, %(description_md)s,
                        %(owner_comment)s, %(meta)s,
                        %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
                        %(source)s, %(source_ref)s, now(), 'suggested')
@@ -114,6 +114,7 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                    website = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.website ELSE pois.website END,
                    opening_hours = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.opening_hours ELSE pois.opening_hours END,
                    cuisine = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.cuisine, pois.cuisine) ELSE pois.cuisine END,
+                   subtype = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.subtype, pois.subtype) ELSE pois.subtype END,
                    description_md = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.description_md, pois.description_md) ELSE pois.description_md END,
                    -- Coup de cœur / raison éditoriale (V2-56) : porté par l'enrichissement
                    -- pour les picks « réputés » (source='web'). Complété sans s'effacer
@@ -150,7 +151,7 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                 "address": p.get("address"), "locality": p.get("locality"),
                 "phone": p.get("phone"),
                 "website": p.get("website"), "opening_hours": p.get("opening_hours"),
-                "cuisine": p.get("cuisine"),
+                "cuisine": p.get("cuisine"), "subtype": p.get("subtype"),
                 "description_md": p.get("description_md"),
                 "owner_comment": p.get("owner_comment"),
                 "dist_walk_m": p.get("dist_walk_m"), "walk_min": p.get("walk_min"),

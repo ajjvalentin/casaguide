@@ -1608,7 +1608,7 @@ def guide_pois(conn, property_id: str) -> list[dict]:
                   c.icon AS category_icon, c.map_color, c.travel_mode,
                   p.name, ST_Y(p.geom) AS lat, ST_X(p.geom) AS lon,
                   p.address, p.locality, p.phone, p.website, p.opening_hours, p.cuisine,
-                  p.weekday, p.weekday_note,
+                  p.subtype, p.weekday, p.weekday_note,
                   p.description_md, p.owner_comment, p.price_level,
                   p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min,
                   p.status,
