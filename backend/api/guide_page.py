@@ -90,6 +90,11 @@ _UI7: dict[str, dict[str, str]] = {
                         "es": "Ubicación aproximada", "it": "Posizione approssimativa",
                         "de": "Ungefährer Standort", "nl": "Locatie bij benadering",
                         "sq": "Vendndodhje e përafërt"},
+    # V2-73g : lien de la popup d'activité vers la fiche du POI apparié (cohérence interne).
+    "see_in_guide": {"fr": "Voir dans le guide", "en": "See in the guide",
+                     "es": "Ver en la guía", "it": "Vedi nella guida",
+                     "de": "Im Reiseführer ansehen", "nl": "Bekijk in de gids",
+                     "sq": "Shihe në udhëzues"},
     # V2-71b : accès d'un équipement sportif (repli factuel).
     "access_public": {"fr": "accès libre", "en": "open access", "es": "acceso libre",
                       "it": "accesso libero", "de": "frei zugänglich", "nl": "vrij toegankelijk",
@@ -2041,7 +2046,9 @@ def _activities_tile(act: dict, lang: str) -> tuple[str, int, str] | None:
 def _activities_map_points(act: dict) -> list[dict]:
     """Activités PLAÇABLES (lat/lon posés par le pipeline, cascade stricte V2-73) pour la
     carte « Autour » : marqueur distinct + popup (intitulé, saison, lien de source). Une
-    activité non plaçable n'apparaît pas ici (elle reste dans la liste sans marqueur)."""
+    activité non plaçable n'apparaît pas ici (elle reste dans la liste sans marqueur).
+    `exact` (V2-73g) = position d'un POI apparié (exacte → pas de cercle d'approximation) ;
+    `poi_cat` = catégorie de ce POI (lien « voir dans le guide »)."""
     pts: list[dict] = []
     for a in _activities_items(act):
         lat, lon = a.get("lat"), a.get("lon")
@@ -2050,7 +2057,9 @@ def _activities_map_points(act: dict) -> list[dict]:
         pts.append({"name": (a.get("activity") or "").strip(), "lat": lat, "lon": lon,
                     "season": (a.get("season") or "").strip(),
                     "where": (a.get("where") or "").strip(),
-                    "source_url": (a.get("source_url") or "").strip()})
+                    "source_url": (a.get("source_url") or "").strip(),
+                    "exact": bool(a.get("exact")),
+                    "poi_cat": (a.get("poi_cat") or "").strip() or None})
     return pts
 
 
@@ -2677,7 +2686,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}" data-approx-label="{_esc(_t7(lang, "approx_position"))}"{speak_attr}>
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}" data-approx-label="{_esc(_t7(lang, "approx_position"))}" data-in-guide-label="{_esc(_t7(lang, "see_in_guide"))}"{speak_attr}>
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">

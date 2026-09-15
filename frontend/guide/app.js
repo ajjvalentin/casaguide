@@ -143,37 +143,42 @@ function linkDomain(url) {
 // la famille) au lieu de promettre un point précis qu'on n'a pas. Rayon configurable.
 const ACT_COLOR = "#AD1457";                 // = couleur de famille ACT (SSR _CHAPTER_COLORS)
 const ACT_APPROX_RADIUS_M = 1000;
-// Libellé « position approximative » servi par le SSR dans la langue du guide (7 langues,
-// data-approx-label) ; repli FR assumé (défense contre un rendu ancien en cache, cf. V2-39).
+// Libellés servis par le SSR dans la langue du guide (7 langues) ; replis FR assumés
+// (défense contre un rendu ancien en cache, cf. V2-39).
 const ACT_APPROX_LABEL = (document.body && document.body.dataset.approxLabel)
   || "Position approximative";
+const ACT_IN_GUIDE_LABEL = (document.body && document.body.dataset.inGuideLabel)
+  || "Voir dans le guide";
 
-// Marqueur d'ACTIVITÉ (V2-73/f) : DISTINCT des pastilles rondes de commerce — un CERCLE
-// d'approximation (couleur de la famille) + une petite épingle boussole au centre. Popup :
-// intitulé + lieu · saison + « position approximative » + lien de source. Le cercle est
-// attaché à `m._circle` (affiché/masqué avec le marqueur). Tagué `_catCode=activities`/
-// `_chapter=ACT` → filtré par la tuile « Activités » du sommaire ; le CENTRE seul compte
-// pour le cadrage (le cercle n'élargit jamais la vue).
+// Marqueur d'ACTIVITÉ (V2-73/f/g) : DISTINCT des pastilles rondes de commerce — épingle
+// boussole à la couleur de la famille. Position APPROCHÉE (géocodage) → cercle d'approximation
+// (V2-73f) + mention « position approximative ». Position EXACTE (POI moissonné apparié, V2-73g,
+// `a.exact`) → épingle SEULE (pas de cercle : on connaît le point) + lien « voir dans le guide »
+// vers la fiche du POI (`a.poi_cat`). Le cercle éventuel est attaché à `m._circle` (affiché/
+// masqué avec le marqueur) ; le CENTRE seul compte pour le cadrage (le cercle n'élargit rien).
 function makeActivityMarker(a) {
   const m = L.marker([a.lat, a.lon], {
     icon: L.divIcon({ className: "", iconAnchor: [13, 13], html: '<div class="act-pin">🧭</div>' }),
     keyboard: false,
   });
-  const circle = L.circle([a.lat, a.lon], {
+  const circle = a.exact ? null : L.circle([a.lat, a.lon], {
     radius: ACT_APPROX_RADIUS_M, className: "act-approx",
     color: ACT_COLOR, weight: 1, opacity: 0.5, fillColor: ACT_COLOR, fillOpacity: 0.12,
   });
   let html = `<b>${escapeHtml(a.name || "")}</b>`;
   const detail = [a.where, a.season].filter(Boolean).join(" · ");
   if (detail) html += `<br>${escapeHtml(detail)}`;
-  html += `<br><span class="approx-note">${escapeHtml(ACT_APPROX_LABEL)}</span>`;
+  if (!a.exact) html += `<br><span class="approx-note">${escapeHtml(ACT_APPROX_LABEL)}</span>`;
+  if (a.poi_cat) {
+    html += `<br><a href="#${escapeHtml(TAB_HASH.around)}/${encodeURIComponent(a.poi_cat)}">`
+      + `${escapeHtml(ACT_IN_GUIDE_LABEL)}</a>`;
+  }
   if (a.source_url && /^https?:\/\//i.test(a.source_url)) {
     const dom = linkDomain(a.source_url);
     html += `<br><a href="${escapeHtml(a.source_url)}" target="_blank" rel="noopener nofollow">${escapeHtml(dom || "↗")}</a>`;
   }
   m.bindPopup(html);
-  circle.bindPopup(html);          // taper le cercle ou l'épingle ouvre la même popup
-  m._circle = circle;
+  if (circle) { circle.bindPopup(html); m._circle = circle; }  // taper cercle/épingle = même popup
   m._catCode = "activities";
   m._chapter = "ACT";
   return m;

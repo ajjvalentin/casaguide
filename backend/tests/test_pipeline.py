@@ -533,29 +533,40 @@ def test_activity_place_prefers_structured_then_derives_from_where():
     assert ap({"place_name": "", "where": ""}) == ("", "")
 
 
+def test_activity_soft_name_match_natural_places():
+    """V2-73g : appariement SOUPLE des lieux naturels — mots de catégorie (plage/beach/…) et
+    articles retirés avant comparaison. « Plage du Gurp » accroche « Le Gurp · Plage » ; deux
+    plages DISTINCTES ne matchent jamais ; un nom = catégorie seule n'accroche rien."""
+    assert pipeline._place_core("Plage du Gurp") == "gurp"
+    assert pipeline._place_core("Le Gurp · Plage") == "gurp"
+    assert pipeline._place_core("Plage") == ""                 # catégorie seule → vide
+    cands = [{"name": "Le Gurp · Plage", "lat": 1, "lon": 1, "category": "beach"},
+             {"name": "Plage de Montalivet", "lat": 2, "lon": 2, "category": "beach"}]
+    m = pipeline._activity_name_match("Plage du Gurp", cands)
+    assert m is not None and m["name"] == "Le Gurp · Plage"    # bon lieu, pas l'autre plage
+    assert pipeline._activity_name_match("Plage", cands) is None   # cœur vide → aucune accroche
+    assert pipeline._activity_name_match("Plage du Gurp", None) is None   # None toléré
+
+
 def test_position_activity_cascade_never_centroid(monkeypatch):
-    """V2-73/c/d : placement STRICT d'une activité — (1) nom contre la moisson, (2) ADRESSE
+    """V2-73/c/d/g : placement STRICT — (1) nom contre la MOISSON (exact), (2) ADRESSE
     POSTALE, (3) « nom, commune », (4) repli OSM par tag, (5) None. Le garde n'accepte jamais
-    un centroïde ; une plage résolue en lieu naturel (class=natural) EST acceptée (point 3)."""
+    un centroïde ; une plage en lieu naturel EST acceptée. Renvoie `(lat, lon, exact, poi)`."""
     prop = {"city": "Bégadan", "country_code": "FR"}
     origin = (45.30, -0.86)
-    harvested = [{"name": "Plage du Gurp", "lat": 45.40, "lon": -1.13}]
-    # Repli OSM par tag : le secteur connaît « Plage du Gurp » (natural=beach), pas Nominatim.
+    # V2-73g : la moisson connaît le POI « Le Gurp · Plage » (position OSM vérifiée).
+    harvested = [{"name": "Le Gurp · Plage", "lat": 45.36, "lon": -1.15, "category": "beach"}]
     osm_places = [{"name": "Plage du Gurp", "lat": 45.36, "lon": -1.15}]
 
     def fake_geocode(**kw):
         q = kw.get("address") or ""
-        # Le garde NE reçoit JAMAIS la phrase entière : la requête est adresse ou « lieu, commune ».
         assert "env." not in q and "côte atlantique" not in q, f"phrase géocodée : {q!r}"
         if "route de l'océan" in q:                # ADRESSE POSTALE (tier 2) → résolue
-            return {"lat": 45.36, "lon": -1.15, "accuracy": "street",
+            return {"lat": 45.42, "lon": -1.11, "accuracy": "street",
                     "osm_class": "highway", "osm_type": "residential"}
         if "Plage propre" in q:                    # plage résolue en LIEU NATUREL → ACCEPTÉE
             return {"lat": 45.39, "lon": -1.12, "accuracy": "city",
                     "osm_class": "natural", "osm_type": "beach"}
-        if "Massif" in q:                          # lieu précis (type non mappé) → accepté
-            return {"lat": 45.31, "lon": -0.90, "accuracy": "city",
-                    "osm_class": "leisure", "osm_type": "sports_centre"}
         if "Centre" in q:                          # CENTROÏDE communal → refusé
             return {"lat": 45.33, "lon": -0.87, "accuracy": "city",
                     "osm_class": "place", "osm_type": "village"}
@@ -568,27 +579,26 @@ def test_position_activity_cascade_never_centroid(monkeypatch):
     def pos(a):
         return pipeline._position_activity(a, harvested, prop, origin, None, osm_places)
 
-    # (1) appariement de nom (place_name) contre la moisson → position de la fiche récoltée.
-    assert pos({"place_name": "Plage du Gurp"}) == (45.40, -1.13)
-    # (2) ADRESSE POSTALE géocodée EN PRIORITÉ (V2-73d) — même quand le nom seul échouerait.
-    assert pos({"place_name": "Spot inconnu", "place_city": "Grayan",
-                "place_address": "Le Gurp, route de l'océan, 33590 Grayan"}) == (45.36, -1.15)
-    # (3-point 3) une PLAGE résolue en lieu naturel (class=natural) est ACCEPTÉE.
-    assert pos({"place_name": "Plage propre", "place_city": "Grayan"}) == (45.39, -1.12)
-    # (3) lieu-dit précis (leisure) → accepté ; la phrase `where` n'est PAS géocodée.
-    assert pos({"place_name": "Massif de x", "where": "Massif de x (env. 10 km), côte "
-                "atlantique"}) == (45.31, -0.90)
-    # centroïde administratif (place/village) → None ; aberrant → None.
+    # (1-point 1/2) APPARIEMENT SOUPLE à la moisson : « Plage du Gurp » s'accroche à
+    #   « Le Gurp · Plage » (cœur « gurp ») → position VÉRIFIÉE, exact=True, poi renvoyé.
+    r = pos({"place_name": "Plage du Gurp"})
+    assert r[:2] == (45.36, -1.15) and r[2] is True and r[3]["category"] == "beach"
+    # (2) ADRESSE POSTALE géocodée quand aucun POI n'apparie → APPROCHÉ (exact=False).
+    r = pos({"place_name": "Spot isolé", "place_city": "Grayan",
+             "place_address": "Le Truc, route de l'océan, 33590 Grayan"})
+    assert r[:2] == (45.42, -1.11) and r[2] is False and r[3] is None
+    # (3) plage résolue en lieu naturel (class=natural) → acceptée, APPROCHÉ.
+    assert pos({"place_name": "Plage propre", "place_city": "Grayan"})[:3] == (45.39, -1.12, False)
+    # centroïde administratif → None ; aberrant → None ; diffuse → None.
     assert pos({"place_name": "Centre de x"}) is None
     assert pos({"place_name": "Loin de x"}) is None
-    # diffuse (aucun lieu) → None (jamais un géocodage à vide).
     assert pos({"place_name": "", "where": ""}) is None
 
-    # (4) REPLI OSM (V2-73d) — isolé : moisson neutralisée, géocodage en échec, mais le lieu
-    #     est connu d'OSM par TAG (natural=beach) → placé ; sans repli OSM → None.
-    monkeypatch.setattr(pipeline, "_name_match", lambda *a, **k: None)
-    assert pipeline._position_activity({"place_name": "Plage du Gurp"}, [], prop, origin,
-                                       None, osm_places) == (45.36, -1.15)
+    # (4) REPLI OSM par tag — isolé : moisson vide, géocodage en échec, lieu connu d'OSM →
+    #     placé APPROCHÉ ; sans repli OSM → None (candidats None toléré, pas de crash).
+    r = pipeline._position_activity({"place_name": "Plage du Gurp"}, [], prop, origin,
+                                    None, osm_places)
+    assert r[:3] == (45.36, -1.15, False)
     assert pipeline._position_activity({"place_name": "Plage du Gurp"}, [], prop, origin,
                                        None, None) is None
 
@@ -689,7 +699,7 @@ def test_backfill_activity_positions_upgrades_pre_v2_73_fact(monkeypatch):
 
         pipeline._backfill_activity_positions(conn, prop, [], origin, None, job_id, {})
         fact = edb.get_area_fact(conn, CC, CITY, ce.ACTIVITIES_FACT_TYPE)
-        assert fact["v"] == ce.ACTIVITIES_SCHEMA_V == 5      # v3 → v5 (schéma courant)
+        assert fact["v"] == ce.ACTIVITIES_SCHEMA_V == 6      # v3 → v6 (schéma courant)
         acts = fact["activities"]
         assert acts[0].get("lat") == 45.36 and acts[0].get("lon") == -1.15  # plage placée (repli OSM)
         assert "lat" not in acts[1]                          # diffuse : reste sans marqueur
@@ -697,13 +707,57 @@ def test_backfill_activity_positions_upgrades_pre_v2_73_fact(monkeypatch):
         assert any(q.startswith("Plage du Gurp, Grayan") for q in queries)
         assert osm_calls["n"] == 1                           # …et le repli OSM, UN seul appel
 
-        # Re-passage : le fait est au schéma courant (v4) → AUCUNE nouvelle tentative.
+        # Re-passage : le fait est au schéma courant (v6) → AUCUNE nouvelle tentative.
         n_before = len(queries)
         pipeline._backfill_activity_positions(conn, prop, [], origin, None, job_id, {})
         assert len(queries) == n_before and osm_calls["n"] == 1
 
         conn.execute("DELETE FROM area_facts WHERE country_code=%s AND admin_area=%s",
                      (CC, CITY))
+        conn.commit()
+
+
+def test_backfill_repositions_approximate_to_harvested_poi(monkeypatch):
+    """V2-73g : à la montée de schéma, une position APPROXIMATIVE (géocodée, `exact` absent)
+    est ré-évaluée — « Plage du Gurp » s'accroche au POI moissonné « Le Gurp · Plage »
+    (position OSM vérifiée, 1,5 km plus juste), devient exact + poi_cat ; une position déjà
+    EXACTE est conservée telle quelle, sans re-géocodage."""
+    from enrich import db as edb, claude_enrich as ce
+    CC, CITY = "FR", "TestReposition73g"
+    origin = (45.30, -0.86)
+    prop = {"country_code": CC, "city": CITY}
+    job_id = str(uuid.uuid4())
+    harvested = [{"name": "Le Gurp · Plage", "lat": 45.36, "lon": -1.15, "category": "beach"}]
+    geo_calls = {"n": 0}
+
+    def fake_geocode(**kw):
+        geo_calls["n"] += 1
+        raise pipeline.geocode.GeocodeError("ne devrait pas être appelé")
+    monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
+    monkeypatch.setattr(pipeline.overpass, "fetch_natural_places", lambda *a, **k: [])
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        conn.execute("DELETE FROM area_facts WHERE country_code=%s AND admin_area=%s", (CC, CITY))
+        # Fait v5 : Surf placé APPROXIMATIVEMENT (géocodage d'adresse, ~1,5 km off, exact absent) ;
+        # Kayak déjà EXACT (POI apparié) → à conserver.
+        edb.upsert_area_facts(conn, CC, CITY, {ce.ACTIVITIES_FACT_TYPE: {"v": 5, "activities": [
+            {"activity": "Surf", "place_name": "Plage du Gurp", "source_url": "https://x",
+             "lat": 45.42, "lon": -1.11},
+            {"activity": "Kayak", "place_name": "Lac", "source_url": "https://y",
+             "lat": 45.20, "lon": -1.05, "exact": True},
+        ]}}, source="seed")
+        conn.commit()
+
+        pipeline._backfill_activity_positions(conn, prop, harvested, origin, None, job_id, {})
+        acts = edb.get_area_fact(conn, CC, CITY, ce.ACTIVITIES_FACT_TYPE)["activities"]
+        # Surf ré-accroché au POI moissonné (position vérifiée), exact + lien vers la fiche.
+        assert acts[0]["lat"] == 45.36 and acts[0]["lon"] == -1.15
+        assert acts[0]["exact"] is True and acts[0]["poi_cat"] == "beach"
+        # Kayak (déjà exact) conservé tel quel ; aucun géocodage (la moisson a suffi).
+        assert acts[1]["lat"] == 45.20 and acts[1].get("exact") is True
+        assert geo_calls["n"] == 0
+
+        conn.execute("DELETE FROM area_facts WHERE country_code=%s AND admin_area=%s", (CC, CITY))
         conn.commit()
 
 

@@ -409,48 +409,99 @@ def _geocode_activity_query(query: str, prop: dict, origin: tuple,
     return geo["lat"], geo["lon"]
 
 
-# Seuil d'appariement de NOM du repli OSM par tag (V2-73d) : le candidat est déjà borné au
-# secteur (bbox Overpass) ; un seuil modéré tolère « Le Gurp » ↔ « Plage du Gurp ».
-_ACT_OSM_NAME_THR = 0.55
+# Appariement SOUPLE des lieux naturels (V2-73g) : « Plage du Gurp » doit s'accrocher au POI
+# moissonné « Le Gurp · Plage » (position OSM vérifiée à 1,5 km de l'adresse géocodée). On
+# compare le CŒUR du nom, mots de catégorie (plage/beach/lac/mont/port…) et articles retirés,
+# à un seuil abaissé. Garde-fou : un cœur vide (nom = mot de catégorie seul) n'apparie rien ;
+# à égalité, le candidat le plus proche du NOM COMPLET gagne (jamais deux plages distinctes).
+_ACT_SOFT_NAME_THR = 0.6
+_PLACE_WORDS = {
+    "plage", "playa", "spiaggia", "strand", "praia", "plazh", "beach",
+    "lac", "lago", "lake", "meer", "see", "liqen", "etang", "estany", "lagune", "laguna",
+    "marais", "marsh", "riviere", "river", "rio",
+    "mont", "montagne", "monte", "mountain", "berg", "pic", "peak", "pico", "cima", "massif",
+    "sierra", "serra", "puig", "mal", "maja",
+    "port", "porto", "puerto", "harbour", "harbor", "haven",
+    "cap", "cape", "cabo", "capo", "pointe", "point", "punta",
+    "ile", "island", "isla", "isola", "insel", "ilot", "islet",
+    "reserve", "reserva", "riserva", "parc", "park", "parque", "parco",
+    "foret", "forest", "bois", "wood", "selva",
+    "dune", "dunes", "calanque", "crique", "cala", "baie", "bay", "bahia", "baia",
+    "gorges", "gorge", "cascade", "waterfall", "grotte", "cave", "cueva",
+    "sentier", "sentiers", "trail", "spot", "site", "zone", "secteur",
+}
+_PLACE_ARTICLES = {"le", "la", "les", "l", "du", "de", "des", "d", "un", "une", "au", "aux",
+                   "el", "los", "las", "il", "lo", "gli", "der", "die", "das", "den", "het",
+                   "the", "of"}
 
 
-def _match_osm_place(place: str, osm_places: list[dict] | None) -> tuple | None:
-    """Meilleur appariement de NOM d'un lieu naturel OSM (V2-73d, tags natural/place/…).
-    `(lat, lon)` du meilleur ≥ seuil, ou None. C'est ainsi qu'OSM situe la « Plage du
-    Gurp » que la recherche textuelle Nominatim n'indexe pas."""
-    best, best_s = None, 0.0
-    for e in osm_places or []:
-        s = fusion.name_similarity(place, e.get("name"))
-        if s >= _ACT_OSM_NAME_THR and s > best_s:
-            best, best_s = (e["lat"], e["lon"]), s
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s) if not unicodedata.combining(c))
+
+
+def _place_core(name: str | None) -> str:
+    """Cœur du nom d'un lieu (V2-73g) : minuscules, sans accents, mots de catégorie et
+    articles retirés. « Plage du Gurp » → « gurp », « Le Gurp · Plage » → « gurp ». Vide
+    si le nom ne contient qu'un mot de catégorie (pas d'accroche possible)."""
+    toks = re.split(r"[^0-9a-zà-ÿ]+", (name or "").lower())
+    core = [ta for t in toks if t
+            for ta in [_strip_accents(t)]
+            if ta and ta not in _PLACE_WORDS and ta not in _PLACE_ARTICLES]
+    return " ".join(core)
+
+
+def _activity_name_match(place: str, candidates: list[dict] | None) -> dict | None:
+    """Meilleur candidat pour une activité (V2-73g) : d'abord l'appariement STRICT existant
+    (nom brut ≥ 0,72), sinon l'appariement SOUPLE sur le cœur du nom (≥ `_ACT_SOFT_NAME_THR`,
+    naturels). Renvoie le candidat (dict avec lat/lon) ou None. À égalité de cœur, le plus
+    proche du nom complet l'emporte (« si deux plages matchent, la plus proche du nom »)."""
+    candidates = candidates or []
+    m = _name_match(place, candidates)                     # strict (comportement préservé)
+    if m is not None:
+        return m
+    core = _place_core(place)
+    if not core:
+        return None                                        # nom = catégorie seule → pas d'accroche
+    best, best_raw = None, -1.0
+    for c in candidates:
+        cc = _place_core(c.get("name"))
+        if not cc or fusion.name_similarity(core, cc) < _ACT_SOFT_NAME_THR:
+            continue
+        raw = fusion.name_similarity(place, c.get("name"))
+        if raw > best_raw:
+            best, best_raw = c, raw
     return best
 
 
 def _position_activity(a: dict, harvested: list[dict], prop: dict, origin: tuple,
                        http_client: httpx.Client | None,
                        osm_places: list[dict] | None = None) -> tuple | None:
-    """Position FIABLE d'une activité, cascade STRICTE (V2-73/c/d). Géocode le LIEU
-    structuré (jamais la phrase `where`). Ordre : (1) appariement de nom contre la moisson,
-    (2) géocodage de l'ADRESSE POSTALE `place_address` (la mieux résolue par Nominatim),
-    (3) géocodage « nom, commune », (4) REPLI OSM PAR TAG (lieux naturels du secteur,
-    appariés au nom — la « Plage du Gurp » y est en natural=beach), (5) abandon. Renvoie
-    `(lat, lon)` ou None (l'activité reste dans la liste sans marqueur)."""
+    """Position FIABLE d'une activité, cascade STRICTE (V2-73/c/d/g). Géocode le LIEU
+    structuré (jamais la phrase `where`). Ordre : (1) appariement de nom contre la MOISSON
+    (POI déjà collectés, position OSM VÉRIFIÉE — avant le géocodage, V2-73g), (2) géocodage
+    de l'ADRESSE POSTALE `place_address`, (3) géocodage « nom, commune », (4) REPLI OSM PAR
+    TAG, (5) abandon. Renvoie `(lat, lon, exact, poi)` — `exact=True` seulement pour un POI
+    moissonné apparié (position exacte → pas de cercle d'approximation, V2-73f/g), `poi` = la
+    fiche appariée (pour le lien « voir dans le guide »). None → sans marqueur."""
     place, place_city = _activity_place(a)
     if not place:
         return None                                        # activité diffuse → pas de point
-    m = _name_match(place, harvested)                      # 1. union moissonnée
+    m = _activity_name_match(place, harvested)             # 1. moisson (position VÉRIFIÉE)
     if m is not None and m.get("lat") is not None and m.get("lon") is not None:
-        return m["lat"], m["lon"]
+        return m["lat"], m["lon"], True, m                 # exact → épingle seule, lien fiche
     addr = (a.get("place_address") or "").strip()
     if addr:                                               # 2. adresse postale de la source
         pos = _geocode_activity_query(addr, prop, origin, http_client)
         if pos is not None:
-            return pos
+            return pos[0], pos[1], False, None             # approché → cercle
     pos = _geocode_activity_query(                         # 3. « lieu, commune »
         f"{place}, {place_city or prop['city']}", prop, origin, http_client)
     if pos is not None:
-        return pos
-    return _match_osm_place(place, osm_places)             # 4. repli OSM ; 5. sinon None
+        return pos[0], pos[1], False, None
+    om = _activity_name_match(place, osm_places)           # 4. repli OSM par tag
+    if om is not None and om.get("lat") is not None and om.get("lon") is not None:
+        return om["lat"], om["lon"], False, None           # approché → cercle
+    return None                                            # 5. sinon : abandon
 
 
 # Deux activités résolues à moins de ce rayon = adresse EMPRUNTÉE (V2-73e) : une diffuse
@@ -500,9 +551,14 @@ def _place_activities(activities: list[dict], harvested: list[dict], prop: dict,
             continue
         if a.get("lat") is not None and a.get("lon") is not None:
             continue
-        pos = _position_activity(a, harvested, prop, origin, http_client, osm_places)
-        if pos is not None:
-            a["lat"], a["lon"] = pos
+        res = _position_activity(a, harvested, prop, origin, http_client, osm_places)
+        if res is not None:
+            a["lat"], a["lon"], a["exact"] = res[0], res[1], bool(res[2])
+            poi = res[3]
+            # V2-73g : accroche à un POI moissonné → lien « voir dans le guide » (cohérence
+            # interne). Le POI vit dans sa catégorie (ancre `#autour/{code}`).
+            if poi and poi.get("category"):
+                a["poi_cat"] = poi["category"]
     _dedup_activity_positions(activities)      # V2-73e : jamais deux marqueurs au même point
     return sum(1 for a in activities if isinstance(a, dict)
                and a.get("lat") is not None and a.get("lon") is not None)
@@ -526,6 +582,13 @@ def _backfill_activity_positions(conn, prop: dict, harvested: list[dict], origin
     if not fact or fact.get("v") == claude_enrich.ACTIVITIES_SCHEMA_V:
         return  # absent, ou positions déjà tentées (schéma courant) → rien à faire
     acts = fact.get("activities") or []
+    # V2-73g : à la montée de schéma, ré-évaluer les positions APPROXIMATIVES (issues d'un
+    # géocodage, pas d'un POI apparié) — le matching s'est amélioré (accroche à la moisson,
+    # 1,5 km plus juste). Une position EXACTE (POI apparié) est conservée telle quelle.
+    for a in acts:
+        if isinstance(a, dict) and a.get("lat") is not None and not a.get("exact"):
+            a.pop("lat", None)
+            a.pop("lon", None)
     try:
         with conn.transaction():
             n_placed = _place_activities(acts, harvested, prop, origin, http_client)
@@ -1002,10 +1065,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     pois = fusion.cap_after_fusion(pois, settings.max_pois_per_category)
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
-                # V2-73 : mémorise nom+position pour l'appariement des activités (cascade
-                # stricte) — seules les fiches géolocalisées servent de cible d'ancrage.
+                # V2-73 : mémorise nom+position (+ catégorie, V2-73g : lien « voir dans le
+                # guide ») pour l'appariement des activités — seules les fiches géolocalisées
+                # servent de cible d'ancrage.
                 all_harvested.extend(
-                    {"name": p.get("name"), "lat": p.get("lat"), "lon": p.get("lon")}
+                    {"name": p.get("name"), "lat": p.get("lat"), "lon": p.get("lon"),
+                     "category": code}
                     for p in pois if p.get("lat") is not None and p.get("lon") is not None)
                 n = db.upsert_pois(conn, property_id, code, pois)
                 summary["categories"][code] = n

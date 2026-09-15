@@ -1149,7 +1149,12 @@ ACTIVITIES_FACT_TYPE = "activities"
 #   v5 (V2-73e) : passe ANTI-EMPILEMENT — deux activités au même point (< 50 m) = adresse
 #                 empruntée ; seule la NOMMÉE garde le marqueur. Bump → les faits v4 sont
 #                 dé-empilés (les diffuses qui partageaient une épingle la perdent).
-ACTIVITIES_SCHEMA_V = 5
+#   v6 (V2-73g) : appariement à la MOISSON (POI déjà collectés, position VÉRIFIÉE) AVANT le
+#                 géocodage, souple sur les lieux naturels (« Plage du Gurp » ↔ « Le Gurp »).
+#                 Bump → les positions APPROXIMATIVES des faits v5 sont ré-évaluées (une
+#                 position exacte de POI apparié est conservée). `exact` marque le POI apparié
+#                 (pas de cercle d'approximation).
+ACTIVITIES_SCHEMA_V = 6
 
 _ACTIVITIES_PROMPT = """\
 Tu prépares l'encart « Activités du secteur » du guide d'un lieu de vacances situé à

@@ -12,7 +12,7 @@
   window.__markers = [];
   function rec(m, kind, iconHtml) {
     m._kind = kind; m._iconHtml = iconHtml || "";
-    m.addTo = () => m; m.bindPopup = () => m;
+    m.addTo = () => m; m.bindPopup = (h) => { m._popup = h || ""; return m; };
     m.getLatLng = () => ({ lat: m._ll[0], lng: m._ll[1] });
     m.on = () => m;
     window.__markers.push(m);
@@ -41,7 +41,7 @@
   location.hash = "#autour";
 </script>
 </head>
-<body data-token="tok" data-api-base="/g/tok" data-lang="fr" data-default-lang="fr" data-guest-guide="1">
+<body data-token="tok" data-api-base="/g/tok" data-lang="fr" data-default-lang="fr" data-guest-guide="1" data-approx-label="Position approximative" data-in-guide-label="Voir dans le guide">
 <div class="wrap">
   <nav class="guide-tabs" role="tablist">
     <button class="tab on" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="true">Autour</button>
@@ -56,7 +56,10 @@
 <pre id="result">PENDING</pre>
 <script id="guide-data" type="application/json">{"property":{"name":"V","lat":45.30,"lon":-0.86},
   "pois":[{"name":"Mercadona","lat":45.31,"lon":-0.87,"category_code":"supermarket","chapter":"C","color":"#2E7D32"}],
-  "activities":[{"name":"Surf","lat":45.40,"lon":-1.13,"where":"plage du Gurp","season":"été","source_url":"https://www.medoc-tourisme.com/surf"}],
+  "activities":[
+    {"name":"Surf","lat":45.36,"lon":-1.15,"where":"plage du Gurp","season":"été","source_url":"https://www.medoc-tourisme.com/surf","exact":true,"poi_cat":"beach"},
+    {"name":"Randonnée","lat":45.31,"lon":-0.90,"where":"arrière-pays","exact":false}
+  ],
   "emergency":[]}</script>
 <script type="module">
   const out = document.getElementById("result");
@@ -66,22 +69,32 @@
       await import("/frontend/guide/app.js");
       await wait(80);
       const act = window.__markers.filter((m) => m._catCode === "activities");
-      if (act.length !== 1)
-        return void (out.textContent = "FAIL: marqueur d'activité attendu (1), obtenu " + act.length);
+      if (act.length !== 2)
+        return void (out.textContent = "FAIL: 2 marqueurs d'activité attendus, obtenu " + act.length);
       // DISTINCT d'une pastille de commerce : divIcon `.act-pin`, pas un circleMarker.
-      if (act[0]._kind !== "marker" || !act[0]._iconHtml.includes("act-pin"))
+      if (act.some((m) => m._kind !== "marker" || !m._iconHtml.includes("act-pin")))
         return void (out.textContent = "FAIL: marqueur d'activité non distinct (act-pin manquant)");
       const commerce = window.__markers.filter((m) => m._catCode === "supermarket");
       if (!(commerce.length === 1 && commerce[0]._kind === "circle"))
         return void (out.textContent = "FAIL: le commerce doit rester une pastille ronde");
-      // V2-73f : l'activité a un CERCLE d'approximation (≈ 1 km) centré sur son point,
-      // et non un simple point ; le commerce, lui, n'en a pas.
+      const exact = act.find((m) => m._ll[1] === -1.15);       // Surf (POI apparié)
+      const approx = act.find((m) => m._ll[1] === -0.90);      // Randonnée (géocodée)
+      // V2-73g : la position EXACTE (POI apparié) → PAS de cercle + lien « voir dans le guide ».
+      if (exact._circle)
+        return void (out.textContent = "FAIL: une position exacte ne doit PAS avoir de cercle");
+      if (!/Voir dans le guide/.test(exact._popup) || !/#autour\/beach/.test(exact._popup))
+        return void (out.textContent = "FAIL: la popup exacte doit lier vers la fiche du POI");
+      if (/Position approximative/.test(exact._popup))
+        return void (out.textContent = "FAIL: pas de mention 'approximative' sur une position exacte");
+      // V2-73f : la position APPROCHÉE → cercle (≈ 1 km) + mention « position approximative ».
       const circles = window.__circles || [];
       if (circles.length !== 1 || circles[0]._radius !== 1000)
-        return void (out.textContent = "FAIL: cercle d'approximation attendu (r=1000), obtenu "
+        return void (out.textContent = "FAIL: 1 cercle r=1000 attendu, obtenu "
           + JSON.stringify(circles.map((c) => c._radius)));
-      if (!(act[0]._circle && act[0]._circle === circles[0]))
-        return void (out.textContent = "FAIL: le cercle doit être attaché au marqueur (_circle)");
+      if (!(approx._circle && approx._circle === circles[0]))
+        return void (out.textContent = "FAIL: le cercle doit être attaché à l'activité approchée");
+      if (!/Position approximative/.test(approx._popup))
+        return void (out.textContent = "FAIL: la popup approchée doit mentionner l'approximation");
       out.textContent = "PASS";
     } catch (e) {
       out.textContent = "FAIL: " + ((e && e.message) || e);
