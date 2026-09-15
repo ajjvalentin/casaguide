@@ -786,6 +786,34 @@ def test_void_essentials_only_wanted_and_far():
     assert "doctor" not in void and "post_office" not in void  # non demandées → jamais
 
 
+def test_geocode_local_commerce_guard_escalation_fallback(monkeypatch):
+    """V2-74b : garde de cohérence (position PRÉCISE > 2 km du centre de la commune → rejetée,
+    cas « 59 min »), ESCALADE sur la rue sans numéro (numéros ruraux absents d'OSM), REPLI au
+    centre marqué approximatif."""
+    prop = {"city": "Bégadan", "country_code": "FR"}
+    center = (45.33, -0.86)                     # centre de la commune
+
+    def fake_geocode(**kw):
+        street = (kw.get("street") or "").strip()
+        if street.startswith("1 ") and "Saint-Saturnin" in street:
+            return {"lat": 45.37, "lon": -0.86, "accuracy": "street",   # ~4,4 km : LOIN du centre
+                    "locality": "Bégadan"}
+        if "Saint-Saturnin" in street:          # rue SANS numéro → près du centre
+            return {"lat": 45.331, "lon": -0.861, "accuracy": "street", "locality": "Bégadan"}
+        raise pipeline.geocode.GeocodeError("introuvable")
+    monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
+
+    # (1+2) numéro rural → géocodage LOIN, rejeté par la garde ; escalade rue seule → près du
+    #       centre, position PRÉCISE retenue (non approximative).
+    r = pipeline._geocode_local_commerce(
+        {"place_address": "1 route de Saint-Saturnin, 33340 Bégadan"}, prop, center, None)
+    assert r[:2] == (45.331, -0.861) and r[3] is False
+    # (repli) adresse introuvable → centre de la commune, marqué APPROXIMATIF.
+    r2 = pipeline._geocode_local_commerce(
+        {"place_address": "5 impasse Inconnue, 33340 Bégadan"}, prop, center, None)
+    assert r2[:2] == center and r2[3] is True
+
+
 def test_fetch_local_commerces_proof_or_nothing():
     """V2-74 : PREUVE OU RIEN — sans adresse précise, sans source, ou catégorie inconnue,
     l'entrée est écartée. Liste vide valide."""

@@ -148,6 +148,84 @@ def deduplicate(candidates: list[dict]) -> tuple[list[dict], int]:
     return survivors, merged
 
 
+# ── Dédup INTER-SOURCES par cœur de nom (V2-74b) ─────────────────────────────
+# Un même établissement vient de sources différentes (OSM + web éditorial) à des positions
+# DISTINCTES → la dédup par distance (`_same_place`) ne l'attrape pas : « Le Canoé » (4 min,
+# OSM) vs « Restaurant Le Canoe » (14 min, web). On compare les CŒURS de nom (mots de type +
+# articles retirés), à un seuil éprouvé (V2-73g), avec un garde-fou de proximité pour ne pas
+# fusionner deux homonymes réellement distincts (chaîne).
+NAME_CORE_THRESHOLD = 0.60   # Dice sur le cœur de nom (aligné V2-73g)
+NAME_CORE_DIST_M = 3000.0    # proximité raisonnable (au-delà = homonymes distincts probables)
+_TYPE_WORDS = {
+    "restaurant", "resto", "cafe", "bar", "brasserie", "bistrot", "bistro", "pub",
+    "pizzeria", "creperie", "taverne", "auberge", "grill", "snack", "tabac", "estaminet",
+    "le", "la", "les", "l", "du", "de", "des", "d", "au", "aux", "un", "une",
+    "the", "el", "los", "las", "il", "lo",
+}
+
+
+def _name_core(name: str | None) -> str:
+    """Cœur de nom (V2-74b) : normalisé, mots de TYPE d'établissement et articles retirés.
+    « Restaurant Le Canoe » → « canoe » ; « La Mare aux Grenouilles » → « mare grenouilles »."""
+    return " ".join(t for t in _norm(name).split() if t not in _TYPE_WORDS)
+
+
+def _same_contact(a: dict, b: dict) -> bool:
+    """Même téléphone (chiffres) OU même site (hôte) — signe fort du même établissement,
+    même à distance (le garde-fou proximité peut alors être levé)."""
+    pa = re.sub(r"\D", "", a.get("phone") or "")
+    pb = re.sub(r"\D", "", b.get("phone") or "")
+    if pa and pb and pa[-9:] == pb[-9:]:
+        return True
+    wa = _norm(a.get("website")).rstrip("/ ")
+    wb = _norm(b.get("website")).rstrip("/ ")
+    return bool(wa) and wa == wb
+
+
+def _merge_pair(a: dict, b: dict) -> dict:
+    """Fusionne deux doublons inter-sources : BASE = position la mieux établie (OSM/Overture
+    avant web géocodé), à source égale le mieux renseigné ; puis on COMBLE les champs vides de
+    la base depuis l'autre (contacts, description) — jamais d'écrasement."""
+    a_web, b_web = (a.get("source") == "web"), (b.get("source") == "web")
+    if a_web != b_web:
+        base, other = (b, a) if a_web else (a, b)     # non-web (OSM/Overture) = position sûre
+    else:
+        base, other = (a, b) if _score(a) >= _score(b) else (b, a)
+    for f in ("phone", "website", "opening_hours", "cuisine", "description_md",
+              "owner_comment", "locality", "address"):
+        if not _nonempty(base.get(f)) and _nonempty(other.get(f)):
+            base[f] = other[f]
+    return base
+
+
+def dedupe_name_core(candidates: list[dict]) -> tuple[list[dict], int]:
+    """Dédup INTER-SOURCES par CŒUR de nom (V2-74b), indépendante de la distance mais BORNÉE.
+    Deux fiches fusionnent si leurs cœurs sont proches (Dice ≥ NAME_CORE_THRESHOLD) ET (à
+    moins de 3 km OU même contact) — jamais deux homonymes distincts (chaîne) éloignés. Le
+    survivant garde la position la mieux établie (OSM avant web) et se complète de l'autre.
+    Ordre stable. Renvoie `(survivants, n_fusionnés)`."""
+    survivors: list[dict] = []
+    merged = 0
+    for c in candidates:
+        core = _name_core(c.get("name"))
+        idx = None
+        if core:
+            for i, s in enumerate(survivors):
+                sc = _name_core(s.get("name"))
+                if not sc or _dice(core, sc) < NAME_CORE_THRESHOLD:
+                    continue
+                d = _distance_m(c, s)
+                if (d is not None and d <= NAME_CORE_DIST_M) or _same_contact(c, s):
+                    idx = i
+                    break
+        if idx is None:
+            survivors.append(c)
+        else:
+            merged += 1
+            survivors[idx] = _merge_pair(survivors[idx], c)
+    return survivors, merged
+
+
 def reconcile_suggested(survivors: list[dict],
                         existing_suggested: list[dict]
                         ) -> tuple[list[dict], list[str]]:

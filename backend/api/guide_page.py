@@ -2486,7 +2486,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                 "travel_mode": p.get("travel_mode"), "phone": p.get("phone"),
                 # Jour du marché (V2-33) : le client rend le badge localisé (Intl)
                 # dans les popups de la carte, aligné sur le SSR (Babel/CLDR).
-                "weekday": p.get("weekday"), "weekday_note": p.get("weekday_note")}
+                "weekday": p.get("weekday"), "weekday_note": p.get("weekday_note"),
+                # V2-74b : position APPROXIMATIVE (commerce de village replié au centre de la
+                # commune, adresse non résoluble) → cercle d'approximation (réutilise V2-73f).
+                "approx": p.get("local_approx") == "true"}
 
     home_has_coords = prop.get("lat") is not None and prop.get("lon") is not None
 

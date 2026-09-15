@@ -608,6 +608,55 @@ def _backfill_activity_positions(conn, prop: dict, harvested: list[dict], origin
         conn.commit()
 
 
+# Garde de cohérence du géocodage d'un commerce découvert (V2-74b, esprit V2-46) : au-delà de
+# ce rayon du CENTRE DE LA COMMUNE annoncée, le géocodage a raté (numéro rural absent d'OSM →
+# Nominatim retombe loin, cas « 59 min à pied pour la pharmacie du village »). Repli : le
+# centre de la commune, marqué approximatif — « au village » vaut mieux qu'un point faux.
+_LOCAL_COMMUNE_MAX_M = 2000
+_LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*(bis|ter|quater)?\s*[,]?\s*", re.IGNORECASE)
+
+
+def _commune_center(prop: dict, http_client: httpx.Client | None) -> tuple:
+    """Centre de la commune du logement (V2-74b) : géocodage du NOM de commune (centroïde),
+    repli sur la position du logement (il est dans la commune). `(lat, lon)` ou (None, None)."""
+    try:
+        geo = geocode.geocode(city=prop["city"], country_code=prop["country_code"],
+                              client=http_client)
+        return geo["lat"], geo["lon"]
+    except geocode.GeocodeError:
+        return prop.get("lat"), prop.get("lon")
+
+
+def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
+                            http_client: httpx.Client | None) -> tuple | None:
+    """Position d'un commerce de village (V2-74b), avec GARDE DE COHÉRENCE + ESCALADE.
+    (1) géocode l'adresse (avec numéro), (2) escalade sur la RUE SEULE sans numéro (les
+    numéros ruraux manquent souvent d'OSM) — accepte une position PRÉCISE (rue/toit) à moins
+    de 2 km du centre de la commune ; (3) sinon REPLI sur le centre de la commune, marqué
+    APPROXIMATIF. Renvoie `(lat, lon, locality, approx)` ou None (commune introuvable)."""
+    addr = (commerce.get("place_address") or "").strip()
+    cc, city = prop["country_code"], prop["city"]
+    candidates = [addr] if addr else []
+    no_num = _LEADING_NUMBER_RE.sub("", addr).strip()
+    if no_num and no_num != addr:
+        candidates.append(no_num)                          # escalade : rue sans numéro (part 2)
+    for query in candidates:
+        try:
+            geo = geocode.geocode(street=query, city=city, country_code=cc, client=http_client)
+        except geocode.GeocodeError:
+            continue
+        # Précis (rue/toit, jamais un centroïde) ET proche du centre → position retenue.
+        if (geocode.is_precise_enough(geo.get("accuracy"))
+                and commune_center[0] is not None
+                and overpass.haversine_m(commune_center[0], commune_center[1],
+                                         geo["lat"], geo["lon"]) <= _LOCAL_COMMUNE_MAX_M):
+            return geo["lat"], geo["lon"], geo.get("locality"), False
+    # Repli (part 1) : le centre de la commune, position APPROXIMATIVE (jamais « 59 min »).
+    if commune_center[0] is not None:
+        return commune_center[0], commune_center[1], city, True
+    return None
+
+
 def _void_essentials(all_harvested: list[dict], wanted_codes: set,
                      origin: tuple, proximity_m: int) -> list[str]:
     """Catégories ESSENTIELLES (V2-74) DEMANDÉES pour ce logement mais SANS aucun POI dans le
@@ -648,6 +697,7 @@ def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
             fact = db.get_area_fact(conn, cc, city,
                                     claude_enrich.LOCAL_COMMERCE_FACT_TYPE) or {}
             discovered = fact.get("commerces") or []
+            commune_center = _commune_center(prop, http_client)   # V2-74b : garde de cohérence
             created = skipped_pos = 0
             for c in discovered:
                 cat = c.get("category")
@@ -656,16 +706,18 @@ def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
                 ref = "claude:local:" + cat + ":" + _slug(c["name"])
                 if db.poi_source_ref_exists(conn, prop["id"], ref):
                     continue                   # déjà matérialisé (idempotent, pas de géocodage)
-                geo = _geocode_pick_strict({"address": c.get("place_address")},
-                                           prop, origin, http_client)
+                # V2-74b : géocodage avec garde de cohérence + escalade + repli au centre.
+                geo = _geocode_local_commerce(c, prop, commune_center, http_client)
                 if geo is None:
                     skipped_pos += 1
-                    continue                   # adresse non fiable → n'entre pas
-                poi = {"name": c["name"], "category": cat, "lat": geo["lat"], "lon": geo["lon"],
+                    continue                   # commune introuvable → n'entre pas
+                lat, lon, locality, approx = geo
+                poi = {"name": c["name"], "category": cat, "lat": lat, "lon": lon,
                        "address": c.get("place_address"), "phone": c.get("phone"),
-                       "locality": geo.get("locality") or city, "source_ref": ref,
+                       "locality": locality or city, "source_ref": ref,
                        "completion_meta": {"_local": {"source_url": c.get("source_url"),
-                                                      "verified_on": c.get("verified_on")}}}
+                                                      "verified_on": c.get("verified_on"),
+                                                      "approx": approx}}}
                 distance.compute_distances(origin, [poi], client=http_client)
                 created += db.insert_local_commerce_poi(conn, prop["id"], poi)
             summary["local_commerces_created"] += created
@@ -1140,6 +1192,11 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # non-régression des catégories pleines. (Le cap guest a déjà tranché.)
                 if ovt_contributed and not guest_capped:
                     pois = fusion.cap_after_fusion(pois, settings.max_pois_per_category)
+                # V2-74b : dédup INTER-SOURCES par cœur de nom, APRÈS la fusion des picks
+                # éditoriaux (OSM + web à positions distinctes que la dédup par distance
+                # rate : « Le Canoé »/« Restaurant Le Canoe »). Position OSM préférée au web.
+                pois, name_merged = dedup.dedupe_name_core(pois)
+                summary["duplicates_merged"] += name_merged
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
                 # V2-73 : mémorise nom+position (+ catégorie, V2-73g : lien « voir dans le

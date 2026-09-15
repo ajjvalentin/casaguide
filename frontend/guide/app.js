@@ -124,8 +124,20 @@ function makePoiMarker(p) {
     if (day) html += `<br>📅 <b>${escapeHtml(day)}</b>${note ? " · " + escapeHtml(note) : ""}`;
   }
   if (p.phone) html += `<br>📞 <a href="tel:${tel(p.phone)}">${escapeHtml(p.phone)}</a>`;
+  // V2-74b : commerce de village à position APPROXIMATIVE (adresse non résoluble → replié au
+  // centre de la commune) → mention en popup + cercle d'approximation (réutilise V2-73f).
+  if (p.approx) html += `<br><span class="approx-note">${escapeHtml(ACT_APPROX_LABEL)}</span>`;
   html += `<br><a href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}" target="_blank" rel="noopener">Itinéraire ↗</a>`;
   m.bindPopup(html);
+  if (p.approx) {
+    const circle = L.circle([p.lat, p.lon], {
+      radius: ACT_APPROX_RADIUS_M, className: "act-approx",
+      color: p.color || ACT_COLOR, weight: 1, opacity: 0.5,
+      fillColor: p.color || ACT_COLOR, fillOpacity: 0.12,
+    });
+    circle.bindPopup(html);
+    m._circle = circle;               // affiché/masqué avec le marqueur (syncMarkers, V2-73f)
+  }
   m._catCode = p.category_code || "";
   m._chapter = p.chapter || "";
   return m;
@@ -219,6 +231,7 @@ function initMap() {
     try {
       const m = makePoiMarker(p);
       m.addTo(map);
+      if (m._circle) m._circle.addTo(map);   // cercle d'approximation (V2-74b)
       allMarkers.push(m);
       bounds.push([p.lat, p.lon]);
     } catch (e) {
@@ -386,6 +399,7 @@ function initEmergencyMap() {
         try {
           const m = makePoiMarker(p);
           m.addTo(map);
+          if (m._circle) m._circle.addTo(map);   // pharmacie approx. de village (V2-74b)
           emapMarkers.push(m);
         } catch (e) {
           console.error("[guide] POI urgences ignoré :", (p && p.name) || "?", e);

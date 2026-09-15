@@ -203,3 +203,48 @@ def test_reconcile_untouched_place_is_never_deleted():
     existing = [_existing("osm-1", "Kassteele", "osm", "node/9")]   # autre lieu
     survivors, to_delete = dedup.reconcile_suggested([web], existing)
     assert survivors == [web] and to_delete == []   # place non concernée → intacte
+
+
+# ── V2-74b : dédup INTER-SOURCES par cœur de nom (doublons réels Bégadan) ─────
+
+def test_name_core_strips_type_words_and_articles():
+    assert dedup._name_core("Restaurant Le Canoe") == "canoe"
+    assert dedup._name_core("Le Canoé") == "canoe"
+    # articles (la/aux) retirés → cœur stable quelle que soit la source.
+    assert dedup._name_core("La Mare aux Grenouilles") == "mare grenouilles"
+    assert dedup._name_core("Restaurant La Mare aux Grenouilles") == "mare grenouilles"
+    # parenthèses de lieu neutralisées par la normalisation → même cœur.
+    assert dedup._name_core("La Cabane (Port de By)") == dedup._name_core("La Cabane du Port de By")
+
+
+def test_dedupe_name_core_merges_cross_source_variants():
+    """Les doublons réels Bégadan (positions DISTINCTES, sources différentes) fusionnent par
+    cœur de nom ; le survivant garde la position OSM et se complète du web."""
+    osm = _c("Le Canoé", lat=45.30, lon=-0.86, category="restaurant")  # OSM, 4 min, sans contact
+    web = _c("Restaurant Le Canoe", lat=45.31, lon=-0.87, category="restaurant",
+             source="web", phone="+33 5 56 00 00 00", website="https://canoe.example")
+    survivors, merged = dedup.dedupe_name_core([osm, web])
+    assert merged == 1 and len(survivors) == 1
+    s = survivors[0]
+    assert (s["lat"], s["lon"]) == (45.30, -0.86)      # position OSM conservée
+    assert s["phone"] and s["website"]                  # complétée depuis le web
+    # Autres paires réelles du constat (cœurs identiques, positions distinctes).
+    for a, b in [("La Mare aux Grenouilles", "Restaurant La Mare aux Grenouilles"),
+                 ("La Cabane (Port de By)", "La Cabane du Port de By")]:
+        pair, m = dedup.dedupe_name_core([
+            _c(a, lat=45.30, lon=-0.86, category="restaurant"),
+            _c(b, lat=45.31, lon=-0.87, category="restaurant", source="web")])
+        assert m == 1 and len(pair) == 1, (a, b)
+
+
+def test_dedupe_name_core_keeps_distinct_homonyms_apart():
+    """Garde-fou : deux homonymes réellement distincts (chaîne, > 3 km, contacts différents)
+    ne fusionnent PAS ; mais un même contact lève le garde-fou de distance."""
+    far = dedup.dedupe_name_core([
+        _c("Le Canoé", lat=45.30, lon=-0.86, category="restaurant", phone="1"),
+        _c("Le Canoé", lat=45.60, lon=-0.86, category="restaurant", phone="2")])  # ~33 km
+    assert far[1] == 0 and len(far[0]) == 2             # distincts → non fusionnés
+    same_contact = dedup.dedupe_name_core([
+        _c("Le Canoé", lat=45.30, lon=-0.86, category="restaurant", phone="+33 5 56 00 00 00"),
+        _c("Le Canoé", lat=45.60, lon=-0.86, category="restaurant", phone="0556000000")])
+    assert same_contact[1] == 1                         # même téléphone → fusionnés malgré 33 km
