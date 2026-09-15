@@ -824,10 +824,13 @@ def _element_to_poi(el: dict, lat0: float, lon0: float,
         "crow_m": haversine_m(lat0, lon0, float(lat), float(lon)),
         "_tags": tags,
     }
-    # Nom/adresse locaux (V2-66) : stockés en completion_meta, jamais dans `name`.
-    local = _local_name_meta(tags, name, country_lang)
-    if local:
-        poi["completion_meta"] = local
+    # Nom/adresse locaux (V2-66) + accès (V2-71b) : stockés en completion_meta.
+    meta = dict(_local_name_meta(tags, name, country_lang))
+    acc = _access_from(tags)
+    if acc:
+        meta["_access"] = acc
+    if meta:
+        poi["completion_meta"] = meta
     return poi
 
 
@@ -857,16 +860,54 @@ _SUBTYPE_LEISURE = frozenset({
 })
 
 
+# Sous-type déductible du NOM (V2-71b) quand le tag est générique/absent : « Skate Parc »
+# → skateboard, « Stade … » → stadium. Mots-clés multilingues, matés en sous-chaîne.
+_NAME_SPORT_HINTS = (
+    ("skate", "skateboard"), ("tennis", "tennis"), ("padel", "padel"), ("pádel", "padel"),
+    ("piscin", "swimming_pool"), ("pool", "swimming_pool"), ("aquati", "swimming_pool"),
+    ("stade", "stadium"), ("stadium", "stadium"), ("estadio", "stadium"),
+    ("golf", "golf"), ("boulodrome", "boules"), ("petanque", "boules"), ("pétanque", "boules"),
+    ("bowl", "bowling"), ("patinoire", "ice_rink"),
+)
+# Sous-types trop GÉNÉRIQUES : le nom, s'il nomme le sport, est plus parlant (V2-71b).
+_GENERIC_SUBTYPES = frozenset({None, "sports_centre", "pitch", "multi", "track"})
+
+_ACCESS_PUBLIC = frozenset({"yes", "permissive", "public", "designated"})
+_ACCESS_PRIVATE = frozenset({"private", "no", "members", "customers", "permit"})
+
+
 def _norm_subtype(tags: dict) -> str | None:
     """Sous-type d'un lieu de SPORT/LOISIR (V2-71) : discipline OSM `sport` (soccer,
     tennis, swimming, padel…) en priorité, sinon type de lieu `leisure` connu
     (sports_centre, pitch, swimming_pool, stadium…). Multi-valué `;` → premier terme,
-    minuscules ; forme bornée (≤ 3 mots) comme la cuisine. None si rien d'utile."""
+    minuscules ; forme bornée (≤ 3 mots) comme la cuisine. None si rien d'utile.
+
+    V2-71b : si le sous-type est générique/absent mais que le NOM nomme le sport
+    (« Skate Parc », « Stade … »), la puce la plus PRÉCISE l'emporte."""
     sp = (tags.get("sport") or "").split(";")[0].strip().lower()
-    if sp and len(sp.split()) <= 3:
-        return sp
-    lz = (tags.get("leisure") or "").strip().lower()
-    return lz if lz in _SUBTYPE_LEISURE else None
+    base = sp if (sp and len(sp.split()) <= 3) else None
+    if base is None:
+        lz = (tags.get("leisure") or "").strip().lower()
+        if lz in _SUBTYPE_LEISURE:
+            base = lz
+    if base in _GENERIC_SUBTYPES:
+        low = (tags.get("name") or "").lower()
+        for kw, canon in _NAME_SPORT_HINTS:
+            if kw in low:
+                return canon
+    return base
+
+
+def _access_from(tags: dict) -> str | None:
+    """Accès d'un lieu (V2-71b) déduit du tag OSM `access` : « public » (accès libre) /
+    « private » (réservé) / None. Sert au repli factuel des équipements sportifs — jamais
+    une invention, seulement ce que la donnée porte."""
+    a = (tags.get("access") or "").strip().lower()
+    if a in _ACCESS_PUBLIC:
+        return "public"
+    if a in _ACCESS_PRIVATE:
+        return "private"
+    return None
 
 
 def _sort_key(p: dict) -> tuple[int, int]:

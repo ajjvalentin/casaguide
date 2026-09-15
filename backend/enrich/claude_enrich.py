@@ -160,8 +160,16 @@ SPORT & LOISIR (V2-71) : pour un lieu de sport ou d'activité, dis en priorité 
 DISCIPLINE (football, tennis, natation, padel, escalade…), si l'accès est PUBLIC ou
 RÉSERVÉ aux clubs/licenciés, et la NATURE du lieu (complexe couvert, stade, terrain
 municipal, piscine). Un champ « sous-type : … » (ex. soccer, swimming_pool,
-sports_centre) t'aide à identifier la discipline/le type — appuie-toi dessus. Si tu
-ignores le sport pratiqué, renvoie "" plutôt qu'une phrase creuse.
+sports_centre) t'aide à identifier la discipline/le type — appuie-toi dessus.
+
+ÉQUIPEMENT PUBLIC (V2-71b) — EXCEPTION à la règle du silence : pour un ÉQUIPEMENT
+sportif/de loisir (stade, complexe, gymnase, piscine, aire de skate, aire de jeux,
+terrain…), même SANS connaissance propre à ce lieu, tu PEUX décrire sa NATURE d'après
+son TYPE et son NOM (« Complexe sportif municipal », « Stade avec terrains de plein
+air », « Aire de skate »), SANS RIEN inventer sur ses activités, horaires, tarifs ou
+services précis. Un équipement doit toujours dire ce qu'il EST — le silence ("") ne
+reste la règle que pour les COMMERCES et lieux à identité propre (où une phrase creuse
+nuirait).
 
 Contraintes factuelles : n'invente ni distance, ni horaire, ni prix, ni note, ni
 anecdote.

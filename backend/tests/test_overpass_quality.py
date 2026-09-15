@@ -209,6 +209,39 @@ def test_element_to_poi_carries_cuisine():
     assert overpass._element_to_poi(el2, LAT, LON)["cuisine"] is None
 
 
+# ── V2-71 / V2-71b : sous-type sport/loisir + repli factuel ───────────────────
+
+def test_norm_subtype_sport_then_leisure_then_name():
+    # discipline OSM `sport` prioritaire
+    assert overpass._norm_subtype({"sport": "soccer", "leisure": "pitch"}) == "soccer"
+    # sinon type `leisure` connu ; `park` générique ignoré
+    assert overpass._norm_subtype({"leisure": "swimming_pool"}) == "swimming_pool"
+    assert overpass._norm_subtype({"leisure": "park"}) is None
+    # V2-71b : sous-type générique/absent + nom qui nomme le sport → le nom l'emporte
+    assert overpass._norm_subtype({"leisure": "pitch", "name": "Skate Parc"}) == "skateboard"
+    assert overpass._norm_subtype({"name": "Stade Rigobert Nouguérède"}) == "stadium"
+    assert overpass._norm_subtype({"leisure": "sports_centre",
+                                   "name": "Piscine Municipale"}) == "swimming_pool"
+    # un sport SPÉCIFIQUE n'est jamais écrasé par le nom
+    assert overpass._norm_subtype({"sport": "tennis", "name": "Stade des Sports"}) == "tennis"
+
+
+def test_access_from_public_private():
+    assert overpass._access_from({"access": "yes"}) == "public"
+    assert overpass._access_from({"access": "permissive"}) == "public"
+    assert overpass._access_from({"access": "private"}) == "private"
+    assert overpass._access_from({"access": "customers"}) == "private"
+    assert overpass._access_from({}) is None
+
+
+def test_element_to_poi_carries_subtype_and_access():
+    el = {"type": "node", "id": 44, "lat": LAT, "lon": LON,
+          "tags": {"name": "Skate Parc", "leisure": "pitch", "access": "yes"}}
+    poi = overpass._element_to_poi(el, LAT, LON)
+    assert poi["subtype"] == "skateboard"                       # nom plus parlant
+    assert poi["completion_meta"]["_access"] == "public"        # accès tagué
+
+
 # ── V2-66 : nom LOCAL (écriture d'origine) pour montrer au chauffeur ──────────
 
 def test_country_language_maps_non_latin_only():

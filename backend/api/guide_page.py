@@ -80,6 +80,13 @@ _UI7: dict[str, dict[str, str]] = {
                          "es": "Actividades de la zona", "it": "Attività della zona",
                          "de": "Aktivitäten in der Umgebung", "nl": "Activiteiten in de buurt",
                          "sq": "Aktivitete në zonë"},
+    # V2-71b : accès d'un équipement sportif (repli factuel).
+    "access_public": {"fr": "accès libre", "en": "open access", "es": "acceso libre",
+                      "it": "accesso libero", "de": "frei zugänglich", "nl": "vrij toegankelijk",
+                      "sq": "hyrje e lirë"},
+    "access_private": {"fr": "accès réservé", "en": "members only", "es": "acceso reservado",
+                       "it": "accesso riservato", "de": "nur für Mitglieder",
+                       "nl": "alleen leden", "sq": "vetëm anëtarë"},
     "nearest_of_network": {"fr": "station la plus proche", "en": "nearest station",
                            "es": "estación más cercana", "it": "stazione più vicina",
                            "de": "nächste Station", "nl": "dichtstbijzijnde station",
@@ -568,6 +575,42 @@ _SUBTYPE_LABELS: dict[str, dict[str, str]] = {
     "beach_resort": {"fr": "Complexe balnéaire", "en": "Beach resort",
                      "es": "Complejo de playa", "it": "Stabilimento balneare",
                      "de": "Strandbad", "nl": "Strandresort", "sq": "Resort plazhi"},
+    "skateboard": {"fr": "Skate", "en": "Skateboarding", "es": "Skate", "it": "Skateboard",
+                   "de": "Skaten", "nl": "Skaten", "sq": "Skateboard"},
+    "boules": {"fr": "Pétanque", "en": "Pétanque", "es": "Petanca", "it": "Bocce",
+               "de": "Boule", "nl": "Jeu de boules", "sq": "Petankë"},
+    "bowling": {"fr": "Bowling", "en": "Bowling", "es": "Bolos", "it": "Bowling",
+                "de": "Bowling", "nl": "Bowlen", "sq": "Bouling"},
+}
+
+# Repli factuel des équipements (V2-71b) : NATURE du lieu en une phrase, quand le modèle
+# n'a rien à dire. Différent de la puce (discipline) : ici le TYPE de lieu. 7 langues EN
+# DUR. Une clé absente retombe sur le libellé de puce (`_subtype_label`).
+_SUBTYPE_NATURE: dict[str, dict[str, str]] = {
+    "sports_centre": {"fr": "Complexe sportif", "en": "Sports complex",
+                      "es": "Complejo deportivo", "it": "Complesso sportivo",
+                      "de": "Sportkomplex", "nl": "Sportcomplex", "sq": "Kompleks sportiv"},
+    "pitch": {"fr": "Terrain de sport de plein air", "en": "Outdoor sports pitch",
+              "es": "Cancha deportiva al aire libre", "it": "Campo sportivo all'aperto",
+              "de": "Sportplatz im Freien", "nl": "Buitensportveld",
+              "sq": "Fushë sportive e hapur"},
+    "stadium": {"fr": "Stade", "en": "Stadium", "es": "Estadio", "it": "Stadio",
+                "de": "Stadion", "nl": "Stadion", "sq": "Stadium"},
+    "skateboard": {"fr": "Aire de skate", "en": "Skate park", "es": "Skatepark",
+                   "it": "Area skate", "de": "Skatepark", "nl": "Skatepark",
+                   "sq": "Skatepark"},
+    "swimming_pool": {"fr": "Piscine", "en": "Swimming pool", "es": "Piscina",
+                      "it": "Piscina", "de": "Schwimmbad", "nl": "Zwembad",
+                      "sq": "Pishinë"},
+    "playground": {"fr": "Aire de jeux", "en": "Playground", "es": "Parque infantil",
+                   "it": "Parco giochi", "de": "Spielplatz", "nl": "Speeltuin",
+                   "sq": "Shesh lojërash"},
+    "fitness_station": {"fr": "Agrès de plein air", "en": "Outdoor gym",
+                        "es": "Gimnasio al aire libre", "it": "Palestra all'aperto",
+                        "de": "Outdoor-Fitness", "nl": "Buitengym", "sq": "Palestër jashtë"},
+    "water_park": {"fr": "Parc aquatique", "en": "Water park", "es": "Parque acuático",
+                   "it": "Parco acquatico", "de": "Wasserpark", "nl": "Waterpark",
+                   "sq": "Park ujor"},
 }
 
 _esc = html.escape
@@ -580,6 +623,24 @@ def _subtype_label(value: str, lang: str = "fr") -> str:
     if d:
         return d.get(lang) or d.get("fr") or value
     return value.replace("_", " ").strip().capitalize()
+
+
+def _sport_fallback(p: dict, lang: str) -> str:
+    """Repli FACTUEL d'un équipement sport/loisir SANS description (V2-71b) : une phrase
+    composée des seules données connues (NATURE d'après le sous-type + accès si tagué) —
+    « Complexe sportif · accès libre ». Jamais d'invention. 7 langues EN DUR (comme les
+    puces). Renvoie "" sans sous-type (rien à dire de factuel)."""
+    subtype = (p.get("subtype") or "").strip().lower()
+    if not subtype:
+        return ""
+    d = _SUBTYPE_NATURE.get(subtype)
+    nature = (d.get(lang) or d.get("fr")) if d else _subtype_label(subtype, lang)
+    access = (p.get("access") or "").strip().lower()
+    if access == "public":
+        nature += f' · {_t7(lang, "access_public")}'
+    elif access == "private":
+        nature += f' · {_t7(lang, "access_private")}'
+    return nature
 
 
 def _cuisine_label(value: str, lang: str = "fr") -> str:
@@ -1384,8 +1445,13 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # Sous-type sport/loisir (V2-71) : puce comme la cuisine (même classe, aucun
             # CSS neuf → aucun bump SW), pour dire la discipline/le type de lieu.
             subtype = (p.get("subtype") or "").strip().lower()
+            is_equip = code in ("sport", "family_activity")
+            # V2-71b : repli FACTUEL quand un équipement n'a AUCUNE description — une phrase
+            # de nature (sous-type + accès), rendue à la place de la description. Elle
+            # subsume la puce → on ne montre PAS la puce dans ce cas (jamais deux fois).
+            fallback = _sport_fallback(p, lang) if (is_equip and not desc) else ""
             subtype_tag = (f'<span class="cuisine-tag">{_esc(_subtype_label(subtype, lang))}</span>'
-                           if subtype and code in ("sport", "family_activity") else "")
+                           if subtype and is_equip and not fallback else "")
             # Commune / localité (V2-38) : discrète, à côté du nom (« · Vétroz »), même
             # séparateur/ton muet que la mention d'horaires. Anti-bruit ASSUMÉ : affichée
             # UNIQUEMENT si elle DIFFÈRE de la commune du logement (comparaison normalisée
@@ -1423,11 +1489,19 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # Nom/adresse LOCAUX en écriture d'origine (V2-66) : sous le nom, copiables —
             # à montrer au chauffeur. Rien dans les pays latins (nom local == affiché).
             local_html = _render_poi_local(p, lang)
+            # Description : celle du modèle (HTML), sinon le repli factuel équipement
+            # (texte à échapper, V2-71b). Rien si ni l'un ni l'autre.
+            if desc:
+                prose_html = f'<div class="prose">{desc}</div>'
+            elif fallback:
+                prose_html = f'<div class="prose">{_esc(fallback)}</div>'
+            else:
+                prose_html = ""
             cards.append(
                 f'<div class="poi-card"{cuisine_attr} style="border-left-color:{color}">'
                 f'<div class="dist"><b>{_esc(n)}</b><span>{_esc(u)}</span></div>'
                 f'<div class="poi-body"><h4>{_esc(_poi_display_name(p, lang))}{loc_html}{cuisine_tag}{subtype_tag}</h4>{local_html}{day_html}{comment}'
-                f'{f"<div class=prose>{desc}</div>" if desc else ""}{hours}{meta_html}{nav_html}</div></div>')
+                f'{prose_html}{hours}{meta_html}{nav_html}</div></div>')
         n = len(lst)
         head = f'<h4 class="cat-title">{cat_name} · {n}</h4>'
         group = f'<div class="poi-group" data-cat="{_esc(code)}">{"".join(cards)}</div>'

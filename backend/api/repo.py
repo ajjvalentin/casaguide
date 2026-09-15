@@ -1618,7 +1618,8 @@ def guide_pois(conn, property_id: str) -> list[dict]:
                   p.completion_meta->>'_name_local' AS name_local,
                   p.completion_meta->>'_name_latin' AS name_latin,
                   p.completion_meta->>'_name_script' AS name_script,
-                  p.completion_meta->>'_addr_local' AS addr_local
+                  p.completion_meta->>'_addr_local' AS addr_local,
+                  p.completion_meta->>'_access' AS access
            FROM pois p
            JOIN poi_categories c ON c.code = p.category_code
            WHERE p.property_id = %s AND p.status IN ('approved', 'edited')

@@ -793,12 +793,14 @@ def _panel(html, key):
 
 
 def _poi(name, cat, ch, walk=5, comment=None, weekday=None, weekday_note=None,
-         locality=None, name_local=None, addr_local=None, name_latin=None):
+         locality=None, name_local=None, addr_local=None, name_latin=None,
+         subtype=None, access=None, description_md=None):
     return {"id": name, "name": name, "category_code": cat, "chapter": ch,
             "category_name": {"fr": cat}, "map_color": "#0E5A73",
             "lat": 37.9, "lon": -0.74, "walk_min": walk, "dist_walk_m": walk * 70,
-            "drive_min": None, "owner_comment": comment, "description_md": None,
+            "drive_min": None, "owner_comment": comment, "description_md": description_md,
             "opening_hours": None, "phone": None, "website": None, "cuisine": None,
+            "subtype": subtype, "access": access,
             "weekday": weekday, "weekday_note": weekday_note, "locality": locality,
             "name_local": name_local, "addr_local": addr_local, "name_latin": name_latin}
 
@@ -903,6 +905,36 @@ def test_poi_local_name_not_shown_when_equal_to_display():
     pois = [_poi("浅草寺", "sight", "G", name_local="浅草寺")]
     html = guide_page.render_guide(_prop(city="Tokyo"), [], pois, {}, "tok")
     assert "poi-local" not in html and "copy-btn" not in html
+
+
+def test_sport_subtype_chip_shown_with_description():
+    """V2-71 : un équipement sport DÉCRIT porte sa puce de sous-type (discipline)."""
+    pois = [_poi("Espace Aquatique", "sport", "G", subtype="swimming_pool",
+                 description_md="Piscine olympique chauffée, bassin extérieur l'été.")]
+    html = guide_page.render_guide(_prop(city="Bégadan"), [], pois, {}, "tok")
+    assert "Piscine olympique chauffée" in html          # description riche gardée
+    assert '<span class="cuisine-tag">Piscine</span>' in html   # puce (discipline)
+
+
+def test_sport_equipment_gets_factual_fallback_without_description():
+    """V2-71b : un équipement SANS description reçoit une phrase factuelle (nature +
+    accès) à la place — et pas la puce (le repli la subsume). Aucune invention."""
+    pois = [_poi("Skate Parc", "sport", "G", subtype="skateboard", access="public")]
+    html = guide_page.render_guide(_prop(city="Bégadan"), [], pois, {}, "tok")
+    assert "Aire de skate · accès libre" in html         # repli factuel
+    assert "cuisine-tag" not in html                     # puce non redondante
+    # Stade sans accès tagué → nature seule, factuelle.
+    h2 = guide_page.render_guide(_prop(city="Bégadan"), [],
+                                 [_poi("Stade RN", "sport", "G", subtype="stadium")], {}, "tok")
+    assert '<div class="prose">Stade</div>' in h2
+
+
+def test_non_sport_poi_never_gets_sport_fallback():
+    """V2-71b : le repli factuel ne s'applique QU'aux sport/family_activity — un commerce
+    sans description reste muet (une phrase creuse y nuirait)."""
+    pois = [_poi("Mercadona", "supermarket", "C")]
+    html = guide_page.render_guide(_prop(city="La Zenia"), [], pois, {}, "tok")
+    assert 'class="prose"' not in html
 
 
 def test_three_tabs_present_and_labelled():
