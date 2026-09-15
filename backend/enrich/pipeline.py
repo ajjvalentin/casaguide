@@ -389,18 +389,13 @@ def _activity_place(a: dict) -> tuple[str, str]:
     return name, city
 
 
-def _position_activity(a: dict, harvested: list[dict], prop: dict, origin: tuple,
-                       http_client: httpx.Client | None) -> tuple | None:
-    """Position FIABLE d'une activité, cascade STRICTE (V2-73/V2-73c). Géocode le LIEU
-    structuré (`place_name`/`place_city`, ou dérivé de `where`), jamais la phrase entière.
-    Renvoie `(lat, lon)` ou None (l'activité reste dans la liste sans marqueur)."""
-    place, place_city = _activity_place(a)
-    if not place:
-        return None                                        # activité diffuse → pas de point
-    m = _name_match(place, harvested)                      # 1. union moissonnée
-    if m is not None and m.get("lat") is not None and m.get("lon") is not None:
-        return m["lat"], m["lon"]
-    query = f"{place}, {place_city or prop['city']}"       # 2. géocodage du lieu-dit (propre)
+def _geocode_activity_query(query: str, prop: dict, origin: tuple,
+                            http_client: httpx.Client | None) -> tuple | None:
+    """Géocode une requête (adresse OU « lieu, commune ») et applique le garde STRICT :
+    jamais un centroïde, jamais une position aberrante (> 25 km). `(lat, lon)` ou None."""
+    query = (query or "").strip()
+    if not query:
+        return None
     try:
         geo = geocode.geocode(address=query, country_code=prop["country_code"],
                               client=http_client)
@@ -411,13 +406,67 @@ def _position_activity(a: dict, harvested: list[dict], prop: dict, origin: tuple
     if overpass.haversine_m(origin[0], origin[1], geo["lat"], geo["lon"]) \
             > _EDITORIAL_MAX_DIST_M:
         return None                                        # position aberrante
-    return geo["lat"], geo["lon"]                          # 3. sinon : abandon (None)
+    return geo["lat"], geo["lon"]
+
+
+# Seuil d'appariement de NOM du repli OSM par tag (V2-73d) : le candidat est déjà borné au
+# secteur (bbox Overpass) ; un seuil modéré tolère « Le Gurp » ↔ « Plage du Gurp ».
+_ACT_OSM_NAME_THR = 0.55
+
+
+def _match_osm_place(place: str, osm_places: list[dict] | None) -> tuple | None:
+    """Meilleur appariement de NOM d'un lieu naturel OSM (V2-73d, tags natural/place/…).
+    `(lat, lon)` du meilleur ≥ seuil, ou None. C'est ainsi qu'OSM situe la « Plage du
+    Gurp » que la recherche textuelle Nominatim n'indexe pas."""
+    best, best_s = None, 0.0
+    for e in osm_places or []:
+        s = fusion.name_similarity(place, e.get("name"))
+        if s >= _ACT_OSM_NAME_THR and s > best_s:
+            best, best_s = (e["lat"], e["lon"]), s
+    return best
+
+
+def _position_activity(a: dict, harvested: list[dict], prop: dict, origin: tuple,
+                       http_client: httpx.Client | None,
+                       osm_places: list[dict] | None = None) -> tuple | None:
+    """Position FIABLE d'une activité, cascade STRICTE (V2-73/c/d). Géocode le LIEU
+    structuré (jamais la phrase `where`). Ordre : (1) appariement de nom contre la moisson,
+    (2) géocodage de l'ADRESSE POSTALE `place_address` (la mieux résolue par Nominatim),
+    (3) géocodage « nom, commune », (4) REPLI OSM PAR TAG (lieux naturels du secteur,
+    appariés au nom — la « Plage du Gurp » y est en natural=beach), (5) abandon. Renvoie
+    `(lat, lon)` ou None (l'activité reste dans la liste sans marqueur)."""
+    place, place_city = _activity_place(a)
+    if not place:
+        return None                                        # activité diffuse → pas de point
+    m = _name_match(place, harvested)                      # 1. union moissonnée
+    if m is not None and m.get("lat") is not None and m.get("lon") is not None:
+        return m["lat"], m["lon"]
+    addr = (a.get("place_address") or "").strip()
+    if addr:                                               # 2. adresse postale de la source
+        pos = _geocode_activity_query(addr, prop, origin, http_client)
+        if pos is not None:
+            return pos
+    pos = _geocode_activity_query(                         # 3. « lieu, commune »
+        f"{place}, {place_city or prop['city']}", prop, origin, http_client)
+    if pos is not None:
+        return pos
+    return _match_osm_place(place, osm_places)             # 4. repli OSM ; 5. sinon None
 
 
 def _place_activities(activities: list[dict], harvested: list[dict], prop: dict,
                       origin: tuple, http_client: httpx.Client | None) -> int:
     """Pose `lat`/`lon` sur chaque activité plaçable (V2-73), en place. Renvoie le
-    nombre placé. Idempotent : une activité déjà positionnée n'est pas re-géocodée."""
+    nombre placé. Idempotent : une activité déjà positionnée n'est pas re-géocodée.
+
+    Le REPLI OSM par tag (V2-73d) est UN SEUL appel Overpass par secteur, mutualisé entre
+    toutes les activités du lot (mission §3), et seulement s'il reste au moins un lieu nommé
+    à placer — jamais quand tout est déjà positionné/diffus."""
+    to_place = [a for a in activities if isinstance(a, dict)
+                and a.get("lat") is None and _activity_place(a)[0]]
+    osm_places: list[dict] | None = None
+    if to_place:
+        osm_places = overpass.fetch_natural_places(origin[0], origin[1], http_client,
+                                                   radius_m=int(_EDITORIAL_MAX_DIST_M))
     placed = 0
     for a in activities:
         if not isinstance(a, dict):
@@ -425,7 +474,7 @@ def _place_activities(activities: list[dict], harvested: list[dict], prop: dict,
         if a.get("lat") is not None and a.get("lon") is not None:
             placed += 1
             continue
-        pos = _position_activity(a, harvested, prop, origin, http_client)
+        pos = _position_activity(a, harvested, prop, origin, http_client, osm_places)
         if pos is not None:
             a["lat"], a["lon"] = pos
             placed += 1

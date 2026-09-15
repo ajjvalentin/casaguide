@@ -1140,7 +1140,13 @@ ACTIVITIES_FACT_TYPE = "activities"
 #   v3 (V2-73c) : géocodage sur les champs STRUCTURÉS place_name/place_city (ou dérivés de
 #                 `where` au rattrapage). Bump → les faits v2 sont RE-POSITIONNÉS (passe de
 #                 géocodage seule, aucun web/LLM), pas re-collectés.
-ACTIVITIES_SCHEMA_V = 3
+#   v4 (V2-73d) : géocodage de l'ADRESSE POSTALE d'abord (`place_address`, la mieux résolue
+#                 par Nominatim), puis nom/commune, puis REPLI OSM PAR TAG (Overpass : la
+#                 « Plage du Gurp » est un natural=beach qu'aucune recherche textuelle ne
+#                 trouve). Bump → les faits v3 sont re-positionnés (le repli OSM place les
+#                 lieux naturels sans re-collecte ; place_address ne sert qu'aux collectes
+#                 neuves).
+ACTIVITIES_SCHEMA_V = 4
 
 _ACTIVITIES_PROMPT = """\
 Tu prépares l'encart « Activités du secteur » du guide d'un lieu de vacances situé à
@@ -1157,6 +1163,10 @@ tourisme, guide, prestataire local, presse). Pour chaque activité :
   du Gurp », « Massif du Montgó », « Calanque de Sormiou »). **VIDE "" si l'activité est
   DIFFUSE** (réseau de sentiers, routes vicinales, « tout le secteur ») — mieux vaut aucun
   point qu'un point faux ;
+- `place_address` : l'ADRESSE POSTALE du lieu TELLE QU'ELLE FIGURE sur la source (rue + code
+  postal + commune, ex. « Le Gurp, route de l'océan, 33590 Grayan-et-l'Hôpital »), "" si la
+  source n'en donne pas. C'est le champ que le géocodeur résout le MIEUX — donne-le dès que
+  la source le mentionne ;
 - `place_city` : la COMMUNE de ce lieu (« Grayan-et-l'Hôpital »), "" si inconnue. Sert
   UNIQUEMENT à lever l'ambiguïté du géocodage — ne mets ni distance, ni parenthèse, ni
   région ;
@@ -1176,7 +1186,9 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
 {{
   "activities": [
     {{"activity": "Surf", "where": "Plage du Gurp, Grayan-et-l'Hôpital",
-      "place_name": "Plage du Gurp", "place_city": "Grayan-et-l'Hôpital",
+      "place_name": "Plage du Gurp",
+      "place_address": "Le Gurp, route de l'océan, 33590 Grayan-et-l'Hôpital",
+      "place_city": "Grayan-et-l'Hôpital",
       "season": "toute l'année", "source_url": "https://...", "verified_on": "{today}"}}
   ]
 }}
@@ -1187,10 +1199,10 @@ def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
                      today: str | None = None, lang: str = "fr") -> tuple[dict, dict]:
     """Activités du secteur (V2-71), vérifiées par recherche web. Retourne
     ({ACTIVITIES_FACT_TYPE: {"activities": [...], "v": N}}, méta coût). Chaque activité
-    retenue porte `activity`, `where` (phrase lisible), `place_name`/`place_city` (champs
-    STRUCTURÉS pour le géocodage, V2-73c — vides si diffuse), `season`, `source_url`,
-    `verified_on`. **PREUVE OU RIEN** (sans source → écartée). **Liste vide valide.**
-    Réponse malformée → ValueError."""
+    retenue porte `activity`, `where` (phrase lisible), `place_address`/`place_name`/
+    `place_city` (champs STRUCTURÉS pour le géocodage, V2-73c/d — vides si diffuse),
+    `season`, `source_url`, `verified_on`. **PREUVE OU RIEN** (sans source → écartée).
+    **Liste vide valide.** Réponse malformée → ValueError."""
     today = today or _dt.date.today().isoformat()
     lang_name = _REPUTED_LANG_NAMES.get(lang, "français")
     data, meta = _ask_web_search_json(
@@ -1215,10 +1227,11 @@ def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
         source_url = _s("source_url")
         if not (name and source_url):
             continue  # preuve ou rien
-        # V2-73c : champs STRUCTURÉS pour le géocodage (place_name/place_city), distincts
-        # de la phrase lisible `where` — la cascade géocode sur eux, jamais sur la phrase.
+        # V2-73c/V2-73d : champs STRUCTURÉS pour le géocodage (adresse postale d'abord —
+        # la mieux résolue —, puis nom/commune), distincts de la phrase lisible `where`.
         clean.append({"activity": name, "where": _s("where"), "season": _s("season"),
-                      "place_name": _s("place_name"), "place_city": _s("place_city"),
+                      "place_name": _s("place_name"), "place_address": _s("place_address"),
+                      "place_city": _s("place_city"),
                       "source_url": source_url, "verified_on": _s("verified_on") or today})
     # V2-73b : le fait porte sa version de schéma ; le positionnement (cascade stricte)
     # est tenté juste après par le pipeline → « v présent » = « positions tentées ».

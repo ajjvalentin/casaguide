@@ -416,6 +416,40 @@ def test_nearby_neighborhoods_named_and_sorted():
     assert all("crow_m" not in h for h in hoods)                  # sortie propre
 
 
+def test_fetch_natural_places_named_by_tag():
+    """V2-73d : lieux naturels/de plein air NOMMÉS par TAG OSM (natural=beach…), pour le
+    repli de placement des activités. Un élément (way avec `center`) et un nœud sont rendus ;
+    un élément sans nom est ignoré ; réseau en échec → liste vide (best-effort)."""
+    settings.politeness_delay_s = 0
+    els = [
+        {"type": "way", "id": 1, "center": {"lat": 45.36, "lon": -1.15},
+         "tags": {"natural": "beach", "name": "Plage du Gurp"}},
+        {"type": "node", "id": 2, "lat": 45.31, "lon": -0.90,
+         "tags": {"leisure": "nature_reserve", "name": "Réserve de x"}},
+        {"type": "node", "id": 3, "lat": 45.32, "lon": -0.91,
+         "tags": {"natural": "peak"}},                            # sans nom → ignoré
+    ]
+    calls: list = []
+    client = httpx.Client(transport=httpx.MockTransport(
+        _one_selector_handler(els, "natural", calls)))
+    places = overpass.fetch_natural_places(45.30, -0.86, client=client)
+    client.close()
+    assert {"name": "Plage du Gurp", "lat": 45.36, "lon": -1.15} in places
+    assert [p["name"] for p in places] == ["Plage du Gurp", "Réserve de x"]
+
+    # Réseau en échec → liste vide, jamais d'exception (best-effort). Backoff neutralisé.
+    orig_bo, orig_at = settings.overpass_backoff_s, settings.overpass_max_attempts
+    settings.overpass_backoff_s, settings.overpass_max_attempts = 0, 1
+    try:
+        def boom(_req):
+            raise httpx.ConnectError("réseau coupé")
+        c2 = httpx.Client(transport=httpx.MockTransport(boom))
+        assert overpass.fetch_natural_places(45.30, -0.86, client=c2) == []
+        c2.close()
+    finally:
+        settings.overpass_backoff_s, settings.overpass_max_attempts = orig_bo, orig_at
+
+
 def test_no_max_radius_means_no_escalation():
     """`max_radius_m` NULL (= default, ex. parking/aéroport) → jamais de 2e passe même
     sous le minimum."""

@@ -1084,6 +1084,50 @@ def nearby_neighborhoods(lat: float, lon: float,
     return uniq[:limit]
 
 
+# Lieux NATURELS / de plein air NOMMÉS (V2-73d) : c'est par leurs TAGS qu'OSM connaît la
+# « Plage du Gurp » (natural=beach) qu'aucune recherche TEXTUELLE Nominatim n'indexe. Repli
+# de placement des activités quand ni l'adresse postale ni le nom ne se géocodent.
+_NATURAL_PLACE_SELECTORS = [
+    'natural~"^(beach|water|bay|cape|cliff|peak|wood|wetland|spring|hot_spring|dune)$"',
+    'place~"^(locality|island|islet)$"',
+    'leisure~"^(nature_reserve|park|beach_resort|marina)$"',
+    'waterway~"^(waterfall)$"',
+    'tourism~"^(viewpoint|attraction|theme_park)$"',
+]
+
+
+def fetch_natural_places(lat: float, lon: float, client: httpx.Client | None = None,
+                         radius_m: int = 25000, limit: int = 250) -> list[dict]:
+    """Lieux NATURELS / de plein air NOMMÉS autour d'un point (V2-73d), par leurs TAGS OSM
+    (natural / place / leisure / waterway / tourism). Sert de REPLI au placement d'une
+    activité : la « Plage du Gurp » est un `natural=beach` qu'aucune recherche textuelle ne
+    résout, mais qu'OSM connaît. Renvoie `[{name, lat, lon}]` (l'appariement par nom se fait
+    chez l'appelant, où vit le matcher trigramme). Best-effort : réutilise `_post_overpass`
+    (miroirs + backoff) ; liste VIDE en cas d'échec (jamais bloquant)."""
+    sel = "".join(f"nwr[{s}](around:{radius_m},{lat},{lon});"
+                  for s in _NATURAL_PLACE_SELECTORS)
+    query = (f"[out:json][timeout:{settings.overpass_timeout_s}];"
+             f"({sel});out center {limit};")
+    own_client = client is None
+    client = client or httpx.Client(timeout=settings.overpass_timeout_s + 5)
+    try:
+        els = _post_overpass(client, query)
+    except Exception:  # noqa: BLE001 — best-effort (réseau/Overpass) : jamais bloquant
+        return []
+    finally:
+        if own_client:
+            client.close()
+    out: list[dict] = []
+    for el in els:
+        name = (el.get("tags", {}).get("name") or "").strip()
+        plat = el.get("lat") or el.get("center", {}).get("lat")
+        plon = el.get("lon") or el.get("center", {}).get("lon")
+        if not name or plat is None or plon is None:
+            continue
+        out.append({"name": name, "lat": float(plat), "lon": float(plon)})
+    return out
+
+
 def fetch_grouped(categories: list[dict], lat: float, lon: float,
                   client: httpx.Client | None = None,
                   country_lang: str | None = None,
