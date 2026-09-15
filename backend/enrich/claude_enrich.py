@@ -1146,7 +1146,10 @@ ACTIVITIES_FACT_TYPE = "activities"
 #                 trouve). Bump → les faits v3 sont re-positionnés (le repli OSM place les
 #                 lieux naturels sans re-collecte ; place_address ne sert qu'aux collectes
 #                 neuves).
-ACTIVITIES_SCHEMA_V = 4
+#   v5 (V2-73e) : passe ANTI-EMPILEMENT — deux activités au même point (< 50 m) = adresse
+#                 empruntée ; seule la NOMMÉE garde le marqueur. Bump → les faits v4 sont
+#                 dé-empilés (les diffuses qui partageaient une épingle la perdent).
+ACTIVITIES_SCHEMA_V = 5
 
 _ACTIVITIES_PROMPT = """\
 Tu prépares l'encart « Activités du secteur » du guide d'un lieu de vacances situé à
@@ -1161,12 +1164,16 @@ tourisme, guide, prestataire local, presse). Pour chaque activité :
   du Gurp, Grayan-et-l'Hôpital, côte atlantique du Médoc ») ;
 - `place_name` : le NOM SEUL du lieu à cartographier, sans commune ni commentaire (« Plage
   du Gurp », « Massif du Montgó », « Calanque de Sormiou »). **VIDE "" si l'activité est
-  DIFFUSE** (réseau de sentiers, routes vicinales, « tout le secteur ») — mieux vaut aucun
-  point qu'un point faux ;
-- `place_address` : l'ADRESSE POSTALE du lieu TELLE QU'ELLE FIGURE sur la source (rue + code
-  postal + commune, ex. « Le Gurp, route de l'océan, 33590 Grayan-et-l'Hôpital »), "" si la
-  source n'en donne pas. C'est le champ que le géocodeur résout le MIEUX — donne-le dès que
-  la source le mentionne ;
+  DIFFUSE** (réseau de sentiers balisés, routes vicinales, marais/réserve étendue, « tout le
+  secteur ») — mieux vaut aucun point qu'un point faux ;
+- `place_address` : l'ADRESSE POSTALE **PROPRE À CE LIEU**, telle qu'elle figure sur la
+  source (rue + code postal + commune, ex. « Le Gurp, route de l'océan, 33590 Grayan-et-
+  l'Hôpital »), "" si la source n'en donne pas. C'est le champ que le géocodeur résout le
+  MIEUX — donne-le dès que la source le mentionne ;
+- **N'EMPRUNTE JAMAIS l'adresse NI le nom d'une AUTRE entrée** : chaque activité a SON
+  propre lieu. Une activité DIFFUSE (sans lieu unique) a `place_name` ET `place_address`
+  VIDES — ne lui recopie pas le point d'une plage/d'un site voisin (un seul marqueur pour
+  N activités serait un mensonge) ;
 - `place_city` : la COMMUNE de ce lieu (« Grayan-et-l'Hôpital »), "" si inconnue. Sert
   UNIQUEMENT à lever l'ambiguïté du géocodage — ne mets ni distance, ni parenthèse, ni
   région ;

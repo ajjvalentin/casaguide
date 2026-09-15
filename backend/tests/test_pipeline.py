@@ -602,7 +602,9 @@ def test_place_activities_marks_placeable_and_is_idempotent(monkeypatch):
 
     def fake_geocode(**kw):
         calls["geo"] += 1
-        return {"lat": 45.31, "lon": -0.90, "accuracy": "street",
+        q = kw.get("address") or ""          # points DISTINCTS (pas d'empilement ici)
+        lon = -0.90 if "falaise" in q else -0.95
+        return {"lat": 45.31, "lon": lon, "accuracy": "street",
                 "osm_class": "leisure", "osm_type": "sports_centre"}
     monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
 
@@ -624,6 +626,25 @@ def test_place_activities_marks_placeable_and_is_idempotent(monkeypatch):
     assert acts[0]["lat"] == 45.4            # position d'origine intacte
     assert acts[1]["lat"] == 45.31 and acts[1]["lon"] == -0.90
     assert "lat" not in acts[3]             # sans lieu → reste sans marqueur
+
+
+def test_dedup_activity_positions_keeps_named_drops_borrowed():
+    """V2-73e : plusieurs activités au MÊME point (< 50 m) → seule la NOMMÉE (place_name
+    explicite) garde le marqueur ; les diffuses (place_name vide, adresse empruntée) le
+    perdent. Une activité à un AUTRE point garde le sien. Idempotent."""
+    lat, lon = 45.4286, -1.1165                 # plage du Gurp (cas réel Bégadan)
+    acts = [
+        {"activity": "Sentiers balisés", "place_name": "", "lat": lat, "lon": lon},       # emprunt
+        {"activity": "Surf", "place_name": "Plage du Gurp", "lat": lat + 0.0001, "lon": lon},  # NOMMÉE
+        {"activity": "Marais Natura 2000", "place_name": "", "lat": lat, "lon": lon + 0.0001},  # emprunt
+        {"activity": "Kayak", "place_name": "Lac d'Hourtin", "lat": 45.20, "lon": -1.05},  # autre point
+    ]
+    pipeline._dedup_activity_positions(acts)
+    assert acts[1].get("lat") is not None                     # Surf (nommée) gardée
+    assert "lat" not in acts[0] and "lat" not in acts[2]      # emprunts évincés
+    assert acts[3].get("lat") == 45.20                        # autre point : intact
+    pipeline._dedup_activity_positions(acts)                  # re-passage : rien ne bouge
+    assert acts[1].get("lat") is not None and "lat" not in acts[0]
 
 
 def test_backfill_activity_positions_upgrades_pre_v2_73_fact(monkeypatch):
@@ -668,7 +689,7 @@ def test_backfill_activity_positions_upgrades_pre_v2_73_fact(monkeypatch):
 
         pipeline._backfill_activity_positions(conn, prop, [], origin, None, job_id, {})
         fact = edb.get_area_fact(conn, CC, CITY, ce.ACTIVITIES_FACT_TYPE)
-        assert fact["v"] == ce.ACTIVITIES_SCHEMA_V == 4      # v3 → v4
+        assert fact["v"] == ce.ACTIVITIES_SCHEMA_V == 5      # v3 → v5 (schéma courant)
         acts = fact["activities"]
         assert acts[0].get("lat") == 45.36 and acts[0].get("lon") == -1.15  # plage placée (repli OSM)
         assert "lat" not in acts[1]                          # diffuse : reste sans marqueur

@@ -453,6 +453,33 @@ def _position_activity(a: dict, harvested: list[dict], prop: dict, origin: tuple
     return _match_osm_place(place, osm_places)             # 4. repli OSM ; 5. sinon None
 
 
+# Deux activités résolues à moins de ce rayon = adresse EMPRUNTÉE (V2-73e) : une diffuse
+# (sentier balisé, route vicinale, marais Natura 2000) a hérité de l'adresse d'un lieu
+# nommé. On ne garde qu'un marqueur au point — même défaut que les punaises empilées (V2-56b).
+_ACT_DUP_DIST_M = 50
+
+
+def _dedup_activity_positions(activities: list[dict]) -> None:
+    """Anti-punaises empilées (V2-73e) : quand plusieurs activités résolvent au MÊME point
+    (< 50 m), une seule garde le marqueur — celle dont le lieu est NOMMÉ (`place_name`
+    explicite de la collecte, pas un nom dérivé de la phrase `where`) ; les autres retournent
+    en liste SANS position. Déterministe (nommées d'abord, puis ordre d'origine) → idempotent
+    (un re-passage garde le même gagnant, ne réanime jamais une évincée)."""
+    placed = [a for a in activities if isinstance(a, dict)
+              and a.get("lat") is not None and a.get("lon") is not None]
+    order = sorted(range(len(placed)),
+                   key=lambda i: (0 if (placed[i].get("place_name") or "").strip() else 1, i))
+    kept: list[dict] = []
+    for i in order:
+        a = placed[i]
+        if any(overpass.haversine_m(a["lat"], a["lon"], k["lat"], k["lon"])
+               < _ACT_DUP_DIST_M for k in kept):
+            a.pop("lat", None)
+            a.pop("lon", None)                 # adresse empruntée → sans marqueur
+        else:
+            kept.append(a)
+
+
 def _place_activities(activities: list[dict], harvested: list[dict], prop: dict,
                       origin: tuple, http_client: httpx.Client | None) -> int:
     """Pose `lat`/`lon` sur chaque activité plaçable (V2-73), en place. Renvoie le
@@ -460,25 +487,25 @@ def _place_activities(activities: list[dict], harvested: list[dict], prop: dict,
 
     Le REPLI OSM par tag (V2-73d) est UN SEUL appel Overpass par secteur, mutualisé entre
     toutes les activités du lot (mission §3), et seulement s'il reste au moins un lieu nommé
-    à placer — jamais quand tout est déjà positionné/diffus."""
+    à placer — jamais quand tout est déjà positionné/diffus. Une passe anti-empilement
+    (V2-73e) retire ensuite les marqueurs des activités qui ont emprunté l'adresse d'une autre."""
     to_place = [a for a in activities if isinstance(a, dict)
                 and a.get("lat") is None and _activity_place(a)[0]]
     osm_places: list[dict] | None = None
     if to_place:
         osm_places = overpass.fetch_natural_places(origin[0], origin[1], http_client,
                                                    radius_m=int(_EDITORIAL_MAX_DIST_M))
-    placed = 0
     for a in activities:
         if not isinstance(a, dict):
             continue
         if a.get("lat") is not None and a.get("lon") is not None:
-            placed += 1
             continue
         pos = _position_activity(a, harvested, prop, origin, http_client, osm_places)
         if pos is not None:
             a["lat"], a["lon"] = pos
-            placed += 1
-    return placed
+    _dedup_activity_positions(activities)      # V2-73e : jamais deux marqueurs au même point
+    return sum(1 for a in activities if isinstance(a, dict)
+               and a.get("lat") is not None and a.get("lon") is not None)
 
 
 def _backfill_activity_positions(conn, prop: dict, harvested: list[dict], origin: tuple,
