@@ -2293,3 +2293,40 @@ def test_overture_respects_arbitrated_pois(property_id, http_client):
     assert santander["status"] == "approved" and santander["source"] == "owner"
     caixa = next(r for r in rows if r["name"] == "CaixaBank")
     assert caixa["source"] == "overture" and caixa["status"] == "suggested"
+
+
+# ── V2-70 : granularité de l'échec de traduction (langues réussies livrées) ────
+
+def test_translate_run_delivers_succeeded_langs_when_one_lang_fails():
+    """V2-70 pièce 4 : une langue en échec n'emporte plus les autres (fin de
+    l'all-or-nothing). Les langues RÉUSSIES sont publiées ; la fautive est omise."""
+    from enrich import translate
+    from api import repo
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        prop = repo.create_guest_property(conn, name="T70", city="Tokyo",
+                                          country_code="JP", lat=35.7, lon=139.7)
+        pid = str(prop["id"])
+        conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom,
+                                 description_md, source, source_ref, status)
+               VALUES (%s, 'restaurant', 'R', ST_SetSRID(ST_MakePoint(139.7, 35.7), 4326),
+                       'Bonjour le monde', 'osm', 'n:r70', 'approved')""", (pid,))
+        conn.commit()
+
+    class _FailDe:
+        def translate(self, texts, *, target_lang, source_lang):
+            if target_lang == "de":
+                raise RuntimeError("boom de")   # une seule langue tombe
+            return ({k: f"[{target_lang}] {v}" for k, v in texts.items()},
+                    {"units": 1, "cost_cts": 0.0})
+
+    summary = translate.run(pid, target_langs=["en", "de", "es"], translator=_FailDe())
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        pub = conn.execute("SELECT published_langs FROM properties WHERE id=%s",
+                           (pid,)).fetchone()["published_langs"] or []
+        conn.execute("DELETE FROM properties WHERE id=%s", (pid,))
+        conn.commit()
+    assert set(pub) == {"en", "es"}                     # de omis, en/es LIVRÉS
+    assert summary["langs"]["en"] == 1 and summary["langs"]["es"] == 1
+    assert str(summary["langs"]["de"]).startswith("failed")

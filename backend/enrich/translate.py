@@ -30,11 +30,46 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
+import re
 
 import anthropic
 
 from . import db
 from .settings import settings
+
+log = logging.getLogger("casaguide.translate")
+
+# Récupération TOLÉRANTE (V2-70) : d'une réponse JSON TRONQUÉE, on récolte toutes les
+# paires « "clé": "valeur" » COMPLÈTES (chaînes JSON, échappements inclus) et on ignore la
+# dernière paire coupée — au lieu de tout jeter. La valeur incomplète en fin est perdue,
+# jamais les précédentes.
+_PAIR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _parse_translations(raw: str) -> dict:
+    """Parse la réponse du traducteur. JSON strict d'abord ; sinon (tronqué/malformé)
+    récupère les paires complètes (V2-70) — un lot tronqué livre quand même ses entrées
+    valides. Ne renvoie que des valeurs chaînes."""
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if isinstance(v, str)}
+    except ValueError:
+        pass
+    out: dict[str, str] = {}
+    for k, v in _PAIR_RE.findall(raw):
+        try:
+            out[json.loads('"' + k + '"')] = json.loads('"' + v + '"')
+        except ValueError:
+            continue
+    return out
+
+
+def _chunked(items: list, size: int) -> list[list]:
+    """Découpe une liste en tranches d'au plus `size` (≥ 1)."""
+    size = max(1, size)
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 # Seuls ces types de champ portent du texte libre à traduire. Les autres
 # (time, bool, number, url, phone, select) sont structurés : jamais traduits.
@@ -137,10 +172,53 @@ class ClaudeTranslator:
                   source_lang: str) -> tuple[dict[str, str], dict]:
         """Traduit {clé: texte} → ({clé: texte traduit}, méta {units, cost_cts}).
 
-        Ne renvoie que les clés effectivement traduites (chaînes) : une clé
-        manquante retombera sur la source au rendu (jamais de trou)."""
+        Par LOTS bornés (V2-70, `settings.translate_batch_size`) : un guide dense dépassait
+        la limite de tokens en un seul appel → réponse TRONQUÉE. Chaque lot est indépendant
+        (un lot qui casse n'emporte pas les autres) ; parsing tolérant + une re-tentative des
+        seules clés manquantes du lot fautif. Ne renvoie que les clés effectivement traduites
+        (chaînes non vides) : une clé manquante retombe sur la source au rendu (jamais de trou)."""
         if not texts:
             return {}, {"units": 0, "cost_cts": 0.0}
+        result: dict[str, str] = {}
+        units = 0
+        cost = 0.0
+        keys = list(texts)
+        for chunk_keys in _chunked(keys, settings.translate_batch_size):
+            chunk = {k: texts[k] for k in chunk_keys}
+            got, m = self._translate_chunk(chunk, target_lang, source_lang)
+            result.update(got)
+            units += m["units"]
+            cost += m["cost_cts"]
+        result = {k: v for k, v in result.items()
+                  if k in texts and isinstance(v, str) and v.strip()}
+        return result, {"units": units, "cost_cts": round(cost, 4)}
+
+    def _translate_chunk(self, chunk: dict[str, str], target_lang: str,
+                         source_lang: str) -> tuple[dict[str, str], dict]:
+        """Traduit UN lot. Best-effort : jamais d'exception (un appel/parse fautif renvoie
+        ce qui a pu être récupéré). Re-tente UNE fois les seules clés manquantes (réponse
+        tronquée : le reste, plus court, passe)."""
+        try:
+            got, meta = self._one_call(chunk, target_lang, source_lang)
+        except Exception as exc:  # noqa: BLE001 — un lot ne fait jamais tomber la langue
+            log.warning("Traduction %s : lot en échec (%s) — ignoré", target_lang, exc)
+            return {}, {"units": 0, "cost_cts": 0.0}
+        missing = {k: v for k, v in chunk.items() if k not in got}
+        if missing and len(missing) < len(chunk):        # progrès → re-tenter le reste
+            try:
+                got2, m2 = self._one_call(missing, target_lang, source_lang)
+                got.update(got2)
+                meta = {"units": meta["units"] + m2["units"],
+                        "cost_cts": meta["cost_cts"] + m2["cost_cts"]}
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Traduction %s : re-tentative du lot en échec (%s)",
+                            target_lang, exc)
+        return got, meta
+
+    def _one_call(self, texts: dict[str, str], target_lang: str,
+                  source_lang: str) -> tuple[dict[str, str], dict]:
+        """Un appel API : renvoie ({clé: traduction}, méta). Parsing TOLÉRANT (V2-70) :
+        une réponse tronquée livre ses paires complètes plutôt que de tout jeter."""
         prompt = _PROMPT.format(
             src=_LANG_NAMES.get(source_lang, source_lang),
             dst=_LANG_NAMES.get(target_lang, target_lang),
@@ -151,7 +229,7 @@ class ClaudeTranslator:
             messages=[{"role": "user", "content": prompt}])
         raw = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
         raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        data = json.loads(raw)  # non-JSON -> ValueError -> job 'failed', rien de corrompu
+        data = _parse_translations(raw)
         result = {k: v for k, v in data.items()
                   if k in texts and isinstance(v, str) and v.strip()}
         inp, out = settings.model_prices_usd.get(settings.translate_model, (1.0, 5.0))
@@ -201,16 +279,33 @@ def run(property_id: str, *, target_langs: list[str] | None = None,
             sections = db.translatable_sections(conn, property_id)
             pois = db.translatable_pois(conn, property_id)
 
+            # GRANULARITÉ DE L'ÉCHEC (V2-70) : chaque langue est indépendante — une langue
+            # en échec ne fait plus tout tomber (fin de l'all-or-nothing). Les langues
+            # RÉUSSIES sont livrées ; une langue fautive est simplement omise de la publication.
+            published: list[str] = []
             for lang in langs:
-                n = _translate_lang(conn, property_id, job_id, lang, source_lang,
-                                    sections, pois, translator, summary)
-                summary["langs"][lang] = n
-                conn.commit()
+                try:
+                    n = _translate_lang(conn, property_id, job_id, lang, source_lang,
+                                        sections, pois, translator, summary)
+                    conn.commit()
+                    summary["langs"][lang] = n
+                    published.append(lang)
+                except Exception as exc:  # noqa: BLE001 — isole la langue fautive
+                    conn.rollback()
+                    summary["langs"][lang] = f"failed: {type(exc).__name__}"
+                    log.warning("Traduction %s (logement %s) en échec : %s",
+                                lang, property_id, exc)
 
-            # Publie la liste des langues cibles (les libellés fixes et les
-            # name_i18n du seed sont localisés même sans texte propriétaire).
-            db.set_published_langs(conn, property_id, langs)
-            db.job_finish(conn, job_id, "done")
+            if published:
+                # Publie les langues LIVRÉES (libellés fixes + name_i18n du seed localisés
+                # même sans texte propriétaire ; segments non traduits → repli source).
+                # Si TOUT échoue, on NE touche PAS `published_langs` (l'état antérieur, avec
+                # son repli élégant, reste servi) et le job est 'failed'.
+                db.set_published_langs(conn, property_id, published)
+                db.job_finish(conn, job_id, "done")
+            else:
+                db.job_finish(conn, job_id, "failed",
+                              error="aucune langue traduite")
             conn.commit()
         except Exception as exc:
             conn.rollback()

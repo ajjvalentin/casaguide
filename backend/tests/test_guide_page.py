@@ -880,6 +880,16 @@ def test_poi_non_latin_primary_gets_copy_and_speak_without_latin():
     assert html.count('poi-local" data-speak') == 1     # ligne speakable = le nom lui-même
 
 
+def test_poi_local_name_hidden_when_contained_in_display():
+    """V2-70 bonus : si le nom local est DÉJÀ dans le nom affiché (« Janu Mercato
+    (ジャヌ メルカート) »), pas de bloc local redondant — mais le nom reste visible (h4)."""
+    pois = [_poi("Janu Mercato (ジャヌ メルカート)", "restaurant", "F",
+                 name_local="ジャヌ メルカート")]
+    html = guide_page.render_guide(_prop(city="Tokyo", country_code="JP"), [], pois, {}, "tok")
+    assert "poi-local" not in html                 # aucun bloc local redondant
+    assert "ジャヌ メルカート" in html               # présent dans le titre affiché
+
+
 def test_poi_no_local_line_in_latin_country():
     """V2-66 — non-régression : sans nom local, aucune ligne/bouton supplémentaire
     (La Zenia, Ardon inchangés)."""

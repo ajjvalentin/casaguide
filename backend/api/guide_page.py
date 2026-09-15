@@ -1025,7 +1025,9 @@ def _render_poi_local(p: dict, lang: str) -> str:
     rows: list[str] = []
     name_local = (p.get("name_local") or "").strip()
     raw = (p.get("name") or "").strip()
-    if name_local and name_local != disp:
+    # V2-70 bonus : rien si le nom local est DÉJÀ contenu dans le nom affiché
+    # (« Janu Mercato (ジャヌ メルカート) » porte déjà l'écriture d'origine).
+    if name_local and name_local != disp and name_local not in disp:
         rows.append(_local_copy_row(name_local, lang, speakable=True))
     elif not name_local and not (p.get("name_latin") or "").strip() and _is_non_latin(raw):
         rows.append(_local_copy_row(raw, lang, speakable=True))     # cas (b)

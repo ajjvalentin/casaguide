@@ -84,6 +84,11 @@ class Settings:
     translate_model: str = os.getenv("CASAGUIDE_TRANSLATE_MODEL",
                                      "claude-haiku-4-5-20251001")
     translate_max_tokens: int = 4000
+    # Traduction par LOTS bornés (V2-70) : un guide dense (115 POI + noms japonais)
+    # dépassait `translate_max_tokens` en un seul appel → réponse tronquée
+    # (JSONDecodeError). On découpe en lots d'au plus N segments — un lot casse sans
+    # emporter les autres (comme le juge, lots de 15).
+    translate_batch_size: int = int(os.getenv("CASAGUIDE_TRANSLATE_BATCH", "20"))
     # Langues cibles MVP du guide voyageur (la langue source vient de
     # properties.default_lang et n'est jamais dans cette liste). DE/NL en V2.
     translate_langs: tuple = tuple(

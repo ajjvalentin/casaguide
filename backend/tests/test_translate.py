@@ -137,3 +137,76 @@ def test_empty_batch_no_call():
     out, meta = translate.ClaudeTranslator(_AI()).translate(
         {}, target_lang="en", source_lang="fr")
     assert out == {} and meta["units"] == 0
+
+
+# ── V2-70 : robustesse des gros guides / réponses tronquées ───────────────────
+
+def test_parse_translations_strict_and_tolerant():
+    """JSON strict d'abord ; une réponse TRONQUÉE livre ses paires COMPLÈTES (jette la
+    dernière coupée) au lieu de tout perdre ; échappements préservés ; non-chaînes ignorées."""
+    assert translate._parse_translations('{"1":"x","2":"y"}') == {"1": "x", "2": "y"}
+    # tronqué au milieu de la 2e valeur → seule la 1re paire est récupérée
+    assert translate._parse_translations('{"1": "Hello", "2": "Wor') == {"1": "Hello"}
+    # guillemets échappés préservés, dernière valeur non fermée
+    assert translate._parse_translations('{"1": "a \\"b\\" c", "2": "z"') \
+        == {"1": 'a "b" c', "2": "z"}
+    # valeur non-chaîne (jamais une traduction) écartée
+    assert translate._parse_translations('{"1":"x","2":3}') == {"1": "x"}
+
+
+def _fake_ai(handler):
+    """Client factice : `handler(keys, payload)` → dict de traductions à émettre."""
+    from types import SimpleNamespace
+    import json as _j
+    calls: list[list] = []
+
+    class _Msgs:
+        def create(self, *, model, max_tokens, messages):
+            payload = _j.loads(messages[0]["content"].rsplit("Objet à traduire :", 1)[-1].strip())
+            keys = list(payload)
+            calls.append(keys)
+            emit = handler(keys, payload)
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=_j.dumps(emit, ensure_ascii=False))],
+                usage=SimpleNamespace(input_tokens=10, output_tokens=5))
+
+    class _AI:
+        messages = _Msgs()
+
+    return _AI(), calls
+
+
+def test_translator_batches_bounded():
+    """V2-70 : la traduction est DÉCOUPÉE en lots bornés (`translate_batch_size`)."""
+    import enrich.translate as tr
+    old = tr.settings.translate_batch_size
+    tr.settings.translate_batch_size = 2
+    try:
+        ai, calls = _fake_ai(lambda keys, payload: {k: "T:" + payload[k] for k in keys})
+        texts = {str(i): f"v{i}" for i in range(1, 6)}     # 5 → lots [2, 2, 1]
+        out, meta = tr.ClaudeTranslator(ai).translate(texts, target_lang="en", source_lang="fr")
+        assert out == {str(i): f"T:v{i}" for i in range(1, 6)}
+        assert len(calls) == 3 and [len(c) for c in calls] == [2, 2, 1]
+    finally:
+        tr.settings.translate_batch_size = old
+
+
+def test_translator_retries_missing_after_truncation():
+    """V2-70 : un lot tronqué (clé manquante) est re-tenté sur les SEULES clés manquantes
+    → tout finit traduit, un lot fautif n'emporte pas les autres."""
+    import enrich.translate as tr
+    old = tr.settings.translate_batch_size
+    tr.settings.translate_batch_size = 3
+    try:
+        def handler(keys, payload):
+            emit = {k: "T:" + payload[k] for k in keys}
+            if len(keys) > 1:                # 1er passage d'un lot : omet la dernière clé
+                emit.pop(keys[-1])
+            return emit
+        ai, calls = _fake_ai(handler)
+        texts = {str(i): f"v{i}" for i in range(1, 4)}     # 1 lot de 3
+        out, _ = tr.ClaudeTranslator(ai).translate(texts, target_lang="en", source_lang="fr")
+        assert out == {"1": "T:v1", "2": "T:v2", "3": "T:v3"}   # récupéré via re-tentative
+        assert len(calls) == 2                                  # lot + re-tentative du manquant
+    finally:
+        tr.settings.translate_batch_size = old
