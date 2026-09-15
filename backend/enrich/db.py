@@ -521,6 +521,41 @@ def insert_market_poi(conn, property_id: str, market: dict) -> int:
     return cur.rowcount
 
 
+def insert_local_commerce_poi(conn, property_id: str, poi: dict) -> int:
+    """Crée un POI de COMMERCE/SERVICE de village issu de Claude+web (V2-74) : catégorie
+    ESSENTIELLE réelle (pharmacy/supermarket/bakery/doctor/post_office), `source='claude'`,
+    `status='suggested'` (validation propriétaire), position RÉELLE (adresse géocodée) +
+    distances pré-calculées + `locality` (commune, honnêteté de la distance V2-38) + preuve
+    en `completion_meta`. Idempotent par (property_id, source, source_ref) ; ne réécrit QUE si
+    encore 'suggested' (invariant 1). Retourne 1 si inséré, 0 si conflit ignoré."""
+    cur = conn.execute(
+        """INSERT INTO pois (property_id, category_code, name, geom, address, locality,
+                             phone, dist_walk_m, walk_min, dist_drive_m, drive_min,
+                             completion_meta, source, source_ref, fetched_at, status)
+           VALUES (%(pid)s, %(cat)s, %(name)s,
+                   ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
+                   %(address)s, %(locality)s, %(phone)s,
+                   %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
+                   %(meta)s, 'claude', %(ref)s, now(), 'suggested')
+           ON CONFLICT (property_id, source, source_ref) WHERE source_ref IS NOT NULL
+           DO UPDATE SET name = EXCLUDED.name, geom = EXCLUDED.geom,
+                         address = EXCLUDED.address, locality = EXCLUDED.locality,
+                         phone = EXCLUDED.phone,
+                         dist_walk_m = EXCLUDED.dist_walk_m, walk_min = EXCLUDED.walk_min,
+                         dist_drive_m = EXCLUDED.dist_drive_m, drive_min = EXCLUDED.drive_min,
+                         completion_meta = EXCLUDED.completion_meta, fetched_at = now()
+           WHERE pois.status = 'suggested'""",
+        {"pid": property_id, "cat": poi["category"], "name": poi["name"],
+         "lat": poi["lat"], "lon": poi["lon"], "address": poi.get("address"),
+         "locality": poi.get("locality"), "phone": poi.get("phone"),
+         "dist_walk_m": poi.get("dist_walk_m"), "walk_min": poi.get("walk_min"),
+         "dist_drive_m": poi.get("dist_drive_m"), "drive_min": poi.get("drive_min"),
+         "meta": json.dumps(poi["completion_meta"]) if poi.get("completion_meta") else None,
+         "ref": poi["source_ref"]},
+    )
+    return cur.rowcount
+
+
 def poi_source_ref_exists(conn, property_id: str, source_ref: str) -> bool:
     """True si un POI de ce (logement, source_ref) existe déjà (TOUS statuts) →
     idempotence AVANT géocodage (on ne re-géocode pas un marché déjà matérialisé)."""

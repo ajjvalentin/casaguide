@@ -49,6 +49,19 @@ def test_airport_keeps_public_excludes_military_and_aeroclub():
 
 # ── 1b. Cohérence catégorie / tags ───────────────────────────────────────────
 
+def test_supermarket_and_pharmacy_tags_widened_v2_74():
+    """V2-74 : l'épicerie de village (shop=convenience/grocery/general/village_shop) est
+    moissonnée comme « supermarket », et la pharmacie taguée healthcare=pharmacy comme
+    « pharmacy » — OSM ne les tague jamais « supermarket »/« amenity=pharmacy » au village."""
+    for v in ("supermarket", "convenience", "grocery", "general", "village_shop"):
+        assert overpass.category_matches("supermarket", {"shop": v, "name": "Vival"})
+    assert overpass.category_matches("pharmacy", {"healthcare": "pharmacy", "name": "Pharma"})
+    assert overpass.category_matches("pharmacy", {"amenity": "pharmacy", "name": "Pharma"})
+    # Les sélecteurs de requête en dérivent (source unique) → convenience/healthcare y figurent.
+    assert ("shop", "convenience") in overpass.CATEGORY_TAGS["supermarket"]
+    assert ("healthcare", "pharmacy") in overpass.CATEGORY_TAGS["pharmacy"]
+
+
 def test_market_rejects_estate_agent_and_minimarket():
     # Vrai marché hebdomadaire -> gardé
     assert overpass.category_matches("market", {"amenity": "marketplace",

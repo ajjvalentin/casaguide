@@ -72,11 +72,15 @@ def _short(msg: str, limit: int = 160) -> str:
 # dessus pour re-ventiler les résultats d'une requête groupée.
 CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
     "hospital":        [("amenity", "hospital")],
-    "pharmacy":        [("amenity", "pharmacy")],
+    # V2-74 : la pharmacie de village est parfois taguée `healthcare=pharmacy` (sans amenity).
+    "pharmacy":        [("amenity", "pharmacy"), ("healthcare", "pharmacy")],
     "doctor":          [("amenity", "doctors"), ("amenity", "dentist")],
     "police":          [("amenity", "police")],
     "veterinary":      [("amenity", "veterinary")],
-    "supermarket":     [("shop", "supermarket")],
+    # V2-74 : l'épicerie de village n'est JAMAIS taguée « supermarket » — on élargit aux
+    # commerces d'alimentation générale (convenience/grocery/general/village_shop).
+    "supermarket":     [("shop", "supermarket"), ("shop", "convenience"),
+                        ("shop", "grocery"), ("shop", "general"), ("shop", "village_shop")],
     "market":          [("amenity", "marketplace")],
     "bakery":          [("shop", "bakery")],
     # V2-47 : toute agence BANCAIRE a un distributeur. En centre-ville, OSM ne tague

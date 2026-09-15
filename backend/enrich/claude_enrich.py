@@ -1250,6 +1250,91 @@ def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
     return {ACTIVITIES_FACT_TYPE: {"activities": clean, "v": ACTIVITIES_SCHEMA_V}}, meta
 
 
+# ── Commerces & services de village (V2-74) ──────────────────────────────────
+# Quand OSM est MUET sur une commune (constat Bégadan : ni épicerie ni pharmacie dans la
+# bbox), le guide sert la ville voisine à 10 km comme « le plus proche » — faux, et dangereux
+# pour une pharmacie. Passe web MUTUALISÉE par commune (mairie, pages jaunes locales, office
+# de tourisme, presse), matérialisée en POI par logement (patron des marchés). Preuve ou rien.
+LOCAL_COMMERCE_FACT_TYPE = "local_commerces"
+# Catégories ESSENTIELLES éligibles : ce qu'un habitant cherche d'abord au village. Les codes
+# correspondent aux `category_code` du seed (materialisés tels quels en POI).
+LOCAL_COMMERCE_CATEGORIES = ("pharmacy", "supermarket", "bakery", "doctor", "post_office")
+_LOCAL_COMMERCE_LABELS = {"pharmacy": "pharmacie", "supermarket": "épicerie / supérette",
+                          "bakery": "boulangerie", "doctor": "médecin / cabinet médical",
+                          "post_office": "bureau de poste / point poste"}
+
+_LOCAL_COMMERCE_PROMPT = """\
+Tu prépares la liste des COMMERCES & SERVICES ESSENTIELS de la commune de {city} ({country_code})
+— ceux qu'un habitant a près de chez lui. OpenStreetMap ignore souvent les petits villages :
+ton rôle est de retrouver ce qui existe VRAIMENT sur place.
+
+Catégories recherchées (renvoie `category` avec EXACTEMENT l'un de ces codes) :
+{cats}
+
+MÉTHODE : recherche web. Sources fiables : site de la MAIRIE, office de tourisme, pages jaunes
+locales, presse/annuaire local. Pour chaque commerce :
+- `name` : le nom de l'établissement (« Pharmacie du Centre », « Boulangerie Martin », « Vival ») ;
+- `category` : le code EXACT parmi la liste ci-dessus ;
+- `place_address` : l'ADRESSE POSTALE telle qu'elle figure sur la source (rue + code postal +
+  commune) — INDISPENSABLE pour le placer sur la carte ; sans adresse précise, écarte l'entrée ;
+- `phone` : le téléphone si disponible, sinon "" ;
+- `source_url` : l'URL de la preuve (https), `verified_on` : « {today} ».
+
+RÈGLES STRICTES :
+- PREUVE OU RIEN : pas d'adresse précise + pas de source https → écartée. N'invente JAMAIS.
+- Reste DANS la commune de {city} (ou un hameau qui en dépend), pas la ville voisine.
+- Une liste VIDE est un résultat parfaitement valide (le village n'a peut-être rien).
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
+{{
+  "commerces": [
+    {{"name": "Pharmacie du Centre", "category": "pharmacy",
+      "place_address": "3 place de l'Église, 33340 {city}", "phone": "+33 5 …",
+      "source_url": "https://...", "verified_on": "{today}"}}
+  ]
+}}
+"""
+
+
+def fetch_local_commerces(city: str, country_code: str, client: anthropic.Anthropic,
+                          today: str | None = None, lang: str = "fr") -> tuple[dict, dict]:
+    """Commerces & services ESSENTIELS d'une commune (V2-74), vérifiés par recherche web.
+    Retourne ({LOCAL_COMMERCE_FACT_TYPE: {"commerces": [...]}}, méta coût). Chaque entrée
+    retenue porte `name`, `category` (∈ LOCAL_COMMERCE_CATEGORIES), `place_address` (NON
+    VIDE — sans adresse un commerce n'est pas plaçable), `phone`, `source_url`, `verified_on`.
+    **PREUVE OU RIEN** (ni adresse ni source → écartée). **Liste vide valide.** Réponse
+    malformée → ValueError (aucune écriture)."""
+    today = today or _dt.date.today().isoformat()
+    cats = "\n".join(f"- `{c}` : {_LOCAL_COMMERCE_LABELS[c]}" for c in LOCAL_COMMERCE_CATEGORIES)
+    data, meta = _ask_web_search_json(
+        client, _LOCAL_COMMERCE_PROMPT.format(city=city, country_code=country_code,
+                                              today=today, cats=cats),
+        city=city, country_code=country_code,
+        max_searches=settings.local_commerce_max_searches,
+        max_tokens=settings.local_commerce_max_tokens)
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    commerces = data.get("commerces")
+    if not isinstance(commerces, list):
+        raise ValueError("Réponse IA invalide : 'commerces' doit être une liste.")
+    clean: list[dict] = []
+    for c in commerces:
+        if not isinstance(c, dict):
+            continue
+        def _s(key: str) -> str:
+            v = c.get(key)
+            return v.strip() if isinstance(v, str) else ""
+        name, cat, addr = _s("name"), _s("category"), _s("place_address")
+        source_url = _s("source_url")
+        # PREUVE OU RIEN + catégorie connue + adresse (sinon non plaçable).
+        if not (name and addr and source_url and cat in LOCAL_COMMERCE_CATEGORIES):
+            continue
+        clean.append({"name": name, "category": cat, "place_address": addr,
+                      "phone": _s("phone") or None, "source_url": source_url,
+                      "verified_on": _s("verified_on") or today})
+    return {LOCAL_COMMERCE_FACT_TYPE: {"commerces": clean}}, meta
+
+
 # ── Déduplication des marchés (pure — testée sans base ni réseau) ─────────────
 
 _MARKET_STOPWORDS = {

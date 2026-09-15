@@ -608,6 +608,82 @@ def _backfill_activity_positions(conn, prop: dict, harvested: list[dict], origin
         conn.commit()
 
 
+def _void_essentials(all_harvested: list[dict], wanted_codes: set,
+                     origin: tuple, proximity_m: int) -> list[str]:
+    """Catégories ESSENTIELLES (V2-74) DEMANDÉES pour ce logement mais SANS aucun POI dans le
+    rayon de proximité — le vide rural qui déclenche la découverte web des commerces de
+    village. On ne considère QUE les catégories `wanted` (jamais inventer un besoin non prévu ;
+    et une catégorie couverte, même par un seul commerce proche, n'est pas « vide »)."""
+    present = set()
+    for p in all_harvested:
+        cat = p.get("category")
+        if (cat in claude_enrich.LOCAL_COMMERCE_CATEGORIES
+                and p.get("lat") is not None and p.get("lon") is not None
+                and overpass.haversine_m(origin[0], origin[1], p["lat"], p["lon"]) <= proximity_m):
+            present.add(cat)
+    return [c for c in claude_enrich.LOCAL_COMMERCE_CATEGORIES
+            if c in wanted_codes and c not in present]
+
+
+def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
+                                              summary: dict, http_client, void_codes: list[str],
+                                              origin: tuple) -> None:
+    """Commerces & services ESSENTIELS de village (V2-74) : découverte web MUTUALISÉE par
+    commune (cache area_facts, fenêtre propre) PUIS matérialisation en POI 'suggested' par
+    logement, UNIQUEMENT pour les catégories VIDES localement (OSM couvre déjà les autres).
+    Adresse géocodée STRICTEMENT (cascade V2-56b — jamais un centroïde) ; sans position fiable,
+    le commerce n'entre pas. Idempotent (source_ref). Best-effort (SAVEPOINT). `locality` =
+    commune → honnêteté de la distance (V2-38). Le juge (guest) publie derrière."""
+    cc, city = prop["country_code"], prop["city"]
+    try:
+        with conn.transaction():
+            if not db.area_fact_fresh(conn, cc, city, claude_enrich.LOCAL_COMMERCE_FACT_TYPE,
+                                      settings.local_commerce_max_age_days):
+                fact, meta = claude_enrich.fetch_local_commerces(
+                    city, cc, ai, lang=prop.get("default_lang") or "fr")
+                db.upsert_area_facts(conn, cc, city, fact, source=settings.anthropic_model)
+                db.record_costs(conn, prop["id"], job_id, "anthropic",
+                                "local_commerces", meta["attempts"])
+                summary["cost_cts"] += meta["cost_cts"]
+            fact = db.get_area_fact(conn, cc, city,
+                                    claude_enrich.LOCAL_COMMERCE_FACT_TYPE) or {}
+            discovered = fact.get("commerces") or []
+            created = skipped_pos = 0
+            for c in discovered:
+                cat = c.get("category")
+                if cat not in void_codes:      # OSM couvre déjà cette catégorie ici
+                    continue
+                ref = "claude:local:" + cat + ":" + _slug(c["name"])
+                if db.poi_source_ref_exists(conn, prop["id"], ref):
+                    continue                   # déjà matérialisé (idempotent, pas de géocodage)
+                geo = _geocode_pick_strict({"address": c.get("place_address")},
+                                           prop, origin, http_client)
+                if geo is None:
+                    skipped_pos += 1
+                    continue                   # adresse non fiable → n'entre pas
+                poi = {"name": c["name"], "category": cat, "lat": geo["lat"], "lon": geo["lon"],
+                       "address": c.get("place_address"), "phone": c.get("phone"),
+                       "locality": geo.get("locality") or city, "source_ref": ref,
+                       "completion_meta": {"_local": {"source_url": c.get("source_url"),
+                                                      "verified_on": c.get("verified_on")}}}
+                distance.compute_distances(origin, [poi], client=http_client)
+                created += db.insert_local_commerce_poi(conn, prop["id"], poi)
+            summary["local_commerces_created"] += created
+            db.job_step(conn, job_id, "local_commerces",
+                        {"ok": True, "void": sorted(void_codes), "discovered": len(discovered),
+                         "created": created, "skipped_position": skipped_pos})
+        _progress(f"  ✓ commerces de village : {created} créé(s) "
+                  f"(catégories vides : {', '.join(sorted(void_codes))})")
+    except Exception as exc:  # noqa: BLE001 — best-effort (web/parse)
+        log.warning("Commerces de village (%s) non résolus : %s", city, exc)
+        c = _record_failed_call_cost(conn, prop["id"], job_id, "local_commerces", exc)
+        summary["cost_cts"] += c
+        db.job_step(conn, job_id, "local_commerces",
+                    {"ok": False, "error": overpass._short(str(exc)), "cost_cts": round(c, 2)})
+        conn.commit()
+        _progress(f"  ⚠ commerces de village non résolus : {overpass._short(str(exc))}")
+
+
 def _memorize_fresh_picks(conn, prop: dict, code: str, pois: list[dict],
                           ovt: list[dict] | None, raw_picks: list[dict],
                           origin: tuple, http_client: httpx.Client | None,
@@ -799,7 +875,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
     """
     summary: dict = {"pois": 0, "categories": {}, "area_facts": False,
                      "cost_cts": 0.0, "services_completed": 0, "babysitters": 0,
-                     "markets_created": 0, "duplicates_merged": 0,
+                     "markets_created": 0, "local_commerces_created": 0,
+                     "duplicates_merged": 0,
                      "rental_web_kept": 0, "hard_cap_dropped": 0,
                      "network_dropped": 0, "service_dropped": 0,
                      "service_qualified": 0,
@@ -1475,6 +1552,17 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     _backfill_activity_positions(conn, prop, all_harvested, origin,
                                                  http_client, job_id, summary)
 
+                # 4g. Commerces de village (V2-74) : quand une catégorie ESSENTIELLE demandée
+                # est VIDE dans le rayon de proximité (OSM muet sur le village), découverte web
+                # mutualisée + matérialisation. En zone dense, aucune catégorie n'est vide →
+                # l'étape ne part pas (contre-épreuve La Zenia/Tokyo : aucun changement).
+                void_codes = _void_essentials(
+                    all_harvested, {c["code"] for c in wanted}, origin,
+                    settings.local_commerce_proximity_m)
+                if void_codes:
+                    _discover_and_materialize_local_commerces(
+                        conn, prop, ai, job_id, summary, http_client, void_codes, origin)
+
                 db.job_step(conn, job_id, "claude",
                             {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})
             else:
@@ -1494,6 +1582,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 f"{summary['services_completed']} fiche(s) complétée(s), "
                 f"{summary['babysitters']} baby-sitting créé(s), "
                 f"{summary['markets_created']} marché(s) créé(s), "
+                f"{summary['local_commerces_created']} commerce(s) de village créé(s), "
                 f"coût IA {summary['cost_cts']:.2f} ct")
         except Exception as exc:  # échec -> job 'failed', rien de corrompu
             conn.rollback()
@@ -1672,6 +1761,7 @@ def main() -> None:
     print(f"  Fiches complétées     : {result.get('services_completed', 0)}")
     print(f"  Baby-sitting créés    : {result.get('babysitters', 0)}")
     print(f"  Marchés créés         : {result.get('markets_created', 0)}")
+    print(f"  Commerces de village  : {result.get('local_commerces_created', 0)}")
     print(f"  Loueurs (web) retenus : {result.get('rental_web_kept', 0)}")
     if result.get("editorial_found"):
         print(f"  Picks réputés (web)   : {result.get('editorial_found', 0)} trouvés, "

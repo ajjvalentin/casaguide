@@ -217,6 +217,16 @@ class Settings:
     activities_max_searches: int = int(os.getenv("CASAGUIDE_ACTIVITIES_MAX_SEARCHES", "6"))
     activities_max_age_days: int = int(os.getenv("CASAGUIDE_ACTIVITIES_MAX_AGE_DAYS", "90"))
     activities_max_tokens: int = int(os.getenv("CASAGUIDE_ACTIVITIES_MAX_TOKENS", "4000"))
+    # Commerces de village (V2-74) : quand une catégorie ESSENTIELLE (pharmacie, épicerie,
+    # boulangerie, médecin, poste) est VIDE dans le rayon de proximité, découverte web
+    # MUTUALISÉE par (pays, commune) — l'épicerie/pharmacie de village qu'OSM ignore. Même
+    # régime que les marchés (cache area_facts, plafonds propres).
+    local_commerce_max_age_days: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_MAX_AGE_DAYS", "90"))
+    local_commerce_max_searches: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_MAX_SEARCHES", "6"))
+    local_commerce_max_tokens: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_MAX_TOKENS", "6000"))
+    # Rayon de PROXIMITÉ (m) : en deçà, un commerce essentiel est « au village » ; au-delà,
+    # la catégorie est réputée VIDE localement → déclenche la découverte web.
+    local_commerce_proximity_m: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_PROXIMITY_M", "5000"))
     # Cibles ENRICHIES par catégorie pour un guide voyageur (un touriste veut du
     # choix) : proximité (socle OSM/Overture) + picks éditoriaux. Jamais en dur
     # (invariant 8) — surchargeable « restaurant:10,bar:8,cafe:6 ».

@@ -107,8 +107,11 @@ class FakeMessages:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
                  describe_malformed=False, rentals=None, service_qualifications=None,
-                 reputed_places=None, activities=None):
+                 reputed_places=None, activities=None, local_commerces=None):
         self._service_qualifications = service_qualifications
+        # V2-74 : commerces de village découverts par le web (défaut : rien — proof or nothing).
+        self.local_commerces = local_commerces or []
+        self.local_commerce_calls = 0
         # V2-56 : sélection éditoriale « sorties » (réputés) — deux incontournables
         # par défaut (le cas La Zenia : absents d'OSM), avec contacts + raison.
         self.reputed_places = ([
@@ -202,6 +205,10 @@ class FakeMessages:
             self.activities_calls += 1
             assert tools and tools[0]["type"] == "web_search_20250305"
             return _web_reply(json.dumps({"activities": self.activities}))
+        if "COMMERCES & SERVICES ESSENTIELS" in prompt:  # commerces de village (V2-74)
+            self.local_commerce_calls += 1
+            assert tools and tools[0]["type"] == "web_search_20250305"
+            return _web_reply(json.dumps({"commerces": self.local_commerces}))
         if '"platforms"' in prompt:  # prompt livraison de repas (recherche web)
             self.food_delivery_calls += 1
             assert tools and tools[0]["type"] == "web_search_20250305"
@@ -242,12 +249,13 @@ class FakeAnthropic:
     def __init__(self, food_delivery_malformed=False, babysitter_services=None,
                  service_completions=None, markets=None, markets_malformed=False,
                  describe_malformed=False, rentals=None, service_qualifications=None,
-                 reputed_places=None):
+                 reputed_places=None, local_commerces=None):
         self.messages = FakeMessages(food_delivery_malformed, babysitter_services,
                                      service_completions, markets, markets_malformed,
                                      describe_malformed, rentals,
                                      service_qualifications=service_qualifications,
-                                     reputed_places=reputed_places)
+                                     reputed_places=reputed_places,
+                                     local_commerces=local_commerces)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -759,6 +767,91 @@ def test_backfill_repositions_approximate_to_harvested_poi(monkeypatch):
 
         conn.execute("DELETE FROM area_facts WHERE country_code=%s AND admin_area=%s", (CC, CITY))
         conn.commit()
+
+
+# ── V2-74 : commerces de village (vide rural) ────────────────────────────────
+
+def test_void_essentials_only_wanted_and_far():
+    """V2-74 : une catégorie essentielle est VIDE si DEMANDÉE mais sans POI dans le rayon.
+    Une catégorie non demandée n'est jamais « vide » ; un POI proche la couvre ; un POI
+    lointain (> rayon) ne la couvre pas."""
+    origin = (45.30, -0.86)
+    harv = [{"name": "Supérette", "lat": 45.301, "lon": -0.861, "category": "supermarket"},
+            {"name": "Pharmacie Lesparre", "lat": 45.40, "lon": -1.15, "category": "pharmacy"}]
+    wanted = {"pharmacy", "supermarket", "bakery", "restaurant"}
+    void = pipeline._void_essentials(harv, wanted, origin, 5000)
+    assert "supermarket" not in void          # POI proche → couverte
+    assert "pharmacy" in void                 # seule à ~24 km (hors rayon) → vide
+    assert "bakery" in void                   # demandée, aucun POI → vide
+    assert "doctor" not in void and "post_office" not in void  # non demandées → jamais
+
+
+def test_fetch_local_commerces_proof_or_nothing():
+    """V2-74 : PREUVE OU RIEN — sans adresse précise, sans source, ou catégorie inconnue,
+    l'entrée est écartée. Liste vide valide."""
+    from enrich import claude_enrich as ce
+    ai = FakeAnthropic(local_commerces=[
+        {"name": "Pharmacie du Centre", "category": "pharmacy",
+         "place_address": "3 place de l'Église, 33340 Bégadan", "phone": "+33 5 56 00 00 00",
+         "source_url": "https://mairie.example/commerces", "verified_on": "2026-09-15"},
+        {"name": "Sans adresse", "category": "pharmacy", "source_url": "https://x"},  # écartée
+        {"name": "Cinéma", "category": "cinema",                                       # catégorie hors liste
+         "place_address": "1 rue X, Bégadan", "source_url": "https://y"},
+    ])
+    fact, meta = ce.fetch_local_commerces("Bégadan", "FR", ai, today="2026-09-15")
+    items = fact[ce.LOCAL_COMMERCE_FACT_TYPE]["commerces"]
+    assert [c["name"] for c in items] == ["Pharmacie du Centre"]   # preuve ou rien
+    assert items[0]["category"] == "pharmacy" and items[0]["place_address"]
+    assert meta["cost_cts"] >= 0
+
+
+def test_local_commerce_fills_rural_void(monkeypatch):
+    """V2-74 bout en bout : une commune où OSM ne connaît PAS la pharmacie (catégorie vide)
+    déclenche la découverte web → la pharmacie de village est matérialisée en POI 'suggested'
+    positionné (adresse géocodée), avec `locality` (honnêteté de la distance). La catégorie
+    couverte par OSM (supermarket) n'est PAS re-découverte."""
+    from enrich import db as edb, claude_enrich as ce
+    pid, oid = str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        conn.execute("INSERT INTO owners (id, email, full_name) VALUES (%s,%s,'T')",
+                     (oid, f"{oid}@test.local"))
+        conn.execute(
+            """INSERT INTO properties (id, owner_id, name, address_line1, city, country_code)
+               VALUES (%s,%s,'Villa Void','Calle 1','Orihuela Costa','ES')""", (pid, oid))
+        conn.commit()
+    ai = FakeAnthropic(local_commerces=[
+        {"name": "Farmacia del Pueblo", "category": "pharmacy",
+         "place_address": "Plaza Mayor 1, Orihuela Costa", "phone": "+34 966 00 00 00",
+         "source_url": "https://ayto.example/farmacias", "verified_on": "2026-09-15"}])
+    try:
+        with httpx.Client(transport=httpx.MockTransport(_mock_handler)) as client:
+            settings.politeness_delay_s = 0
+            result = pipeline.run(pid, use_claude=True, trigger="initial",
+                                  only_categories={"pharmacy", "supermarket"},
+                                  http_client=client, anthropic_client=ai)
+        assert result["local_commerces_created"] == 1
+        with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+            poi = conn.execute(
+                """SELECT name, category_code, locality, status, source, walk_min, drive_min
+                   FROM pois WHERE property_id=%s AND category_code='pharmacy'""",
+                (pid,)).fetchone()
+            assert poi and poi["name"] == "Farmacia del Pueblo"
+            assert poi["source"] == "claude" and poi["status"] == "suggested"
+            assert poi["locality"]                                   # commune posée (honnêteté)
+            assert poi["walk_min"] is not None or poi["drive_min"] is not None  # distances calculées
+            job = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                               (result["job_id"],)).fetchone()
+            lc = job["steps"]["local_commerces"]
+            assert lc["ok"] and lc["created"] == 1 and "pharmacy" in lc["void"]
+            # La commune a bien un area_fact mutualisé 'local_commerces'.
+            assert edb.get_area_fact(conn, "ES", "Orihuela Costa",
+                                     ce.LOCAL_COMMERCE_FACT_TYPE) is not None
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
+            conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+            conn.commit()
 
 
 def test_sector_editorial_memory_accumulates_and_dedups():
