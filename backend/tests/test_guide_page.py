@@ -540,6 +540,21 @@ def test_reputed_editorial_pick_shows_badge_not_heart():
     assert "❤ Le préféré du proprio." in html2 and "Réputé" not in html2
 
 
+def test_header_home_link_present_guest_and_owner():
+    """V2-72 : l'en-tête porte un retour à l'accueil Holaguia (cliquable), sur guest ET
+    propriétaire (acquisition). Vers la racine du site ; repli « / » sans base_url."""
+    prop = _prop()
+    guest = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True,
+                                    base_url="https://holaguia.com")
+    assert '<a class="guide-home" href="https://holaguia.com/">Holaguia</a>' in guest
+    owner = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok",
+                                    base_url="https://holaguia.com")
+    assert '<a class="guide-home" href="https://holaguia.com/">Holaguia</a>' in owner
+    # Sans base_url absolue → lien relatif vers la racine (jamais de href vide).
+    nobar = guide_page.render_guide(prop, [], [], AREA_FACTS, "tok", guest_guide=True)
+    assert '<a class="guide-home" href="/">Holaguia</a>' in nobar
+
+
 def test_guest_situation_header_title_and_country_line():
     """V2-59 : un guide voyageur se SITUE — titre = commune (jamais « Guide — … »),
     ligne de situation « région, pays drapeau » (Babel/CLDR 7 langues, dégradation si
@@ -552,8 +567,11 @@ def test_guest_situation_header_title_and_country_line():
     assert 'og:title" content="Orihuela Costa —' in html
     # Ligne de situation : région + pays + drapeau.
     assert "Alicante, Espagne 🇪🇸" in html
-    # Carte de situation + médaillon pays.
-    assert 'id="situ-map"' in html and 'id="situ-medallion"' in html
+    # V2-72 : UNE seule carte dans « Autour » — le médaillon pays est DANS la carte
+    # principale (coin), plus de 2e carte de situation redondante côté guest.
+    assert 'id="situ-medallion"' in html                 # médaillon conservé
+    assert 'id="situ-map"' not in html                   # carte de situation séparée SUPPRIMÉE (guest)
+    assert '<div id="map"><div class="situ-medallion"' in html   # médaillon enfant de #map
     # 7 langues : SQ localise le pays (Babel).
     assert "Spanjë" in guide_page.render_guide(prop, [], [], AREA_FACTS, "tok",
                                                guest_guide=True, lang="sq")
@@ -656,13 +674,15 @@ def test_guest_guide_render_is_amputated_to_around_and_emergency():
     for key in ("around", "emergency"):
         assert f'data-tab="{key}"' in html and f'id="tab-{key}"' in html
     assert 'data-tab="home"' not in html and 'id="tab-home"' not in html
-    # « Autour de vous » est l'onglet actif par défaut. La carte de situation V2-59
-    # vit désormais DANS « Autour » (en tête), plus dans un onglet Logement (absent).
+    # « Autour de vous » est l'onglet actif par défaut. V2-72 : UNE seule carte dans
+    # « Autour », le médaillon pays est DANS la carte principale (plus de carte de
+    # situation séparée), plus d'onglet Logement (absent).
     assert 'class="tab-panel tab-active" data-tab="around"' in html
     assert 'id="tab-home"' not in html
-    situ_at = html.find('id="situ-map"')
+    assert 'id="situ-map"' not in html                       # carte de situation séparée supprimée
+    med_at = html.find('id="situ-medallion"')
     around_at = html.find('id="tab-around"')
-    assert situ_at != -1 and situ_at > around_at   # dans le panneau « Autour »
+    assert med_at != -1 and med_at > around_at   # médaillon dans le panneau « Autour »
     # Marqueur neutre signalé au client ; la valeur demeure (urgences + contenu Autour).
     assert 'data-guest-guide="1"' in html
     assert "112" in html and "La Marejada" in html

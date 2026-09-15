@@ -21,6 +21,10 @@ a{color:var(--sea);text-decoration:none}
 
 /* ── En-tête ─────────────────────────────────────────────────────────────── */
 .guide-head{padding:26px 0 8px}
+/* V2-72 : retour à l'accueil Holaguia depuis l'en-tête (marque cliquable, discrète). */
+.guide-home{display:inline-block;font-family:Fraunces,serif;font-weight:700;font-size:15px;
+  color:var(--sea);text-decoration:none;margin:0 0 8px;letter-spacing:.01em}
+.guide-home:hover{color:var(--sea-dark)}
 .hrow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 h1{font-family:Fraunces,serif;font-weight:700;font-size:clamp(28px,7vw,36px);margin:.12em 0 .05em}
@@ -168,7 +172,7 @@ html.js .tab-panel[data-tab="around"].fact-filtered > #map{display:none}
 .situ-wrap .situ-map{margin:0}
 .situ-medallion{position:absolute;bottom:10px;right:10px;width:92px;height:92px;
   border-radius:10px;overflow:hidden;border:2px solid #fff;background:#E9EEF0;
-  box-shadow:0 2px 8px rgba(0,0,0,.28);z-index:500;cursor:pointer}
+  box-shadow:0 2px 8px rgba(0,0,0,.28);z-index:650;cursor:pointer}
 .med-dot{width:10px;height:10px;border-radius:50%;background:#C62828;border:2px solid #fff;
   box-shadow:0 0 0 1px rgba(0,0,0,.3)}
 /* Le défilement de page (touch) ne doit jamais être capturé par la mini-carte

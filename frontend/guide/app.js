@@ -399,6 +399,26 @@ function buildMedallion(P, onTap) {
   }
 }
 
+// V2-72 : médaillon pays posé DANS la carte principale « Autour » (guide voyageur) — une
+// seule carte, plus de doublon avec la carte de situation. Bâti PARESSEUSEMENT (le conteneur
+// vit dans l'onglet « Autour », masqué au chargement → 0×0 ; on attend sa visibilité).
+// Pour un guide propriétaire, `#situ-medallion` n'existe pas ici → no-op (sa carte de
+// situation reste dans « Logement »). Ne re-bâtit jamais (`window._medMap`).
+function initMedallion() {
+  const medEl = document.getElementById("situ-medallion");
+  const P = GUIDE.property || {};
+  if (!medEl || window._medMap || !window.L || P.lat == null || P.lon == null) return;
+  const build = () => { if (!window._medMap) buildMedallion(P, null); };  // décoratif : aucun tap
+  if ("IntersectionObserver" in window) {
+    const io = new IntersectionObserver((es) => {
+      if (es.some((e) => e.isIntersecting)) { build(); io.disconnect(); }
+    });
+    io.observe(medEl);
+  } else {
+    build();
+  }
+}
+
 // Message discret « hors ligne / hors zone » sur la carte (M-10).
 function showMapOffline(mapEl) {
   if (mapEl.querySelector(".map-offline")) return;
@@ -1174,6 +1194,7 @@ function escapeHtml(s) {
 initLang();
 initMap();
 initSituationMap();
+initMedallion();      // V2-72 : médaillon pays DANS la carte « Autour » (guide voyageur)
 initEmergencyMap();   // V2-61 : enregistre le bâtisseur paresseux (aucune carte tant
                       // que l'onglet Urgences n'est pas activé — discipline V2-53e)
 initTabs();

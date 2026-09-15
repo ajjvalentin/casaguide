@@ -2157,15 +2157,6 @@ def _situation_line(prop: dict, lang: str) -> str:
     return (line + " " + flag).strip() if flag else line
 
 
-def _render_guest_situation() -> str:
-    """Bloc de situation (V2-59) en TÊTE de « Autour » d'un guide voyageur : carte de
-    quartier (composant V2-53, `#situ-map`) + MÉDAILLON pays (`#situ-medallion`) dans
-    le coin. Conteneurs vides, initialisés paresseusement par `app.js`."""
-    return ('<div class="situ-wrap">'
-            '<div class="situ-map" id="situ-map" aria-hidden="true"></div>'
-            '<div class="situ-medallion" id="situ-medallion" aria-hidden="true"></div>'
-            '</div>')
-
 
 def _holaquetal_link(base: str, city: str | None) -> str:
     """Lien du pont Holaquetal Immo (V2-54 C) avec suivi utm + commune."""
@@ -2450,10 +2441,6 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                                 _chapter_name(ch, lang))
         chips.append(f'<button class="chip" data-chapter="{ch}">{_esc(chip_name)}</button>')
     around_inner: list[str] = []
-    # V2-59 : le guide voyageur se situe AVANT de lister — carte de quartier + médaillon
-    # pays en tête de « Autour », au-dessus des catégories (position stockée requise).
-    if guest_guide and prop.get("lat") is not None:
-        around_inner.append(_render_guest_situation())
     # Grille de services (V2-12) EN TÊTE de l'onglet, avant la carte : c'est la
     # navigation principale (sur mobile en plein soleil, une grille d'icônes bat
     # dix intitulés texte). La carte + les puces de filtre restent la couche
@@ -2468,7 +2455,15 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     if grid_html:
         around_inner.append(grid_html)
     if has_map:
-        around_inner.append('<div id="map"></div>')
+        # V2-72 : UNE seule carte dans « Autour ». Pour un guide voyageur, le MÉDAILLON
+        # pays (V2-59, situer le pays d'un coup d'œil) est posé DANS la carte principale
+        # (coin) au lieu d'une 2e carte de situation redondante — `#situ-medallion` enfant
+        # de `#map` : il se cache avec elle en mode filtré (`.fact-filtered > #map`), et
+        # `initMedallion` (app.js) l'initialise. Un guide propriétaire garde sa carte de
+        # situation dans l'onglet « Logement » (inchangée), sans médaillon ici.
+        medallion = ('<div class="situ-medallion" id="situ-medallion" aria-hidden="true">'
+                     '</div>' if guest_guide and prop.get("lat") is not None else '')
+        around_inner.append(f'<div id="map">{medallion}</div>')
     if around_chapters:
         around_inner.append(
             f'<nav class="chips" aria-label="{_esc(_t(lang, "filter"))}">{"".join(chips)}</nav>')
@@ -2544,6 +2539,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     showcase_banner = (f'<div class="showcase-banner">'
                        f'{_esc(_t(lang, "showcase_banner"))}</div>'
                        if variant == "showcase" else "")
+    # V2-72 : retour à l'accueil Holaguia depuis l'en-tête (guest ET propriétaire — c'est
+    # aussi de l'acquisition). Lien discret vers la racine du site (holaguia.com/).
+    home_url = ((base_url or "").rstrip("/") + "/") or "/"
+    home_link = (f'<a class="guide-home" href="{_esc(home_url)}">Holaguia</a>')
     # Accueil personnalisé (lien de séjour).
     welcome = (_stay_welcome_html(stay, lang)
                if variant == "stay" and stay else "")
@@ -2599,6 +2598,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">
+    {home_link}
     <div class="hrow">
       <div>
         <div class="eyebrow">{_esc(_t(lang, "eyebrow"))}</div>
