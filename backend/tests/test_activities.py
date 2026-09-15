@@ -94,15 +94,34 @@ def test_malformed_response_raises_without_write():
 def test_ssr_renders_activities_encart_with_place_season_and_proof():
     content = {"activities": [
         {"activity": "Surf", "where": "plage de La Zenia", "season": "toute l'année",
-         "source_url": "https://turismo.example/surf"},
+         "source_url": "https://www.medoc-tourisme.com/surf"},
         {"activity": "Randonnée", "where": "Sierra Escalona", "season": "",
          "source_url": ""},
     ]}
     html = guide_page._fact_activities(content, "fr")
     assert "Activités du secteur" in html
     assert "Surf" in html and "plage de La Zenia" in html and "année" in html  # saison (apostrophe échappée)
-    assert 'href="https://turismo.example/surf"' in html          # lien de preuve
-    assert "Randonnée" in html and "Sierra Escalona" in html      # sans saison ni lien
+    assert 'href="https://www.medoc-tourisme.com/surf"' in html   # lien de preuve
+    assert "medoc-tourisme.com" in html                           # V2-71c : libellé VISIBLE (domaine sans www.)
+    assert "www.medoc-tourisme.com" not in html.split("href=")[0]  # www. retiré du LIBELLÉ
+    assert "Randonnée" in html and "Sierra Escalona" in html      # sans saison → aucun lien
+    assert html.count("route-link") == 1                          # rien pour la source manquante
+
+
+def test_link_domain_helper():
+    assert guide_page._link_domain("https://www.medoc-tourisme.com/surf") == "medoc-tourisme.com"
+    assert guide_page._link_domain("http://fed-surf.fr") == "fed-surf.fr"
+    assert guide_page._link_domain("ftp://x") is None
+    assert guide_page._link_domain("") is None
+
+
+def test_activities_link_falls_back_to_learn_more_label():
+    """V2-71c : sans domaine lisible… en pratique le domaine existe toujours pour une URL
+    http(s) ; le repli « En savoir plus » (7 langues) reste le filet."""
+    content = {"activities": [{"activity": "Surf", "where": "beach", "season": "",
+                               "source_url": "https://ok.example/surf"}]}
+    # le domaine sert de libellé (sobre, informatif) ; repli couvert par le helper ci-dessus.
+    assert "ok.example" in guide_page._fact_activities(content, "en")
 
 
 def test_ssr_empty_activities_renders_nothing():

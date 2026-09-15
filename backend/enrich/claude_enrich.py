@@ -1143,10 +1143,13 @@ tourisme, guide, prestataire local, presse). Pour chaque activité :
   Zenia », « massif du Montgó », « calanque de Sormiou ») — jamais vague ;
 - `season` : la saison/période si pertinente, en {lang_name} (« toute l'année », « été »,
   « décembre à avril ») sinon "" ;
-- `source_url` : l'URL de la preuve ; `verified_on` : « {today} ».
+- `source_url` : l'URL de la preuve, en https, la PLUS UTILE au voyageur — de préférence
+  l'office de tourisme, le site officiel du site, ou une fédération/prestataire local ;
+  ÉVITE les blogs agrégateurs. Donne la page DÉDIÉE à l'activité (pas la page d'accueil
+  générique du domaine si une page précise existe). `verified_on` : « {today} ».
 
 RÈGLES STRICTES :
-- PREUVE OU RIEN : pas de source vérifiable → écartée. N'invente JAMAIS.
+- PREUVE OU RIEN : pas de source https vérifiable → écartée. N'invente JAMAIS.
 - Une liste VIDE est un résultat parfaitement valide.
 - Reste dans le secteur de {city} et ses environs immédiats. Pas de prose de remplissage.
 

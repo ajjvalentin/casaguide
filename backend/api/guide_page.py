@@ -80,6 +80,10 @@ _UI7: dict[str, dict[str, str]] = {
                          "es": "Actividades de la zona", "it": "Attività della zona",
                          "de": "Aktivitäten in der Umgebung", "nl": "Activiteiten in de buurt",
                          "sq": "Aktivitete në zonë"},
+    # V2-71c : libellé de repli du lien de preuve des activités (sinon le domaine).
+    "learn_more": {"fr": "En savoir plus", "en": "Learn more", "es": "Más información",
+                   "it": "Scopri di più", "de": "Mehr erfahren", "nl": "Meer info",
+                   "sq": "Mëso më shumë"},
     # V2-71b : accès d'un équipement sportif (repli factuel).
     "access_public": {"fr": "accès libre", "en": "open access", "es": "acceso libre",
                       "it": "accesso libero", "de": "frei zugänglich", "nl": "vrij toegankelijk",
@@ -1934,11 +1938,22 @@ def _fact_food_delivery(fd: dict, lang: str) -> str:
             f'<div class="poi-nav">{"".join(items)}</div>{note_html}</div>')
 
 
+def _link_domain(url: str) -> str | None:
+    """Domaine LISIBLE d'une URL (« medoc-tourisme.com »), sans schéma ni « www. » —
+    libellé sobre et informatif du lien de preuve (V2-71c). None si l'URL n'est pas http(s)."""
+    m = re.match(r"https?://([^/]+)", (url or "").strip(), re.I)
+    if not m:
+        return None
+    host = m.group(1).lower().split(":")[0]
+    return host[4:] if host.startswith("www.") else (host or None)
+
+
 def _fact_activities(act: dict, lang: str) -> str:
     """Encart « Activités du secteur » (V2-71) — STANDALONE (pas adossé à une section) :
     les activités sans lieu propre (surf, randonnée…), avec l'endroit et la saison, et un
-    lien de preuve. Rien si vide (liste vide = résultat valide). Réutilise `.facts` et
-    l'icône de lien externe → aucun CSS neuf, aucun bump SW."""
+    lien de preuve VISIBLE (V2-71c : libellé = domaine, ex. « medoc-tourisme.com », sinon
+    « En savoir plus » 7 langues). Rien si la source manque (pas de lien mort). Réutilise
+    `.facts` et l'icône de lien externe → aucun CSS neuf, aucun bump SW."""
     items = [a for a in (act.get("activities") or [])
              if isinstance(a, dict) and (a.get("activity") or "").strip()]
     if not items:
@@ -1952,8 +1967,9 @@ def _fact_activities(act: dict, lang: str) -> str:
         line = f"<b>{name}</b>" + (f' — {_esc(detail)}' if detail else "")
         url = (a.get("source_url") or "").strip()
         if url.lower().startswith(("http://", "https://")):
+            label = _link_domain(url) or _t7(lang, "learn_more")   # domaine ou repli 7 langues
             line += (f' <a class="route-link" href="{_esc(url)}" target="_blank" '
-                     f'rel="noopener nofollow" aria-label="{name}">{_EXT_LINK_ICON}</a>')
+                     f'rel="noopener nofollow">{_esc(label)}{_EXT_LINK_ICON}</a>')
         rows.append(f"<li>{line}</li>")
     return (f'<section class="facts activities">'
             f'<b class="tt">{_esc(_t7(lang, "activities_title"))}</b>'
