@@ -29,6 +29,13 @@
     divIcon(o) { return { __html: (o && o.html) || "" }; },
     marker(ll, opts) { return rec({ _ll: ll }, "marker", opts && opts.icon && opts.icon.__html); },
     circleMarker(ll) { return rec({ _ll: ll }, "circle", ""); },
+    // V2-73f : cercle d'approximation des activités (enregistré à part pour vérif du rayon).
+    circle(ll, opts) {
+      const c = { _ll: ll, _radius: opts && opts.radius, _kind: "approx",
+                  addTo() { return c; }, bindPopup() { return c; }, removeLayer() { return c; } };
+      window.__circles = window.__circles || []; window.__circles.push(c);
+      return c;
+    },
   };
   try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
   location.hash = "#autour";
@@ -67,6 +74,14 @@
       const commerce = window.__markers.filter((m) => m._catCode === "supermarket");
       if (!(commerce.length === 1 && commerce[0]._kind === "circle"))
         return void (out.textContent = "FAIL: le commerce doit rester une pastille ronde");
+      // V2-73f : l'activité a un CERCLE d'approximation (≈ 1 km) centré sur son point,
+      // et non un simple point ; le commerce, lui, n'en a pas.
+      const circles = window.__circles || [];
+      if (circles.length !== 1 || circles[0]._radius !== 1000)
+        return void (out.textContent = "FAIL: cercle d'approximation attendu (r=1000), obtenu "
+          + JSON.stringify(circles.map((c) => c._radius)));
+      if (!(act[0]._circle && act[0]._circle === circles[0]))
+        return void (out.textContent = "FAIL: le cercle doit être attaché au marqueur (_circle)");
       out.textContent = "PASS";
     } catch (e) {
       out.textContent = "FAIL: " + ((e && e.message) || e);

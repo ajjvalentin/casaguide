@@ -84,6 +84,12 @@ _UI7: dict[str, dict[str, str]] = {
     "learn_more": {"fr": "En savoir plus", "en": "Learn more", "es": "Más información",
                    "it": "Scopri di più", "de": "Mehr erfahren", "nl": "Meer info",
                    "sq": "Mëso më shumë"},
+    # V2-73f : une activité est SITUÉE (cercle d'approximation), pas pointée — la popup
+    # le dit. Lu par `app.js` (data-approx-label), jamais un point mensongèrement précis.
+    "approx_position": {"fr": "Position approximative", "en": "Approximate location",
+                        "es": "Ubicación aproximada", "it": "Posizione approssimativa",
+                        "de": "Ungefährer Standort", "nl": "Locatie bij benadering",
+                        "sq": "Vendndodhje e përafërt"},
     # V2-71b : accès d'un équipement sportif (repli factuel).
     "access_public": {"fr": "accès libre", "en": "open access", "es": "acceso libre",
                       "it": "accesso libero", "de": "frei zugänglich", "nl": "vrij toegankelijk",
@@ -2671,7 +2677,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}"{speak_attr}>
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}" data-approx-label="{_esc(_t7(lang, "approx_position"))}"{speak_attr}>
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">

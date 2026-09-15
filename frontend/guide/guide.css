@@ -365,10 +365,13 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
 .act-card .route-link{margin-top:6px}
 /* Marqueur d'activité sur la carte (V2-73) : épingle carrée à la COULEUR de la famille
    activités (miroir de `_ACT_CHAPTER` côté serveur, #AD1457) — DISTINCTE des pastilles
-   rondes de commerce. Glyphe boussole centré. */
+   rondes de commerce. Glyphe boussole centré, au CENTRE d'un cercle d'approximation (V2-73f). */
 .act-pin{display:flex;align-items:center;justify-content:center;width:26px;height:26px;
   background:#AD1457;border:2px solid #fff;border-radius:7px;font-size:14px;line-height:1;
   box-shadow:0 1px 5px rgba(0,0,0,.4)}
+/* V2-73f : mention « position approximative » dans la popup d'activité — la carte ne ment
+   jamais sur ce qu'elle sait (une plage est SITUÉE dans un secteur, pas pointée sur une rue). */
+.approx-note{color:var(--muted);font-size:12px;font-style:italic}
 
 /* ── POI (cartes « distance d'abord ») ───────────────────────────────────── */
 /* Ancre de catégorie (V2-12) : marge pour ne pas passer sous les puces/onglets. */

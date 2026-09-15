@@ -1291,6 +1291,16 @@ def test_activities_chapter_tile_and_map_wired_end_to_end():
     assert data["activities"][0]["lat"] == 45.4
 
 
+def test_approx_label_localised_on_body():
+    """V2-73f — le libellé « position approximative » du cercle d'activité est servi sur le
+    <body> (data-approx-label), dans la langue du guide (lu par app.js, 7 langues _UI7)."""
+    prop = _prop(lat=45.30, lon=-0.86)
+    assert 'data-approx-label="Position approximative"' in guide_page.render_guide(
+        prop, [], [], {}, "tok")
+    assert 'data-approx-label="Approximate location"' in guide_page.render_guide(
+        prop, [], [], {}, "tok", lang="en")
+
+
 def test_emergency_tab_has_map_with_only_emergency_pois():
     """V2-61 — l'onglet Urgences porte SA carte (`#emap`), sous la barre SOS, cadrée
     sur le logement + les POI de CET onglet (santé & sécurité, chap. D) uniquement ;
