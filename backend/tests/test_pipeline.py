@@ -578,6 +578,52 @@ def test_place_activities_marks_placeable_and_is_idempotent(monkeypatch):
     assert "lat" not in acts[2]             # sans lieu → reste sans marqueur
 
 
+def test_backfill_activity_positions_upgrades_pre_v2_73_fact(monkeypatch):
+    """V2-73b : un fait 'activities' MÉMORISÉ d'avant V2-73 (sans version, sans position)
+    est mis à niveau — positions posées par la SEULE passe de cascade (aucun web/LLM),
+    version stampée — puis JAMAIS re-tenté (pas de re-géocodage indéfini des diffuses)."""
+    from enrich import db as edb, claude_enrich as ce
+    CC, CITY = "ES", "TestBackfill73b"
+    origin = (37.90, -0.75)
+    prop = {"country_code": CC, "city": CITY}
+    job_id = str(uuid.uuid4())   # aucun job réel requis (UPDATE ... WHERE id : 0 ligne)
+    calls = {"n": 0}
+
+    def fake_geocode(**kw):
+        calls["n"] += 1
+        if "Plage" in (kw.get("address") or ""):
+            return {"lat": 37.92, "lon": -0.73, "accuracy": "street",
+                    "osm_class": "natural", "osm_type": "beach"}
+        raise pipeline.geocode.GeocodeError("introuvable")   # activité diffuse → sans marqueur
+    monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
+
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        conn.execute("DELETE FROM area_facts WHERE country_code=%s AND admin_area=%s",
+                     (CC, CITY))
+        # Fait d'AVANT V2-73 : pas de "v", aucune lat/lon.
+        edb.upsert_area_facts(conn, CC, CITY, {ce.ACTIVITIES_FACT_TYPE: {"activities": [
+            {"activity": "Surf", "where": "Plage du Gurp", "source_url": "https://x"},
+            {"activity": "16 circuits", "where": "tout le secteur", "source_url": "https://y"},
+        ]}}, source="seed")
+        conn.commit()
+
+        pipeline._backfill_activity_positions(conn, prop, [], origin, None, job_id, {})
+        fact = edb.get_area_fact(conn, CC, CITY, ce.ACTIVITIES_FACT_TYPE)
+        assert fact["v"] == ce.ACTIVITIES_SCHEMA_V           # version stampée
+        acts = fact["activities"]
+        assert acts[0].get("lat") == 37.92 and acts[0].get("lon") == -0.73  # plage placée
+        assert "lat" not in acts[1]                          # diffuse : reste sans marqueur
+        assert calls["n"] == 2                               # les deux tentées une fois
+
+        # Re-passage : le fait est au schéma courant → AUCUNE nouvelle tentative.
+        pipeline._backfill_activity_positions(conn, prop, [], origin, None, job_id, {})
+        assert calls["n"] == 2
+
+        conn.execute("DELETE FROM area_facts WHERE country_code=%s AND admin_area=%s",
+                     (CC, CITY))
+        conn.commit()
+
+
 def test_sector_editorial_memory_accumulates_and_dedups():
     """V2-56c : la mémoire de secteur accumule et déduplique (upsert par nom normalisé),
     et rafraîchit position/contacts/raison au re-passage."""

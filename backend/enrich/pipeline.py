@@ -406,6 +406,43 @@ def _place_activities(activities: list[dict], harvested: list[dict], prop: dict,
     return placed
 
 
+def _backfill_activity_positions(conn, prop: dict, harvested: list[dict], origin: tuple,
+                                 http_client: httpx.Client | None, job_id: str,
+                                 summary: dict) -> None:
+    """MISE À NIVEAU d'un fait 'activities' MÉMORISÉ d'avant V2-73 (V2-73b) : le fait
+    existe (mutualisé par commune, l'étape web est sautée) mais ses entrées n'ont AUCUNE
+    position → sans rattrapage, `map_data.activities` reste vide et aucune épingle
+    n'apparaît (le cache masque le correctif). On exécute la SEULE passe de placement
+    (cascade stricte V2-56b — aucun appel web/LLM, quasi gratuit) et on met à jour le
+    fait ; les guides suivants du secteur en profitent immédiatement.
+
+    Ne s'exécute QUE si le fait n'est pas déjà au schéma courant (`v` absent = jamais
+    tenté). Un fait déjà versionné n'est jamais re-tenté → pas de re-géocodage indéfini
+    des activités diffuses (les 16 circuits, une route vicinale)."""
+    fact = db.get_area_fact(conn, prop["country_code"], prop["city"],
+                            claude_enrich.ACTIVITIES_FACT_TYPE)
+    if not fact or fact.get("v") == claude_enrich.ACTIVITIES_SCHEMA_V:
+        return  # absent, ou positions déjà tentées (schéma courant) → rien à faire
+    acts = fact.get("activities") or []
+    try:
+        with conn.transaction():
+            n_placed = _place_activities(acts, harvested, prop, origin, http_client)
+            fact["v"] = claude_enrich.ACTIVITIES_SCHEMA_V
+            db.upsert_area_facts(conn, prop["country_code"], prop["city"],
+                                 {claude_enrich.ACTIVITIES_FACT_TYPE: fact},
+                                 source=settings.anthropic_model)
+            db.job_step(conn, job_id, "activities",
+                        {"ok": True, "backfilled": True,
+                         "activities": len(acts), "placed": n_placed})
+        _progress(f"  ✓ activités : positions rattrapées "
+                  f"({n_placed}/{len(acts)} sur la carte)")
+    except Exception as exc:  # noqa: BLE001 — best-effort (le SAVEPOINT annule le rattrapage)
+        log.warning("Rattrapage positions activités (%s) : %s", prop["city"], exc)
+        db.job_step(conn, job_id, "activities",
+                    {"ok": False, "backfill_error": overpass._short(str(exc))})
+        conn.commit()
+
+
 def _memorize_fresh_picks(conn, prop: dict, code: str, pois: list[dict],
                           ovt: list[dict] | None, raw_picks: list[dict],
                           origin: tuple, http_client: httpx.Client | None,
@@ -1265,6 +1302,11 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         conn.commit()
                         _progress(f"  ⚠ activités non résolues : "
                                   f"{overpass._short(str(ac_exc))}")
+                else:
+                    # V2-73b : le fait existe déjà (étape web sautée) — rattraper les
+                    # positions s'il date d'avant V2-73 (aucun appel web/LLM).
+                    _backfill_activity_positions(conn, prop, all_harvested, origin,
+                                                 http_client, job_id, summary)
 
                 db.job_step(conn, job_id, "claude",
                             {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})

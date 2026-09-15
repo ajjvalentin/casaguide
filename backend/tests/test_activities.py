@@ -67,6 +67,8 @@ def test_resolves_activities_with_proof():
     act, meta = ce.fetch_activities("La Zenia", "ES", cli, today="2026-09-15")
     items = act[ce.ACTIVITIES_FACT_TYPE]["activities"]
     assert [a["activity"] for a in items] == ["Surf", "Randonnée"]   # preuve ou rien
+    # V2-73b : le fait porte sa version de schéma (positions tentées par le pipeline).
+    assert act[ce.ACTIVITIES_FACT_TYPE]["v"] == ce.ACTIVITIES_SCHEMA_V
     assert items[0]["where"] == "plage de La Zenia"
     assert items[1]["verified_on"] == "2026-09-15"                    # comblé par défaut
     assert meta["cost_cts"] >= 0

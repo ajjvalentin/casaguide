@@ -103,7 +103,9 @@
   const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : "✗ ") + msg); };
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const q = (sel) => document.querySelector(sel);
-  const EXPECTED = 5;   // villa + 4 POI
+  // V2-73b : cadrage « le proche d'abord ». La villa + 3 POI PROCHES commandent la vue ;
+  // le « Marché lointain » (~33 km) reste POSÉ sur la carte mais hors des bornes.
+  const EXPECTED = 4;   // villa + 3 POI proches (le lointain exclu du cadrage)
 
   try {
     await import("/frontend/guide/app.js");
@@ -117,13 +119,14 @@
       "4 marqueurs POI posés (aucun perdu)");
     chk(window.__fits.length === 0, "aucun cadrage tant que Autour est masqué (conteneur 0×0)");
 
-    // 1) ONGLET DIRECT → « Autour » : recadrage (nouveau fitBounds sur villa + tous les POI).
+    // 1) ONGLET DIRECT → « Autour » : recadrage (fitBounds sur villa + POI proches, V2-73b).
     const before1 = window.__fits.length;
     q('.tab[data-tab="around"]').click();
     await wait(120);
     chk(window.__fits.length > before1, "recadrage à l'activation DIRECTE de l'onglet");
     const f1 = window.__fits[window.__fits.length - 1];
-    chk(f1.n === EXPECTED && f1.hasHome, "recadrage sur villa + tous les POI (villa dans le cadre)");
+    chk(f1.n === EXPECTED && f1.hasHome,
+      "recadrage sur villa + POI PROCHES (le lointain exclu du cadrage, V2-73b)");
 
     // 2) Retour Logement, puis BASCULE MINI-CARTE (via _activateTab, le chemin du tap) →
     //    même recadrage : les DEUX chemins convergent sur `activate`.
@@ -134,7 +137,7 @@
     await wait(120);
     chk(window.__fits.length > before2, "recadrage AUSSI via la bascule mini-carte (_activateTab)");
     const f2 = window.__fits[window.__fits.length - 1];
-    chk(f2.n === EXPECTED && f2.hasHome, "bascule : recadrage villa + tous les POI");
+    chk(f2.n === EXPECTED && f2.hasHome, "bascule : recadrage villa + POI PROCHES (lointain exclu)");
 
     // ── Carte de l'onglet Urgences (V2-61) : même discipline V2-53e ──────────
     // 3) CONTRÔLE NÉGATIF : tant qu'Urgences n'a JAMAIS été activé, sa carte n'est

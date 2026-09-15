@@ -1130,6 +1130,13 @@ def fetch_markets(city: str, country_code: str, client: anthropic.Anthropic,
 # dédiée, mutualisée par commune (area_fact), preuve ou rien comme la réputation.
 ACTIVITIES_FACT_TYPE = "activities"
 
+# Version du SCHÉMA du fait 'activities' (V2-73b). Stampée dès qu'une passe de
+# POSITIONNEMENT a été TENTÉE (cascade stricte V2-56b, pipeline). Elle distingue « pas de
+# position parce que jamais tenté » (v absent → schéma d'avant V2-73, à rattraper) de
+# « pas de position parce que non géocodable » (v courant → une activité diffuse — les 16
+# circuits, une route vicinale — ne se re-géocode pas indéfiniment).
+ACTIVITIES_SCHEMA_V = 2
+
 _ACTIVITIES_PROMPT = """\
 Tu prépares l'encart « Activités du secteur » du guide d'un lieu de vacances situé à
 {city} ({country_code}). Rôle : lister les ACTIVITÉS de plein air / sportives / nature
@@ -1195,7 +1202,9 @@ def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
             continue  # preuve ou rien
         clean.append({"activity": name, "where": _s("where"), "season": _s("season"),
                       "source_url": source_url, "verified_on": _s("verified_on") or today})
-    return {ACTIVITIES_FACT_TYPE: {"activities": clean}}, meta
+    # V2-73b : le fait porte sa version de schéma ; le positionnement (cascade stricte)
+    # est tenté juste après par le pipeline → « v présent » = « positions tentées ».
+    return {ACTIVITIES_FACT_TYPE: {"activities": clean, "v": ACTIVITIES_SCHEMA_V}}, meta
 
 
 # ── Déduplication des marchés (pure — testée sans base ni réseau) ─────────────

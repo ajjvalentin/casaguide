@@ -57,7 +57,54 @@ function weekdayLabel(n) {
 // Marqueurs POI conservés à plat (`_allMarkers`, tagués `_catCode`/`_chapter`) pour
 // filtrer par catégorie (mode filtré) ou par chapitre (puces) sans les recréer.
 let allMarkers = [];      // marqueurs POI (jamais le logement)
-let allBounds = null;     // cadrage d'origine (logement + tous les POI)
+let allBounds = null;     // cadrage complet (logement + tous les marqueurs, référence)
+let nearBounds = null;    // cadrage « le proche d'abord » (V2-73b) : logement + marqueurs utiles
+
+// Rayon utile de CADRAGE de la carte « Autour » (V2-73b, principe V2-63 des urgences) :
+// on cadre sur le PROCHE, pas la province — un lieu lointain (plage à 20 km, marché de la
+// sous-préfecture) reste POSÉ sur la carte mais ne commande pas la vue initiale (sinon la
+// carte de Bégadan s'ouvrait sur tout le Médoc). Repli sur le plus proche si rien dans le
+// rayon (zone rurale/alpine). La tuile d'une catégorie/activité recadre, elle, sur SON
+// sous-ensemble (`fitFiltered`) — c'est là qu'on va voir le lieu lointain choisi.
+const AROUND_FIT_RADIUS_M = 12000;
+
+function haversineM(lat1, lon1, lat2, lon2) {
+  const R = 6371000, toRad = (x) => (x * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Cadrage « le proche d'abord » : logement + marqueurs dans le rayon utile ; si aucun
+// n'y est, repli sur le plus proche (jamais un cadrage vide). Les lointains restent
+// affichés (ce sont des marqueurs à part entière), ils ne pèsent que sur les BORNES.
+function computeNearBounds(P, markers) {
+  if (!P || P.lat == null || P.lon == null) return null;
+  const near = [[P.lat, P.lon]];
+  let best = null, bd = Infinity;
+  for (const m of markers) {
+    const ll = m.getLatLng();
+    const d = haversineM(P.lat, P.lon, ll.lat, ll.lng);
+    if (d <= AROUND_FIT_RADIUS_M) near.push([ll.lat, ll.lng]);
+    if (d < bd) { bd = d; best = [ll.lat, ll.lng]; }
+  }
+  if (near.length === 1 && best) near.push(best);   // rien dans le rayon → le plus proche
+  return near;
+}
+
+// Cadrage de la carte « Autour » (V2-73b) : le proche d'abord (guide voyageur ET
+// propriétaire), le logement TOUJOURS dans le cadre (héritage V2-54 : on ne dérive
+// jamais vers l'arrière-pays). Un seul point (aucun marqueur) → vue centrée zoom 13.
+function fitNear(map) {
+  const P = GUIDE.property || {};
+  if (!map || P.lat == null || P.lon == null) return;
+  if (nearBounds && nearBounds.length > 1) {
+    map.fitBounds(nearBounds, { padding: [30, 30], maxZoom: 15 });
+  } else {
+    map.setView([P.lat, P.lon], 13);
+  }
+}
 
 // Marqueur POI partagé par les cartes « Autour » et « Urgences » (V2-61) : pastille
 // à la COULEUR de la catégorie (map_color, = pastille de la carte) + popup (nom,
@@ -167,20 +214,12 @@ function initMap() {
     }
   }
   allBounds = bounds;
+  nearBounds = computeNearBounds(P, allMarkers);   // V2-73b : cadrage « le proche d'abord »
   // RACINE du bug Ballarin (V2-53d) : cadrer MAINTENANT si l'onglet « Autour » est
   // MASQUÉ (conteneur 0×0) donne un cadrage faux (centre arrière-pays, villa hors
   // cadre) que le seul invalidateSize ne corrige pas. On ne cadre que si le conteneur
   // est visible ; sinon `recenterAround` s'en charge à la première activation.
-  if (mapEl.offsetParent !== null) {
-    if (isGuestGuide()) {
-      // Guide voyageur (V2-54) : vue centrée sur l'ADRESSE saisie (le vacancier
-      // n'est pas encore sur place), JAMAIS le barycentre des POI — un lieu lointain
-      // (aéroport, grand site) tirerait sinon la vue vers l'arrière-pays.
-      map.setView([P.lat, P.lon], 13);
-    } else if (bounds.length > 1) {
-      map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
-    }
-  }
+  if (mapEl.offsetParent !== null) fitNear(map);
   // La carte est créée avant la mise en page finale : recalage.
   setTimeout(() => map.invalidateSize(), 80);
   window._guideMap = map;
@@ -235,18 +274,13 @@ function fitFiltered(code) {
   map.fitBounds(pts, { padding: [40, 40], maxZoom: pts.length <= 2 ? 15 : 16 });
 }
 
-// Retour au cadrage d'origine (grille) : logement + tous les POI.
+// Retour au cadrage « grille » (sortie du mode filtré, ré-activation d'onglet) : le
+// proche d'abord (V2-73b), logement toujours dans le cadre. Les lieux lointains restent
+// sur la carte mais ne rouvrent pas la vue sur toute la région.
 function fitAll() {
   const map = window._guideMap;
   if (!map) return;
-  // Guide voyageur (V2-54) : la vue « Tout » reste centrée sur l'adresse (zoom ~13),
-  // pas sur le barycentre des POI (cohérent avec le cadrage initial ci-dessus).
-  if (isGuestGuide()) {
-    const P = (typeof GUIDE !== "undefined" && GUIDE.property) || {};
-    if (P.lat != null && P.lon != null) map.setView([P.lat, P.lon], 13);
-    return;
-  }
-  if (allBounds && allBounds.length > 1) map.fitBounds(allBounds, { padding: [30, 30], maxZoom: 15 });
+  fitNear(map);
 }
 
 // Guide voyageur (V2-54) : signalé par le SSR sur le <body> (data-guest-guide).
