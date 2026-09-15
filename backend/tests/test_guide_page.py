@@ -1265,6 +1265,32 @@ def _guide_data(html):
     return json.loads(m.group(1)) if m else {}
 
 
+def test_activities_chapter_tile_and_map_wired_end_to_end():
+    """V2-73 — bout en bout : le chapitre « Activités » est dans « Autour » (h2 + cartes),
+    sa tuile est dans le sommaire EN TÊTE (avant les familles de commerces), et seules les
+    activités géolocalisées passent dans map_data (marqueur), les autres restent en liste."""
+    facts = {"activities": {"activities": [
+        {"activity": "Surf", "where": "plage du Gurp", "season": "été",
+         "source_url": "https://www.medoc-tourisme.com/surf", "lat": 45.4, "lon": -1.13},
+        {"activity": "Randonnée", "where": "arrière-pays", "source_url": "https://x"},
+    ]}}
+    pois = [_poi("Mercadona", "supermarket", "C")]   # une famille de commerces
+    html = guide_page.render_guide(_prop(lat=45.30, lon=-0.86), [], pois, facts, "tok")
+    around = _panel(html, "around")
+    # Chapitre présent, avec cartes (pas une liste à puces).
+    assert '<section class="chapter" data-chapter="ACT">' in around
+    assert "<h2>Activités du secteur</h2>" in around
+    assert 'class="act-card"' in around and "Surf" in around and "Randonnée" in around
+    # Tuile de sommaire présente ET placée AVANT la famille commerces (rang de tête).
+    assert 'data-cat="activities"' in around
+    grid = around[around.index('<nav class="svc-toc"'):]
+    assert grid.index('data-cat="activities"') < grid.index('data-cat="supermarket"')
+    # map_data : la plaçable a un marqueur, la non plaçable non.
+    data = _guide_data(html)
+    assert [a["name"] for a in data["activities"]] == ["Surf"]
+    assert data["activities"][0]["lat"] == 45.4
+
+
 def test_emergency_tab_has_map_with_only_emergency_pois():
     """V2-61 — l'onglet Urgences porte SA carte (`#emap`), sous la barre SOS, cadrée
     sur le logement + les POI de CET onglet (santé & sécurité, chap. D) uniquement ;

@@ -84,6 +84,34 @@ function makePoiMarker(p) {
   return m;
 }
 
+// Domaine lisible d'une URL (popup d'activité) : « medoc-tourisme.com » plutôt que
+// l'URL brute. Repli sur la flèche seule si l'URL est illisible.
+function linkDomain(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
+}
+
+// Marqueur d'ACTIVITÉ (V2-73) : DISTINCT des pastilles rondes de commerce — une
+// épingle carrée (divIcon `.act-pin`) à la couleur de la famille activités, glyphe
+// boussole. Popup : intitulé + lieu · saison + lien de source. Tagué `_catCode=
+// activities`/`_chapter=ACT` → filtré par la tuile « Activités » du sommaire.
+function makeActivityMarker(a) {
+  const m = L.marker([a.lat, a.lon], {
+    icon: L.divIcon({ className: "", iconAnchor: [13, 13], html: '<div class="act-pin">🧭</div>' }),
+    keyboard: false,
+  });
+  let html = `<b>${escapeHtml(a.name || "")}</b>`;
+  const detail = [a.where, a.season].filter(Boolean).join(" · ");
+  if (detail) html += `<br>${escapeHtml(detail)}`;
+  if (a.source_url && /^https?:\/\//i.test(a.source_url)) {
+    const dom = linkDomain(a.source_url);
+    html += `<br><a href="${escapeHtml(a.source_url)}" target="_blank" rel="noopener nofollow">${escapeHtml(dom || "↗")}</a>`;
+  }
+  m.bindPopup(html);
+  m._catCode = "activities";
+  m._chapter = "ACT";
+  return m;
+}
+
 function initMap() {
   const mapEl = document.getElementById("map");
   const P = GUIDE.property || {};
@@ -123,6 +151,19 @@ function initMap() {
       bounds.push([p.lat, p.lon]);
     } catch (e) {
       console.error("[guide] POI ignoré (marqueur illisible) :", (p && p.name) || "?", e);
+    }
+  }
+  // Activités plaçables (V2-73) : marqueurs distincts, mêmes garanties de résilience
+  // par élément que les POI (une activité illisible n'avorte jamais la boucle).
+  for (const a of GUIDE.activities || []) {
+    if (a.lat == null || a.lon == null) continue;
+    try {
+      const m = makeActivityMarker(a);
+      m.addTo(map);
+      allMarkers.push(m);
+      bounds.push([a.lat, a.lon]);
+    } catch (e) {
+      console.error("[guide] activité ignorée (marqueur illisible) :", (a && a.name) || "?", e);
     }
   }
   allBounds = bounds;

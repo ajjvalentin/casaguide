@@ -231,6 +231,17 @@ _CHAPTER_COLORS: dict[str, str] = {
 }
 _CHAPTER_ORDER = ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
 
+# Activités du secteur (V2-73) : PROMUES en vrai chapitre de l'onglet « Autour » — le
+# contenu qui différencie le produit. Famille synthétique `ACT` (hors seed, hors POI),
+# sa propre couleur, placée EN TÊTE de l'ordre des familles du sommaire, et pseudo-
+# catégorie `activities` sur la carte (marqueur distinct). Le libellé vient de
+# `_UI7["activities_title"]` (7 langues déjà là, hors inventaire i18n voyageur).
+_ACT_CHAPTER = "ACT"
+_ACT_CATEGORY = "activities"
+_CHAPTER_COLORS[_ACT_CHAPTER] = "#AD1457"   # magenta profond, distinct de toutes les familles
+# Ordre des familles du sommaire : activités d'abord (différenciateur), puis le seed.
+_FAMILY_ORDER = [_ACT_CHAPTER, *_CHAPTER_ORDER]
+
 # Trois espaces à onglets (V2-09) : les retours testeurs unanimes (« trop
 # d'informations ») imposent de casser le rouleau unique. On répartit le contenu
 # SANS rien retirer :
@@ -1599,8 +1610,9 @@ def _render_service_grid(pois: list[dict], lang: str = "fr",
     famille** — la MÊME que les pastilles de la carte (`_CHAPTER_COLORS`, alignée
     sur `poi_categories.map_color`) → cohérence carte ↔ sommaire ↔ sections.
 
-    Les **blocs** paraissent dans l'ordre des sections (`_CHAPTER_ORDER`) ; à
-    l'intérieur d'une famille, les tuiles suivent l'**ordre d'utilité fixe du seed**
+    Les **blocs** paraissent dans l'ordre des familles (`_FAMILY_ORDER` : activités en
+    tête — V2-73 —, puis le seed `_CHAPTER_ORDER`) ; à l'intérieur d'une famille, les
+    tuiles suivent l'**ordre d'utilité fixe du seed**
     (`poi_icons.category_rank`, identique dans les 7 langues, jamais alphabétique).
 
     Chaque tuile reste ce qu'elle était (V2-12/V2-07) : une grande icône du seed,
@@ -1637,14 +1649,17 @@ def _render_service_grid(pois: list[dict], lang: str = "fr",
     by_ch: dict[str, list[tuple[int, str]]] = {}
     for chapter, rank, html in entries:
         by_ch.setdefault(chapter, []).append((rank, html))
-    order = [c for c in _CHAPTER_ORDER if c in by_ch]
-    order += [c for c in by_ch if c not in _CHAPTER_ORDER]
+    order = [c for c in _FAMILY_ORDER if c in by_ch]
+    order += [c for c in by_ch if c not in _FAMILY_ORDER]
     blocks: list[str] = []
     for chapter in order:
         tiles = [html for _, html in sorted(by_ch[chapter], key=lambda rh: rh[0])]
-        title = _esc(_seed_label(lang, _i18n_mod.chapter_tab_key(chapter, "around"),
-                                 _CHAPTER_TAB_NAMES.get((chapter, "around")),
-                                 _chapter_name(chapter, lang)))
+        if chapter == _ACT_CHAPTER:            # famille activités (V2-73), hors seed
+            title = _esc(_t7(lang, "activities_title"))
+        else:
+            title = _esc(_seed_label(lang, _i18n_mod.chapter_tab_key(chapter, "around"),
+                                     _CHAPTER_TAB_NAMES.get((chapter, "around")),
+                                     _chapter_name(chapter, lang)))
         color = _esc(_CHAPTER_COLORS.get(chapter, "#0E5A73"))
         blocks.append(
             f'<section class="svc-group" style="--fam:{color}">'
@@ -1948,32 +1963,89 @@ def _link_domain(url: str) -> str | None:
     return host[4:] if host.startswith("www.") else (host or None)
 
 
-def _fact_activities(act: dict, lang: str) -> str:
-    """Encart « Activités du secteur » (V2-71) — STANDALONE (pas adossé à une section) :
-    les activités sans lieu propre (surf, randonnée…), avec l'endroit et la saison, et un
-    lien de preuve VISIBLE (V2-71c : libellé = domaine, ex. « medoc-tourisme.com », sinon
-    « En savoir plus » 7 langues). Rien si la source manque (pas de lien mort). Réutilise
-    `.facts` et l'icône de lien externe → aucun CSS neuf, aucun bump SW."""
-    items = [a for a in (act.get("activities") or [])
-             if isinstance(a, dict) and (a.get("activity") or "").strip()]
+def _activities_items(act: dict) -> list[dict]:
+    """Activités valides d'un fait de zone (nom non vide) — source unique des trois
+    consommateurs (chapitre, tuile, carte) → compteurs et présence toujours alignés."""
+    return [a for a in (act.get("activities") or [])
+            if isinstance(a, dict) and (a.get("activity") or "").strip()]
+
+
+def _activity_card(a: dict, lang: str, color: str) -> str:
+    """Carte d'une activité (V2-73) : intitulé, lieu · saison, lien de preuve VISIBLE
+    (libellé = domaine, ex. « medoc-tourisme.com », sinon « En savoir plus » 7 langues,
+    V2-71c). Barre latérale à la couleur de la famille activités."""
+    name = _esc((a.get("activity") or "").strip())
+    where = (a.get("where") or "").strip()
+    season = (a.get("season") or "").strip()
+    detail = " · ".join(x for x in [where, season] if x)
+    parts = [f"<h4>{name}</h4>"]
+    if detail:
+        parts.append(f'<p class="act-where">{_esc(detail)}</p>')
+    url = (a.get("source_url") or "").strip()
+    if url.lower().startswith(("http://", "https://")):
+        label = _link_domain(url) or _t7(lang, "learn_more")   # domaine ou repli 7 langues
+        parts.append(f'<a class="route-link" href="{_esc(url)}" target="_blank" '
+                     f'rel="noopener nofollow">{_esc(label)}{_EXT_LINK_ICON}</a>')
+    return f'<div class="act-card" style="border-left-color:{color}">{"".join(parts)}</div>'
+
+
+def _render_activities_chapter(act: dict, lang: str) -> str:
+    """« Activités du secteur » PROMUE en vrai chapitre de l'onglet « Autour » (V2-73) :
+    titre au même niveau que « Commerces & services », cartes par activité (plus une liste
+    à puces), sa couleur de famille propre. Structure `.chapter[data-chapter=ACT] > .cat
+    [data-cat=activities]` → le mode filtré (tuile du sommaire) et le retour aux services
+    réutilisent la MÊME mécanique que les catégories de POI, sans code neuf. Rien si vide."""
+    items = _activities_items(act)
     if not items:
         return ""
-    rows: list[str] = []
-    for a in items:
-        name = _esc((a.get("activity") or "").strip())
-        where = (a.get("where") or "").strip()
-        season = (a.get("season") or "").strip()
-        detail = " · ".join(x for x in [where, season] if x)
-        line = f"<b>{name}</b>" + (f' — {_esc(detail)}' if detail else "")
-        url = (a.get("source_url") or "").strip()
-        if url.lower().startswith(("http://", "https://")):
-            label = _link_domain(url) or _t7(lang, "learn_more")   # domaine ou repli 7 langues
-            line += (f' <a class="route-link" href="{_esc(url)}" target="_blank" '
-                     f'rel="noopener nofollow">{_esc(label)}{_EXT_LINK_ICON}</a>')
-        rows.append(f"<li>{line}</li>")
-    return (f'<section class="facts activities">'
-            f'<b class="tt">{_esc(_t7(lang, "activities_title"))}</b>'
-            f'<ul>{"".join(rows)}</ul></section>')
+    color = _CHAPTER_COLORS[_ACT_CHAPTER]
+    title = _esc(_t7(lang, "activities_title"))
+    cards = "".join(_activity_card(a, lang, _esc(color)) for a in items)
+    group = (f'<div class="cat" data-cat="{_ACT_CATEGORY}" '
+             f'id="{_TAB_HASH["around"]}/{_ACT_CATEGORY}">'
+             f'<div class="poi-group" data-cat="{_ACT_CATEGORY}">{cards}</div>'
+             f'<a class="back-services" href="#{_TAB_HASH["around"]}">'
+             f'{_esc(_t(lang, "back_services"))}</a></div>')
+    return (f'<section class="chapter" data-chapter="{_ACT_CHAPTER}">'
+            f'<h2>{title}</h2>'
+            f'<div class="chapline" style="background:{color}"></div>'
+            f'{group}</section>')
+
+
+def _activities_tile(act: dict, lang: str) -> tuple[str, int, str] | None:
+    """Tuile « Activités » du sommaire (V2-73) : famille propre (`_ACT_CHAPTER`, rang 0 →
+    placée en TÊTE de l'ordre des familles), couleur propre, compteur. Ouvre le même mode
+    filtré que les tuiles de catégorie (`data-cat=activities`). None si aucune activité."""
+    items = _activities_items(act)
+    if not items:
+        return None
+    color = _esc(_CHAPTER_COLORS[_ACT_CHAPTER])
+    name = _esc(_t7(lang, "activities_title"))
+    count = len(items)
+    icon = category_icon_svg(_ACT_CATEGORY, None)
+    return (_ACT_CHAPTER, 0,
+            f'<a class="svc-tile" href="#{_TAB_HASH["around"]}/{_ACT_CATEGORY}" '
+            f'data-cat="{_ACT_CATEGORY}" style="--svc-accent:{color}" '
+            f'aria-label="{name} : {count}">'
+            f'<span class="svc-ic">{icon}</span>'
+            f'<span class="svc-name">{name}</span>'
+            f'<span class="svc-count">{count}</span></a>')
+
+
+def _activities_map_points(act: dict) -> list[dict]:
+    """Activités PLAÇABLES (lat/lon posés par le pipeline, cascade stricte V2-73) pour la
+    carte « Autour » : marqueur distinct + popup (intitulé, saison, lien de source). Une
+    activité non plaçable n'apparaît pas ici (elle reste dans la liste sans marqueur)."""
+    pts: list[dict] = []
+    for a in _activities_items(act):
+        lat, lon = a.get("lat"), a.get("lon")
+        if lat is None or lon is None:
+            continue
+        pts.append({"name": (a.get("activity") or "").strip(), "lat": lat, "lon": lon,
+                    "season": (a.get("season") or "").strip(),
+                    "where": (a.get("where") or "").strip(),
+                    "source_url": (a.get("source_url") or "").strip()})
+    return pts
 
 
 # Renderers d'encart par type de fait, adossés à une section (M-17). Les
@@ -2428,6 +2500,9 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                  if p.get("lat") is not None and p.get("lon") is not None],
         # Sous-ensemble Urgences (V2-61) : lu par `initEmergencyMap` côté client.
         "emergency": [_map_poi(p) for p in emergency_map_pois],
+        # Activités plaçables (V2-73) : marqueur DISTINCT sur la carte « Autour »
+        # (`initMap` les tague `_catCode=activities` → filtre par la tuile du sommaire).
+        "activities": _activities_map_points(area_facts.get("activities") or {}),
     }
     data_json = json.dumps(map_data, ensure_ascii=False).replace("</", "<\\/")
     has_map = map_data["property"]["lat"] is not None
@@ -2457,20 +2532,24 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                      '</div>' if guest_guide and prop.get("lat") is not None else '')
         around_inner.append(f'<div id="map">{medallion}</div>')
     # Grille de services (V2-12) : navigation principale (sur mobile, une grille d'icônes
-    # bat dix intitulés). Tuiles adossées à un fait de zone (V2-07 volet 1bis) incluses.
+    # bat dix intitulés). Tuiles adossées à un fait de zone (V2-07 volet 1bis) + tuile
+    # « Activités » (V2-73, famille propre placée EN TÊTE — le contenu qui différencie).
     fact_tiles = _service_fact_tiles(sections, area_facts, lang)
+    act_tile = _activities_tile(area_facts.get("activities") or {}, lang)
+    if act_tile:
+        fact_tiles = [act_tile, *fact_tiles]
     grid_html = _render_service_grid(around_card_pois, lang, fact_tiles=fact_tiles)
     if grid_html:
         around_inner.append(grid_html)
     if around_chapters:
         around_inner.append(
             f'<nav class="chips" aria-label="{_esc(_t(lang, "filter"))}">{"".join(chips)}</nav>')
-    around_inner += panels["around"]
-    # Activités du secteur (V2-71) : encart STANDALONE (pas adossé à une section) — les
-    # activités sans lieu propre (surf, randonnée…). Rien si vide. En fin d'onglet « Autour ».
-    activities_html = _fact_activities(area_facts.get("activities") or {}, lang)
+    # Activités du secteur (V2-73) : vrai CHAPITRE, placé en TÊTE des chapitres de
+    # « Autour » (différenciateur). Cartes + carte (marqueurs distincts). Rien si vide.
+    activities_html = _render_activities_chapter(area_facts.get("activities") or {}, lang)
     if activities_html:
         around_inner.append(activities_html)
+    around_inner += panels["around"]
     # Bouton flottant « Retour aux services » (V2-27) : rendu SSR mais masqué par
     # défaut (bonus JS) — app.js le révèle quand on défile dans « Autour de vous ».
     # N'a de sens que s'il y a une grille (POI en cartes ou tuile de fait de zone).

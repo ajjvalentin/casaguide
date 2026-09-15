@@ -119,9 +119,16 @@ html.js .tab-panel.tab-active{display:block}
   border-radius:999px;padding:8px 16px;font-size:13px;font-weight:600;
   text-decoration:none;transition:.12s}
 .back-services:hover,.back-services:focus-visible{border-color:var(--sea);outline:none}
-.back-float{display:none;position:fixed;right:14px;z-index:800;
-  bottom:calc(14px + env(safe-area-inset-bottom));
-  box-shadow:0 4px 16px rgba(30,42,50,.22)}
+/* V2-73 : le flottant « Retour aux services » était trop discret (on le cherchait).
+   C'est désormais un VRAI bouton — fond plein contrasté (mer), texte blanc, taille
+   tactile (≥ 44 px de haut), ombre marquée — persistant tant qu'on parcourt une
+   section, masqué en haut de page. Mobile ET ordinateur (position fixe). */
+.back-float{display:none;position:fixed;right:16px;z-index:800;
+  bottom:calc(16px + env(safe-area-inset-bottom));
+  background:var(--sea);color:#fff;border-color:var(--sea);
+  padding:12px 20px;font-size:14px;min-height:44px;
+  box-shadow:0 6px 20px rgba(14,90,115,.38)}
+.back-float:hover,.back-float:focus-visible{background:var(--ink);border-color:var(--ink);color:#fff}
 html.js .back-float.show{display:inline-flex}
 
 /* ── Mode filtré « une catégorie = un écran » (V2-12b, carte V2-12e) ──────────
@@ -347,6 +354,21 @@ h3{font-size:16px;font-weight:600;margin:0 0 6px}
       border-radius:10px;background:var(--shell);font-size:13px;color:var(--ink)}
 .gpdf .ic{font-family:Fraunces,serif;font-weight:700;font-size:12px;color:#fff;background:var(--alert);
           border-radius:6px;padding:3px 7px}
+
+/* Activités du secteur (V2-73) : cartes du chapitre « Activités » (surf, randonnée…),
+   au même niveau que les catégories de POI mais SANS colonne de distance (le lieu est
+   dans le texte). Barre latérale à la couleur de la famille (posée en inline). */
+.act-card{background:var(--shell);border:1px solid var(--line);border-left:4px solid #AD1457;
+          border-radius:12px;padding:12px 14px;margin-bottom:8px}
+.act-card h4{margin:0;font-size:15.5px;font-weight:600}
+.act-card .act-where{margin:4px 0 0;font-size:13.5px;color:var(--muted)}
+.act-card .route-link{margin-top:6px}
+/* Marqueur d'activité sur la carte (V2-73) : épingle carrée à la COULEUR de la famille
+   activités (miroir de `_ACT_CHAPTER` côté serveur, #AD1457) — DISTINCTE des pastilles
+   rondes de commerce. Glyphe boussole centré. */
+.act-pin{display:flex;align-items:center;justify-content:center;width:26px;height:26px;
+  background:#AD1457;border:2px solid #fff;border-radius:7px;font-size:14px;line-height:1;
+  box-shadow:0 1px 5px rgba(0,0,0,.4)}
 
 /* ── POI (cartes « distance d'abord ») ───────────────────────────────────── */
 /* Ancre de catégorie (V2-12) : marge pour ne pas passer sous les puces/onglets. */

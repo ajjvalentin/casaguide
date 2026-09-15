@@ -337,6 +337,75 @@ def _position_pick(pk: dict, pois: list[dict], ovt: list[dict] | None,
     return None                                            # 4. tombe
 
 
+# Placement STRICT des activités du secteur (V2-73). Une activité nomme son LIEU
+# (« plage du Gurp, Grayan-et-l'Hôpital ») mais ces spots (plage, massif, spot de
+# surf) sont précisément ceux ABSENTS de la moisson commerciale — d'où la passe web.
+# Cascade V2-56b : (1) appariement de NOM contre l'union moissonnée OSM/Overture,
+# (2) géocodage du lieu-dit STRICT, (3) abandon — JAMAIS un centroïde communal (sept
+# punaises empilées au centre-ville). Le garde anti-centroïde ne peut PAS se fier au
+# seul `accuracy` (une plage retombe sur « city » alors que sa position est précise) :
+# on rejette d'après la CLASSE/TYPE OSM administratifs (boundary, place=city|town…).
+_ACT_ADMIN_CLASSES = {"boundary"}
+_ACT_ADMIN_PLACE_TYPES = {
+    "city", "town", "village", "municipality", "hamlet", "county", "state",
+    "region", "province", "district", "suburb", "quarter", "borough",
+    "administrative", "locality", "isolated_dwelling",
+}
+
+
+def _geo_is_centroid(geo: dict) -> bool:
+    """Vrai si un résultat de géocodage est un CENTROÏDE administratif (à rejeter pour
+    une activité) : commune incohérente (`mismatch`) ou classe/type OSM administratifs.
+    Un LIEU précis (plage/massif/leisure/tourism…) est accepté même si `accuracy`
+    retombe sur « city » (type non cartographié dans `_ACCURACY`)."""
+    if geo.get("accuracy") == "mismatch":
+        return True
+    cls = (geo.get("osm_class") or "").lower()
+    typ = (geo.get("osm_type") or "").lower()
+    return cls in _ACT_ADMIN_CLASSES or (cls == "place" and typ in _ACT_ADMIN_PLACE_TYPES)
+
+
+def _position_activity(where: str, harvested: list[dict], prop: dict, origin: tuple,
+                       http_client: httpx.Client | None) -> tuple | None:
+    """Position FIABLE d'une activité depuis son `where`, cascade STRICTE (V2-73).
+    Renvoie `(lat, lon)` ou None (l'activité reste dans la liste sans marqueur)."""
+    where = (where or "").strip()
+    if not where:
+        return None
+    m = _name_match(where, harvested)                      # 1. union moissonnée
+    if m is not None and m.get("lat") is not None and m.get("lon") is not None:
+        return m["lat"], m["lon"]
+    try:                                                   # 2. géocodage du lieu-dit
+        geo = geocode.geocode(address=f"{where}, {prop['city']}",
+                              country_code=prop["country_code"], client=http_client)
+    except geocode.GeocodeError:
+        return None
+    if _geo_is_centroid(geo):                              # jamais un centroïde
+        return None
+    if overpass.haversine_m(origin[0], origin[1], geo["lat"], geo["lon"]) \
+            > _EDITORIAL_MAX_DIST_M:
+        return None                                        # position aberrante
+    return geo["lat"], geo["lon"]                          # 3. sinon : abandon (None)
+
+
+def _place_activities(activities: list[dict], harvested: list[dict], prop: dict,
+                      origin: tuple, http_client: httpx.Client | None) -> int:
+    """Pose `lat`/`lon` sur chaque activité plaçable (V2-73), en place. Renvoie le
+    nombre placé. Idempotent : une activité déjà positionnée n'est pas re-géocodée."""
+    placed = 0
+    for a in activities:
+        if not isinstance(a, dict):
+            continue
+        if a.get("lat") is not None and a.get("lon") is not None:
+            placed += 1
+            continue
+        pos = _position_activity(a.get("where") or "", harvested, prop, origin, http_client)
+        if pos is not None:
+            a["lat"], a["lon"] = pos
+            placed += 1
+    return placed
+
+
 def _memorize_fresh_picks(conn, prop: dict, code: str, pois: list[dict],
                           ovt: list[dict] | None, raw_picks: list[dict],
                           origin: tuple, http_client: httpx.Client | None,
@@ -643,6 +712,11 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 conn.commit()
 
             all_editorial: list[dict] = []
+            # V2-73 : union des POI moissonnés (nom+position), source du 1er échelon de
+            # la cascade STRICTE de placement des activités (appariement de NOM contre
+            # OSM/Overture — une activité « surf/plage du Gurp » se pose sur la fiche
+            # plage déjà récoltée plutôt que d'être re-géocodée).
+            all_harvested: list[dict] = []
             capped_empty: set[str] = set()   # V2-44 v3 : vidées par le plafond de pertinence
             for cat in wanted:
                 code = cat["code"]
@@ -789,6 +863,11 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     pois = fusion.cap_after_fusion(pois, settings.max_pois_per_category)
                 if code in settings.describe_categories:
                     all_editorial.extend(pois)
+                # V2-73 : mémorise nom+position pour l'appariement des activités (cascade
+                # stricte) — seules les fiches géolocalisées servent de cible d'ancrage.
+                all_harvested.extend(
+                    {"name": p.get("name"), "lat": p.get("lat"), "lon": p.get("lon")}
+                    for p in pois if p.get("lat") is not None and p.get("lon") is not None)
                 n = db.upsert_pois(conn, property_id, code, pois)
                 summary["categories"][code] = n
                 summary["pois"] += n
@@ -1155,7 +1234,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             act, meta = claude_enrich.fetch_activities(
                                 prop["city"], prop["country_code"], ai,
                                 lang=prop.get("default_lang") or "fr")
-                            n_act = len(act[claude_enrich.ACTIVITIES_FACT_TYPE]["activities"])
+                            acts = act[claude_enrich.ACTIVITIES_FACT_TYPE]["activities"]
+                            n_act = len(acts)
+                            # V2-73 : placer les activités sur la carte (cascade stricte,
+                            # jamais un centroïde) AVANT de mémoriser le fait de zone.
+                            n_placed = _place_activities(acts, all_harvested, prop,
+                                                         origin, http_client)
                             db.upsert_area_facts(conn, prop["country_code"],
                                                  prop["city"], act,
                                                  source=settings.anthropic_model)
@@ -1164,8 +1248,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             summary["cost_cts"] += meta["cost_cts"]
                             db.job_step(conn, job_id, "activities",
                                         {"ok": True, "activities": n_act,
+                                         "placed": n_placed,
                                          "cost_cts": round(meta["cost_cts"], 2)})
-                        _progress(f"  ✓ activités du secteur : {n_act} — "
+                        _progress(f"  ✓ activités du secteur : {n_act} "
+                                  f"({n_placed} sur la carte) — "
                                   f"{meta['cost_cts']:.2f} ct")
                     except Exception as ac_exc:  # noqa: BLE001 — best-effort
                         log.warning("Activités (%s) non résolues : %s",

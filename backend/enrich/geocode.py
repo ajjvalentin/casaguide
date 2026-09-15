@@ -227,6 +227,13 @@ def geocode(address: str | None = None, country_code: str = "ES",
                 "locality": _locality_of(r),   # V2-38 : commune, servie sur la carte
                 "source": "nominatim",
                 "mismatch": mismatch,          # Mismatch | None (V2-46)
+                # Classe/type OSM bruts (V2-73) : permettent à l'appelant de distinguer
+                # un LIEU précis (plage, massif, leisure…) d'un CENTROÏDE administratif
+                # (boundary / place=city|town|village) que `accuracy` ne sépare pas —
+                # un type non cartographié retombe sur « city » alors que sa position,
+                # elle, est spécifique. Le placement strict des activités s'en sert.
+                "osm_class": r.get("class", ""),
+                "osm_type": r.get("type", ""),
             }
 
         tried = address or f"{street}, {postalcode}, {city}"

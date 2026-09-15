@@ -514,6 +514,70 @@ def test_position_pick_cascade_never_centroid(monkeypatch):
                                    osm_jp, None, prop, origin, None)[5] == "久兵衛"
 
 
+def test_position_activity_cascade_never_centroid(monkeypatch):
+    """V2-73 : placement STRICT d'une activité depuis son `where` — (1) appariement de NOM
+    contre l'union moissonnée, (2) géocodage du lieu-dit accepté SI ce n'est pas un
+    centroïde administratif (une plage retombe sur accuracy='city' mais sa CLASSE OSM est
+    naturelle → acceptée), (3) sinon None. Jamais un centroïde communal."""
+    prop = {"city": "Bégadan", "country_code": "FR"}
+    origin = (45.30, -0.86)
+    harvested = [{"name": "Plage du Gurp", "lat": 45.40, "lon": -1.13}]
+
+    def fake_geocode(**kw):
+        q = kw.get("address") or ""
+        if "Massif" in q:                          # LIEU précis (leisure) : type non mappé
+            return {"lat": 45.31, "lon": -0.90, "accuracy": "city",
+                    "osm_class": "natural", "osm_type": "peak"}
+        if "Centre" in q:                          # CENTROÏDE communal : à refuser
+            return {"lat": 45.33, "lon": -0.87, "accuracy": "city",
+                    "osm_class": "place", "osm_type": "village"}
+        if "Loin" in q:                            # position aberrante (> 25 km)
+            return {"lat": 46.50, "lon": -0.90, "accuracy": "street",
+                    "osm_class": "highway", "osm_type": "residential"}
+        raise pipeline.geocode.GeocodeError("introuvable")
+    monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
+
+    # (1) appariement de nom contre la moisson → position de la fiche récoltée.
+    assert pipeline._position_activity("Plage du Gurp", harvested, prop, origin, None) \
+        == (45.40, -1.13)
+    # (2) lieu-dit naturel (accuracy 'city' mais classe naturelle) → ACCEPTÉ.
+    assert pipeline._position_activity("Massif de x", harvested, prop, origin, None) \
+        == (45.31, -0.90)
+    # (3) centroïde administratif (place/village) → None.
+    assert pipeline._position_activity("Centre de x", harvested, prop, origin, None) is None
+    # (4) position aberrante (> 25 km du logement) → None.
+    assert pipeline._position_activity("Loin de x", harvested, prop, origin, None) is None
+    # (5) introuvable → None ; `where` vide → None (jamais un géocodage à vide).
+    assert pipeline._position_activity("Inconnu", harvested, prop, origin, None) is None
+    assert pipeline._position_activity("", harvested, prop, origin, None) is None
+
+
+def test_place_activities_marks_placeable_and_is_idempotent(monkeypatch):
+    """V2-73 : `_place_activities` pose lat/lon en place et n'écrase/re-géocode jamais une
+    activité déjà positionnée."""
+    prop = {"city": "Bégadan", "country_code": "FR"}
+    origin = (45.30, -0.86)
+    calls = {"n": 0}
+
+    def fake_geocode(**kw):
+        calls["n"] += 1
+        return {"lat": 45.31, "lon": -0.90, "accuracy": "street",
+                "osm_class": "leisure", "osm_type": "sports_centre"}
+    monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
+
+    acts = [
+        {"activity": "Surf", "where": "spot", "lat": 45.4, "lon": -1.1},   # déjà placé
+        {"activity": "Escalade", "where": "falaise"},                       # à géocoder
+        {"activity": "Sans lieu", "where": ""},                            # non plaçable
+    ]
+    placed = pipeline._place_activities(acts, [], prop, origin, None)
+    assert placed == 2                       # le déjà-placé + l'escalade
+    assert calls["n"] == 1                   # le déjà-placé n'est PAS re-géocodé
+    assert acts[0]["lat"] == 45.4            # position d'origine intacte
+    assert acts[1]["lat"] == 45.31 and acts[1]["lon"] == -0.90
+    assert "lat" not in acts[2]             # sans lieu → reste sans marqueur
+
+
 def test_sector_editorial_memory_accumulates_and_dedups():
     """V2-56c : la mémoire de secteur accumule et déduplique (upsert par nom normalisé),
     et rafraîchit position/contacts/raison au re-passage."""

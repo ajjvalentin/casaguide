@@ -1,0 +1,77 @@
+<!doctype html>
+<!-- Harnais headless du MARQUEUR D'ACTIVITÉ distinct (V2-73). Pilote le VRAI
+     /frontend/guide/app.js (initMap) : une activité plaçable (lat/lon) doit produire un
+     marqueur DISTINCT des pastilles de commerce — épingle `.act-pin`, taguée
+     `_catCode=activities`. Leaflet est stubé : chaque marqueur créé est enregistré avec
+     l'HTML de son icône. Verdict dans #result. Hors frontend/. -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>guide-activities-harness</title>
+<style>html.js .tab-panel:not(.tab-active){display:none}</style>
+<script>
+  document.documentElement.className = "js";
+  window.__markers = [];
+  function rec(m, kind, iconHtml) {
+    m._kind = kind; m._iconHtml = iconHtml || "";
+    m.addTo = () => m; m.bindPopup = () => m;
+    m.getLatLng = () => ({ lat: m._ll[0], lng: m._ll[1] });
+    m.on = () => m;
+    window.__markers.push(m);
+    return m;
+  }
+  window.L = {
+    map(el) {
+      if (el && el.classList) el.classList.add("leaflet-container");
+      const m = { setView() { return m; }, on() { return m; }, invalidateSize() { return m; },
+                  fitBounds() { return m; }, removeLayer() { return m; }, addLayer() { return m; } };
+      window._guideMap = m; return m;
+    },
+    tileLayer() { return { on() { return this; }, addTo() { return this; } }; },
+    divIcon(o) { return { __html: (o && o.html) || "" }; },
+    marker(ll, opts) { return rec({ _ll: ll }, "marker", opts && opts.icon && opts.icon.__html); },
+    circleMarker(ll) { return rec({ _ll: ll }, "circle", ""); },
+  };
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  location.hash = "#autour";
+</script>
+</head>
+<body data-token="tok" data-api-base="/g/tok" data-lang="fr" data-default-lang="fr" data-guest-guide="1">
+<div class="wrap">
+  <nav class="guide-tabs" role="tablist">
+    <button class="tab on" role="tab" data-tab="around" id="tabbtn-around" aria-controls="tab-around" aria-selected="true">Autour</button>
+  </nav>
+  <main>
+    <section class="tab-panel tab-active" data-tab="around" id="tab-around" role="tabpanel">
+      <div id="map"><div class="situ-medallion" id="situ-medallion" aria-hidden="true"></div></div>
+      <nav class="svc-toc" id="autour" aria-label="Services"></nav>
+    </section>
+  </main>
+</div>
+<pre id="result">PENDING</pre>
+<script id="guide-data" type="application/json">{"property":{"name":"V","lat":45.30,"lon":-0.86},
+  "pois":[{"name":"Mercadona","lat":45.31,"lon":-0.87,"category_code":"supermarket","chapter":"C","color":"#2E7D32"}],
+  "activities":[{"name":"Surf","lat":45.40,"lon":-1.13,"where":"plage du Gurp","season":"été","source_url":"https://www.medoc-tourisme.com/surf"}],
+  "emergency":[]}</script>
+<script type="module">
+  const out = document.getElementById("result");
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  (async () => {
+    try {
+      await import("/frontend/guide/app.js");
+      await wait(80);
+      const act = window.__markers.filter((m) => m._catCode === "activities");
+      if (act.length !== 1)
+        return void (out.textContent = "FAIL: marqueur d'activité attendu (1), obtenu " + act.length);
+      // DISTINCT d'une pastille de commerce : divIcon `.act-pin`, pas un circleMarker.
+      if (act[0]._kind !== "marker" || !act[0]._iconHtml.includes("act-pin"))
+        return void (out.textContent = "FAIL: marqueur d'activité non distinct (act-pin manquant)");
+      const commerce = window.__markers.filter((m) => m._catCode === "supermarket");
+      if (!(commerce.length === 1 && commerce[0]._kind === "circle"))
+        return void (out.textContent = "FAIL: le commerce doit rester une pastille ronde");
+      out.textContent = "PASS";
+    } catch (e) {
+      out.textContent = "FAIL: " + ((e && e.message) || e);
+    }
+  })();
+</script>
+</body>
+</html>
