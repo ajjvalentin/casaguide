@@ -1130,12 +1130,17 @@ def fetch_markets(city: str, country_code: str, client: anthropic.Anthropic,
 # dédiée, mutualisée par commune (area_fact), preuve ou rien comme la réputation.
 ACTIVITIES_FACT_TYPE = "activities"
 
-# Version du SCHÉMA du fait 'activities' (V2-73b). Stampée dès qu'une passe de
-# POSITIONNEMENT a été TENTÉE (cascade stricte V2-56b, pipeline). Elle distingue « pas de
-# position parce que jamais tenté » (v absent → schéma d'avant V2-73, à rattraper) de
-# « pas de position parce que non géocodable » (v courant → une activité diffuse — les 16
-# circuits, une route vicinale — ne se re-géocode pas indéfiniment).
-ACTIVITIES_SCHEMA_V = 2
+# Version du SCHÉMA du fait 'activities'. Stampée dès qu'une passe de POSITIONNEMENT a été
+# TENTÉE (cascade stricte V2-56b, pipeline). Elle distingue « pas de position parce que
+# jamais tenté » (v périmé → à rattraper) de « pas de position parce que non géocodable »
+# (v courant → une activité diffuse — les 16 circuits, une route vicinale — ne se
+# re-géocode pas indéfiniment).
+#   v2 (V2-73b) : 1er positionnement, MAIS géocodait la phrase `where` entière → Nominatim
+#                 échouait sur « Plage du Gurp, … (env. 10 km), côte atlantique » (placed:0).
+#   v3 (V2-73c) : géocodage sur les champs STRUCTURÉS place_name/place_city (ou dérivés de
+#                 `where` au rattrapage). Bump → les faits v2 sont RE-POSITIONNÉS (passe de
+#                 géocodage seule, aucun web/LLM), pas re-collectés.
+ACTIVITIES_SCHEMA_V = 3
 
 _ACTIVITIES_PROMPT = """\
 Tu prépares l'encart « Activités du secteur » du guide d'un lieu de vacances situé à
@@ -1146,8 +1151,15 @@ randonnée, VTT, kayak, paddle, via ferrata, ski, escalade, plongée en apnée, 
 MÉTHODE : recherche web. Ne retiens QUE ce qui a une PREUVE en ligne récente (office de
 tourisme, guide, prestataire local, presse). Pour chaque activité :
 - `activity` : le nom de l'activité, EN {lang_name} (« Surf », « Randonnée », « Plongée ») ;
-- `where` : OÙ on la pratique, en {lang_name} et le plus PRÉCIS possible (« plage de La
-  Zenia », « massif du Montgó », « calanque de Sormiou ») — jamais vague ;
+- `where` : OÙ on la pratique, en {lang_name}, phrase LISIBLE affichée au voyageur (« Plage
+  du Gurp, Grayan-et-l'Hôpital, côte atlantique du Médoc ») ;
+- `place_name` : le NOM SEUL du lieu à cartographier, sans commune ni commentaire (« Plage
+  du Gurp », « Massif du Montgó », « Calanque de Sormiou »). **VIDE "" si l'activité est
+  DIFFUSE** (réseau de sentiers, routes vicinales, « tout le secteur ») — mieux vaut aucun
+  point qu'un point faux ;
+- `place_city` : la COMMUNE de ce lieu (« Grayan-et-l'Hôpital »), "" si inconnue. Sert
+  UNIQUEMENT à lever l'ambiguïté du géocodage — ne mets ni distance, ni parenthèse, ni
+  région ;
 - `season` : la saison/période si pertinente, en {lang_name} (« toute l'année », « été »,
   « décembre à avril ») sinon "" ;
 - `source_url` : l'URL de la preuve, en https, la PLUS UTILE au voyageur — de préférence
@@ -1163,8 +1175,9 @@ RÈGLES STRICTES :
 Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
 {{
   "activities": [
-    {{"activity": "Surf", "where": "plage de …", "season": "toute l'année",
-      "source_url": "https://...", "verified_on": "{today}"}}
+    {{"activity": "Surf", "where": "Plage du Gurp, Grayan-et-l'Hôpital",
+      "place_name": "Plage du Gurp", "place_city": "Grayan-et-l'Hôpital",
+      "season": "toute l'année", "source_url": "https://...", "verified_on": "{today}"}}
   ]
 }}
 """
@@ -1173,9 +1186,11 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
 def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
                      today: str | None = None, lang: str = "fr") -> tuple[dict, dict]:
     """Activités du secteur (V2-71), vérifiées par recherche web. Retourne
-    ({ACTIVITIES_FACT_TYPE: {"activities": [...]}}, méta coût). Chaque activité retenue
-    porte `activity`, `where`, `season`, `source_url`, `verified_on`. **PREUVE OU RIEN**
-    (sans source → écartée). **Liste vide valide.** Réponse malformée → ValueError."""
+    ({ACTIVITIES_FACT_TYPE: {"activities": [...], "v": N}}, méta coût). Chaque activité
+    retenue porte `activity`, `where` (phrase lisible), `place_name`/`place_city` (champs
+    STRUCTURÉS pour le géocodage, V2-73c — vides si diffuse), `season`, `source_url`,
+    `verified_on`. **PREUVE OU RIEN** (sans source → écartée). **Liste vide valide.**
+    Réponse malformée → ValueError."""
     today = today or _dt.date.today().isoformat()
     lang_name = _REPUTED_LANG_NAMES.get(lang, "français")
     data, meta = _ask_web_search_json(
@@ -1200,7 +1215,10 @@ def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
         source_url = _s("source_url")
         if not (name and source_url):
             continue  # preuve ou rien
+        # V2-73c : champs STRUCTURÉS pour le géocodage (place_name/place_city), distincts
+        # de la phrase lisible `where` — la cascade géocode sur eux, jamais sur la phrase.
         clean.append({"activity": name, "where": _s("where"), "season": _s("season"),
+                      "place_name": _s("place_name"), "place_city": _s("place_city"),
                       "source_url": source_url, "verified_on": _s("verified_on") or today})
     # V2-73b : le fait porte sa version de schéma ; le positionnement (cascade stricte)
     # est tenté juste après par le pipeline → « v présent » = « positions tentées ».

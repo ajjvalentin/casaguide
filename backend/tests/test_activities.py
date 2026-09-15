@@ -56,7 +56,9 @@ class _Msgs:
 
 def test_resolves_activities_with_proof():
     payload = {"activities": [
-        {"activity": "Surf", "where": "plage de La Zenia", "season": "toute l'année",
+        {"activity": "Surf", "where": "Plage de La Zenia, Orihuela Costa",
+         "place_name": "Playa de La Zenia", "place_city": "Orihuela Costa",
+         "season": "toute l'année",
          "source_url": "https://turismo.example/surf", "verified_on": "2026-09-15"},
         {"activity": "Randonnée", "where": "Sierra Escalona", "season": "",
          "source_url": "https://turismo.example/senderismo"},
@@ -67,9 +69,13 @@ def test_resolves_activities_with_proof():
     act, meta = ce.fetch_activities("La Zenia", "ES", cli, today="2026-09-15")
     items = act[ce.ACTIVITIES_FACT_TYPE]["activities"]
     assert [a["activity"] for a in items] == ["Surf", "Randonnée"]   # preuve ou rien
+    # V2-73c : champs structurés de géocodage portés (distincts de la phrase `where`).
+    assert items[0]["place_name"] == "Playa de La Zenia"
+    assert items[0]["place_city"] == "Orihuela Costa"
+    assert items[1]["place_name"] == "" and items[1]["place_city"] == ""   # absents → vides
     # V2-73b : le fait porte sa version de schéma (positions tentées par le pipeline).
     assert act[ce.ACTIVITIES_FACT_TYPE]["v"] == ce.ACTIVITIES_SCHEMA_V
-    assert items[0]["where"] == "plage de La Zenia"
+    assert items[0]["where"] == "Plage de La Zenia, Orihuela Costa"   # phrase lisible intacte
     assert items[1]["verified_on"] == "2026-09-15"                    # comblé par défaut
     assert meta["cost_cts"] >= 0
     # Outil web_search réellement demandé.

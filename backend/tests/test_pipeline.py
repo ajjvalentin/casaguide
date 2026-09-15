@@ -129,8 +129,10 @@ class FakeMessages:
         self.food_delivery_calls = 0
         self.market_calls = 0
         self.activities_calls = 0
-        # V2-71 : activités du secteur (une crédible avec preuve par défaut).
+        # V2-71 : activités du secteur (une crédible avec preuve par défaut). V2-73c :
+        # champs structurés place_name/place_city pour le géocodage.
         self.activities = ([{"activity": "Surf", "where": "plage de La Zenia",
+                             "place_name": "Playa de La Zenia", "place_city": "Orihuela Costa",
                              "season": "toute l'année",
                              "source_url": "https://turismo.example/surf",
                              "verified_on": "2026-09-15"}]
@@ -514,42 +516,68 @@ def test_position_pick_cascade_never_centroid(monkeypatch):
                                    osm_jp, None, prop, origin, None)[5] == "久兵衛"
 
 
+def test_activity_place_prefers_structured_then_derives_from_where():
+    """V2-73c : le LIEU à géocoder vient des champs STRUCTURÉS (place_name/place_city) ;
+    à défaut (faits d'avant V2-73c), il est DÉRIVÉ de la phrase `where` (1re partie = lieu,
+    2e = commune, parenthèse/commentaire retirés). Diffuse (ni l'un ni l'autre) → ("","")."""
+    ap = pipeline._activity_place
+    # champs structurés fournis → tels quels.
+    assert ap({"place_name": "Plage du Gurp", "place_city": "Grayan-et-l'Hôpital",
+               "where": "peu importe"}) == ("Plage du Gurp", "Grayan-et-l'Hôpital")
+    # dérivation de la phrase (cas réel Bégadan : commentaire de distance à retirer).
+    assert ap({"where": "Plage du Gurp, Grayan-et-l'Hôpital (env. 10 km de Bégadan), "
+                        "côte atlantique du Médoc"}) == ("Plage du Gurp", "Grayan-et-l'Hôpital")
+    # un seul segment → lieu sans commune.
+    assert ap({"where": "Sierra Escalona"}) == ("Sierra Escalona", "")
+    # diffuse (aucun lieu nommé) → rien.
+    assert ap({"place_name": "", "where": ""}) == ("", "")
+
+
 def test_position_activity_cascade_never_centroid(monkeypatch):
-    """V2-73 : placement STRICT d'une activité depuis son `where` — (1) appariement de NOM
-    contre l'union moissonnée, (2) géocodage du lieu-dit accepté SI ce n'est pas un
-    centroïde administratif (une plage retombe sur accuracy='city' mais sa CLASSE OSM est
-    naturelle → acceptée), (3) sinon None. Jamais un centroïde communal."""
+    """V2-73/V2-73c : placement STRICT d'une activité — (1) appariement de NOM (place_name)
+    contre l'union moissonnée, (2) géocodage du LIEU STRUCTURÉ (jamais la phrase) accepté si
+    ce n'est pas un centroïde administratif (une plage retombe sur accuracy='city' mais sa
+    CLASSE OSM est naturelle → acceptée, point 3), (3) sinon None. Jamais un centroïde."""
     prop = {"city": "Bégadan", "country_code": "FR"}
     origin = (45.30, -0.86)
     harvested = [{"name": "Plage du Gurp", "lat": 45.40, "lon": -1.13}]
 
     def fake_geocode(**kw):
         q = kw.get("address") or ""
-        if "Massif" in q:                          # LIEU précis (leisure) : type non mappé
+        # Le garde NE reçoit JAMAIS la phrase entière : la requête est « lieu, commune ».
+        assert "env." not in q and "côte atlantique" not in q, f"phrase géocodée : {q!r}"
+        if "Plage propre" in q:                    # plage résolue en LIEU NATUREL → ACCEPTÉE
+            return {"lat": 45.39, "lon": -1.12, "accuracy": "city",
+                    "osm_class": "natural", "osm_type": "beach"}
+        if "Massif" in q:                          # lieu précis (type non mappé) → accepté
             return {"lat": 45.31, "lon": -0.90, "accuracy": "city",
-                    "osm_class": "natural", "osm_type": "peak"}
-        if "Centre" in q:                          # CENTROÏDE communal : à refuser
+                    "osm_class": "leisure", "osm_type": "sports_centre"}
+        if "Centre" in q:                          # CENTROÏDE communal → refusé
             return {"lat": 45.33, "lon": -0.87, "accuracy": "city",
                     "osm_class": "place", "osm_type": "village"}
-        if "Loin" in q:                            # position aberrante (> 25 km)
+        if "Loin" in q:                            # position aberrante (> 25 km) → refusée
             return {"lat": 46.50, "lon": -0.90, "accuracy": "street",
                     "osm_class": "highway", "osm_type": "residential"}
         raise pipeline.geocode.GeocodeError("introuvable")
     monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
 
-    # (1) appariement de nom contre la moisson → position de la fiche récoltée.
-    assert pipeline._position_activity("Plage du Gurp", harvested, prop, origin, None) \
-        == (45.40, -1.13)
-    # (2) lieu-dit naturel (accuracy 'city' mais classe naturelle) → ACCEPTÉ.
-    assert pipeline._position_activity("Massif de x", harvested, prop, origin, None) \
-        == (45.31, -0.90)
-    # (3) centroïde administratif (place/village) → None.
-    assert pipeline._position_activity("Centre de x", harvested, prop, origin, None) is None
-    # (4) position aberrante (> 25 km du logement) → None.
-    assert pipeline._position_activity("Loin de x", harvested, prop, origin, None) is None
-    # (5) introuvable → None ; `where` vide → None (jamais un géocodage à vide).
-    assert pipeline._position_activity("Inconnu", harvested, prop, origin, None) is None
-    assert pipeline._position_activity("", harvested, prop, origin, None) is None
+    def pos(a):
+        return pipeline._position_activity(a, harvested, prop, origin, None)
+
+    # (1) appariement de nom (place_name) contre la moisson → position de la fiche récoltée.
+    assert pos({"place_name": "Plage du Gurp"}) == (45.40, -1.13)
+    # (3-point 3) une PLAGE résolue en lieu naturel (class=natural) est ACCEPTÉE.
+    assert pos({"place_name": "Plage propre", "place_city": "Grayan"}) == (45.39, -1.12)
+    # (2) lieu-dit précis (leisure) → accepté ; la phrase `where` n'est PAS géocodée.
+    assert pos({"place_name": "Massif de x", "where": "Massif de x (env. 10 km), côte "
+                "atlantique"}) == (45.31, -0.90)
+    # centroïde administratif (place/village) → None.
+    assert pos({"place_name": "Centre de x"}) is None
+    # position aberrante (> 25 km du logement) → None.
+    assert pos({"place_name": "Loin de x"}) is None
+    # introuvable → None ; diffuse (aucun lieu) → None (jamais un géocodage à vide).
+    assert pos({"place_name": "Inconnu"}) is None
+    assert pos({"place_name": "", "where": ""}) is None
 
 
 def test_place_activities_marks_placeable_and_is_idempotent(monkeypatch):
@@ -579,45 +607,54 @@ def test_place_activities_marks_placeable_and_is_idempotent(monkeypatch):
 
 
 def test_backfill_activity_positions_upgrades_pre_v2_73_fact(monkeypatch):
-    """V2-73b : un fait 'activities' MÉMORISÉ d'avant V2-73 (sans version, sans position)
-    est mis à niveau — positions posées par la SEULE passe de cascade (aucun web/LLM),
-    version stampée — puis JAMAIS re-tenté (pas de re-géocodage indéfini des diffuses)."""
+    """V2-73b/V2-73c : un fait 'activities' MÉMORISÉ d'un schéma périmé est mis à niveau —
+    positions posées par la SEULE passe de cascade (aucun web/LLM), version stampée — puis
+    JAMAIS re-tenté (pas de re-géocodage indéfini des diffuses). Cas RÉEL Bégadan : un fait
+    v2 (backfillé V2-73b avec placed:0 car il géocodait la PHRASE `where`) est re-positionné
+    en v3 en dérivant le LIEU de la phrase (sans place_name)."""
     from enrich import db as edb, claude_enrich as ce
-    CC, CITY = "ES", "TestBackfill73b"
-    origin = (37.90, -0.75)
+    CC, CITY = "FR", "TestBackfill73c"
+    origin = (45.30, -0.86)
     prop = {"country_code": CC, "city": CITY}
     job_id = str(uuid.uuid4())   # aucun job réel requis (UPDATE ... WHERE id : 0 ligne)
-    calls = {"n": 0}
+    calls = {"queries": []}
 
     def fake_geocode(**kw):
-        calls["n"] += 1
-        if "Plage" in (kw.get("address") or ""):
-            return {"lat": 37.92, "lon": -0.73, "accuracy": "street",
-                    "osm_class": "natural", "osm_type": "beach"}
+        q = kw.get("address") or ""
+        calls["queries"].append(q)
+        # La cascade NE géocode JAMAIS la phrase entière (le bug V2-73b).
+        assert "env." not in q and "côte atlantique" not in q, f"phrase géocodée : {q!r}"
+        if "Plage du Gurp" in q:
+            return {"lat": 45.39, "lon": -1.12, "accuracy": "city",
+                    "osm_class": "natural", "osm_type": "beach"}   # plage → ACCEPTÉE (point 3)
         raise pipeline.geocode.GeocodeError("introuvable")   # activité diffuse → sans marqueur
     monkeypatch.setattr(pipeline.geocode, "geocode", lambda **kw: fake_geocode(**kw))
 
     with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
         conn.execute("DELETE FROM area_facts WHERE country_code=%s AND admin_area=%s",
                      (CC, CITY))
-        # Fait d'AVANT V2-73 : pas de "v", aucune lat/lon.
-        edb.upsert_area_facts(conn, CC, CITY, {ce.ACTIVITIES_FACT_TYPE: {"activities": [
-            {"activity": "Surf", "where": "Plage du Gurp", "source_url": "https://x"},
-            {"activity": "16 circuits", "where": "tout le secteur", "source_url": "https://y"},
+        # Fait v2 (V2-73b) : phrase `where` entière, aucune position, aucun place_name.
+        edb.upsert_area_facts(conn, CC, CITY, {ce.ACTIVITIES_FACT_TYPE: {"v": 2, "activities": [
+            {"activity": "Surf", "source_url": "https://x", "where":
+             "Plage du Gurp, Grayan-et-l'Hôpital (env. 10 km de Bégadan), côte atlantique"},
+            {"activity": "16 circuits VTT", "source_url": "https://y",
+             "where": "tout le secteur du Médoc"},
         ]}}, source="seed")
         conn.commit()
 
         pipeline._backfill_activity_positions(conn, prop, [], origin, None, job_id, {})
         fact = edb.get_area_fact(conn, CC, CITY, ce.ACTIVITIES_FACT_TYPE)
-        assert fact["v"] == ce.ACTIVITIES_SCHEMA_V           # version stampée
+        assert fact["v"] == ce.ACTIVITIES_SCHEMA_V == 3      # v2 → v3
         acts = fact["activities"]
-        assert acts[0].get("lat") == 37.92 and acts[0].get("lon") == -0.73  # plage placée
+        assert acts[0].get("lat") == 45.39 and acts[0].get("lon") == -1.12  # plage placée
         assert "lat" not in acts[1]                          # diffuse : reste sans marqueur
-        assert calls["n"] == 2                               # les deux tentées une fois
+        # Le lieu géocodé a bien été DÉRIVÉ de la phrase (« Plage du Gurp, Grayan… »).
+        assert any(q.startswith("Plage du Gurp, Grayan") for q in calls["queries"])
+        assert len(calls["queries"]) == 2                    # les deux tentées une fois
 
-        # Re-passage : le fait est au schéma courant → AUCUNE nouvelle tentative.
+        # Re-passage : le fait est au schéma courant (v3) → AUCUNE nouvelle tentative.
         pipeline._backfill_activity_positions(conn, prop, [], origin, None, job_id, {})
-        assert calls["n"] == 2
+        assert len(calls["queries"]) == 2
 
         conn.execute("DELETE FROM area_facts WHERE country_code=%s AND admin_area=%s",
                      (CC, CITY))

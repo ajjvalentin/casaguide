@@ -365,19 +365,45 @@ def _geo_is_centroid(geo: dict) -> bool:
     return cls in _ACT_ADMIN_CLASSES or (cls == "place" and typ in _ACT_ADMIN_PLACE_TYPES)
 
 
-def _position_activity(where: str, harvested: list[dict], prop: dict, origin: tuple,
-                       http_client: httpx.Client | None) -> tuple | None:
-    """Position FIABLE d'une activité depuis son `where`, cascade STRICTE (V2-73).
-    Renvoie `(lat, lon)` ou None (l'activité reste dans la liste sans marqueur)."""
-    where = (where or "").strip()
+def _activity_place(a: dict) -> tuple[str, str]:
+    """Le LIEU à géocoder d'une activité (V2-73c), `(place_name, place_city)`.
+
+    La cascade géocode ces champs STRUCTURÉS, JAMAIS la phrase `where` entière (« Plage du
+    Gurp, Grayan-et-l'Hôpital (env. 10 km de Bégadan), côte atlantique » que Nominatim ne
+    résout pas — cause du placed:0). Priorité aux champs fournis par la collecte ; à défaut
+    (faits d'avant V2-73c), RATTRAPAGE par heuristique simple depuis `where` : 1re partie
+    avant virgule = lieu, 2e = commune (parenthèse/commentaire retirés). Aucun appel LLM.
+    `place_name` vide → activité DIFFUSE (aucun point)."""
+    name = (a.get("place_name") or "").strip()
+    city = (a.get("place_city") or "").strip()
+    if name:
+        return name, city
+    where = (a.get("where") or "").strip()
     if not where:
-        return None
-    m = _name_match(where, harvested)                      # 1. union moissonnée
+        return "", ""
+    parts = [p.strip() for p in where.split(",") if p.strip()]
+    if not parts:
+        return "", ""
+    name = re.sub(r"\(.*", "", parts[0]).strip()          # « Lieu (env. 10 km) » → « Lieu »
+    city = re.sub(r"\(.*", "", parts[1]).strip() if len(parts) > 1 else ""
+    return name, city
+
+
+def _position_activity(a: dict, harvested: list[dict], prop: dict, origin: tuple,
+                       http_client: httpx.Client | None) -> tuple | None:
+    """Position FIABLE d'une activité, cascade STRICTE (V2-73/V2-73c). Géocode le LIEU
+    structuré (`place_name`/`place_city`, ou dérivé de `where`), jamais la phrase entière.
+    Renvoie `(lat, lon)` ou None (l'activité reste dans la liste sans marqueur)."""
+    place, place_city = _activity_place(a)
+    if not place:
+        return None                                        # activité diffuse → pas de point
+    m = _name_match(place, harvested)                      # 1. union moissonnée
     if m is not None and m.get("lat") is not None and m.get("lon") is not None:
         return m["lat"], m["lon"]
-    try:                                                   # 2. géocodage du lieu-dit
-        geo = geocode.geocode(address=f"{where}, {prop['city']}",
-                              country_code=prop["country_code"], client=http_client)
+    query = f"{place}, {place_city or prop['city']}"       # 2. géocodage du lieu-dit (propre)
+    try:
+        geo = geocode.geocode(address=query, country_code=prop["country_code"],
+                              client=http_client)
     except geocode.GeocodeError:
         return None
     if _geo_is_centroid(geo):                              # jamais un centroïde
@@ -399,7 +425,7 @@ def _place_activities(activities: list[dict], harvested: list[dict], prop: dict,
         if a.get("lat") is not None and a.get("lon") is not None:
             placed += 1
             continue
-        pos = _position_activity(a.get("where") or "", harvested, prop, origin, http_client)
+        pos = _position_activity(a, harvested, prop, origin, http_client)
         if pos is not None:
             a["lat"], a["lon"] = pos
             placed += 1
