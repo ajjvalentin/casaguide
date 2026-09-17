@@ -79,7 +79,7 @@ def generate_guest_guide(*, city: str, country_code: str,
                          region: str | None = None, name: str | None = None,
                          email: str | None = None, ip: str | None = None,
                          use_claude: bool = True, do_translate: bool = True,
-                         enforce_limits: bool = True,
+                         enforce_limits: bool = True, allow_imprecise: bool = False,
                          heartbeat: "Callable[[], None] | None" = None) -> dict:
     """Génère (ou ressert depuis le cache) un guide voyageur. Renvoie
     `{"property": <row publiée>, "cached": bool, "summary": <résumé pipeline|None>}`.
@@ -93,7 +93,11 @@ def generate_guest_guide(*, city: str, country_code: str,
     sur refus métier.
 
     `heartbeat` (V2-64) : appelé à chaque étape lourde pour horodater la commande en
-    cours (distinguer « lente » de « morte » ; no-op par défaut hors fulfillment)."""
+    cours (distinguer « lente » de « morte » ; no-op par défaut hors fulfillment).
+
+    `allow_imprecise` (V2-68c) : dérogation de RECETTE — laisse passer un ancrage
+    imprécis (« city ») quand l'administrateur sait ce qu'il fait (`ops/
+    make_guest_guide.py --force`). Jamais utilisé par le tunnel ni le webhook."""
     beat = heartbeat or (lambda: None)
     with db.connect() as conn:
         # Un ACHAT payé génère toujours (le paiement EST le gate) → `enforce_limits`
@@ -112,13 +116,20 @@ def generate_guest_guide(*, city: str, country_code: str,
                 raise GuestGuideMismatch(msg, mismatch=mm)
             # V2-68 p1 : un ancrage trop imprécis (centroïde administratif « Tokyo »
             # sans rue) produit un guide vague — on REFUSE plutôt que de générer creux.
-            # Garde côté script ops ET backstop du webhook (jamais contournable). Un point
-            # ajusté (lat/lon fournis) est `manual` → toujours accepté.
+            # Garde côté tunnel ET backstop du webhook. Un point ajusté (lat/lon fournis)
+            # est `manual` → toujours accepté.
+            # V2-68c p4 : `allow_imprecise` est la SEULE dérogation — réservée au script
+            # ops (`--force`, recette administrateur, cf. les adresses rurales que
+            # Nominatim ne connaît pas). Le tunnel et le webhook ne la passent jamais.
             if not geocode.is_precise_enough(geo["accuracy"]):
-                raise GuestGuideError(
-                    "imprecise_location",
-                    "Adresse trop imprécise : indiquez votre rue ou ajustez le point "
-                    "sur votre lieu de séjour.")
+                if not allow_imprecise:
+                    raise GuestGuideError(
+                        "imprecise_location",
+                        "Adresse trop imprécise : indiquez votre rue ou ajustez le point "
+                        "sur votre lieu de séjour.")
+                log.warning("Ancrage imprécis ('%s') FORCÉ pour %s (%s) — le guide "
+                            "couvrira un secteur large.", geo["accuracy"], city,
+                            country_code)
             lat, lon, accuracy = geo["lat"], geo["lon"], geo["accuracy"]
         else:
             accuracy = "manual"

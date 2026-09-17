@@ -98,10 +98,14 @@ class GeocodeIn(BaseModel):
 
 class GeocodeOut(BaseModel):
     found: bool
+    # `lat`/`lon` = OÙ CENTRER LA CARTE, toujours — le point géocodé si `found`, sinon le
+    # repère de départ du placement manuel (V2-68c). `None` seulement si même le pays est
+    # resté introuvable.
     lat: float | None = None
     lon: float | None = None
-    accuracy: str | None = None     # rooftop | street | city | mismatch
+    accuracy: str | None = None     # rooftop | street | city | mismatch (si found)
     mismatch: bool = False          # commune/CP incohérents (V2-46) → ajuster le point
+    hint_level: str | None = None   # city | postal | country — repli V2-68c (si !found)
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -128,22 +132,43 @@ def demo(conn: Conn):
 @router.post("/geocode", response_model=GeocodeOut)
 def geocode_address(payload: GeocodeIn):
     """Géocodage PUBLIC pré-checkout (V2-54 C) : situe l'adresse pour que le vacancier
-    AJUSTE le point sur la carte avant de payer. `found=False` → placement manuel ;
-    `mismatch=True` ou `accuracy='city'` → invite à vérifier/déplacer le point. Le point
-    ajusté part au checkout (`accuracy='manual'`, pas de re-géocodage à la génération).
-    Throttlé (politesse Nominatim)."""
+    AJUSTE le point sur la carte avant de payer. `mismatch=True` ou `accuracy='city'` →
+    invite à vérifier/déplacer le point. Le point ajusté part au checkout
+    (`accuracy='manual'`, pas de re-géocodage à la génération). Throttlé (politesse
+    Nominatim).
+
+    V2-68c : un échec ne ferme JAMAIS le parcours. `found=False` est servi AVEC un
+    REPÈRE de départ (`lat`/`lon` + `hint_level` = commune, code postal ou pays) pour
+    que la carte s'ouvre là où le client reconnaît quelque chose et pose son point.
+    Aucune exception ne remonte en 500 : une panne de géocodage se traite comme une
+    adresse introuvable — placement manuel."""
     with _GEO_LOCK:
         wait = _GEO_MIN_INTERVAL_S - (time.monotonic() - _GEO_LAST[0])
         if wait > 0:
             time.sleep(wait)
+        geo = None
         try:
             geo = _geocode.geocode(street=payload.address_line1,
                                    postalcode=payload.postal_code, city=payload.city,
                                    country_code=payload.country_code)
-        except _geocode.GeocodeError:
+        except Exception:  # noqa: BLE001 — GeocodeError, mais aussi réseau/HTTP/quota
+            log.info("Géocodage voyageur infructueux (%s, %s) — repli sur un repère.",
+                     payload.city, payload.country_code, exc_info=True)
+        hint = None
+        if geo is None:
+            try:
+                hint = _geocode.coarse_locate(city=payload.city,
+                                              postalcode=payload.postal_code,
+                                              country_code=payload.country_code)
+            except Exception:  # noqa: BLE001 — best-effort : sans repère, carte au large
+                log.info("Aucun repère de départ pour %s/%s.", payload.city,
+                         payload.country_code, exc_info=True)
+        _GEO_LAST[0] = time.monotonic()
+    if geo is None:
+        if hint is None:
             return GeocodeOut(found=False)
-        finally:
-            _GEO_LAST[0] = time.monotonic()
+        return GeocodeOut(found=False, lat=hint["lat"], lon=hint["lon"],
+                          hint_level=hint["level"])
     return GeocodeOut(found=True, lat=geo["lat"], lon=geo["lon"],
                       accuracy=geo.get("accuracy"),
                       mismatch=geo.get("accuracy") == "mismatch")

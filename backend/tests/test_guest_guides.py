@@ -137,3 +137,24 @@ def test_generate_refuses_imprecise_anchor(monkeypatch):
                                       "mismatch": None})
     with pytest.raises(guest_guides.GuestGuideError):
         guest_guides.generate_guest_guide(city="Tokyo", country_code="JP")
+
+
+# ── V2-68c pièce 4 : dérogation de recette (--force) ──────────────────────────
+
+def test_generate_forced_accepts_imprecise_anchor(monkeypatch):
+    """V2-68c p4 : le garde de précision bloquait AUSSI l'administrateur en recette
+    (adresses rurales que Nominatim ignore — « 18Bis rue du huit mai, Bégadan »).
+    `allow_imprecise` (drapeau `--force` de `ops/make_guest_guide.py`) le laisse passer ;
+    le tunnel et le webhook ne passent jamais ce drapeau, la garde reste entière."""
+    from api import guest_guides
+    monkeypatch.setattr(guest_guides.geocode, "geocode",
+                        lambda **kw: {"lat": 45.3, "lon": -0.87, "accuracy": "city",
+                                      "mismatch": None})
+    # On s'arrête au cache de proximité : la preuve cherchée est d'avoir PASSÉ la garde.
+    monkeypatch.setattr(guest_guides.repo, "find_recent_guest_guide_near",
+                        lambda *a, **kw: {"id": "cached", "guide_token": "tok"})
+    monkeypatch.setattr(guest_guides.repo, "record_guest_generation",
+                        lambda *a, **kw: None)
+    res = guest_guides.generate_guest_guide(city="Bégadan", country_code="FR",
+                                            allow_imprecise=True)
+    assert res["cached"] is True

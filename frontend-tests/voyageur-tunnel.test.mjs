@@ -98,3 +98,31 @@ test("V2-68b : le tunnel gère le refus imprécis (carte + message + quartiers +
     server.close();
   }
 });
+
+test("V2-68c : une adresse introuvable ouvre le placement manuel (repère + paiement)", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const server = await startServer();
+  try {
+    const verdict = await runHarness(chrome, server.address().port,
+                                     "voyageur-notfound-harness.html");
+    assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
+    assert.equal(verdict, "PASS", `harnais en échec :\n${verdict}`);
+  } finally {
+    server.close();
+  }
+});
+
+test("V2-68c : les quartiers ne bloquent plus l'ouverture de la carte", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const server = await startServer();
+  try {
+    const verdict = await runHarness(chrome, server.address().port,
+                                     "voyageur-slowhoods-harness.html");
+    assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
+    assert.equal(verdict, "PASS", `harnais en échec :\n${verdict}`);
+  } finally {
+    server.close();
+  }
+});

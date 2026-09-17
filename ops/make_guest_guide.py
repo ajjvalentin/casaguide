@@ -13,6 +13,7 @@ Usage (dans le venv de l'app, `backend/.env` chargé automatiquement — OPS-1) 
         --address "Calle Ejemplo 1"
     python ops/make_guest_guide.py --city Ardon --country CH --lat 46.21 --lon 7.26
     python ops/make_guest_guide.py … --no-claude   # étapes géo seules (test rapide)
+    python ops/make_guest_guide.py … --force       # malgré un ancrage imprécis (recette)
 
 Connexion : DSN dans `CASAGUIDE_DB` (ou --dsn). L'enrichissement/traduction réels
 exigent `ANTHROPIC_API_KEY` (sauf --no-claude / --no-translate).
@@ -44,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lat", type=float, default=None)
     parser.add_argument("--lon", type=float, default=None)
     parser.add_argument("--email", default=None, help="anti-abus (facultatif)")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="générer MALGRÉ un ancrage imprécis (garde V2-68) — recette administrateur, "
+             "pour les adresses rurales que Nominatim ne connaît pas")
     parser.add_argument("--no-claude", action="store_true", help="sauter l'IA (test géo)")
     parser.add_argument("--no-translate", action="store_true", help="pas de traduction")
     parser.add_argument("--dsn", default=None)
@@ -63,13 +68,16 @@ def main(argv: list[str] | None = None) -> int:
             city=args.city, country_code=args.country, address=args.address,
             postal_code=args.postal, region=args.region, name=args.name,
             lat=args.lat, lon=args.lon, email=args.email,
-            use_claude=not args.no_claude, do_translate=not args.no_translate)
+            use_claude=not args.no_claude, do_translate=not args.no_translate,
+            allow_imprecise=args.force)
     except guest_guides.GuestGuideMismatch as exc:
         log.error("✖ position incohérente : %s", exc.message)
         log.error("  → ajustez le point (le tunnel le fera ; ici passez --lat/--lon).")
         return 3
     except guest_guides.GuestGuideError as exc:
         log.error("✖ génération refusée (%s) : %s", exc.code, exc.message)
+        if exc.code == "imprecise_location":
+            log.error("  → posez le point (--lat/--lon), ou forcez la recette (--force).")
         return 4
 
     prop = res["property"] or {}

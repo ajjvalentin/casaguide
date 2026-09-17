@@ -14,6 +14,7 @@ sur la carte dans le back-office (prévu au CdC, champ geocode_accuracy).
 """
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from dataclasses import dataclass
 import httpx
 
 from .settings import settings
+
+log = logging.getLogger(__name__)
 
 _ACCURACY = {
     "building": "rooftop", "house": "rooftop", "residential": "rooftop",
@@ -238,6 +241,56 @@ def geocode(address: str | None = None, country_code: str = "ES",
 
         tried = address or f"{street}, {postalcode}, {city}"
         raise GeocodeError(f"Adresse introuvable (toutes stratégies) : {tried!r}")
+    finally:
+        if own_client:
+            client.close()
+
+
+# ── V2-68c : repère de départ quand l'adresse est introuvable ─────────────────
+#
+# Un géocodage infructueux doit OUVRIR le placement manuel, jamais fermer le parcours
+# (constat Kosovo, « Rrugë Skënderbeu 307, Xërxë, XK » : le tunnel disait « adresse
+# introuvable » et s'arrêtait, alors que la carte d'ajustement existe et que le client,
+# lui, connaît sa position). On rend donc le MEILLEUR repère disponible pour centrer la
+# carte — du plus fin au plus large — le code pays étant toujours fourni par la saisie.
+#
+# Ce n'est JAMAIS une position de guide : `coarse_locate` ne sert qu'à cadrer la carte
+# de placement. L'ancrage réel reste le point posé à la main (accuracy 'manual'), et la
+# garde de précision (`is_precise_enough`) n'est pas touchée.
+_COARSE_LEVELS = ("city", "postal", "country")
+
+
+def coarse_locate(*, city: str | None = None, postalcode: str | None = None,
+                  country_code: str = "ES",
+                  client: httpx.Client | None = None) -> dict | None:
+    """Meilleur REPÈRE de départ pour une adresse introuvable (V2-68c).
+
+    Essaie, du plus fin au plus large : commune → code postal → pays. Retourne
+    `{"lat", "lon", "level"}` (`level` ∈ `city` | `postal` | `country`) ou `None`
+    si même le pays est introuvable. Un échec d'un barreau (réseau, HTTP, pays
+    inconnu de Nominatim) n'interrompt jamais la descente : on essaie le suivant.
+    """
+    own_client = client is None
+    client = client or httpx.Client(timeout=15)
+    try:
+        attempts: list[tuple[dict, str]] = []
+        if city:
+            attempts.append(({"q": city}, "city"))
+        if postalcode:
+            attempts.append(({"q": postalcode}, "postal"))
+        # Le pays est TOUJOURS saisi dans le tunnel → dernier repère garanti.
+        attempts.append(({"country": country_code}, "country"))
+
+        for params, level in attempts:
+            try:
+                r = _search(params, country_code, client)
+            except Exception:  # noqa: BLE001 — un barreau qui casse n'arrête pas l'échelle
+                log.info("Repère '%s' non résolu pour %s/%s.", level, city, country_code,
+                         exc_info=True)
+                continue
+            if r:
+                return {"lat": float(r["lat"]), "lon": float(r["lon"]), "level": level}
+        return None
     finally:
         if own_client:
             client.close()

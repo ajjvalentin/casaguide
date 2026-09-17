@@ -145,3 +145,64 @@ def test_is_precise_enough():
         assert geocode.is_precise_enough(ok) is True
     for bad in ("city", "mismatch", None, ""):
         assert geocode.is_precise_enough(bad) is False
+
+
+# ── V2-68c : repère de départ d'une adresse introuvable ───────────────────────
+
+def _fake_search(found_for):
+    """`_search` simulé : rend un résultat pour les jeux de paramètres nommés dans
+    `found_for` (clé = 'city' | 'postal' | 'country'), None sinon. Aucun réseau."""
+    seen = []
+
+    def _search(params, country_code, client):
+        level = ("country" if "country" in params
+                 else "postal" if params.get("q", "").strip().isdigit()
+                 else "city")
+        seen.append(level)
+        pt = found_for.get(level)
+        return {"lat": str(pt[0]), "lon": str(pt[1])} if pt else None
+
+    return _search, seen
+
+
+def test_coarse_locate_prefers_the_commune(monkeypatch):
+    """V2-68c p3 : le meilleur repère d'abord — la commune quand Nominatim la connaît."""
+    search, seen = _fake_search({"city": (46.2, 7.26), "country": (46.8, 8.2)})
+    monkeypatch.setattr(geocode, "_search", search)
+    out = geocode.coarse_locate(city="Ardon", postalcode="1957", country_code="CH")
+    assert out == {"lat": 46.2, "lon": 7.26, "level": "city"}
+    assert seen == ["city"]                       # on ne descend pas plus bas que besoin
+
+
+def test_coarse_locate_falls_back_to_postcode_then_country(monkeypatch):
+    """Commune inconnue → code postal ; ni l'un ni l'autre → pays (TOUJOURS fourni par la
+    saisie). Cas réel : « Rrugë Skënderbeu 307, Xërxë, XK »."""
+    search, seen = _fake_search({"postal": (44.9, -0.7), "country": (42.6, 20.9)})
+    monkeypatch.setattr(geocode, "_search", search)
+    assert geocode.coarse_locate(city="Bégadan", postalcode="33340",
+                                 country_code="FR")["level"] == "postal"
+
+    search, seen = _fake_search({"country": (42.6, 20.9)})
+    monkeypatch.setattr(geocode, "_search", search)
+    out = geocode.coarse_locate(city="Xërxë", country_code="XK")
+    assert out == {"lat": 42.6, "lon": 20.9, "level": "country"}
+    assert seen == ["city", "country"]            # pas de CP saisi → barreau sauté
+
+
+def test_coarse_locate_survives_a_broken_rung(monkeypatch):
+    """Un barreau qui casse (réseau, HTTP, pays inconnu) n'interrompt jamais la descente
+    — sinon le parcours se refermerait justement là où il doit s'ouvrir."""
+    def search(params, country_code, client):
+        if "country" not in params:
+            raise httpx.ConnectError("boom")
+        return {"lat": "42.6", "lon": "20.9"}
+
+    monkeypatch.setattr(geocode, "_search", search)
+    assert geocode.coarse_locate(city="Xërxë", country_code="XK")["level"] == "country"
+
+
+def test_coarse_locate_returns_none_when_even_the_country_is_unknown(monkeypatch):
+    """Aucun repère du tout → None (le tunnel ouvre alors la carte au large)."""
+    search, _ = _fake_search({})
+    monkeypatch.setattr(geocode, "_search", search)
+    assert geocode.coarse_locate(city="Nulle part", country_code="ZZ") is None

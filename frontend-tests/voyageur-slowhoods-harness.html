@@ -1,0 +1,101 @@
+<!doctype html>
+<!-- Harnais headless du TUNNEL voyageur — LES QUARTIERS NE BLOQUENT PLUS (V2-68c).
+     Reproduit le gel réel : pour une adresse imprécise, le tunnel attendait
+     /neighborhoods (Overpass), mesuré 48,7 s sur « Xërxë, XK » — bouton « Situer » grisé,
+     ni carte ni message pendant tout ce temps. Ici /neighborhoods NE RÉPOND JAMAIS : on
+     vérifie que la carte, le message et le paiement sont quand même là tout de suite, que
+     le bouton est réarmé, et que poser le point débloque le paiement. Verdict dans #result. -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>voyageur-slowhoods-harness</title></head>
+<body>
+<div id="app"></div>
+<pre id="result">PENDING</pre>
+<script>
+  let mapClickCb = null;
+  window.__view = null;
+  window.L = {
+    map: () => ({
+      setView(center, zoom) { window.__view = { center, zoom }; return this; },
+      on(ev, cb) { if (ev === "click") mapClickCb = cb; return this; },
+      invalidateSize() {}, remove() {},
+    }),
+    tileLayer: () => ({ addTo() { return this; } }),
+    marker: () => ({ on() { return this; }, setLatLng() { return this; },
+                     getLatLng: () => ({ lat: 42.08, lng: 20.68 }), addTo() { return this; } }),
+  };
+  window.__clickMap = (lat, lng) => mapClickCb && mapClickCb({ latlng: { lat, lng } });
+
+  // Géocodage imprécis (centroïde du village) + /neighborhoods qui ne répond JAMAIS.
+  window.fetch = async (path) => {
+    const p = String(path);
+    const json = (b) => new Response(JSON.stringify(b), { headers: { "Content-Type": "application/json" } });
+    if (p.endsWith("/api/guest-guides/geocode"))
+      return json({ found: true, accuracy: "city", mismatch: false, lat: 42.0801, lon: 20.6838 });
+    if (p.endsWith("/api/guest-guides/neighborhoods"))
+      return new Promise(() => {});          // Overpass en timeout : jamais de réponse
+    if (p.endsWith("/api/guest-guides/offer")) return json({ price_cts: 290, currency: "eur" });
+    return new Response("{}", { headers: { "Content-Type": "application/json" } });
+  };
+</script>
+
+<script type="module">
+  import { renderVoyageur } from "/frontend/js/views/voyageur.js";
+  const out = document.getElementById("result");
+  const app = document.getElementById("app");
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const vis = (elm) => elm && !elm.classList.contains("hidden");
+  (async () => {
+    let step = "start";
+    const fail = (m) => { out.textContent = "FAIL[" + step + "]: " + m; };
+    try {
+      step = "render";
+      renderVoyageur(app, ["adresse"], new URLSearchParams("lang=fr"));
+      await wait(20);
+      const inputFor = (lbl) => {
+        const l = [...app.querySelectorAll("label.field")]
+          .find((x) => x.querySelector("span").textContent.includes(lbl));
+        return l && l.querySelector("input");
+      };
+      inputFor("Adresse").value = "Rrugë Skënderbeu 307";
+      inputFor("Ville").value = "Xërxë";
+      inputFor("Pays").value = "XK";
+      inputFor("e-mail").value = "k@example.com";
+
+      step = "locate";
+      const locate = [...app.querySelectorAll("button")]
+        .find((b) => b.textContent === "Situer sur la carte");
+      locate.click();
+      await wait(80);                        // les quartiers, eux, n'arriveront jamais
+
+      // (1) Le parcours est OUVERT malgré Overpass muet.
+      step = "assert";
+      if (locate.disabled) return fail("bouton « Situer » resté grisé (gel V2-68c)");
+      const mapWrap = app.querySelector(".voyageur-mapwrap");
+      if (!vis(mapWrap)) return fail("carte absente tant que les quartiers n'arrivent pas");
+      const msg = [...mapWrap.children]
+        .find((c) => c.tagName === "P" && /déplacez le point/i.test(c.textContent));
+      if (!msg) return fail("message d'invitation absent");
+      // (2) Le récapitulatif existe déjà, paiement bloqué tant que rien n'est posé.
+      const payBtn = [...app.querySelectorAll(".voyageur-recap button")].pop();
+      if (!payBtn) return fail("récapitulatif absent (bloqué par les quartiers)");
+      if (!payBtn.disabled) return fail("paiement débloqué sans ancrage");
+      // (3) Carte cadrée sur le village, assez large pour s'y reconnaître.
+      const v = window.__view;
+      if (!v || Math.abs(v.center[0] - 42.0801) > 0.01)
+        return fail("carte non centrée sur le repère : " + JSON.stringify(v));
+      if (!(v.zoom <= 14)) return fail("centroïde cadré trop serré (zoom " + v.zoom + ")");
+
+      // (4) Poser le point débloque le paiement.
+      step = "placePoint";
+      window.__clickMap(42.07, 20.69);
+      await wait(20);
+      if (payBtn.disabled) return fail("paiement toujours bloqué après placement du point");
+
+      out.textContent = "PASS";
+    } catch (e) {
+      fail((e && e.message) || String(e));
+    }
+  })();
+</script>
+</body>
+</html>

@@ -481,8 +481,46 @@ def test_public_geocode_endpoint(pay, monkeypatch):
     monkeypatch.setattr(
         guest_pay._geocode, "geocode",
         lambda **kw: (_ for _ in ()).throw(guest_pay._geocode.GeocodeError("nope")))
+    monkeypatch.setattr(guest_pay._geocode, "coarse_locate", lambda **kw: None)
     assert client.post("/api/guest-guides/geocode",
                        json={"city": "X", "country_code": "ES"}).json()["found"] is False
+
+
+def test_geocode_failure_still_serves_a_starting_landmark(pay, monkeypatch):
+    """V2-68c p1/p3 : une adresse introuvable OUVRE le placement manuel — `found=False`
+    part AVEC un repère de départ (commune → code postal → pays) pour centrer la carte.
+    Cas réel : « Rrugë Skënderbeu 307, Xërxë, XK »."""
+    client, _, _ = pay
+    monkeypatch.setattr(guest_pay, "_GEO_MIN_INTERVAL_S", 0)
+    monkeypatch.setattr(
+        guest_pay._geocode, "geocode",
+        lambda **kw: (_ for _ in ()).throw(guest_pay._geocode.GeocodeError("nope")))
+    monkeypatch.setattr(guest_pay._geocode, "coarse_locate",
+                        lambda **kw: {"lat": 42.6, "lon": 20.9, "level": "country"})
+    body = client.post("/api/guest-guides/geocode",
+                       json={"city": "Xërxë", "country_code": "XK",
+                             "address_line1": "Rrugë Skënderbeu 307"}).json()
+    assert body["found"] is False
+    assert (body["lat"], body["lon"]) == (42.6, 20.9)
+    assert body["hint_level"] == "country"
+
+
+def test_geocode_never_500s_on_an_unexpected_failure(pay, monkeypatch):
+    """V2-68c : une panne de géocodage (réseau, HTTP, quota Nominatim) se traite comme
+    une adresse introuvable — repère + placement manuel, JAMAIS un 500 qui fermerait le
+    parcours."""
+    client, _, _ = pay
+    monkeypatch.setattr(guest_pay, "_GEO_MIN_INTERVAL_S", 0)
+    monkeypatch.setattr(
+        guest_pay._geocode, "geocode",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("nominatim 503")))
+    monkeypatch.setattr(guest_pay._geocode, "coarse_locate",
+                        lambda **kw: {"lat": 44.9, "lon": -0.7, "level": "postal"})
+    r = client.post("/api/guest-guides/geocode",
+                    json={"city": "Bégadan", "postal_code": "33340",
+                          "country_code": "FR"})
+    assert r.status_code == 200
+    assert r.json()["found"] is False and r.json()["hint_level"] == "postal"
 
 
 def test_checkout_refuses_imprecise_location_without_point(pay, monkeypatch):

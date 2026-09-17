@@ -1,0 +1,113 @@
+<!doctype html>
+<!-- Harnais headless du TUNNEL voyageur — ADRESSE INTROUVABLE (V2-68c). Rend le VRAI
+     /frontend/js/views/voyageur.js (renderAdresse) avec fetch simulé + Leaflet stubé.
+     Reproduit la tentative réelle Kosovo (« Rrugë Skënderbeu 307, Xërxë, XK ») : le
+     géocodage échoue (found:false) mais l'API sert un REPÈRE de départ (niveau pays).
+     On vérifie que le parcours s'OUVRE au lieu de se fermer : carte affichée, centrée
+     sur le repère (jamais le centre d'Espagne par défaut) et cadrée large, message
+     « placez le point », paiement BLOQUÉ tant que rien n'est posé puis DÉBLOQUÉ dès que
+     le client pose son point, bouton « Situer » réarmé. Verdict dans #result. -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>voyageur-notfound-harness</title></head>
+<body>
+<div id="app"></div>
+<pre id="result">PENDING</pre>
+<script>
+  // Leaflet stubé : on CAPTE le cadrage (setView) — c'est lui qui prouve que la carte
+  // s'ouvre sur le repère servi par l'API — et le handler de clic (placement manuel).
+  let mapClickCb = null;
+  window.__view = null;
+  window.L = {
+    map: () => ({
+      setView(center, zoom) { window.__view = { center, zoom }; return this; },
+      on(ev, cb) { if (ev === "click") mapClickCb = cb; return this; },
+      invalidateSize() {}, remove() {},
+    }),
+    tileLayer: () => ({ addTo() { return this; } }),
+    marker: () => ({ on() { return this; }, setLatLng() { return this; },
+                     getLatLng: () => ({ lat: 42.5, lng: 20.7 }), addTo() { return this; } }),
+  };
+  window.__clickMap = (lat, lng) => mapClickCb && mapClickCb({ latlng: { lat, lng } });
+
+  // Fetch simulé : géocodage INTROUVABLE + repère de pays (Kosovo).
+  window.fetch = async (path) => {
+    const p = String(path);
+    const json = (b) => new Response(JSON.stringify(b), { headers: { "Content-Type": "application/json" } });
+    if (p.endsWith("/api/guest-guides/geocode"))
+      return json({ found: false, lat: 42.6, lon: 20.9, hint_level: "country" });
+    if (p.endsWith("/api/guest-guides/neighborhoods")) return json([]);
+    if (p.endsWith("/api/guest-guides/offer")) return json({ price_cts: 290, currency: "eur" });
+    return new Response("{}", { headers: { "Content-Type": "application/json" } });
+  };
+</script>
+
+<script type="module">
+  import { renderVoyageur } from "/frontend/js/views/voyageur.js";
+  const out = document.getElementById("result");
+  const app = document.getElementById("app");
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const vis = (elm) => elm && !elm.classList.contains("hidden");
+  (async () => {
+    let step = "start";
+    const fail = (m) => { out.textContent = "FAIL[" + step + "]: " + m; };
+    try {
+      step = "render";
+      renderVoyageur(app, ["adresse"], new URLSearchParams("lang=fr"));
+      await wait(20);
+
+      const inputFor = (lbl) => {
+        const l = [...app.querySelectorAll("label.field")]
+          .find((x) => x.querySelector("span").textContent.includes(lbl));
+        return l && l.querySelector("input");
+      };
+      inputFor("Adresse").value = "Rrugë Skënderbeu 307";
+      inputFor("Ville").value = "Xërxë";
+      inputFor("Pays").value = "XK";
+      inputFor("e-mail").value = "k@example.com";
+
+      step = "locate";
+      const locate = [...app.querySelectorAll("button")]
+        .find((b) => b.textContent === "Situer sur la carte");
+      if (!locate) return fail("bouton « Situer sur la carte » introuvable");
+      locate.click();
+      await wait(80);
+
+      // (1) Le parcours reste ouvert : bouton réarmé, carte affichée.
+      step = "assert";
+      if (locate.disabled) return fail("bouton « Situer » resté grisé");
+      const mapWrap = app.querySelector(".voyageur-mapwrap");
+      if (!vis(mapWrap)) return fail("carte non affichée après une adresse introuvable");
+
+      // (2) Carte centrée sur le REPÈRE servi (pays), pas sur le centre par défaut.
+      const v = window.__view;
+      if (!v) return fail("carte jamais cadrée (setView non appelé)");
+      if (Math.abs(v.center[0] - 42.6) > 0.01 || Math.abs(v.center[1] - 20.9) > 0.01)
+        return fail("carte centrée ailleurs que sur le repère : " + JSON.stringify(v.center));
+      if (!(v.zoom <= 8)) return fail("repère de pays cadré trop serré (zoom " + v.zoom + ")");
+
+      // (3) Message d'invitation — jamais une impasse.
+      const msg = [...mapWrap.children]
+        .find((c) => c.tagName === "P" && /placez le point/i.test(c.textContent));
+      if (!msg) return fail("message « placez le point » absent");
+      if (!/pas trouvé cette adresse/i.test(msg.textContent))
+        return fail("message ne dit pas ce qui s'est passé : " + msg.textContent);
+
+      // (4) Paiement bloqué tant que le point n'est pas posé à la main.
+      const payBtn = [...app.querySelectorAll(".voyageur-recap button")].pop();
+      if (!payBtn) return fail("bouton de paiement absent");
+      if (!payBtn.disabled) return fail("paiement débloqué par le seul repère de départ");
+
+      // (5) Le client pose son point → paiement débloqué.
+      step = "placePoint";
+      window.__clickMap(42.51, 20.71);
+      await wait(20);
+      if (payBtn.disabled) return fail("paiement toujours bloqué après placement du point");
+
+      out.textContent = "PASS";
+    } catch (e) {
+      fail((e && e.message) || String(e));
+    }
+  })();
+</script>
+</body>
+</html>

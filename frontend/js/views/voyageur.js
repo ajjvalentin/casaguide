@@ -30,7 +30,7 @@ const STRINGS = {
     locate: "Situer sur la carte",
     map_hint: "Déplacez le point (ou touchez la carte) pour marquer précisément le lieu.",
     map_mismatch: "Emplacement incertain — vérifiez et déplacez le point sur le lieu voulu.",
-    map_notfound: "Adresse introuvable — placez le point manuellement sur la carte.",
+    map_notfound: "Nous n'avons pas trouvé cette adresse — placez le point sur votre lieu de séjour.",
     need_precise: "Emplacement imprécis — indiquez une rue ou déplacez le point sur le lieu voulu.",
     geo_error: "Localisation momentanément indisponible — placez le point manuellement sur la carte.",
     choose_area: "Grande ville : choisissez le quartier à explorer.",
@@ -69,7 +69,7 @@ const STRINGS = {
     locate: "Locate on the map",
     map_hint: "Drag the point (or tap the map) to mark the place precisely.",
     map_mismatch: "Location uncertain — check and move the point to the place you mean.",
-    map_notfound: "Address not found — place the point manually on the map.",
+    map_notfound: "We couldn't find this address — place the point on your holiday spot.",
     need_precise: "Imprecise location — enter a street or move the point to the place you mean.",
     geo_error: "Location temporarily unavailable — place the point manually on the map.",
     choose_area: "Large city: choose the district to explore.",
@@ -108,7 +108,7 @@ const STRINGS = {
     locate: "Situar en el mapa",
     map_hint: "Mueve el punto (o toca el mapa) para marcar el lugar con precisión.",
     map_mismatch: "Ubicación incierta — comprueba y mueve el punto al lugar deseado.",
-    map_notfound: "Dirección no encontrada — coloca el punto manualmente en el mapa.",
+    map_notfound: "No hemos encontrado esta dirección — coloca el punto en tu lugar de estancia.",
     need_precise: "Ubicación imprecisa — indica una calle o mueve el punto al lugar deseado.",
     geo_error: "Localización no disponible por el momento — coloca el punto manualmente en el mapa.",
     choose_area: "Ciudad grande: elige el barrio que quieres explorar.",
@@ -180,11 +180,13 @@ function exitDoors() {
 
 // ── Carte d'ajustement du point (Leaflet global sur le SPA) ──────────────────
 // Renvoie un getter () -> {lat, lon} ; `onSet(lat,lon)` notifié à chaque changement.
-function mountAdjustMap(container, { lat, lon }, onSet) {
+// `zoom` (V2-68c) cadre le repère de départ : une rue se montre de près, un repère de
+// pays de loin — centrer un pays au zoom 16 ne montrerait qu'un champ anonyme.
+function mountAdjustMap(container, { lat, lon, zoom }, onSet) {
   if (!window.L) { container.textContent = "(carte indisponible)"; return () => null; }
   const hasPoint = lat != null && lon != null;
   let la = hasPoint ? lat : 40.0, lo = hasPoint ? lon : -3.7;
-  const map = window.L.map(container).setView([la, lo], hasPoint ? 16 : 5);
+  const map = window.L.map(container).setView([la, lo], hasPoint ? (zoom || 16) : 5);
   window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     { attribution: "© OpenStreetMap", maxZoom: 19 }).addTo(map);
   const marker = window.L.marker([la, lo], { draggable: true }).addTo(map);
@@ -194,6 +196,14 @@ function mountAdjustMap(container, { lat, lon }, onSet) {
   setTimeout(() => map.invalidateSize(), 80);
   if (hasPoint && onSet) onSet(la, lo);
   return () => ({ lat: la, lon: lo });
+}
+
+// Cadrage de la carte selon ce que le géocodage a su rendre (V2-68c). Un repère large
+// (commune/code postal/pays) se montre de loin — le client zoome vers chez lui.
+const HINT_ZOOM = { city: 12, postal: 12, country: 6 };
+function startZoom(geo, precise) {
+  if (!geo.found) return HINT_ZOOM[geo.hint_level] || 10;
+  return precise ? 16 : 13;      // centroïde/mismatch : de quoi reconnaître le secteur
 }
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -270,11 +280,6 @@ function renderAdresse(root) {
       // Précision (V2-68 p1) : rue/quartier OK ; « city »/mismatch/introuvable = imprécis
       // → on IMPOSE un ancrage (choix de quartier pour une grande ville, sinon ajustement).
       const precise = geo.found && (geo.accuracy === "rooftop" || geo.accuracy === "street");
-      let hoods = [];
-      if (!precise && geo.found) {
-        try { hoods = await api.guestNeighborhoods({ address_line1: addr1, postal_code: pc, city, country_code: cc }); }
-        catch (_) { hoods = []; }
-      }
 
       // État d'ancrage : « validé » si PRÉCIS, ou AJUSTÉ à la main, ou quartier CHOISI.
       // `anchorCity` porte le quartier retenu (titre « Shibuya »). syncPay et payBtn sont
@@ -310,26 +315,10 @@ function renderAdresse(root) {
         }
       };
 
-      // Carte d'ajustement, CENTRÉE sur le point retourné (même imprécis). Le 1er `onSet`
-      // (appel synchrone du montage) est ignoré → un point imprécis ne débloque PAS le
-      // paiement tant que le client ne l'a pas déplacé.
-      mapWrap.classList.remove("hidden");
-      clear(mapEl);
-      const start = geo.found ? { lat: geo.lat, lon: geo.lon } : { lat: null, lon: null };
-      let mounted = false;
-      getPoint = mountAdjustMap(mapEl, start, () => {
-        if (!mounted) return;              // montage : pas une interaction du client
-        anchored = true; syncPay();
-      });
-      mounted = true;
-
-      // Message + choix de quartier selon la précision.
-      clear(hoodsBox);
-      if (precise) {
-        hoodsBox.classList.add("hidden");
-        mapMsg.textContent = tr("map_hint");
-      } else if (hoods.length) {
-        // Grande ville : boutons de quartier (ancrage précis en un tap) — V2-68 p2.
+      // Puces de quartier — ancrage précis en un tap (V2-68 p2), montées à l'arrivée
+      // de la liste (asynchrone, cf. plus bas) et non plus avant la carte.
+      const showHoods = (hoods) => {
+        clear(hoodsBox);
         mapMsg.textContent = tr("need_precise");
         hoodsBox.appendChild(el("p", { class: "muted small" }, tr("choose_area")));
         const chips = el("div", { class: "hood-chips" });
@@ -337,7 +326,7 @@ function renderAdresse(root) {
           const b = el("button", { class: "btn hood-chip", type: "button" }, h.name);
           b.onclick = () => {
             let m2 = false;
-            getPoint = mountAdjustMap(mapEl, { lat: h.lat, lon: h.lon }, () => {
+            getPoint = mountAdjustMap(mapEl, { lat: h.lat, lon: h.lon, zoom: 14 }, () => {
               if (!m2) return; anchored = true; syncPay();
             });
             m2 = true;
@@ -354,19 +343,52 @@ function renderAdresse(root) {
         });
         hoodsBox.appendChild(chips);
         hoodsBox.classList.remove("hidden");
-      } else {
-        // Imprécis sans quartier (petite commune), introuvable, ou erreur réseau :
-        // ajustement du point imposé, message explicite — jamais d'impasse (V2-68b p3).
-        hoodsBox.classList.add("hidden");
-        mapMsg.textContent = geo.found ? tr("need_precise")
-          : (geoErr ? tr("geo_error") : tr("map_notfound"));
-      }
+      };
+
+      // Carte d'ajustement, CENTRÉE sur le point retourné (même imprécis). Le 1er `onSet`
+      // (appel synchrone du montage) est ignoré → un point imprécis ne débloque PAS le
+      // paiement tant que le client ne l'a pas déplacé.
+      mapWrap.classList.remove("hidden");
+      clear(mapEl);
+      // Repère de départ (V2-68c) : le point trouvé, ou — adresse introuvable — le
+      // repère servi par l'API (commune → code postal → pays). Un géocodage
+      // infructueux OUVRE le placement manuel, il ne ferme jamais le parcours.
+      const start = { lat: geo.lat != null ? geo.lat : null,
+                      lon: geo.lon != null ? geo.lon : null,
+                      zoom: startZoom(geo, precise) };
+      let mounted = false;
+      getPoint = mountAdjustMap(mapEl, start, () => {
+        if (!mounted) return;              // montage : pas une interaction du client
+        anchored = true; syncPay();
+      });
+      mounted = true;
+
+      // UN SEUL chemin, « pose le point » : imprécision, mismatch, adresse introuvable ou
+      // panne de géocodage aboutissent tous à la même carte de placement, avec un message
+      // qui dit ce qui s'est passé. Jamais d'impasse (V2-68b p3, V2-68c p1-2).
+      clear(hoodsBox);
+      hoodsBox.classList.add("hidden");
+      mapMsg.textContent = precise ? tr("map_hint")
+        : (geo.found ? tr("need_precise")
+                     : (geoErr ? tr("geo_error") : tr("map_notfound")));
 
       clear(recap);
       mount(recap, el("h2", {}, tr("recap", { city: anchorCity })), payBtn);
       recap.classList.remove("hidden");
       syncPay();
       recap.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+      // Les quartiers d'une grande ville (V2-68 p2) sont un RACCOURCI, jamais un
+      // PRÉALABLE : leur résolution passe par Overpass et peut demander près d'une minute
+      // (48,7 s mesurés sur « Xërxë, XK » — deux miroirs en timeout avant la liste vide).
+      // Les attendre gelait tout le parcours — bouton grisé, ni carte ni message — ce que
+      // le client décrit comme « ça s'arrête ». Ils arrivent donc APRÈS, et seulement si
+      // le client n'a pas déjà posé son point entre-temps (ne rien bouger sous son doigt).
+      if (!precise && geo.found) {
+        api.guestNeighborhoods({ address_line1: addr1, postal_code: pc, city, country_code: cc })
+          .then((hoods) => { if (hoods && hoods.length && !anchored) showHoods(hoods); })
+          .catch(() => { /* pas de quartiers : l'ajustement du point suffit */ });
+      }
     } finally {
       locateBtn.disabled = false;          // TOUJOURS réarmé — jamais grisé sans issue
     }
