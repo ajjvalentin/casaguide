@@ -37,6 +37,6 @@ const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : 
 setTimeout(() => {
   chk(location.search.includes("lang=es"),
     "fiche muette + clé guest(es) → clé guest gagne sur M-09/navigator(en) → ?lang=es (search=" + JSON.stringify(location.search) + ")");
-  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+  document.getElementById("result").textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n");
 }, 50);
 </script>

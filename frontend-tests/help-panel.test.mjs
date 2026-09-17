@@ -13,7 +13,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { requireChrome, reportVerdict } from "./_harness.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIME = {
@@ -34,20 +35,6 @@ function startServer() {
     });
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
-}
-
-function findChrome() {
-  if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) return process.env.CHROME_BIN;
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  ];
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  for (const name of ["google-chrome", "chromium", "chromium-browser"]) {
-    try { return execSync(`command -v ${name}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
-    catch { /* absent */ }
-  }
-  return null;
 }
 
 async function runHarness(chrome, port, harness) {
@@ -82,13 +69,13 @@ async function runHarness(chrome, port, harness) {
 }
 
 test("panneau d'aide V2-31 : ⌘K, résultats, M'y emmener, zéro-résultat, journal", async (t) => {
-  const chrome = findChrome();
-  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const chrome = requireChrome("help-panel.test.mjs");   // pas de navigateur → LÈVE (V2-76)
+  if (!chrome) { t.skip("aucun navigateur — cf. bandeau final"); return; }   // hatch explicite
   const server = await startServer();
   try {
     const verdict = await runHarness(chrome, server.address().port, "help-panel-harness.html");
     assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
-    assert.equal(verdict, "PASS", `panneau d'aide en échec :\n${verdict}`);
+    reportVerdict("help-panel-harness.html", verdict);
   } finally {
     server.close();
   }

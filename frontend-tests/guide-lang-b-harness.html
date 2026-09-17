@@ -41,6 +41,6 @@ const chk = (cond, msg) => { if (!cond) pass = false; log.push((cond ? "✓ " : 
 setTimeout(() => {
   chk(location.search.includes("lang=en"),
     "clé guest (casaguide:lang:b=en) surclasse guest_lang(de) + M-09(es) → ?lang=en (search=" + JSON.stringify(location.search) + ")");
-  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+  document.getElementById("result").textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n");
 }, 50);
 </script>

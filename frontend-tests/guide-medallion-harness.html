@@ -52,20 +52,25 @@
 <script type="module">
   const out = document.getElementById("result");
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Journal des contrôles (V2-76) : une ligne par assertion RÉELLE, publiée que le
+  // harnais passe ou non — un « PASS » sans aucune ligne est refusé côté node.
+  const log = []; let pass = true;
+  const chk = (c, m) => { log.push((c ? "✓ " : "✗ ") + m); if (!c) pass = false; return c; };
+  const done = () => { out.textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n"); };
   (async () => {
     try {
       await import("/frontend/guide/app.js");
       await wait(80);   // laisse l'IntersectionObserver / le lazy build se déclencher
       const med = document.getElementById("situ-medallion");
       // La carte principale doit être bâtie…
-      if (!document.getElementById("map").classList.contains("leaflet-container"))
-        return void (out.textContent = "FAIL: carte principale non bâtie");
+      if (!chk(document.getElementById("map").classList.contains("leaflet-container"),
+        "la carte principale est bâtie (conteneur Leaflet)")) return done();
       // …ET le médaillon DANS elle (le cœur du correctif V2-72b).
-      if (!med.classList.contains("leaflet-container"))
-        return void (out.textContent = "FAIL: médaillon non bâti (aucun conteneur Leaflet)");
-      out.textContent = "PASS";
+      chk(med.classList.contains("leaflet-container"),
+        "le médaillon pays est bâti DANS #map (conteneur Leaflet)");
+      done();
     } catch (e) {
-      out.textContent = "FAIL: " + ((e && e.message) || e);
+      chk(false, "exception : " + ((e && e.message) || e)); done();
     }
   })();
 </script>

@@ -160,7 +160,7 @@
     pass = false;
     log.push("✗ exception : " + (e && e.message ? e.message : e));
   }
-  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+  document.getElementById("result").textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n");
 </script>
 </body>
 </html>

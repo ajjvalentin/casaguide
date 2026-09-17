@@ -64,40 +64,44 @@
 <script type="module">
   const out = document.getElementById("result");
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Journal des contrôles (V2-76) : une ligne par assertion RÉELLE, publiée que le
+  // harnais passe ou non — un « PASS » sans aucune ligne est refusé côté node.
+  const log = []; let pass = true;
+  const chk = (c, m) => { log.push((c ? "✓ " : "✗ ") + m); if (!c) pass = false; return c; };
+  const done = () => { out.textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n"); };
   (async () => {
     try {
       await import("/frontend/guide/app.js");
       await wait(80);
       const act = window.__markers.filter((m) => m._catCode === "activities");
-      if (act.length !== 2)
-        return void (out.textContent = "FAIL: 2 marqueurs d'activité attendus, obtenu " + act.length);
+      if (!chk(act.length === 2, "2 marqueurs d'activité posés (obtenu " + act.length + ")")) return done();
       // DISTINCT d'une pastille de commerce : divIcon `.act-pin`, pas un circleMarker.
-      if (act.some((m) => m._kind !== "marker" || !m._iconHtml.includes("act-pin")))
-        return void (out.textContent = "FAIL: marqueur d'activité non distinct (act-pin manquant)");
+      chk(!act.some((m) => m._kind !== "marker" || !m._iconHtml.includes("act-pin")),
+        "marqueur d'activité DISTINCT : divIcon .act-pin, pas un circleMarker");
       const commerce = window.__markers.filter((m) => m._catCode === "supermarket");
-      if (!(commerce.length === 1 && commerce[0]._kind === "circle"))
-        return void (out.textContent = "FAIL: le commerce doit rester une pastille ronde");
+      chk(commerce.length === 1 && commerce[0]._kind === "circle",
+        "le commerce reste une pastille ronde (non-régression)");
       const exact = act.find((m) => m._ll[1] === -1.15);       // Surf (POI apparié)
       const approx = act.find((m) => m._ll[1] === -0.90);      // Randonnée (géocodée)
       // V2-73g : la position EXACTE (POI apparié) → PAS de cercle + lien « voir dans le guide ».
-      if (exact._circle)
-        return void (out.textContent = "FAIL: une position exacte ne doit PAS avoir de cercle");
-      if (!/Voir dans le guide/.test(exact._popup) || !/#autour\/beach/.test(exact._popup))
-        return void (out.textContent = "FAIL: la popup exacte doit lier vers la fiche du POI");
-      if (/Position approximative/.test(exact._popup))
-        return void (out.textContent = "FAIL: pas de mention 'approximative' sur une position exacte");
+      if (!chk(!!exact && !!approx, "les deux activités attendues sont identifiées")) return done();
+      chk(!exact._circle, "V2-73g : une position EXACTE n'a PAS de cercle d'approximation");
+      chk(/Voir dans le guide/.test(exact._popup) && /#autour\/beach/.test(exact._popup),
+        "V2-73g : la popup exacte lie vers la fiche du POI apparié");
+      chk(!/Position approximative/.test(exact._popup),
+        "aucune mention « approximative » sur une position exacte");
       // V2-73f : la position APPROCHÉE → cercle (≈ 1 km) + mention « position approximative ».
       const circles = window.__circles || [];
-      if (circles.length !== 1 || circles[0]._radius !== 1000)
-        return void (out.textContent = "FAIL: 1 cercle r=1000 attendu, obtenu "
-          + JSON.stringify(circles.map((c) => c._radius)));
-      if (!(approx._circle && approx._circle === circles[0]))
-        return void (out.textContent = "FAIL: le cercle doit être attaché à l'activité approchée");
-      if (!/Position approximative/.test(approx._popup))
-        return void (out.textContent = "FAIL: la popup approchée doit mentionner l'approximation");
-      out.textContent = "PASS";
+      if (!chk(circles.length === 1 && circles[0]._radius === 1000,
+        "V2-73f : 1 cercle d'approximation r=1000 (obtenu "
+        + JSON.stringify(circles.map((c) => c._radius)) + ")")) return done();
+      chk(approx._circle && approx._circle === circles[0],
+        "le cercle est attaché au marqueur de l'activité approchée");
+      chk(/Position approximative/.test(approx._popup),
+        "la popup approchée mentionne « position approximative »");
+      done();
     } catch (e) {
-      out.textContent = "FAIL: " + ((e && e.message) || e);
+      chk(false, "exception : " + ((e && e.message) || e)); done();
     }
   })();
 </script>

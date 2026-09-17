@@ -17,7 +17,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { requireChrome, reportVerdict } from "./_harness.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -41,20 +42,6 @@ function startServer() {
     });
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
-}
-
-function findChrome() {
-  if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) return process.env.CHROME_BIN;
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  ];
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  for (const name of ["google-chrome", "chromium", "chromium-browser"]) {
-    try { return execSync(`command -v ${name}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
-    catch { /* absent */ }
-  }
-  return null;
 }
 
 async function runHarness(chrome, port, harness) {
@@ -88,9 +75,9 @@ async function runHarness(chrome, port, harness) {
   }
 }
 
-async function withServer(fn) {
-  const chrome = findChrome();
-  if (!chrome) return "SKIP";
+async function withServer(fn, name) {
+  const chrome = requireChrome(name);   // pas de navigateur → LÈVE (V2-76)
+  if (!chrome) return "SKIP";           // CASAGUIDE_ALLOW_NO_CHROME : sauté MAIS compté
   const server = await startServer();
   try { return await fn(chrome, server.address().port); }
   finally { server.close(); }
@@ -100,34 +87,34 @@ test("§3.5 : guest_lang renseignée → aucune redirection (la fiche fait foi)"
   const r = await withServer(async (chrome, port) => {
     const v = await runHarness(chrome, port, "guide-lang-harness.html");
     return v;
-  });
-  if (r === "SKIP") { t.skip("aucun Chrome/Chromium détecté"); return; }
-  assert.equal(r, "PASS", `harnais en échec :\n${r}`);
+  }, "guide-lang-harness.html");
+  if (r === "SKIP") { t.skip("aucun navigateur — cf. bandeau final"); return; }
+  reportVerdict("guide-lang-harness.html", r);
 });
 
 test("§3.5 : guest_lang vide → M-09 intact (redirection vers la langue de l'appareil)", async (t) => {
   const r = await withServer(async (chrome, port) => {
     const v = await runHarness(chrome, port, "guide-lang-m09-harness.html");
     return v;
-  });
-  if (r === "SKIP") { t.skip("aucun Chrome/Chromium détecté"); return; }
-  assert.equal(r, "PASS", `harnais en échec :\n${r}`);
+  }, "guide-lang-m09-harness.html");
+  if (r === "SKIP") { t.skip("aucun navigateur — cf. bandeau final"); return; }
+  reportVerdict("guide-lang-m09-harness.html", r);
 });
 
 test("§3.5 amdt 2 : clé guest /b/ surclasse guest_lang + M-09 (sert un autre /b/)", async (t) => {
   const r = await withServer(async (chrome, port) => {
     const v = await runHarness(chrome, port, "guide-lang-b-harness.html");
     return v;
-  });
-  if (r === "SKIP") { t.skip("aucun Chrome/Chromium détecté"); return; }
-  assert.equal(r, "PASS", `harnais en échec :\n${r}`);
+  }, "guide-lang-b-harness.html");
+  if (r === "SKIP") { t.skip("aucun navigateur — cf. bandeau final"); return; }
+  reportVerdict("guide-lang-b-harness.html", r);
 });
 
 test("§3.5 amdt 2 : fiche muette + clé guest posée → clé guest gagne", async (t) => {
   const r = await withServer(async (chrome, port) => {
     const v = await runHarness(chrome, port, "guide-lang-b-muet-harness.html");
     return v;
-  });
-  if (r === "SKIP") { t.skip("aucun Chrome/Chromium détecté"); return; }
-  assert.equal(r, "PASS", `harnais en échec :\n${r}`);
+  }, "guide-lang-b-muet-harness.html");
+  if (r === "SKIP") { t.skip("aucun navigateur — cf. bandeau final"); return; }
+  reportVerdict("guide-lang-b-muet-harness.html", r);
 });

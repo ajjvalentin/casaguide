@@ -68,7 +68,7 @@
 
   const q = (s) => document.querySelector(s);
   const log = [];
-  const chk = (cond, msg) => { if (!cond) log.push(msg); return cond; };
+  const chk = (cond, msg) => { log.push((cond ? "✓ " : "✗ ") + msg); return cond; };   // V2-76 : journal COMPLET (✓ et ✗), pas seulement les échecs
 
   // app.js s'initialise à l'import (module différé, DOM prêt). On laisse un tour
   // de boucle, on clique la tuile, puis on lit APRÈS le setTimeout(80) d'applyHash.
@@ -98,7 +98,7 @@
       pass = chk(getComputedStyle(q(".cat")).scrollMarginTop === "64px",
         ".cat doit garder scroll-margin-top:64px") && pass;
 
-      document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+      document.getElementById("result").textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n");
     }, 220);
   }, 60);
 </script>

@@ -48,6 +48,6 @@ setTimeout(() => {
     "guest_lang renseignée → aucune redirection M-09 (search=" + JSON.stringify(location.search) + ")");
   chk(document.body.dataset.lang === "es",
     "la langue servie reste celle de la fiche (es)");
-  document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+  document.getElementById("result").textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n");
 }, 50);
 </script>

@@ -39,6 +39,13 @@ window.fetch = async (path) => {
 };
 
 const out = document.getElementById("result");
+// Journal des contrôles (V2-76) : une ligne par assertion RÉELLE, publiée que le harnais
+// passe ou non — un « PASS » sans aucune ligne est refusé côté node. `must` enregistre le
+// contrôle PUIS lève en cas d'échec : la structure d'origine (try/throw) est préservée.
+const log = []; let pass = true;
+const chk = (c, m) => { log.push((c ? "✓ " : "✗ ") + m); if (!c) pass = false; return c; };
+const must = (c, m) => { if (!chk(c, m)) throw new Error(m); };
+const done = () => { out.textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n"); };
 try {
   await renderSubscription(document.getElementById("app"));
 
@@ -47,26 +54,24 @@ try {
   // qui a laissé passer V2-18c (bouton « Confirmer » absent du DOM).
   const card = [...document.querySelectorAll(".card")]
     .find((c) => /Logements supplémentaires/.test(c.textContent));
-  if (!card) throw new Error("carte add-on absente du rendu");
+  must(!!card, "la carte « Logements supplémentaires » est rendue");
 
   const confirm = card.querySelector("button.btn-primary");
-  if (!confirm) throw new Error("bouton Confirmer non monté dans le DOM");
-  if (!/Confirmer/.test(confirm.textContent))
-    throw new Error("libellé inattendu : " + confirm.textContent);
+  must(!!confirm, "V2-18c : le bouton « Confirmer » est MONTÉ dans l'arbre rendu");
+  must(/Confirmer/.test(confirm.textContent), "son libellé est bien « Confirmer »");
 
   // À l'ouverture (quantité == add-on courant), le bouton est désactivé…
-  if (!confirm.disabled)
-    throw new Error("Confirmer devrait être désactivé à l'ouverture");
+  must(confirm.disabled, "à l'ouverture (quantité inchangée) : « Confirmer » désactivé");
 
   // …et s'active dès que la quantité change (clic sur « + »).
   const plus = [...card.querySelectorAll("button")].find((b) => b.textContent.trim() === "+");
-  if (!plus) throw new Error("bouton « + » absent");
+  must(!!plus, "le bouton « + » du stepper est rendu");
   plus.click();
-  if (confirm.disabled)
-    throw new Error("Confirmer devrait s'activer après changement de quantité");
+  must(!confirm.disabled, "après un clic sur « + » : « Confirmer » s'active");
 
-  out.textContent = "PASS";
+  done();
 } catch (e) {
-  out.textContent = "FAIL: " + ((e && e.message) || e);
+  if (pass) chk(false, "exception : " + ((e && e.message) || e));
+  done();
 }
 </script>

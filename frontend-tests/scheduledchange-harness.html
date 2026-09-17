@@ -64,6 +64,13 @@ function waitFor(pred, desc, tries = 120) {
 }
 
 const out = document.getElementById("result");
+// Journal des contrôles (V2-76) : une ligne par assertion RÉELLE, publiée que le harnais
+// passe ou non — un « PASS » sans aucune ligne est refusé côté node. `must` enregistre le
+// contrôle PUIS lève en cas d'échec : la structure d'origine (try/throw) est préservée.
+const log = []; let pass = true;
+const chk = (c, m) => { log.push((c ? "✓ " : "✗ ") + m); if (!c) pass = false; return c; };
+const must = (c, m) => { if (!chk(c, m)) throw new Error(m); };
+const done = () => { out.textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n"); };
 (async () => {
   try {
     await renderSubscription(document.getElementById("app"));
@@ -71,23 +78,23 @@ const out = document.getElementById("result");
     // 1) Bandeau de changement programmé : offre cible + date (2033).
     const banner = [...document.querySelectorAll(".callout")]
       .find((c) => /Changement programmé/.test(c.textContent));
-    if (!banner) throw new Error("bandeau « Changement programmé » absent");
-    if (!/Solo/.test(banner.textContent) || !/2033/.test(banner.textContent))
-      throw new Error("offre/date manquante dans le bandeau : " + banner.textContent);
+    must(!!banner, "V2-18e : le bandeau « Changement programmé » est présent");
+    must(/Solo/.test(banner.textContent) && /2033/.test(banner.textContent),
+      "le bandeau nomme l'offre cible (Solo) ET la date d'effet (2033)");
 
     // 2) La carte Solo doit indiquer « Programmée » (désactivée), pas « Passer en Solo ».
     const soloCard = [...document.querySelectorAll(".plan-card")]
       .find((c) => /\bSolo\b/.test(c.querySelector("h3")?.textContent || ""));
-    if (!soloCard) throw new Error("carte Solo absente");
+    must(!!soloCard, "la carte de l'offre Solo est rendue");
     const soloBtn = soloCard.querySelector("button");
-    if (!/Programmée/.test(soloBtn.textContent) || !soloBtn.disabled)
-      throw new Error("la carte Solo devrait afficher « Programmée » (désactivée) : "
-        + soloBtn.textContent);
+    must(/Programmée/.test(soloBtn.textContent) && soloBtn.disabled,
+      "la carte Solo affiche « Programmée » et son bouton est désactivé");
 
     // 3) Bouton d'annulation monté dans le DOM (vérif sur l'arbre RENDU, V2-18c).
     const cancelBtn = [...banner.querySelectorAll("button")]
       .find((b) => /Annuler le changement programmé/.test(b.textContent));
-    if (!cancelBtn) throw new Error("bouton « Annuler le changement programmé » non monté");
+    must(!!cancelBtn,
+      "V2-18c : le bouton « Annuler le changement programmé » est MONTÉ dans l'arbre rendu");
 
     // 4) Clic → confirmation → appel de cancel-scheduled-change (jamais le Checkout).
     cancelBtn.click();
@@ -95,19 +102,20 @@ const out = document.getElementById("result");
       [...document.querySelectorAll(".modal-foot button")]
         .find((b) => /Oui, annuler/.test(b.textContent)),
       "bouton de confirmation d'annulation");
-    if (calls.some((c) => c.path === "/api/billing/cancel-scheduled-change"))
-      throw new Error("cancel appelé AVANT confirmation");
+    must(!calls.some((c) => c.path === "/api/billing/cancel-scheduled-change"),
+      "aucun appel réseau AVANT la confirmation");
     confirmBtn.click();
     await waitFor(() => calls.some((c) => c.path === "/api/billing/cancel-scheduled-change"),
       "appel cancel-scheduled-change");
     const call = calls.find((c) => c.path === "/api/billing/cancel-scheduled-change");
-    if (call.method !== "POST") throw new Error("méthode inattendue : " + call.method);
-    if (calls.some((c) => c.path === "/api/billing/checkout"))
-      throw new Error("Checkout appelé à tort");
+    must(call.method === "POST", "confirmation → POST /api/billing/cancel-scheduled-change");
+    must(!calls.some((c) => c.path === "/api/billing/checkout"),
+      "aucun Checkout déclenché par une annulation");
 
-    out.textContent = "PASS";
+    done();
   } catch (e) {
-    out.textContent = "FAIL: " + ((e && e.message) || e);
+    if (pass) chk(false, "exception : " + ((e && e.message) || e));
+    done();
   }
 })();
 </script>

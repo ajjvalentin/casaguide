@@ -49,7 +49,12 @@
   const vis = (elm) => elm && !elm.classList.contains("hidden");
   (async () => {
     let step = "start";
-    const fail = (m) => { out.textContent = "FAIL[" + step + "]: " + m; };
+    // Journal des contrôles (V2-76) : une ligne par assertion RÉELLE, publiée que le
+    // harnais passe ou non — un « PASS » sans aucune ligne est refusé côté node.
+    const log = []; let pass = true;
+    const chk = (c, m) => { log.push((c ? "✓ " : "✗ ") + m); if (!c) pass = false; return c; };
+    const done = () => { out.textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n"); };
+    const fail = (m) => { chk(false, "[" + step + "] " + m); done(); };
     try {
       step = "render";
       renderVoyageur(app, ["adresse"], new URLSearchParams("lang=fr"));
@@ -68,42 +73,48 @@
       step = "locate";
       const locate = [...app.querySelectorAll("button")]
         .find((b) => b.textContent === "Situer sur la carte");
-      if (!locate) return fail("bouton « Situer sur la carte » introuvable");
+      if (!chk(!!locate, "le bouton « Situer sur la carte » est rendu")) return done();
       locate.click();
       await wait(80);
 
       // (1) Le parcours reste ouvert : bouton réarmé, carte affichée.
       step = "assert";
-      if (locate.disabled) return fail("bouton « Situer » resté grisé");
+      if (!chk(!locate.disabled,
+        "le bouton « Situer » est réarmé malgré l'adresse introuvable")) return done();
       const mapWrap = app.querySelector(".voyageur-mapwrap");
-      if (!vis(mapWrap)) return fail("carte non affichée après une adresse introuvable");
+      if (!chk(vis(mapWrap),
+        "V2-68c p1 : la carte s'affiche MALGRÉ l'adresse introuvable")) return done();
 
       // (2) Carte centrée sur le REPÈRE servi (pays), pas sur le centre par défaut.
       const v = window.__view;
-      if (!v) return fail("carte jamais cadrée (setView non appelé)");
-      if (Math.abs(v.center[0] - 42.6) > 0.01 || Math.abs(v.center[1] - 20.9) > 0.01)
-        return fail("carte centrée ailleurs que sur le repère : " + JSON.stringify(v.center));
-      if (!(v.zoom <= 8)) return fail("repère de pays cadré trop serré (zoom " + v.zoom + ")");
+      if (!chk(!!v, "la carte a été cadrée (setView appelé)")) return done();
+      if (!chk(Math.abs(v.center[0] - 42.6) <= 0.01 && Math.abs(v.center[1] - 20.9) <= 0.01,
+        "V2-68c p3 : carte centrée sur le REPÈRE servi par l'API, pas sur le défaut Espagne ("
+        + JSON.stringify(v.center) + ")")) return done();
+      if (!chk(v.zoom <= 8,
+        "un repère de niveau PAYS est cadré large (zoom " + v.zoom + " ≤ 8)")) return done();
 
       // (3) Message d'invitation — jamais une impasse.
       const msg = [...mapWrap.children]
         .find((c) => c.tagName === "P" && /placez le point/i.test(c.textContent));
-      if (!msg) return fail("message « placez le point » absent");
-      if (!/pas trouvé cette adresse/i.test(msg.textContent))
-        return fail("message ne dit pas ce qui s'est passé : " + msg.textContent);
+      if (!chk(!!msg, "le message invite à « placez le point »")) return done();
+      if (!chk(/pas trouvé cette adresse/i.test(msg.textContent),
+        "le message DIT ce qui s'est passé (« pas trouvé cette adresse »)")) return done();
 
       // (4) Paiement bloqué tant que le point n'est pas posé à la main.
       const payBtn = [...app.querySelectorAll(".voyageur-recap button")].pop();
-      if (!payBtn) return fail("bouton de paiement absent");
-      if (!payBtn.disabled) return fail("paiement débloqué par le seul repère de départ");
+      if (!chk(!!payBtn, "le récapitulatif et son bouton de paiement sont rendus")) return done();
+      if (!chk(payBtn.disabled,
+        "le seul repère de départ ne débloque PAS le paiement (garde V2-68b)")) return done();
 
       // (5) Le client pose son point → paiement débloqué.
       step = "placePoint";
       window.__clickMap(42.51, 20.71);
       await wait(20);
-      if (payBtn.disabled) return fail("paiement toujours bloqué après placement du point");
+      chk(!payBtn.disabled,
+        "V2-68c p1 : poser le point à la main DÉBLOQUE le paiement");
 
-      out.textContent = "PASS";
+      done();
     } catch (e) {
       fail((e && e.message) || String(e));
     }

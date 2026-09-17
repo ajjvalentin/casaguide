@@ -14,7 +14,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { requireChrome, reportVerdict } from "./_harness.mjs";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -40,20 +41,6 @@ function startServer() {
     });
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
-}
-
-function findChrome() {
-  if (process.env.CHROME_BIN && fs.existsSync(process.env.CHROME_BIN)) return process.env.CHROME_BIN;
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  ];
-  for (const c of candidates) if (fs.existsSync(c)) return c;
-  for (const name of ["google-chrome", "chromium", "chromium-browser"]) {
-    try { return execSync(`command -v ${name}`, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); }
-    catch { /* absent */ }
-  }
-  return null;
 }
 
 /* Lance un harnais dans Chrome headless et renvoie le verdict lu dans #result.
@@ -86,44 +73,49 @@ async function runHarness(chrome, port, harness) {
       });
     }).finally(() => { child.kill("SIGKILL"); });
   } finally {
-    fs.rmSync(profile, { recursive: true, force: true });
+    // Chrome, tué au SIGKILL, écrit encore dans son profil → rmSync peut lever
+    // ENOTEMPTY. C'était le SEUL des 30 fichiers sans cette garde : d'où un rouge
+    // ALÉATOIRE sur les tests d'abonnement, qui ne signifiait rien (V2-76 : un rouge
+    // doit vouloir dire quelque chose). Un profil temporaire résiduel est sans effet.
+    try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 120 }); }
+    catch { /* profil temporaire : sans importance */ }
   }
 }
 
 test("le bouton « Confirmer » du stepper add-on est monté dans le DOM (V2-18c)", async (t) => {
-  const chrome = findChrome();
-  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const chrome = requireChrome("subscription.test.mjs");   // pas de navigateur → LÈVE (V2-76)
+  if (!chrome) { t.skip("aucun navigateur — cf. bandeau final"); return; }   // hatch explicite
   const server = await startServer();
   try {
     const verdict = await runHarness(chrome, server.address().port, "subscription-harness.html");
     assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
-    assert.equal(verdict, "PASS", `harnais en échec : ${verdict}`);
+    reportVerdict("subscription-harness.html", verdict);
   } finally {
     server.close();
   }
 });
 
 test("« Passer en Solo » (downgrade) → confirmation datée puis change-plan (V2-18d/e)", async (t) => {
-  const chrome = findChrome();
-  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const chrome = requireChrome("subscription.test.mjs");   // pas de navigateur → LÈVE (V2-76)
+  if (!chrome) { t.skip("aucun navigateur — cf. bandeau final"); return; }   // hatch explicite
   const server = await startServer();
   try {
     const verdict = await runHarness(chrome, server.address().port, "changeplan-harness.html");
     assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
-    assert.equal(verdict, "PASS", `harnais en échec : ${verdict}`);
+    reportVerdict("changeplan-harness.html", verdict);
   } finally {
     server.close();
   }
 });
 
 test("bandeau de changement programmé + annulation (V2-18e)", async (t) => {
-  const chrome = findChrome();
-  if (!chrome) { t.skip("aucun Chrome/Chromium détecté"); return; }
+  const chrome = requireChrome("subscription.test.mjs");   // pas de navigateur → LÈVE (V2-76)
+  if (!chrome) { t.skip("aucun navigateur — cf. bandeau final"); return; }   // hatch explicite
   const server = await startServer();
   try {
     const verdict = await runHarness(chrome, server.address().port, "scheduledchange-harness.html");
     assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
-    assert.equal(verdict, "PASS", `harnais en échec : ${verdict}`);
+    reportVerdict("scheduledchange-harness.html", verdict);
   } finally {
     server.close();
   }

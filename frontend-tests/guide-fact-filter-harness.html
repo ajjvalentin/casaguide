@@ -82,7 +82,7 @@
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const vis = (el) => !!(el && el.offsetParent !== null);   // visible dans l'arbre de rendu
   const log = [];
-  const chk = (cond, msg) => { if (!cond) log.push(msg); return cond; };
+  const chk = (cond, msg) => { log.push((cond ? "✓ " : "✗ ") + msg); return cond; };   // V2-76 : journal COMPLET (✓ et ✗), pas seulement les échecs
 
   const around = () => q('#tab-around');
   const sec = () => q('#E_food_delivery');
@@ -163,7 +163,7 @@
     pass = chk(vis(sec()) && vis(taxiCat()) && vis(restoCat()), "5: deep-link → tous les blocs visibles (ancre)") && pass;
     pass = chk(window.__lastScroll === "E_food_delivery", "5: deep-link → défilement vers la section") && pass;
 
-    document.getElementById("result").textContent = pass ? "PASS" : ("FAIL\n" + log.join("\n"));
+    document.getElementById("result").textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n");
   })();
 </script>
 </body>

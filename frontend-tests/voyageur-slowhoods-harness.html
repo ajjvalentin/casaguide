@@ -46,7 +46,12 @@
   const vis = (elm) => elm && !elm.classList.contains("hidden");
   (async () => {
     let step = "start";
-    const fail = (m) => { out.textContent = "FAIL[" + step + "]: " + m; };
+    // Journal des contrôles (V2-76) : une ligne par assertion RÉELLE, publiée que le
+    // harnais passe ou non — un « PASS » sans aucune ligne est refusé côté node.
+    const log = []; let pass = true;
+    const chk = (c, m) => { log.push((c ? "✓ " : "✗ ") + m); if (!c) pass = false; return c; };
+    const done = () => { out.textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n"); };
+    const fail = (m) => { chk(false, "[" + step + "] " + m); done(); };
     try {
       step = "render";
       renderVoyageur(app, ["adresse"], new URLSearchParams("lang=fr"));
@@ -69,29 +74,33 @@
 
       // (1) Le parcours est OUVERT malgré Overpass muet.
       step = "assert";
-      if (locate.disabled) return fail("bouton « Situer » resté grisé (gel V2-68c)");
+      if (!chk(!locate.disabled,
+        "V2-68c : le bouton « Situer » est réarmé SANS attendre les quartiers")) return done();
       const mapWrap = app.querySelector(".voyageur-mapwrap");
-      if (!vis(mapWrap)) return fail("carte absente tant que les quartiers n'arrivent pas");
+      if (!chk(vis(mapWrap),
+        "la carte s'affiche alors qu'Overpass reste MUET (le raccourci n'est plus un préalable)")) return done();
       const msg = [...mapWrap.children]
         .find((c) => c.tagName === "P" && /déplacez le point/i.test(c.textContent));
-      if (!msg) return fail("message d'invitation absent");
+      if (!chk(!!msg, "le message « déplacez le point » est affiché tout de suite")) return done();
       // (2) Le récapitulatif existe déjà, paiement bloqué tant que rien n'est posé.
       const payBtn = [...app.querySelectorAll(".voyageur-recap button")].pop();
-      if (!payBtn) return fail("récapitulatif absent (bloqué par les quartiers)");
-      if (!payBtn.disabled) return fail("paiement débloqué sans ancrage");
+      if (!chk(!!payBtn,
+        "le récapitulatif est monté sans attendre les quartiers")) return done();
+      if (!chk(payBtn.disabled, "paiement BLOQUÉ tant que rien n'est posé")) return done();
       // (3) Carte cadrée sur le village, assez large pour s'y reconnaître.
       const v = window.__view;
-      if (!v || Math.abs(v.center[0] - 42.0801) > 0.01)
-        return fail("carte non centrée sur le repère : " + JSON.stringify(v));
-      if (!(v.zoom <= 14)) return fail("centroïde cadré trop serré (zoom " + v.zoom + ")");
+      if (!chk(!!v && Math.abs(v.center[0] - 42.0801) <= 0.01,
+        "carte centrée sur le centroïde du village (" + JSON.stringify(v && v.center) + ")")) return done();
+      if (!chk(v.zoom <= 14,
+        "un centroïde est cadré assez large pour s'y reconnaître (zoom " + v.zoom + " ≤ 14)")) return done();
 
       // (4) Poser le point débloque le paiement.
       step = "placePoint";
       window.__clickMap(42.07, 20.69);
       await wait(20);
-      if (payBtn.disabled) return fail("paiement toujours bloqué après placement du point");
+      chk(!payBtn.disabled, "poser le point à la main DÉBLOQUE le paiement");
 
-      out.textContent = "PASS";
+      done();
     } catch (e) {
       fail((e && e.message) || String(e));
     }

@@ -2027,11 +2027,11 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
   chaque `await` dans un gestionnaire d'événement : *si cet appel ne répond jamais, que
   voit l'utilisateur ?* — la réponse acceptable est « tout, sauf ce raccourci ».
 
-- **Mock ≠ réel — occurrences 4 et 5.** Les trois premières sont techniques et documentées
+- **Mock ≠ réel — occurrences 4 à 6.** Les trois premières sont techniques et documentées
   plus haut (OPS-1 : un `StripeObject` n'est pas un `dict` ; OPS-1b : `update` n'est pas
-  `modify` ; V2-18c : un composant se teste sur son ARBRE RENDU). Les deux suivantes
-  élargissent la famille — ce n'est pas seulement l'objet simulé qui ment, c'est
-  **l'environnement** et **l'exécution même du test**.
+  `modify` ; V2-18c : un composant se teste sur son ARBRE RENDU). Les suivantes élargissent
+  la famille — ce n'est pas seulement l'objet simulé qui ment, c'est **l'environnement**,
+  **l'exécution même du test**, et jusqu'à **l'appareil qui sert à le mesurer**.
   - **(4) L'environnement local n'est pas la production (V2-58b, `05e35ac`).** Le téléphone
     du héros de la vitrine affichait une image cassée : `/g/*` était servi en
     `X-Frame-Options: DENY`, posé par le snippet `(securite)` d'`ops/Caddyfile` — **que
@@ -2043,25 +2043,37 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
     (ce qu'a fait V2-58b avec `mountDemoInPhone`). Le commit portait déjà la mention « à
     consigner au scribe » — elle a mis trois semaines à arriver ici : c'est précisément le
     défaut que V2-75 corrige.
-  - **(5) Un test qui rend la main avant d'asserter est vert sans rien prouver.** Les **30**
-    fichiers de test headless de `frontend-tests/` s'ouvrent tous sur
-    `const chrome = findChrome(); if (!chrome) { t.skip(…); return; }`. **Mesuré** (17/09,
-    `CHROME_BIN=/nonexistent PATH=/usr/bin:/bin node --test frontend-tests/voyageur-tunnel.test.mjs`) :
-    ```
-    ok 1 - V2-68b …   ok 2 - V2-68c …   ok 3 - V2-68c …
-    # tests 3   # pass 3   # fail 0   # skipped 0
-    ```
-    Trois `ok`, **zéro skipped** : `t.skip()` appelé DANS le corps du test ne marque pas la
-    ligne comme sautée — elle est comptée en **réussite**. Sur une machine sans Chrome (CI,
-    conteneur, collègue), **toute la couverture front passe au vert en ne testant RIEN**, et
-    rien dans la sortie ne permet de s'en apercevoir. Le `return` est légitime (on ne peut
-    pas tester sans navigateur) ; ce qui est dangereux, c'est de **lire « 92 pass » comme
-    une preuve**. Règle : un « vert » n'est une preuve que si l'on sait **combien de tests
-    ont réellement couru** ; devant un correctif front, exiger le **contrôle négatif**
-    (retirer le correctif → le harnais doit ROUGIR, cf. V2-53e et V2-68c) — c'est le seul
-    verdict qui distingue un test qui teste d'un test qui passe. *Dette ouverte : faire
-    ÉCHOUER la suite quand Chrome manque (ou au moins le signaler hors du flot `ok`), plutôt
-    que de la laisser mentir en silence.*
+  - **(5) Une suite qui ne peut rien vérifier ne doit pas être verte — et ATTENTION,
+    l'appareil de mesure ment aussi (V2-75 corrigée par V2-76, `c0241c3` → ce commit).**
+    Les 30 fichiers de test headless de `frontend-tests/` s'ouvraient tous sur
+    `const chrome = findChrome(); if (!chrome) { t.skip(…); return; }`. Sans navigateur :
+    aucune ligne « not ok », **code de sortie 0**, couverture front CREUSE — toute barrière
+    qui lit le code de sortie, ou tout humain qui cherche « not ok », y voit une réussite.
+    **Le correctif (V2-76)** : `requireChrome()` LÈVE (mesuré : 37 échecs, code 1) ;
+    échappatoire explicite `CASAGUIDE_ALLOW_NO_CHROME=1` → `# skipped 37` **plus** un
+    bandeau « N HARNAIS NON EXÉCUTÉS » sur stderr, hors du flot `ok`.
+    **Et la leçon dans la leçon** : V2-75 avait affirmé, « mesure » à l'appui, que
+    `t.skip()` comptait en RÉUSSITE (« # skipped 0 »). **C'était faux.** `t.skip()` est
+    correctement comptabilisé (`# SKIP` sur la ligne, `# skipped N` au récapitulatif). La
+    commande de mesure — `CHROME_BIN=/nonexistent node --test …` — **ne masquait pas le
+    navigateur** : `findChrome` ignorait un `CHROME_BIN` inexistant et **retombait en
+    silence** sur le Chrome système, si bien que les tests tournaient vraiment et
+    passaient vraiment. L'instrument de mesure était lui-même un « mock ≠ réel ». Règles
+    qui en sortent : (a) avant de conclure d'une mesure, **vérifier que le levier agit
+    bien** (ici : un `console.log(findChrome())` aurait tout dit en une seconde) ; (b) un
+    levier de test doit être **autoritaire** — `CHROME_BIN` posé et absent signifie
+    désormais « pas de navigateur », jamais « prends-en un autre » ; (c) devant un
+    correctif front, exiger le **contrôle négatif** (retirer le correctif → le harnais
+    doit ROUGIR, cf. V2-53e et V2-68c) — c'est le seul verdict qui distingue un test qui
+    teste d'un test qui passe.
+  - **(6) Corollaire V2-76 — un harnais doit publier CE QU'IL A VÉRIFIÉ.** Les 37 harnais
+    rendaient un « PASS » nu ; leur journal de contrôles n'était imprimé qu'en cas
+    d'échec. Un harnais amputé (assertions court-circuitées, branche jamais atteinte)
+    rendait donc le même vert qu'un harnais complet. Désormais chaque harnais publie
+    `PASS\n✓ …\n✓ …` et `reportVerdict()` **refuse un « PASS » sans aucune ligne** —
+    le garde a immédiatement attrapé deux harnais réels (`guide-anchor-offset`,
+    `guide-fact-filter`) dont le `chk()` ne journalisait que les échecs. La suite imprime
+    aujourd'hui **545 lignes de contrôle** : un harnais qui maigrit se voit à l'œil nu.
 
 - **Le cache masque le correctif (V2-73b, `6d7b03e`).** Après V2-73, les activités de
   Bégadan n'avaient toujours aucune épingle : l'`area_fact` `activities` de la commune

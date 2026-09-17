@@ -49,7 +49,12 @@
   const vis = (elm) => elm && !elm.classList.contains("hidden");
   (async () => {
     let step = "start";
-    const fail = (m) => { out.textContent = "FAIL[" + step + "]: " + m; };
+    // Journal des contrôles (V2-76) : une ligne par assertion RÉELLE, publiée que le
+    // harnais passe ou non — un « PASS » sans aucune ligne est refusé côté node.
+    const log = []; let pass = true;
+    const chk = (c, m) => { log.push((c ? "✓ " : "✗ ") + m); if (!c) pass = false; return c; };
+    const done = () => { out.textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n"); };
+    const fail = (m) => { chk(false, "[" + step + "] " + m); done(); };
     try {
       step = "render";
       renderVoyageur(app, ["adresse"], new URLSearchParams("lang=fr"));
@@ -57,10 +62,12 @@
 
       // (0) V2-69 : l'étape adresse ne présuppose pas une réservation.
       const screen = app.textContent;
-      if (!/Quel lieu voulez-vous explorer/.test(screen)) return fail("titre V2-69 absent");
-      if (!/Adresse ou lieu/.test(screen)) return fail("libellé « Adresse ou lieu » absent");
-      if (/location|séjourner|votre location/i.test(screen))
-        return fail("mention imposant une réservation dans l'écran adresse");
+      if (!chk(/Quel lieu voulez-vous explorer/.test(screen),
+        "V2-69 : titre « Quel lieu voulez-vous explorer ? »")) return done();
+      if (!chk(/Adresse ou lieu/.test(screen),
+        "V2-69 : champ libellé « Adresse ou lieu »")) return done();
+      if (!chk(!/location|séjourner|votre location/i.test(screen),
+        "V2-69 : aucune mention imposant une réservation")) return done();
 
       // Saisie : ville seule (Tokyo), pays JP, e-mail — pas de rue.
       const inputFor = (lbl) => {
@@ -75,40 +82,46 @@
       step = "locate";
       const locate = [...app.querySelectorAll("button")]
         .find((b) => b.textContent === "Situer sur la carte");
-      if (!locate) return fail("bouton « Situer sur la carte » introuvable");
+      if (!chk(!!locate, "le bouton « Situer sur la carte » est rendu")) return done();
       locate.click();
       await wait(80);   // géocodage + quartiers (stubés, asynchrones)
 
       // (1) Bouton « Situer » RÉARMÉ (jamais grisé sans issue).
       step = "assert";
-      if (locate.disabled) return fail("bouton « Situer » resté grisé");
+      if (!chk(!locate.disabled,
+        "V2-68b p3 : le bouton « Situer » est TOUJOURS réarmé")) return done();
 
       // (2) Carte affichée.
       const mapWrap = app.querySelector(".voyageur-mapwrap");
-      if (!vis(mapWrap)) return fail("carte non affichée");
+      if (!chk(vis(mapWrap), "la carte d'ajustement s'affiche")) return done();
 
       // (3) Message d'imprécision.
       const msg = [...mapWrap.children].find((c) => c.tagName === "P" && /imprécis/i.test(c.textContent));
-      if (!msg) return fail("message d'imprécision absent");
+      if (!chk(!!msg, "le message d'imprécision est affiché")) return done();
 
       // (4) Choix de quartiers proposé (Shibuya/Ginza).
       const chips = [...app.querySelectorAll(".hood-chip")];
-      if (chips.length !== 2) return fail("quartiers attendus 2, vus " + chips.length);
-      if (!chips.some((c) => c.textContent === "Shibuya")) return fail("Shibuya absent");
+      if (!chk(chips.length === 2,
+        "V2-68 p2 : 2 quartiers proposés (vus " + chips.length + ")")) return done();
+      if (!chk(chips.some((c) => c.textContent === "Shibuya"),
+        "le quartier « Shibuya » figure parmi les puces")) return done();
 
       // (5) Paiement BLOQUÉ tant qu'aucun ancrage.
       const payBtn = [...app.querySelectorAll(".voyageur-recap button")].pop();
-      if (!payBtn || !payBtn.disabled) return fail("paiement débloqué sans ancrage");
+      if (!chk(!!payBtn && payBtn.disabled,
+        "V2-68 p1 : paiement BLOQUÉ tant qu'aucun ancrage")) return done();
 
       // (6) Choisir un quartier → paiement débloqué + titre = quartier.
       step = "chooseHood";
       chips.find((c) => c.textContent === "Shibuya").click();
       await wait(20);
-      if (payBtn.disabled) return fail("paiement toujours bloqué après choix du quartier");
+      if (!chk(!payBtn.disabled,
+        "choisir un quartier VAUT ancrage → paiement débloqué")) return done();
       const h2 = app.querySelector(".voyageur-recap h2");
-      if (!h2 || !/Shibuya/.test(h2.textContent)) return fail("titre récap ≠ quartier : " + (h2 && h2.textContent));
+      chk(!!h2 && /Shibuya/.test(h2.textContent),
+        "le récapitulatif se titre sur le quartier retenu (Shibuya)");
 
-      out.textContent = "PASS";
+      done();
     } catch (e) {
       fail((e && e.message) || String(e));
     }

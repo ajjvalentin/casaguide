@@ -63,19 +63,26 @@ function waitFor(pred, desc, tries = 120) {
 }
 
 const out = document.getElementById("result");
+// Journal des contrôles (V2-76) : une ligne par assertion RÉELLE, publiée que le harnais
+// passe ou non — un « PASS » sans aucune ligne est refusé côté node. `must` enregistre le
+// contrôle PUIS lève en cas d'échec : la structure d'origine (try/throw) est préservée.
+const log = []; let pass = true;
+const chk = (c, m) => { log.push((c ? "✓ " : "✗ ") + m); if (!c) pass = false; return c; };
+const must = (c, m) => { if (!chk(c, m)) throw new Error(m); };
+const done = () => { out.textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n"); };
 (async () => {
   try {
     await renderSubscription(document.getElementById("app"));
 
     // 1) En-tête « Offre actuelle » : total EFFECTIF (30 €), pas le prix de base (24 €).
     const priceTxt = document.querySelector(".card .plan-price").textContent;
-    if (!/30\s*€/.test(priceTxt))
-      throw new Error("total effectif attendu (30 €), obtenu : " + priceTxt);
+    must(/30\s*€/.test(priceTxt),
+      "en-tête « Offre actuelle » : total EFFECTIF 30 € (base 24 € + add-on), obtenu " + priceTxt);
 
     // 2) Carte Solo → bouton « Passer en Solo » (abonné payant actif).
     const soloCard = [...document.querySelectorAll(".plan-card")]
       .find((c) => /Passer en Solo/.test(c.textContent));
-    if (!soloCard) throw new Error("carte Solo / bouton « Passer en Solo » absent");
+    must(!!soloCard, "abonné payant actif : la carte Solo porte « Passer en Solo »");
     const btn = [...soloCard.querySelectorAll("button")]
       .find((b) => /Passer en Solo/.test(b.textContent));
     btn.click();
@@ -86,28 +93,28 @@ const out = document.getElementById("result");
       [...document.querySelectorAll(".modal-foot button")]
         .find((b) => /Confirmer le changement/.test(b.textContent)),
       "bouton de confirmation");
-    if (calls.some((c) => c.path === "/api/billing/change-plan"))
-      throw new Error("change-plan appelé AVANT confirmation");
+    must(!calls.some((c) => c.path === "/api/billing/change-plan"),
+      "aucun appel réseau AVANT la confirmation");
     const dialogTxt = document.querySelector(".modal-body").textContent;
-    if (!/reste active jusqu'au/.test(dialogTxt))
-      throw new Error("discours de downgrade attendu, obtenu : " + dialogTxt);
-    if (!/2033/.test(dialogTxt))
-      throw new Error("date d'échéance absente du dialogue : " + dialogTxt);
+    must(/reste active jusqu'au/.test(dialogTxt),
+      "V2-18e : discours de DOWNGRADE (« reste active jusqu'au … »)");
+    must(/2033/.test(dialogTxt), "la date d'échéance réelle figure au dialogue");
 
     // 4) Confirmation → appel de /api/billing/change-plan (jamais le Checkout).
     confirmBtn.click();
     await waitFor(() => calls.some((c) => c.path === "/api/billing/change-plan"),
       "appel change-plan");
     const call = calls.find((c) => c.path === "/api/billing/change-plan");
-    if (call.method !== "POST") throw new Error("méthode inattendue : " + call.method);
-    if (!/"plan"\s*:\s*"solo"/.test(String(call.body)))
-      throw new Error("corps inattendu : " + call.body);
-    if (calls.some((c) => c.path === "/api/billing/checkout"))
-      throw new Error("Checkout appelé à tort pour un abonné payant actif");
+    must(call.method === "POST", "confirmation → POST /api/billing/change-plan");
+    must(/"plan"\s*:\s*"solo"/.test(String(call.body)),
+      "le corps porte le plan cible (solo)");
+    must(!calls.some((c) => c.path === "/api/billing/checkout"),
+      "V2-18d : JAMAIS de Checkout pour un abonné payant actif");
 
-    out.textContent = "PASS";
+    done();
   } catch (e) {
-    out.textContent = "FAIL: " + ((e && e.message) || e);
+    if (pass) chk(false, "exception : " + ((e && e.message) || e));
+    done();
   }
 })();
 </script>
