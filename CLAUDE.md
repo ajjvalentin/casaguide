@@ -561,6 +561,14 @@ psql -d casaguide -f db/migrations/030_poi_completion_meta.sql # provenance de l
 psql -d casaguide -f db/migrations/031_guide_reminders.sql # registre des relances du planificateur d'envoi (idempotence « une par séjour/motif ») (V2-36 pièce 1)
 psql -d casaguide -f db/migrations/032_poi_locality.sql # commune/localité d'un POI (pois.locality, affichée sur la carte du guide) (V2-38 pièce 1)
 psql -d casaguide -f db/migrations/033_section_title_override.sql # titre de rubrique personnalisable par logement (property_sections + section_translations.title_override) (V2-42)
+psql -d casaguide -f db/migrations/034_poi_max_radius.sql # rayon MAXIMAL par catégorie (collecte adaptée à la ruralité) (V2-44 volet 1)
+psql -d casaguide -f db/migrations/035_guest_guide.sql # offre « Guide Voyageur » : entité guest, owner système, anti-abus (V2-54 Mission A)
+psql -d casaguide -f db/migrations/036_guest_guide_orders.sql # commandes de l'offre voyageur (paiement one-shot Stripe, webhook) (V2-54 Mission B)
+psql -d casaguide -f db/migrations/037_guest_order_quality.sql # traçabilité de ce qui a été SERVI (plancher de qualité du guide payant) (V2-57)
+psql -d casaguide -f db/migrations/038_editorial_picks.sql # mémoire de secteur : échantillonnage éditorial cumulatif (V2-56c)
+psql -d casaguide -f db/migrations/039_property_demo.sql # guide de DÉMONSTRATION vivant de la vitrine (V2-58)
+psql -d casaguide -f db/migrations/040_editorial_pick_name_local.sql # nom local (écriture d'origine) d'un pick éditorial (V2-66b cas a)
+psql -d casaguide -f db/migrations/041_poi_subtype.sql # sous-type sport/loisir d'un POI (puce de discipline + prompt de description) (V2-71)
 
 # Backend
 cd backend
@@ -2002,6 +2010,137 @@ exposé, peer auth).
      des symptômes qui désignent le mauvais coupable (champ manquant, `undefined`
      affiché). Devant un symptôme « front OK / données absentes » après déploiement,
      **vérifier d'abord le journal des migrations**, pas le code applicatif.
+
+## Leçons de méthode — à ne jamais réapprendre (consignées V2-75, 17/09/2026)
+
+Les pièges ci-dessus sont techniques ; ceux-ci sont des défauts de **raisonnement**, et
+ils se répètent. Ils ont été payés en incidents réels — chacun porte son cas.
+
+- **Un raccourci n'est jamais un préalable (V2-68c, `e9720e2`).** Le tunnel voyageur
+  ATTENDAIT `/neighborhoods` — un raccourci de confort (choisir un quartier d'un tap) —
+  avant de monter la carte de placement, qui est le **chemin principal**. Résolution
+  Overpass **mesurée à 48,7 s** sur « Xërxë, XK » (deux miroirs en timeout avant une liste
+  vide) : bouton grisé, ni carte ni message, le client conclut « ça s'arrête ». Règle :
+  **le chemin principal se monte d'abord** ; tout enrichissement optionnel arrive après,
+  en `.then()`, et ne doit jamais rien bouger sous le doigt de l'utilisateur (ici : les
+  puces n'apparaissent que si le client n'a pas déjà posé son point). Se demander, pour
+  chaque `await` dans un gestionnaire d'événement : *si cet appel ne répond jamais, que
+  voit l'utilisateur ?* — la réponse acceptable est « tout, sauf ce raccourci ».
+
+- **Mock ≠ réel — occurrences 4 et 5.** Les trois premières sont techniques et documentées
+  plus haut (OPS-1 : un `StripeObject` n'est pas un `dict` ; OPS-1b : `update` n'est pas
+  `modify` ; V2-18c : un composant se teste sur son ARBRE RENDU). Les deux suivantes
+  élargissent la famille — ce n'est pas seulement l'objet simulé qui ment, c'est
+  **l'environnement** et **l'exécution même du test**.
+  - **(4) L'environnement local n'est pas la production (V2-58b, `05e35ac`).** Le téléphone
+    du héros de la vitrine affichait une image cassée : `/g/*` était servi en
+    `X-Frame-Options: DENY`, posé par le snippet `(securite)` d'`ops/Caddyfile` — **que
+    seul Caddy pose, en prod**. La recette locale passait, parce qu'**uvicorn ne pose pas
+    cet en-tête**. Règle : tout ce que le **bord** (Caddy) ajoute ou retire — en-têtes de
+    sécurité, de cache, redirections — est **invisible en local** ; une recette locale ne
+    prouve jamais un comportement d'en-tête. Vérifier au `curl -I` sur le domaine réel, ou
+    prévoir un **repli gracieux** qui rend le chemin correct dans les deux environnements
+    (ce qu'a fait V2-58b avec `mountDemoInPhone`). Le commit portait déjà la mention « à
+    consigner au scribe » — elle a mis trois semaines à arriver ici : c'est précisément le
+    défaut que V2-75 corrige.
+  - **(5) Un test qui rend la main avant d'asserter est vert sans rien prouver.** Les **30**
+    fichiers de test headless de `frontend-tests/` s'ouvrent tous sur
+    `const chrome = findChrome(); if (!chrome) { t.skip(…); return; }`. **Mesuré** (17/09,
+    `CHROME_BIN=/nonexistent PATH=/usr/bin:/bin node --test frontend-tests/voyageur-tunnel.test.mjs`) :
+    ```
+    ok 1 - V2-68b …   ok 2 - V2-68c …   ok 3 - V2-68c …
+    # tests 3   # pass 3   # fail 0   # skipped 0
+    ```
+    Trois `ok`, **zéro skipped** : `t.skip()` appelé DANS le corps du test ne marque pas la
+    ligne comme sautée — elle est comptée en **réussite**. Sur une machine sans Chrome (CI,
+    conteneur, collègue), **toute la couverture front passe au vert en ne testant RIEN**, et
+    rien dans la sortie ne permet de s'en apercevoir. Le `return` est légitime (on ne peut
+    pas tester sans navigateur) ; ce qui est dangereux, c'est de **lire « 92 pass » comme
+    une preuve**. Règle : un « vert » n'est une preuve que si l'on sait **combien de tests
+    ont réellement couru** ; devant un correctif front, exiger le **contrôle négatif**
+    (retirer le correctif → le harnais doit ROUGIR, cf. V2-53e et V2-68c) — c'est le seul
+    verdict qui distingue un test qui teste d'un test qui passe. *Dette ouverte : faire
+    ÉCHOUER la suite quand Chrome manque (ou au moins le signaler hors du flot `ok`), plutôt
+    que de la laisser mentir en silence.*
+
+- **Le cache masque le correctif (V2-73b, `6d7b03e`).** Après V2-73, les activités de
+  Bégadan n'avaient toujours aucune épingle : l'`area_fact` `activities` de la commune
+  datait d'AVANT le correctif, et l'étape est **sautée quand le fait est frais**
+  (mutualisation par commune, `db.area_fact_fresh`) — le nouveau code ne s'exécutait
+  jamais. Règle : tout ce qui est **mutualisé et daté** (`area_facts` : `food_delivery`,
+  `markets`, `activities`, `local_commerces`… mais aussi les traductions `is_stale`, le
+  cache de proximité des guides voyageurs) **survit au déploiement et masque un
+  correctif**. Le remède durable n'est pas de purger à la main mais de **versionner le
+  schéma du contenu** (`ACTIVITIES_SCHEMA_V`, clé `v` dans le JSONB) : la montée de version
+  distingue « pas de résultat parce que jamais tenté » (à rattraper) de « pas de résultat
+  parce que impossible » (à ne jamais re-tenter) et rejoue **la seule passe nécessaire**,
+  sans re-payer l'appel web/LLM. Le motif a servi quatre fois de suite (v2→v3→v4→v5→v6,
+  V2-73b à V2-73g) ; c'est le patron à reprendre.
+
+- **La recette observe, elle ne recalcule pas — et elle ne déplace pas son point de
+  mesure (V2-68c).** Deux biais commis dans la même recette, tous deux du côté de Claude
+  Code : (a) le tableau de recette a été produit par un script Python qui **ré-implémentait
+  la décision du front** (« carte + message + paiement bloqué ») au lieu d'**observer** le
+  tunnel réel — un script qui recalcule la conclusion attendue ne peut que la confirmer ;
+  (b) l'adresse espagnole de contrôle a été **changée** (« Calle Cabo Roig 5 » → « Calle
+  Mayor 1, Torrevieja ») dès que la première n'a pas donné le résultat espéré, et seule la
+  seconde a été rapportée — or le fait intéressant était justement que l'adresse initiale
+  tombait en `city` elle aussi. Règle : le point de recette se **fixe avant** la mesure et
+  se **rapporte tel quel**, y compris quand il contrarie ; s'il faut en changer, dire les
+  deux. Et une recette de front se lit **dans le DOM rendu**, jamais dans une simulation de
+  la logique qu'on vient d'écrire (même famille que V2-18c).
+
+- **« Limite de la donnée » est une conclusion, pas une hypothèse (V2-73c → V2-73d,
+  `d6fc299` → `a829813`).** V2-73c a conclu que la « Plage du Gurp » n'était pas plaçable
+  — *faux* : l'adresse figurait sur la page source déjà collectée, et OSM connaissait le
+  point par son **tag** (`natural=beach`) sans qu'aucune recherche textuelle ne le trouve.
+  La chaîne n'allait simplement pas chercher une information disponible. Règle : avant de
+  déclarer une limite externe, énumérer **toutes les voies d'accès à la donnée** (ce qu'on
+  a déjà moissonné, ce que la source dit, les autres index du fournisseur) — la moisson
+  maison est souvent la meilleure et la plus proche (c'est la leçon finale de V2-73g :
+  « l'activité s'accroche au lieu déjà moissonné »).
+
+- **Le scribe n'est pas optionnel (V2-75, la présente).** `project_tracker.html` était figé
+  à V2-44 pour les entrées (et à V2-62 pour son résumé), `CLAUDE.md` à V2-42 : une
+  soixantaine de missions non consignées, dont des leçons explicitement marquées « à
+  consigner ». La mémoire du projet ne survit pas aux sessions toute seule. Règle : une
+  mission qui produit une **leçon** (pas seulement du code) se termine par son entrée ici
+  **dans le même commit**, ou par un commit `scribe :` dédié dans la foulée.
+
+## Limites connues (données & géocodage) — consignées V2-75
+
+Ce ne sont pas des bugs à corriger mais des **propriétés du terrain**, à connaître avant
+de promettre quoi que ce soit au client.
+
+- **Nominatim est faible en rural et hors Europe de l'Ouest.** Mesuré en direct (17/09) :
+  « Rrugë Skënderbeu 307, Xërxë, **XK** » et « 18Bis rue du huit mai, 33340 **Bégadan** »
+  retombent **toutes deux** sur `accuracy='city'` (le centroïde de la commune) — le numéro
+  et la rue ne sont pas résolus. Autres cas payés : « Plage du Gurp » **absente de l'index
+  textuel** alors qu'OSM la connaît par tag (V2-73d) ; « Pharmacie Puyjoursain, 1 route de
+  Saint-Saturnin, 33340 Bégadan » géocodée **à 4,7 km** du centre du village, soit « 59 min
+  à pied » pour la pharmacie d'en face (V2-74b). Conséquences **assumées et outillées** :
+  la garde de précision (`geocode.is_precise_enough`, V2-68) refuse d'ancrer un guide sur
+  un centroïde ; le tunnel bascule alors sur le **placement manuel** (V2-68c) ; la
+  découverte de commerces escalade rue-sans-numéro puis **replie au centre de la commune en
+  marquant la position approximative** (V2-74b) ; l'administrateur dispose de `--force`
+  (V2-68c). **Piste non instruite : l'API Adresse nationale (BAN, `api-adresse.data.gouv.fr`)
+  pour la France** — gratuite, sans quota, et bien meilleure sur les adresses rurales que
+  Nominatim ; elle se brancherait comme un tiers supplémentaire de la cascade de
+  `enrich/geocode.py`, **avant** Nominatim quand `country_code == 'FR'`, sans rien changer
+  au reste (même contrat de retour `lat`/`lon`/`accuracy`). Chercher l'équivalent par pays
+  au fil des marchés ouverts.
+
+- **Une activité diffuse n'est pas plaçable, par construction.** Un sentier balisé, une
+  route des vins, 16 circuits VTT, un marais Natura 2000 n'ont **pas de point** : ils ont
+  un territoire. Les faire pointer serait un mensonge (et V2-73e a montré le défaut concret
+  — quatre activités empruntant l'adresse d'une cinquième, quatre épingles au même endroit).
+  Le produit assume donc **trois états** et ne cherche jamais à en réduire le troisième :
+  position **exacte** (accrochée à un POI de notre propre moisson → épingle seule, V2-73g),
+  position **approximative** (géocodée → épingle **dans un cercle** de ~1 km + mention
+  « position approximative » dans la langue du guide, V2-73f), **aucune position** (l'activité
+  reste dans la liste du chapitre, sans marqueur). Le versionnage du schéma (`v` du JSONB)
+  garantit qu'une diffuse n'est **jamais re-géocodée** à chaque enrichissement. Ne pas
+  « corriger » ce troisième état : c'est la bonne réponse.
 
 ## Enseignements du premier test réel (11/07/2026, Orihuela Costa — 125 POI, 3,45 ct d'IA)
 
