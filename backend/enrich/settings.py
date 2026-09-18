@@ -227,6 +227,18 @@ class Settings:
     # Rayon de PROXIMITÉ (m) : en deçà, un commerce essentiel est « au village » ; au-delà,
     # la catégorie est réputée VIDE localement → déclenche la découverte web.
     local_commerce_proximity_m: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_PROXIMITY_M", "5000"))
+    # V2-77b — ESTANCO & CHICHA : deux passes web mutualisées par (pays, commune), qui se
+    # déclenchent MÊME QUAND OSM A RENDU QUELQUE CHOSE. C'est leur raison d'être : à Adeje
+    # la catégorie tabac était pleine (« Radikas », « La Cava La Cubana ») mais SANS aucun
+    # estanco — le système croyait avoir trouvé, exactement le piège de Bégadan. Aucun tag
+    # OSM ne distingue le bureau de tabac LICENCIÉ d'une cave à cigares, ni un bar à chicha
+    # d'un bar ordinaire : seule une source humaine le dit.
+    estanco_max_age_days: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_AGE_DAYS", "90"))
+    estanco_max_searches: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_SEARCHES", "5"))
+    estanco_max_tokens: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_TOKENS", "4000"))
+    shisha_max_age_days: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_AGE_DAYS", "90"))
+    shisha_max_searches: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_SEARCHES", "4"))
+    shisha_max_tokens: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_TOKENS", "3000"))
     # Cibles ENRICHIES par catégorie pour un guide voyageur (un touriste veut du
     # choix) : proximité (socle OSM/Overture) + picks éditoriaux. Jamais en dur
     # (invariant 8) — surchargeable « restaurant:10,bar:8,cafe:6 ».

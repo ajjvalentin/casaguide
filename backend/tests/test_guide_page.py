@@ -1907,3 +1907,38 @@ def test_tobacco_category_renders_only_when_it_has_places():
     avec = guide_page.render_guide(_prop(city="Adeje"), [], [
         _poi("Estanco nº 12", "tobacco", "C")], {}, "tok")
     assert "Estanco nº 12" in avec
+
+
+# ── V2-77b : l'estanco passe devant, et il le dit ────────────────────────────
+
+def test_tobacco_sorted_estanco_first_then_neutral_then_cigar():
+    """V2-77b — ce qu'on cherche sous cette rubrique, c'est l'ESTANCO (timbres, tickets,
+    recharges) : il passe devant MÊME PLUS LOIN. La cave à cigares reste servie, en
+    complément ; le lieu ni l'un ni l'autre (« Radikas ») s'intercale, retenu jamais promu.
+    Cas réel d'Adeje, où la rubrique était pleine et pourtant sans un seul estanco."""
+    pois = [_poi("La Cava La Cubana", "tobacco", "C", walk=3, subtype="cigar"),
+            _poi("Radikas", "tobacco", "C", walk=5),
+            _poi("Estanco nº 12", "tobacco", "C", walk=20, subtype="estanco")]
+    html = guide_page.render_guide(_prop(city="Adeje"), [], pois, {}, "tok")
+    # NB : la puce de sous-type est rendue DANS le <h4> → on capture le texte qui suit
+    # la balise, sans exiger la fermeture (sinon on ne verrait que les fiches sans puce).
+    order = [t.strip() for t in re.findall(r"<h4>([^<]*)", html)
+             if t.strip() in ("La Cava La Cubana", "Radikas", "Estanco nº 12")]
+    assert order == ["Estanco nº 12", "Radikas", "La Cava La Cubana"], order
+
+
+def test_tobacco_subtypes_are_labelled_and_localised():
+    """La puce DIT lequel des deux on a sous les yeux — sinon le voyageur qui cherche un
+    timbre s'arrête à la cave à cigares. Libellés 7 langues en dur (motif `_SUBTYPE_LABELS`,
+    zéro clé i18n) ; un tabac sans sous-type n'affiche AUCUNE puce (on n'invente pas)."""
+    e = guide_page.render_guide(_prop(city="Adeje"), [],
+                                [_poi("Estanco nº 12", "tobacco", "C", subtype="estanco")],
+                                {}, "tok")
+    assert '<span class="cuisine-tag">Estanco (timbres, tickets)</span>' in e
+    c_es = guide_page.render_guide(_prop(city="Adeje"), [],
+                                   [_poi("La Cava", "tobacco", "C", subtype="cigar")],
+                                   {}, "tok", lang="es")
+    assert "Casa de puros" in c_es
+    nu = guide_page.render_guide(_prop(city="Adeje"), [],
+                                 [_poi("Radikas", "tobacco", "C")], {}, "tok")
+    assert "cuisine-tag" not in nu

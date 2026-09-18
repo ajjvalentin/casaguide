@@ -993,6 +993,149 @@ def fetch_reputed_places(city: str, country_code: str,
     return out, meta
 
 
+# ── Estancos & bars à chicha par zone (V2-77b) ───────────────────────────────
+#
+# Recette réelle Adeje (Tenerife) : la catégorie tabac était PLEINE — « Radikas »,
+# « La Cava La Cubana », « Tobacco Deluxe » — et pourtant sans un seul ESTANCO, le bureau
+# de tabac licencié où l'on achète timbres, tickets de transport et recharges. Aucun tag
+# OSM ne distingue le réseau licencié d'une cave à cigares touristique. Même chose pour la
+# chicha : six bars moissonnés, aucune puce, alors que deux en sont.
+#
+# D'où la règle de ces deux passes, qui les distingue de TOUTES les précédentes : elles se
+# déclenchent **même quand OSM a rendu quelque chose**. Le piège n'est pas le vide (Bégadan,
+# V2-74) mais la FAUSSE PLÉNITUDE — le système croit avoir trouvé. Mutualisées par
+# (pays, commune) comme les marchés, les activités et les commerces : un appel par secteur,
+# réutilisé par tous les guides. Preuve ou rien, liste vide valide.
+ESTANCO_FACT_TYPE = "estancos"
+SHISHA_FACT_TYPE = "shisha_bars"
+
+_ESTANCO_PROMPT = """\
+Tu recenses les ESTANCOS (bureaux de tabac LICENCIÉS) de la commune de {city} ({country_code}).
+
+CE QU'ON CHERCHE — le réseau d'État, sous son nom local : « estanco » / « expendeduría de
+tabaco y timbre » (Espagne), « tabaccheria » (Italie), « bureau de tabac » (France),
+« tabacaria » (Portugal), « Trafik » (Autriche). C'est le commerce qui vend AUSSI les
+timbres, les tickets de transport, les recharges téléphoniques, parfois la vignette de
+stationnement — c'est POUR CELA que le voyageur le cherche.
+
+CE QU'ON NE VEUT PAS : les caves à cigares et boutiques à touristes (« La Casa del Habano »,
+« Cigar Shop »), les boutiques de vapotage/CBD, les supérettes qui vendent des cigarettes.
+Elles ne rendent AUCUN de ces services.
+
+MÉTHODE : recherche web. Sources fiables : annuaire officiel du monopole, site de la MAIRIE,
+pages jaunes locales, presse locale. Pour chaque estanco :
+- `name` : le nom ou l'enseigne (« Estanco nº 12 », « Expendeduría 3 — Tabacos Pérez ») ;
+- `place_address` : l'ADRESSE POSTALE telle qu'elle figure sur la source (rue + numéro +
+  code postal + commune) — INDISPENSABLE pour le placer ; sans elle, écarte l'entrée ;
+- `phone` : si disponible, sinon "" ;
+- `source_url` : l'URL de la preuve (https), `verified_on` : « {today} ».
+
+RÈGLES STRICTES :
+- PREUVE OU RIEN : pas d'adresse précise + pas de source https → écartée. N'invente JAMAIS.
+- Reste DANS la commune de {city}, pas la ville voisine.
+- Une liste VIDE est un résultat parfaitement valide.
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
+{{
+  "estancos": [
+    {{"name": "Estanco nº 12", "place_address": "12 calle Grande, {city}",
+      "phone": "", "source_url": "https://...", "verified_on": "{today}"}}
+  ]
+}}
+"""
+
+_SHISHA_PROMPT = """\
+Tu recenses les BARS À CHICHA (shisha / hookah / narguilé) de la commune de {city}
+({country_code}) — les lieux où l'on fume la chicha sur place : shisha lounges, bars
+orientaux, terrasses à narguilés.
+
+CE QU'ON NE VEUT PAS : les boutiques qui VENDENT du matériel de chicha sans service sur
+place, les bars ordinaires, les restaurants sans offre de chicha.
+
+MÉTHODE : recherche web. Sources fiables : site ou page officielle du lieu, guides de
+sortie locaux, presse locale, annuaires. Pour chaque lieu :
+- `name` : le nom EXACT de l'établissement, tel qu'il s'écrit sur sa devanture ou sa page ;
+- `place_address` : l'adresse postale si la source la donne, sinon "" (le lieu sera alors
+  rattaché à un bar déjà connu, ou écarté) ;
+- `source_url` : l'URL de la preuve (https), `verified_on` : « {today} ».
+
+RÈGLES STRICTES :
+- PREUVE OU RIEN : pas de source https → écartée. N'invente JAMAIS un bar à chicha.
+- Reste DANS la commune de {city}, pas la ville voisine.
+- Une liste VIDE est un résultat parfaitement valide (beaucoup de communes n'en ont aucun).
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
+{{
+  "bars": [
+    {{"name": "Backyard Lounge", "place_address": "avenue …, {city}",
+      "source_url": "https://...", "verified_on": "{today}"}}
+  ]
+}}
+"""
+
+
+def _clean_web_places(data: dict, key: str, *, require_address: bool,
+                      today: str) -> list[dict]:
+    """Nettoyage COMMUN des deux passes V2-77b : preuve obligatoire (source https),
+    adresse obligatoire ou non selon la passe, champs normalisés. PUR."""
+    if not isinstance(data, dict):
+        raise ValueError("Réponse IA invalide : objet JSON attendu.")
+    items = data.get(key)
+    if not isinstance(items, list):
+        raise ValueError(f"Réponse IA invalide : '{key}' doit être une liste.")
+    clean: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        def _s(k: str) -> str:
+            v = it.get(k)
+            return v.strip() if isinstance(v, str) else ""
+        name, addr, src = _s("name"), _s("place_address"), _s("source_url")
+        if not name or not src.startswith("https://"):
+            continue                                   # PREUVE OU RIEN
+        if require_address and not addr:
+            continue                                   # sans adresse, pas plaçable
+        entry = {"name": name, "place_address": addr, "source_url": src,
+                 "verified_on": _s("verified_on") or today}
+        phone = _s("phone")
+        if phone:
+            entry["phone"] = phone
+        clean.append(entry)
+    return clean
+
+
+def fetch_estancos(city: str, country_code: str, client: anthropic.Anthropic,
+                   today: str | None = None) -> tuple[dict, dict]:
+    """Estancos (bureaux de tabac LICENCIÉS) d'une commune (V2-77b), vérifiés par recherche
+    web. Retourne ({ESTANCO_FACT_TYPE: {"estancos": [...]}}, méta coût). Adresse EXIGÉE (un
+    estanco sans adresse n'est pas plaçable). Preuve ou rien ; liste vide valide."""
+    today = today or _dt.date.today().isoformat()
+    data, meta = _ask_web_search_json(
+        client, _ESTANCO_PROMPT.format(city=city, country_code=country_code, today=today),
+        city=city, country_code=country_code,
+        max_searches=settings.estanco_max_searches,
+        max_tokens=settings.estanco_max_tokens)
+    clean = _clean_web_places(data, "estancos", require_address=True, today=today)
+    return {ESTANCO_FACT_TYPE: {"estancos": clean}}, meta
+
+
+def fetch_shisha_bars(city: str, country_code: str, client: anthropic.Anthropic,
+                      today: str | None = None) -> tuple[dict, dict]:
+    """Bars à CHICHA d'une commune (V2-77b), vérifiés par recherche web. Retourne
+    ({SHISHA_FACT_TYPE: {"bars": [...]}}, méta coût). L'adresse est FACULTATIVE : le premier
+    usage est d'apparier le nom contre les bars DÉJÀ moissonnés (cascade V2-73g) pour y
+    poser la puce — un lieu sans adresse et sans jumeau moissonné sera simplement écarté.
+    Preuve ou rien ; liste vide valide."""
+    today = today or _dt.date.today().isoformat()
+    data, meta = _ask_web_search_json(
+        client, _SHISHA_PROMPT.format(city=city, country_code=country_code, today=today),
+        city=city, country_code=country_code,
+        max_searches=settings.shisha_max_searches,
+        max_tokens=settings.shisha_max_tokens)
+    clean = _clean_web_places(data, "bars", require_address=False, today=today)
+    return {SHISHA_FACT_TYPE: {"bars": clean}}, meta
+
+
 # ── Marchés hebdomadaires par zone : découverte CLAUDE + web (V2-07 volet 3) ──
 #
 # Découverte MUTUALISÉE par (pays, commune), mise en cache area_facts sous

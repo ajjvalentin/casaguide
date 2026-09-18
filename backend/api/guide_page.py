@@ -538,6 +538,15 @@ _SUBTYPE_LABELS: dict[str, dict[str, str]] = {
     # mot courant : « chicha » en fr/es, « shisha » ailleurs, « nargjile » en albanais.
     "shisha": {"fr": "Chicha", "en": "Shisha", "es": "Chicha / Cachimba", "it": "Narghilè",
                "de": "Shisha", "nl": "Shisha", "sq": "Nargjile"},
+    # V2-77b : les deux visages du tabac. L'estanco est le réseau LICENCIÉ (timbres,
+    # tickets, recharges) — chaque langue le nomme avec SON mot ; la cave à cigares est
+    # autre chose, et le dire évite la déception de celui qui cherchait un timbre.
+    "estanco": {"fr": "Estanco (timbres, tickets)", "en": "Licensed tobacconist",
+                "es": "Estanco", "it": "Tabaccheria", "de": "Tabakfachgeschäft",
+                "nl": "Tabakszaak (postzegels)", "sq": "Duhanshitës i licencuar"},
+    "cigar": {"fr": "Cave à cigares", "en": "Cigar shop", "es": "Casa de puros",
+              "it": "Sigareria", "de": "Zigarrenladen", "nl": "Sigarenwinkel",
+              "sq": "Dyqan purosh"},
     "soccer": {"fr": "Football", "en": "Football", "es": "Fútbol", "it": "Calcio",
                "de": "Fußball", "nl": "Voetbal", "sq": "Futboll"},
     "tennis": {"fr": "Tennis", "en": "Tennis", "es": "Tenis", "it": "Tennis",
@@ -1437,6 +1446,14 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             lst.sort(key=lambda p: (
                 p.get("weekday") if p.get("weekday") is not None else 8,
                 p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
+        elif code == "tobacco":
+            # V2-77b — ce qu'on cherche sous cette rubrique, c'est l'ESTANCO (timbres,
+            # tickets de transport, recharges) : il passe devant, même un peu plus loin.
+            # La cave à cigares reste servie, en COMPLÉMENT. Le reste (ni l'un ni l'autre,
+            # « Radikas ») s'intercale entre les deux — retenu, mais jamais promu.
+            lst.sort(key=lambda p: (
+                {"estanco": 0, "cigar": 2}.get((p.get("subtype") or "").lower(), 1),
+                p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
         else:
             # Autres catégories : coup de cœur (owner_comment) en tête (M-16), puis
             # distance à pied — le repère naturel d'un lieu reste « à quelle distance ».
@@ -1481,12 +1498,15 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # d'un équipement. Elle n'ouvre PAS le repli factuel de V2-71b (réservé aux
             # équipements : on n'invente pas une phrase de nature pour un bar).
             is_shisha_spot = subtype == "shisha" and code in ("bar", "cafe", "restaurant")
+            # V2-77b : la puce du tabac DIT lequel des deux on a sous les yeux.
+            is_tobacco_kind = code == "tobacco" and subtype in ("estanco", "cigar")
             # V2-71b : repli FACTUEL quand un équipement n'a AUCUNE description — une phrase
             # de nature (sous-type + accès), rendue à la place de la description. Elle
             # subsume la puce → on ne montre PAS la puce dans ce cas (jamais deux fois).
             fallback = _sport_fallback(p, lang) if (is_equip and not desc) else ""
             subtype_tag = (f'<span class="cuisine-tag">{_esc(_subtype_label(subtype, lang))}</span>'
-                           if subtype and (is_shisha_spot or (is_equip and not fallback))
+                           if subtype and (is_shisha_spot or is_tobacco_kind
+                                           or (is_equip and not fallback))
                            else "")
             # Commune / localité (V2-38) : discrète, à côté du nom (« · Vétroz »), même
             # séparateur/ton muet que la mention d'horaires. Anti-bruit ASSUMÉ : affichée

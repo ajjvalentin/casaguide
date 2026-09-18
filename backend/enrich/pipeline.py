@@ -686,6 +686,129 @@ def _void_essentials(all_harvested: list[dict], wanted_codes: set,
     return [c for c in eligible if c in wanted_codes and c not in present]
 
 
+
+# ── V2-77b : estancos & bars à chicha — la FAUSSE PLÉNITUDE ──────────────────
+#
+# V2-74 traitait le VIDE (Bégadan : aucune pharmacie moissonnée). Ici le défaut est
+# inverse et plus sournois : la catégorie est PLEINE et pourtant fausse. À Adeje, le
+# tabac rendait « Radikas », « La Cava La Cubana », « Tobacco Deluxe » — pas un seul
+# ESTANCO, le bureau licencié où l'on achète timbres et tickets. Le système croyait avoir
+# trouvé. Ces deux passes se déclenchent donc MÊME QUAND OSM A RENDU QUELQUE CHOSE.
+#
+# Elles s'ACCROCHENT d'abord au lieu déjà moissonné (cascade V2-73g : poser une puce sur
+# le bar connu vaut mieux qu'en créer un second), et ne CRÉENT que ce qui manque.
+
+def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, http_client,
+                           origin: tuple, *, fact_type: str, items_key: str, fetch,
+                           max_age_days: int, category: str, subtype: str, meta_key: str,
+                           harvested: list[dict], step_name: str,
+                           require_address: bool) -> None:
+    """Moteur COMMUN des deux passes V2-77b. Découverte web mutualisée par (pays, commune)
+    — un appel par secteur, réutilisé par tous les guides — puis, pour chaque lieu prouvé :
+    (1) APPARIEMENT contre les POI déjà moissonnés de la catégorie (`_activity_name_match`,
+    souple, V2-73g) → on pose le sous-type sur la fiche existante ; (2) à défaut, CRÉATION
+    d'un POI 'suggested' à l'adresse géocodée STRICTEMENT (garde de cohérence V2-74b).
+    Un lieu sans jumeau ET sans adresse est simplement écarté. Best-effort (SAVEPOINT) :
+    un échec n'annule ni la moisson ni le reste du job."""
+    cc, city = prop["country_code"], prop["city"]
+    try:
+        with conn.transaction():
+            if not db.area_fact_fresh(conn, cc, city, fact_type, max_age_days):
+                fact, meta = fetch(city, cc, ai)
+                db.upsert_area_facts(conn, cc, city, fact, source=settings.anthropic_model)
+                db.record_costs(conn, prop["id"], job_id, "anthropic", step_name,
+                                meta["attempts"])
+                summary["cost_cts"] += meta["cost_cts"]
+            fact = db.get_area_fact(conn, cc, city, fact_type) or {}
+            found = fact.get(items_key) or []
+            # Cibles d'appariement : les POI de CETTE catégorie déjà moissonnés.
+            pool = [h for h in harvested if h.get("category") == category]
+            commune_center = None
+            marked = created = skipped = 0
+            for item in found:
+                name = (item.get("name") or "").strip()
+                if not name:
+                    continue
+                proof = {"source_url": item.get("source_url"),
+                         "verified_on": item.get("verified_on")}
+                twin = _activity_name_match(name, pool)
+                if twin is not None:
+                    # (1) Le lieu EXISTE déjà : on le qualifie, on ne le double pas.
+                    marked += db.set_poi_subtype_by_name(
+                        conn, prop["id"], category, twin["name"], subtype, meta_key, proof)
+                    continue
+                addr = (item.get("place_address") or "").strip()
+                if not addr and require_address:
+                    skipped += 1
+                    continue
+                if not addr:
+                    skipped += 1     # chicha sans jumeau NI adresse → rien à placer
+                    continue
+                ref = f"claude:{step_name}:" + _slug(name)
+                if db.poi_source_ref_exists(conn, prop["id"], ref):
+                    continue
+                if commune_center is None:
+                    commune_center = _commune_center(prop, http_client)
+                geo = _geocode_local_commerce({"place_address": addr}, prop,
+                                              commune_center, http_client)
+                if geo is None:
+                    skipped += 1
+                    continue
+                lat, lon, locality, approx = geo
+                poi = {"name": name, "category": category, "lat": lat, "lon": lon,
+                       "address": addr, "phone": item.get("phone"),
+                       "locality": locality or city, "subtype": subtype, "source_ref": ref,
+                       "completion_meta": {meta_key: {**proof, "approx": approx}}}
+                distance.compute_distances(origin, [poi], client=http_client)
+                created += db.insert_local_commerce_poi(conn, prop["id"], poi)
+            db.job_step(conn, job_id, step_name,
+                        {"ok": True, "found": len(found), "marked": marked,
+                         "created": created, "skipped": skipped})
+        _progress(f"  ✓ {step_name} : {len(found)} trouvé(s) sur le web — "
+                  f"{marked} fiche(s) qualifiée(s), {created} créée(s)")
+    except Exception as exc:  # noqa: BLE001 — best-effort, le job continue
+        log.warning("Passe %s en échec (%s) : %s", step_name, city, exc, exc_info=True)
+        # Coût des essais APRÈS le rollback du SAVEPOINT (V2-07 3bis) : l'argent est
+        # dépensé à la réponse, pas au succès.
+        summary["cost_cts"] += _record_failed_call_cost(conn, prop["id"], job_id,
+                                                        step_name, exc)
+        db.job_step(conn, job_id, step_name,
+                    {"ok": False, "error": overpass._short(str(exc))})
+        conn.commit()
+        _progress(f"  ⚠ {step_name} non résolus : {overpass._short(str(exc))}")
+
+
+def _discover_estancos(conn, prop, ai, job_id, summary, http_client, origin,
+                       harvested: list[dict]) -> None:
+    """Estancos de la commune (V2-77b) — UNIQUEMENT dans les pays à réseau licencié, donc
+    recensé (`TOBACCO_LICENSED_COUNTRIES`). Ailleurs, aucun appel : il n'y a pas d'annuaire
+    d'estancos aux Pays-Bas. Se déclenche même si la catégorie tabac est PLEINE."""
+    if (prop.get("country_code") or "").upper() not in claude_enrich.TOBACCO_LICENSED_COUNTRIES:
+        return
+    _web_marks_and_creates(
+        conn, prop, ai, job_id, summary, http_client, origin,
+        fact_type=claude_enrich.ESTANCO_FACT_TYPE, items_key="estancos",
+        fetch=claude_enrich.fetch_estancos,
+        max_age_days=settings.estanco_max_age_days,
+        category="tobacco", subtype="estanco", meta_key="_estanco",
+        harvested=harvested, step_name="estancos", require_address=True)
+
+
+def _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client, origin,
+                          harvested: list[dict]) -> None:
+    """Bars à CHICHA de la commune (V2-77b). Aucune garde pays : un shisha lounge existe
+    partout où il y a du tourisme. L'appariement au bar déjà moissonné est le cas NOMINAL
+    (c'est une puce qu'on pose, pas un lieu qu'on ajoute)."""
+    _web_marks_and_creates(
+        conn, prop, ai, job_id, summary, http_client, origin,
+        fact_type=claude_enrich.SHISHA_FACT_TYPE, items_key="bars",
+        fetch=claude_enrich.fetch_shisha_bars,
+        max_age_days=settings.shisha_max_age_days,
+        category="bar", subtype="shisha", meta_key="_shisha",
+        harvested=harvested, step_name="shisha_bars", require_address=False)
+
+
+
 def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
                                               summary: dict, http_client, void_codes: list[str],
                                               origin: tuple) -> None:
@@ -1631,6 +1754,18 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 if void_codes:
                     _discover_and_materialize_local_commerces(
                         conn, prop, ai, job_id, summary, http_client, void_codes, origin)
+
+                # (4h) V2-77b — ESTANCOS & CHICHA : la FAUSSE plénitude. Contrairement à
+                # 4g, ces passes ne regardent PAS si la catégorie est vide : à Adeje elle
+                # était pleine et pourtant sans un seul estanco. Elles ne partent que si la
+                # catégorie concernée est DEMANDÉE (jamais inventer un besoin non prévu).
+                wanted_codes = {c["code"] for c in wanted}
+                if "tobacco" in wanted_codes:
+                    _discover_estancos(conn, prop, ai, job_id, summary, http_client,
+                                       origin, all_harvested)
+                if "bar" in wanted_codes:
+                    _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client,
+                                          origin, all_harvested)
 
                 db.job_step(conn, job_id, "claude",
                             {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})

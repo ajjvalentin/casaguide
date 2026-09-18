@@ -531,19 +531,23 @@ def insert_local_commerce_poi(conn, property_id: str, poi: dict) -> int:
     cur = conn.execute(
         """INSERT INTO pois (property_id, category_code, name, geom, address, locality,
                              phone, dist_walk_m, walk_min, dist_drive_m, drive_min,
-                             completion_meta, source, source_ref, fetched_at, status)
+                             completion_meta, subtype, source, source_ref,
+                             fetched_at, status)
            VALUES (%(pid)s, %(cat)s, %(name)s,
                    ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
                    %(address)s, %(locality)s, %(phone)s,
                    %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
-                   %(meta)s, 'claude', %(ref)s, now(), 'suggested')
+                   %(meta)s, %(subtype)s, 'claude', %(ref)s, now(),
+                   'suggested')
            ON CONFLICT (property_id, source, source_ref) WHERE source_ref IS NOT NULL
            DO UPDATE SET name = EXCLUDED.name, geom = EXCLUDED.geom,
                          address = EXCLUDED.address, locality = EXCLUDED.locality,
                          phone = EXCLUDED.phone,
                          dist_walk_m = EXCLUDED.dist_walk_m, walk_min = EXCLUDED.walk_min,
                          dist_drive_m = EXCLUDED.dist_drive_m, drive_min = EXCLUDED.drive_min,
-                         completion_meta = EXCLUDED.completion_meta, fetched_at = now()
+                         completion_meta = EXCLUDED.completion_meta,
+                         subtype = COALESCE(EXCLUDED.subtype, pois.subtype),
+                         fetched_at = now()
            WHERE pois.status = 'suggested'""",
         {"pid": property_id, "cat": poi["category"], "name": poi["name"],
          "lat": poi["lat"], "lon": poi["lon"], "address": poi.get("address"),
@@ -551,10 +555,37 @@ def insert_local_commerce_poi(conn, property_id: str, poi: dict) -> int:
          "dist_walk_m": poi.get("dist_walk_m"), "walk_min": poi.get("walk_min"),
          "dist_drive_m": poi.get("dist_drive_m"), "drive_min": poi.get("drive_min"),
          "meta": json.dumps(poi["completion_meta"]) if poi.get("completion_meta") else None,
-         "ref": poi["source_ref"]},
+         "subtype": poi.get("subtype"), "ref": poi["source_ref"]},
     )
     return cur.rowcount
 
+
+
+def set_poi_subtype_by_name(conn, property_id: str, category: str, name: str,
+                            subtype: str, meta_key: str, meta: dict) -> int:
+    """Pose le SOUS-TYPE d'un POI déjà moissonné, identifié par (logement, catégorie, nom) —
+    V2-77b : c'est ainsi que la passe web marque « cet établissement-ci EST un estanco » ou
+    « ce bar-ci sert la chicha », sans créer de doublon (cascade V2-73g : on s'accroche au
+    lieu déjà connu plutôt que d'en poser un second).
+
+    **Exception étroite à l'invariant 1, du même régime EXACT que `locality` (V2-38bis)** :
+    le sous-type est une MÉTADONNÉE, pas du contenu rédigé, et il est **complété si NULL**
+    quel que soit le statut — `COALESCE(subtype, %(subtype)s)` rend l'écrasement impossible
+    par construction (un sous-type tagué par OSM ou saisi par le propriétaire survit
+    intact). Sans cela, un guide déjà arbitré — le cas d'Adeje, dont les POI sont
+    `approved` — n'afficherait JAMAIS la puce, puisque le guide ne sert que les fiches
+    retenues. La preuve est FUSIONNÉE dans `completion_meta` (jamais remplacée). Retourne
+    le nombre de fiches touchées (0 si le nom ne correspond à aucune)."""
+    cur = conn.execute(
+        """UPDATE pois
+              SET subtype = COALESCE(subtype, %(subtype)s),
+                  completion_meta = COALESCE(completion_meta, '{}'::jsonb)
+                                    || jsonb_build_object(%(key)s::text, %(meta)s::jsonb)
+            WHERE property_id = %(pid)s AND category_code = %(cat)s AND name = %(name)s""",
+        {"pid": property_id, "cat": category, "name": name, "subtype": subtype,
+         "key": meta_key, "meta": json.dumps(meta)},
+    )
+    return cur.rowcount
 
 def poi_source_ref_exists(conn, property_id: str, source_ref: str) -> bool:
     """True si un POI de ce (logement, source_ref) existe déjà (TOUS statuts) →

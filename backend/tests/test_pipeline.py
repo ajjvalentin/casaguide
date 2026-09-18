@@ -2789,3 +2789,173 @@ def test_tobacco_category_is_seeded_short_radius_and_hosted():
     assert labels["fr"] == "Tabac" and labels["en"] == "Tobacconist"
     assert labels["es"] == "Estanco"
     assert "tobacco" in hosted, "catégorie non rattachée à une section → jamais demandée"
+
+
+# ── V2-77b : la FAUSSE plénitude — estancos & chicha par le web ──────────────
+
+class _FakeWebAI:
+    """Client Claude simulé pour les passes web V2-77b : rend la charge voulue, compte
+    les appels. Surface minimale du SDK réellement utilisée par `_ask_web_search_json`."""
+
+    def __init__(self, payloads):
+        self.payloads, self.calls = payloads, []
+
+
+def _stub_web_pass(monkeypatch, estancos=None, bars=None):
+    """Remplace les DEUX passes web par des fakes purs (aucun réseau) et compte les appels
+    — c'est ainsi qu'on éprouve la garde pays sans clé API."""
+    from enrich import claude_enrich as ce
+    seen = {"estancos": 0, "shisha": 0}
+
+    def fake_estancos(city, cc, client, today=None):
+        seen["estancos"] += 1
+        return {ce.ESTANCO_FACT_TYPE: {"estancos": estancos or []}}, {"cost_cts": 0.0,
+                                                                      "attempts": []}
+
+    def fake_shisha(city, cc, client, today=None):
+        seen["shisha"] += 1
+        return {ce.SHISHA_FACT_TYPE: {"bars": bars or []}}, {"cost_cts": 0.0,
+                                                             "attempts": []}
+    monkeypatch.setattr(ce, "fetch_estancos", fake_estancos)
+    monkeypatch.setattr(ce, "fetch_shisha_bars", fake_shisha)
+    return seen
+
+
+def test_estanco_pass_fires_even_when_the_category_is_full(monkeypatch, property_id):
+    """LE CŒUR DE V2-77b. À Adeje la rubrique tabac était PLEINE (« Radikas », « La Cava
+    La Cubana ») et pourtant sans un seul ESTANCO : le système croyait avoir trouvé. La
+    passe se déclenche donc SANS condition de vide — contrairement à V2-74 — et
+    s'ACCROCHE au lieu déjà moissonné (V2-73g) au lieu d'en créer un second."""
+    from enrich import db as edb, claude_enrich as ce
+    seen = _stub_web_pass(monkeypatch, estancos=[
+        {"name": "Estanco nº 12", "place_address": "12 calle Grande",
+         "source_url": "https://ex.test/e", "verified_on": "2026-09-18"}])
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        # La moisson a déjà rendu DEUX tabacs — aucun n'est un estanco.
+        for name, sub in (("Radikas", None), ("La Cava La Cubana", "cigar")):
+            c.execute("""INSERT INTO pois (property_id, category_code, name, geom, source,
+                                           status, subtype)
+                         VALUES (%s,'tobacco',%s,ST_SetSRID(ST_MakePoint(-16.74,28.09),4326),
+                                 'osm','approved',%s)""", (property_id, name, sub))
+        c.commit()
+        harvested = [{"name": "Radikas", "lat": 28.09, "lon": -16.74, "category": "tobacco"},
+                     {"name": "La Cava La Cubana", "lat": 28.09, "lon": -16.74,
+                      "category": "tobacco"}]
+        prop = {"id": property_id, "country_code": "ES", "city": "Adeje"}
+        summary = {"cost_cts": 0.0}
+        jid = str(edb.start_job(c, property_id, "manual")) if hasattr(edb, "start_job") else None
+        pipeline._discover_estancos(c, prop, object(), jid, summary, None,
+                                    (28.09, -16.74), harvested)
+        c.commit()
+        assert seen["estancos"] == 1, "la passe ne s'est pas déclenchée sur une rubrique PLEINE"
+        # Aucun jumeau : l'estanco n'existait pas dans la moisson → il est créé.
+        row = c.execute("SELECT subtype FROM pois WHERE property_id=%s AND name='Estanco nº 12'",
+                        (property_id,)).fetchone()
+        assert row is not None and row["subtype"] == "estanco"
+        # Les fiches arbitrées ne sont PAS touchées dans leur contenu.
+        keep = c.execute("SELECT subtype FROM pois WHERE property_id=%s AND name="
+                         "'La Cava La Cubana'", (property_id,)).fetchone()
+        assert keep["subtype"] == "cigar"
+
+
+def test_estanco_pass_marks_the_harvested_twin_instead_of_duplicating(monkeypatch,
+                                                                     property_id):
+    """Cascade V2-73g : si le web nomme un lieu DÉJÀ moissonné, on pose la puce sur lui —
+    jamais un doublon. Et c'est bien la fiche `approved` qui est qualifiée : sans cette
+    exception étroite (fill-NULL-only, régime `locality` V2-38bis), un guide déjà arbitré
+    — le cas d'Adeje — n'afficherait jamais la puce."""
+    from enrich import db as edb
+    _stub_web_pass(monkeypatch, estancos=[
+        {"name": "Estanco Tabacos Pérez", "place_address": "x",
+         "source_url": "https://ex.test/e", "verified_on": "2026-09-18"}])
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        c.execute("""INSERT INTO pois (property_id, category_code, name, geom, source, status)
+                     VALUES (%s,'tobacco','Tabacos Pérez',
+                             ST_SetSRID(ST_MakePoint(-16.74,28.09),4326),'osm','approved')""",
+                  (property_id,))
+        c.commit()
+        harvested = [{"name": "Tabacos Pérez", "lat": 28.09, "lon": -16.74,
+                      "category": "tobacco"}]
+        pipeline._discover_estancos(c, {"id": property_id, "country_code": "ES",
+                                        "city": "Adeje"}, object(), None,
+                                    {"cost_cts": 0.0}, None, (28.09, -16.74), harvested)
+        c.commit()
+        rows = c.execute("SELECT name, subtype, completion_meta FROM pois "
+                         "WHERE property_id=%s AND category_code='tobacco'",
+                         (property_id,)).fetchall()
+        assert len(rows) == 1, f"doublon créé : {[r['name'] for r in rows]}"
+        assert rows[0]["subtype"] == "estanco"
+        assert rows[0]["completion_meta"]["_estanco"]["source_url"] == "https://ex.test/e"
+
+
+def test_estanco_pass_never_fires_outside_licensed_countries(monkeypatch, property_id):
+    """Point 4 de la mission : AUCUN appel web hors des pays à réseau licencié. Il n'y a
+    pas d'annuaire d'estancos aux Pays-Bas — la dépense serait sans objet."""
+    from enrich import db as edb
+    seen = _stub_web_pass(monkeypatch, estancos=[{"name": "X", "place_address": "y",
+                                                  "source_url": "https://e.test/z"}])
+    with edb.connect() as c:
+        for cc in ("NL", "DE", "GB", "XK"):
+            pipeline._discover_estancos(c, {"id": property_id, "country_code": cc,
+                                            "city": "Ville"}, object(), None,
+                                        {"cost_cts": 0.0}, None, (0.0, 0.0), [])
+        assert seen["estancos"] == 0
+        pipeline._discover_estancos(c, {"id": property_id, "country_code": "ES",
+                                        "city": "Adeje"}, object(), None,
+                                    {"cost_cts": 0.0}, None, (28.09, -16.74), [])
+        assert seen["estancos"] == 1     # l'Espagne, elle, déclenche
+
+
+def test_shisha_pass_marks_the_matched_bar(monkeypatch, property_id):
+    """La chicha est une PUCE qu'on pose, pas un lieu qu'on ajoute : l'appariement au bar
+    déjà moissonné est le cas nominal. Un lieu sans jumeau ET sans adresse est écarté —
+    jamais un bar inventé."""
+    from enrich import db as edb
+    _stub_web_pass(monkeypatch, bars=[
+        {"name": "Backyard Lounge", "place_address": "",
+         "source_url": "https://ex.test/s", "verified_on": "2026-09-18"},
+        {"name": "Fantôme sans adresse", "place_address": "",
+         "source_url": "https://ex.test/f", "verified_on": "2026-09-18"}])
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        c.execute("""INSERT INTO pois (property_id, category_code, name, geom, source, status)
+                     VALUES (%s,'bar','Backyard Lounge',
+                             ST_SetSRID(ST_MakePoint(-16.74,28.09),4326),'osm','approved')""",
+                  (property_id,))
+        c.commit()
+        harvested = [{"name": "Backyard Lounge", "lat": 28.09, "lon": -16.74,
+                      "category": "bar"}]
+        pipeline._discover_shisha_bars(c, {"id": property_id, "country_code": "ES",
+                                           "city": "Adeje"}, object(), None,
+                                       {"cost_cts": 0.0}, None, (28.09, -16.74), harvested)
+        c.commit()
+        rows = c.execute("SELECT name, subtype FROM pois WHERE property_id=%s AND "
+                         "category_code='bar'", (property_id,)).fetchall()
+        assert len(rows) == 1, "le fantôme sans adresse ne doit PAS entrer"
+        assert rows[0]["subtype"] == "shisha"
+
+
+def test_web_passes_are_mutualised_per_commune(monkeypatch, property_id):
+    """Point 3 : UN appel par secteur, réutilisé par tous les guides. Le second passage
+    sur la même commune lit l'`area_fact` et ne rappelle pas le web (même régime que les
+    marchés, les activités et les commerces de village)."""
+    from enrich import db as edb
+    seen = _stub_web_pass(monkeypatch, estancos=[
+        {"name": "Estanco nº 12", "place_address": "12 calle Grande",
+         "source_url": "https://ex.test/e", "verified_on": "2026-09-18"}])
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        c.execute("""INSERT INTO pois (property_id, category_code, name, geom, source, status)
+                     VALUES (%s,'tobacco','Estanco nº 12',
+                             ST_SetSRID(ST_MakePoint(-16.74,28.09),4326),'osm','suggested')""",
+                  (property_id,))
+        c.commit()
+        prop = {"id": property_id, "country_code": "ES", "city": "Adeje"}
+        harv = [{"name": "Estanco nº 12", "lat": 28.09, "lon": -16.74, "category": "tobacco"}]
+        for _ in range(3):
+            pipeline._discover_estancos(c, prop, object(), None, {"cost_cts": 0.0}, None,
+                                        (28.09, -16.74), harv)
+            c.commit()
+    assert seen["estancos"] == 1, f"{seen['estancos']} appels web au lieu d'un seul"

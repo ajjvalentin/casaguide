@@ -189,6 +189,9 @@ _COURIER_RE = re.compile(r"mensajer|coursier|courier|\bglovo\b|\bstuart\b", re.I
 _VAPE_RE = re.compile(r"\bvap(e|eo|ing|otage)|e-?cig|\bcbd\b|\bshisha\b", re.IGNORECASE)
 # …mais le nom du RÉSEAU licencié prime toujours : « Estanco y Vapeo Pérez » EST un
 # estanco (il vend timbres et tickets) — il ne doit jamais tomber sous la règle ci-dessus.
+# Cave à cigares / boutique à touristes : elle a sa place dans la rubrique (on y achète
+# du tabac) mais EN COMPLÉMENT — jamais à la place de l'estanco qu'on cherchait.
+_CIGAR_RE = re.compile(r"\bcava\b|cigar|habano|\bpuros?\b|humidor|casa del", re.IGNORECASE)
 _TOBACCONIST_RE = re.compile(
     r"estanco|expendedur|tabaqu|tabacos?\b|tabac\b|tabaccher|tabacar|trafik",
     re.IGNORECASE)
@@ -960,6 +963,17 @@ def _norm_subtype(tags: dict) -> str | None:
     aucun sous-type sportif ne la concurrence sur ce type de lieu."""
     if _is_shisha(tags):
         return "shisha"
+    # V2-77b : sous-type du TABAC. Aucun tag OSM ne distingue le bureau de tabac LICENCIÉ
+    # (estanco : timbres, tickets, recharges) d'une cave à cigares touristique — seul le
+    # NOM parle, et encore : « Radikas » ne dit rien. On n'étiquette donc QUE ce qui est
+    # lisible, et la passe web V2-77b confirme/promeut ensuite les vrais estancos.
+    if tags.get("shop") == "tobacco":
+        name = tags.get("name") or ""
+        if _TOBACCONIST_RE.search(name):
+            return "estanco"
+        if _CIGAR_RE.search(name):
+            return "cigar"
+        return None
     sp = (tags.get("sport") or "").split(";")[0].strip().lower()
     base = sp if (sp and len(sp.split()) <= 3) else None
     if base is None:
