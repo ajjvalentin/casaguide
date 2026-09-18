@@ -533,6 +533,11 @@ _CUISINE_LABELS: dict[str, dict[str, str]] = {
 # Sous-types sport/loisir (V2-71) : puce comme les cuisines, libellés EN DUR 7 langues
 # (fr, en, es, it, de, nl, sq). Valeur inconnue → repli embelli (underscores → espaces).
 _SUBTYPE_LABELS: dict[str, dict[str, str]] = {
+    # V2-77 : la chicha. Pas une catégorie (trop de niche pour le sommaire) mais une
+    # caractéristique du LIEU — donc une puce, sur le bar/café. Chaque langue avec son
+    # mot courant : « chicha » en fr/es, « shisha » ailleurs, « nargjile » en albanais.
+    "shisha": {"fr": "Chicha", "en": "Shisha", "es": "Chicha / Cachimba", "it": "Narghilè",
+               "de": "Shisha", "nl": "Shisha", "sq": "Nargjile"},
     "soccer": {"fr": "Football", "en": "Football", "es": "Fútbol", "it": "Calcio",
                "de": "Fußball", "nl": "Voetbal", "sq": "Futboll"},
     "tennis": {"fr": "Tennis", "en": "Tennis", "es": "Tenis", "it": "Tennis",
@@ -1472,12 +1477,17 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # CSS neuf → aucun bump SW), pour dire la discipline/le type de lieu.
             subtype = (p.get("subtype") or "").strip().lower()
             is_equip = code in ("sport", "family_activity")
+            # V2-77 : la chicha se dit sur un bar/café — une puce, comme la discipline
+            # d'un équipement. Elle n'ouvre PAS le repli factuel de V2-71b (réservé aux
+            # équipements : on n'invente pas une phrase de nature pour un bar).
+            is_shisha_spot = subtype == "shisha" and code in ("bar", "cafe", "restaurant")
             # V2-71b : repli FACTUEL quand un équipement n'a AUCUNE description — une phrase
             # de nature (sous-type + accès), rendue à la place de la description. Elle
             # subsume la puce → on ne montre PAS la puce dans ce cas (jamais deux fois).
             fallback = _sport_fallback(p, lang) if (is_equip and not desc) else ""
             subtype_tag = (f'<span class="cuisine-tag">{_esc(_subtype_label(subtype, lang))}</span>'
-                           if subtype and is_equip and not fallback else "")
+                           if subtype and (is_shisha_spot or (is_equip and not fallback))
+                           else "")
             # Commune / localité (V2-38) : discrète, à côté du nom (« · Vétroz »), même
             # séparateur/ton muet que la mention d'horaires. Anti-bruit ASSUMÉ : affichée
             # UNIQUEMENT si elle DIFFÈRE de la commune du logement (comparaison normalisée

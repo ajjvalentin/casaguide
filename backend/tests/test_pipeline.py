@@ -2713,3 +2713,79 @@ def test_translate_run_delivers_succeeded_langs_when_one_lang_fails():
     assert set(pub) == {"en", "es"}                     # de omis, en/es LIVRÉS
     assert summary["langs"]["en"] == 1 and summary["langs"]["es"] == 1
     assert str(summary["langs"]["de"]).startswith("failed")
+
+
+# ── V2-77 : le tabac se cherche sur le web LÀ OÙ le réseau est licencié ───────
+
+def test_tobacco_web_discovery_only_in_licensed_countries():
+    """V2-77 : `shop=tobacco` est moissonné par OSM PARTOUT, mais la DÉCOUVERTE WEB du
+    tabac n'a de sens que là où le réseau est licencié, donc recensé (estanco ES,
+    tabaccheria IT, bureau de tabac FR…). Ailleurs, chercher « les estancos de X » ne
+    pourrait rien rendre : on n'engage pas l'appel. La catégorie, elle, reste demandée."""
+    from enrich import claude_enrich as ce
+    f = ce.local_commerce_categories_for
+    for cc in ("ES", "es", "IT", "FR", "PT", "AT"):
+        assert "tobacco" in f(cc), cc
+    for cc in ("NL", "DE", "GB", "JP", "XK", "", None):
+        assert "tobacco" not in f(cc), cc
+    # Les cinq essentielles historiques ne bougent JAMAIS, quel que soit le pays.
+    for cc in ("ES", "NL", None):
+        assert {"pharmacy", "supermarket", "bakery", "doctor", "post_office"} <= set(f(cc))
+
+
+def test_void_essentials_honours_the_country_gate():
+    """La garde pays passe par `_void_essentials` : en Espagne un tabac absent du rayon
+    est « vide » (donc à découvrir) ; aux Pays-Bas il ne l'est jamais — aucun appel web
+    ne sera déclenché pour lui. Un estanco PROCHE couvre la catégorie, comme les autres."""
+    origin = (28.09, -16.74)
+    wanted = {"pharmacy", "tobacco"}
+    assert "tobacco" in pipeline._void_essentials([], wanted, origin, 5000, "ES")
+    assert "tobacco" not in pipeline._void_essentials([], wanted, origin, 5000, "NL")
+    # Sans pays précisé : prudence — pas de dépense web pour le tabac.
+    assert "tobacco" not in pipeline._void_essentials([], wanted, origin, 5000, None)
+    # Un estanco dans le rayon couvre la catégorie (règle commune V2-74).
+    harv = [{"name": "Estanco nº 12", "lat": 28.091, "lon": -16.741, "category": "tobacco"}]
+    assert "tobacco" not in pipeline._void_essentials(harv, wanted, origin, 5000, "ES")
+
+
+def test_editorial_shisha_flows_to_subtype_both_paths():
+    """V2-77 : la chicha relevée par la passe éditoriale « sorties » traverse jusqu'à
+    `pois.subtype` — sur un POI CRÉÉ comme sur une fiche OSM APPARIÉE. Elle ne remplace
+    JAMAIS un sous-type déjà tagué par OSM (esprit V2-71 : OSM fait foi quand il parle)."""
+    pk = {"name": "Cairo Lounge", "subtype": "shisha", "reason": "Terrasse à narguilés",
+          "source_url": "https://ex.test/a", "verified_on": "2026-09-18"}
+    created = pipeline._build_editorial_poi(pk, "bar", 28.1, -16.7, "Adeje",
+                                            (28.1, -16.7), "web")
+    assert created["subtype"] == "shisha"
+    matched = {"name": "Cairo Lounge", "subtype": None}
+    pipeline._mark_editorial(matched, pk, "web")
+    assert matched["subtype"] == "shisha"
+    tagged = {"name": "Padel Club", "subtype": "padel"}
+    pipeline._mark_editorial(tagged, pk, "web")
+    assert tagged["subtype"] == "padel"          # OSM préservé
+    # Un pick ordinaire (sans chicha) ne pose aucun sous-type.
+    plain = pipeline._build_editorial_poi({"name": "Casa Manolo", "reason": "r",
+                                           "source_url": "u", "verified_on": "d"},
+                                          "restaurant", 28.1, -16.7, None,
+                                          (28.1, -16.7), "web")
+    assert plain["subtype"] is None
+
+
+def test_tobacco_category_is_seeded_short_radius_and_hosted():
+    """V2-77 : la catégorie existe EN BASE (le seed est la source de vérité), au chapitre
+    « Vie pratique », avec un rayon COURT (2 km, comme la boulangerie) — on n'envoie
+    personne à 20 km acheter un timbre. Et elle est RATTACHÉE à la section qui la
+    promettait déjà en toutes lettres (« Distributeur de billets, bureau de poste,
+    tabac… »), sans quoi elle ne serait jamais demandée à la moisson."""
+    with psycopg.connect(settings.db_dsn) as c:
+        row = c.execute("SELECT chapter, icon, default_radius_m, name_i18n "
+                        "FROM poi_categories WHERE code = 'tobacco'").fetchone()
+        hosted = c.execute("SELECT field_schema->'poi_categories' FROM section_templates "
+                           "WHERE code = 'C_shops'").fetchone()[0]
+    assert row is not None, "catégorie 'tobacco' absente du seed"
+    chapter, icon, radius, labels = row
+    assert chapter == "C" and icon == "cigarette" and radius == 2000
+    # Chaque langue nomme l'institution avec SON mot — jamais un mot étranger.
+    assert labels["fr"] == "Tabac" and labels["en"] == "Tobacconist"
+    assert labels["es"] == "Estanco"
+    assert "tobacco" in hosted, "catégorie non rattachée à une section → jamais demandée"

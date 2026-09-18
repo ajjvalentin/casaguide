@@ -89,6 +89,11 @@ CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
     # crypto sont DÉPRIORISÉS (pas exclus) derrière les banques au tri.
     "atm":             [("amenity", "atm"), ("amenity", "bank")],
     "post_office":     [("amenity", "post_office")],
+    # V2-77 : tabac / estanco. `shop=tobacco` est le tag de l'établissement dédié —
+    # c'est lui qui porte l'estanco espagnol, la tabaccheria italienne, le bureau de
+    # tabac français. Les formes COMPOSÉES (kiosque/supérette qui VEND du tabac) sont
+    # dans `CATEGORY_TAG_COMBOS` ci-dessous : une paire simple ne peut pas les dire.
+    "tobacco":         [("shop", "tobacco")],
     "mall":            [("shop", "mall")],
     "laundry":         [("shop", "laundry"), ("shop", "dry_cleaning")],
     "restaurant":      [("amenity", "restaurant")],
@@ -110,10 +115,27 @@ CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
     "charging_station": [("amenity", "charging_station")],  # M-30 : borne de recharge
 }
 
-# Sélecteurs Overpass dérivés des tags positifs (ex. '"amenity"="hospital"').
+# Tags COMPOSÉS (V2-77) — une réalité qui ne se dit qu'en CONJONCTION de tags. Un
+# kiosque ou une supérette qui vend du tabac (`shop=kiosk` + `tobacco=yes`) n'est pas un
+# estanco, mais c'est là qu'on en trouve là où `shop=tobacco` manque. Une paire simple
+# (`CATEGORY_TAGS`) ne peut pas l'exprimer : le tag `tobacco=yes` SEUL attraperait aussi
+# les stations-service. D'où cette table à part, honorée par les sélecteurs Overpass ET
+# par `category_matches`. Chaque entrée est une CONJONCTION (tous les tags requis).
+CATEGORY_TAG_COMBOS: dict[str, list[list[tuple[str, str]]]] = {
+    "tobacco": [
+        [("shop", "kiosk"), ("tobacco", "yes")],
+        [("shop", "convenience"), ("tobacco", "yes")],
+    ],
+}
+
+# Sélecteurs Overpass dérivés des tags positifs (ex. '"amenity"="hospital"') PUIS des
+# conjonctions (ex. '"shop"="kiosk"]["tobacco"="yes"' → `nwr["shop"="kiosk"]["tobacco"="yes"]`).
 CATEGORY_SELECTORS: dict[str, list[str]] = {
     code: [f'"{k}"="{v}"' for k, v in tags] for code, tags in CATEGORY_TAGS.items()
 }
+for _code, _combos in CATEGORY_TAG_COMBOS.items():
+    CATEGORY_SELECTORS.setdefault(_code, []).extend(
+        "][".join(f'"{k}"="{v}"' for k, v in combo) for combo in _combos)
 
 # Catégories sans tags OSM exploitables, traitées AILLEURS. La liste est désormais
 # VIDE (V2-07) : `food_delivery` (volet 1) est résolue par zone (Claude + recherche
@@ -156,6 +178,20 @@ _CIVIL_PROTECTION_RE = re.compile(
 # V2-47 — COURSIERS / MESSAGERIES mal classés en « poste ». On EXCLUT le coursier
 # (Ecomensajeros) mais on GARDE bureaux de poste ET points relais (post_partner).
 _COURIER_RE = re.compile(r"mensajer|coursier|courier|\bglovo\b|\bstuart\b", re.IGNORECASE)
+
+# V2-77 — VAPOTEUSE / CBD mal classés en « tabac ». Constat de recette (Costa Adeje) :
+# `shop=tobacco` y porte « Vape shop » et des caves à cigares. Or ce que le voyageur
+# cherche sous cette rubrique, c'est le réseau LICENCIÉ (estanco/tabaccheria) — celui qui
+# vend aussi timbres, tickets de transport et recharges. Une boutique de vape n'en rend
+# aucun de ces services ; le tag OSM propre existe d'ailleurs (`shop=e-cigarette`), c'est
+# un mésotaguage. Discriminateur étroit : tag dédié, ou nom explicite. Un estanco qui
+# vend AUSSI du vapotage garde son nom d'estanco et n'est jamais écarté.
+_VAPE_RE = re.compile(r"\bvap(e|eo|ing|otage)|e-?cig|\bcbd\b|\bshisha\b", re.IGNORECASE)
+# …mais le nom du RÉSEAU licencié prime toujours : « Estanco y Vapeo Pérez » EST un
+# estanco (il vend timbres et tickets) — il ne doit jamais tomber sous la règle ci-dessus.
+_TOBACCONIST_RE = re.compile(
+    r"estanco|expendedur|tabaqu|tabacos?\b|tabac\b|tabaccher|tabacar|trafik",
+    re.IGNORECASE)
 
 # Catégories capées aux N plus proches EN TEMPS DE TRAJET (V2-44), après calcul des
 # distances (dans le pipeline). Un aéroport de vacances utile est l'un des rares
@@ -336,6 +372,13 @@ def _is_disqualified(category: str, tags: dict) -> bool:
     # Un vétérinaire n'est ni un médecin ni un dentiste (et inversement).
     if category != "veterinary" and tags.get("amenity") == "veterinary":
         return True
+    # V2-77 : une boutique de vape/CBD n'est pas un bureau de tabac au sens du service
+    # rendu (timbres, tickets, recharges) — cf. `_VAPE_RE`.
+    if category == "tobacco":
+        name = tags.get("name") or ""
+        if not _TOBACCONIST_RE.search(name) and (
+                tags.get("shop") == "e-cigarette" or _VAPE_RE.search(name)):
+            return True
     # Un vrai marché hebdomadaire n'a pas de tag `shop` (minimarket, commerce…).
     if category == "market" and "shop" in tags:
         return True
@@ -376,7 +419,10 @@ def category_matches(category: str, tags: dict) -> bool:
     2. aucun tag disqualifiant ;
     3. cas particulier des aéroports (publics/IATA uniquement)."""
     positives = CATEGORY_TAGS.get(category, [])
-    if not any(tags.get(k) == v for k, v in positives):
+    # V2-77 : un tag positif simple OU une conjonction complète (kiosque + tabac=oui).
+    combos = CATEGORY_TAG_COMBOS.get(category, [])
+    if not (any(tags.get(k) == v for k, v in positives)
+            or any(all(tags.get(k) == v for k, v in combo) for combo in combos)):
         return False
     if _is_disqualified(category, tags):
         return False
@@ -880,6 +926,27 @@ _ACCESS_PUBLIC = frozenset({"yes", "permissive", "public", "designated"})
 _ACCESS_PRIVATE = frozenset({"private", "no", "members", "customers", "permit"})
 
 
+# V2-77 — la CHICHA se dit de plusieurs façons dans OSM et aucune n'est un « sport » :
+# `cuisine=shisha` (le plus courant), `smoking=shisha`, `amenity=hookah_lounge`, et le
+# tag dédié `shisha=yes`. Elle n'a pas de catégorie propre (trop de niche pour encombrer
+# le sommaire) : elle devient une PUCE sur le bar/café, motif `subtype` (V2-71) — pas
+# `cuisine`, qui répond à « qu'est-ce qu'on y mange » et n'est rendue que pour les
+# restaurants. Le nom est le dernier recours (« Shisha Lounge », « Chicha Bar »).
+_SHISHA_VALUES = frozenset({"shisha", "hookah", "narghile", "nargile"})
+_SHISHA_NAME_RE = re.compile(r"\b(shisha|chicha|hookah|narguil|narghil)", re.IGNORECASE)
+
+
+def _is_shisha(tags: dict) -> bool:
+    """Vrai si les tags OSM disent la chicha (V2-77). PUR."""
+    if tags.get("amenity") == "hookah_lounge" or tags.get("shisha") == "yes":
+        return True
+    for key in ("cuisine", "smoking"):
+        vals = {v.strip().lower() for v in (tags.get(key) or "").split(";")}
+        if vals & _SHISHA_VALUES:
+            return True
+    return bool(_SHISHA_NAME_RE.search(tags.get("name") or ""))
+
+
 def _norm_subtype(tags: dict) -> str | None:
     """Sous-type d'un lieu de SPORT/LOISIR (V2-71) : discipline OSM `sport` (soccer,
     tennis, swimming, padel…) en priorité, sinon type de lieu `leisure` connu
@@ -887,7 +954,12 @@ def _norm_subtype(tags: dict) -> str | None:
     minuscules ; forme bornée (≤ 3 mots) comme la cuisine. None si rien d'utile.
 
     V2-71b : si le sous-type est générique/absent mais que le NOM nomme le sport
-    (« Skate Parc », « Stade … »), la puce la plus PRÉCISE l'emporte."""
+    (« Skate Parc », « Stade … »), la puce la plus PRÉCISE l'emporte.
+
+    V2-77 : la CHICHA prime — c'est la caractéristique qu'on cherche sur un bar, et
+    aucun sous-type sportif ne la concurrence sur ce type de lieu."""
+    if _is_shisha(tags):
+        return "shisha"
     sp = (tags.get("sport") or "").split(";")[0].strip().lower()
     base = sp if (sp and len(sp.split()) <= 3) else None
     if base is None:

@@ -1098,6 +1098,13 @@
     "fr": "Taxi / VTC",
     "key": "poi_category.taxi"
   },
+  "poi_category.tobacco": {
+    "context": "Catégorie de lieu « tobacco »",
+    "en": "Tobacconist",
+    "es": "Estanco",
+    "fr": "Tabac",
+    "key": "poi_category.tobacco"
+  },
   "poi_category.train_station": {
     "context": "Catégorie de lieu « train_station »",
     "en": "Train station",

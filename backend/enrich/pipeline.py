@@ -268,6 +268,10 @@ def _mark_editorial(poi: dict, pk: dict, origin_tag: str) -> None:
     # mais que la mémoire de secteur en connaît un, le compléter (jamais l'écraser).
     if not meta.get("_name_local"):
         meta.update(overpass.local_meta_from(poi.get("name") or "", pk.get("name_local")))
+    # V2-77 : la chicha relevée par la passe éditoriale complète une fiche OSM muette —
+    # jamais un sous-type déjà tagué (OSM fait foi quand il parle, esprit V2-71).
+    if pk.get("subtype") and not poi.get("subtype"):
+        poi["subtype"] = pk["subtype"]
     poi["completion_meta"] = meta
 
 
@@ -286,6 +290,9 @@ def _build_editorial_poi(pk: dict, code: str, lat: float, lon: float,
         "category": code, "source": "web",
         "phone": pk.get("phone"), "website": pk.get("website"),
         "opening_hours": None, "cuisine": None, "description_md": None,
+        # V2-77 : la caractéristique « chicha » relevée par la passe éditoriale traverse
+        # jusqu'à `pois.subtype` → puce dans le guide, en 7 langues.
+        "subtype": pk.get("subtype"),
         "owner_comment": pk.get("reason") or None,
         "source_ref": "web:reputed:" + _slug(pk["name"]),
         "crow_m": overpass.haversine_m(origin[0], origin[1], lat, lon),
@@ -658,20 +665,25 @@ def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
 
 
 def _void_essentials(all_harvested: list[dict], wanted_codes: set,
-                     origin: tuple, proximity_m: int) -> list[str]:
+                     origin: tuple, proximity_m: int,
+                     country_code: str | None = None) -> list[str]:
     """Catégories ESSENTIELLES (V2-74) DEMANDÉES pour ce logement mais SANS aucun POI dans le
     rayon de proximité — le vide rural qui déclenche la découverte web des commerces de
     village. On ne considère QUE les catégories `wanted` (jamais inventer un besoin non prévu ;
-    et une catégorie couverte, même par un seul commerce proche, n'est pas « vide »)."""
+    et une catégorie couverte, même par un seul commerce proche, n'est pas « vide »).
+
+    V2-77 : l'éligibilité dépend aussi du PAYS (`local_commerce_categories_for`) — le tabac
+    ne se cherche sur le web que là où le réseau est licencié, donc recensé. Ailleurs, la
+    catégorie reste moissonnée par OSM mais ne déclenche aucun appel web."""
+    eligible = claude_enrich.local_commerce_categories_for(country_code)
     present = set()
     for p in all_harvested:
         cat = p.get("category")
-        if (cat in claude_enrich.LOCAL_COMMERCE_CATEGORIES
+        if (cat in eligible
                 and p.get("lat") is not None and p.get("lon") is not None
                 and overpass.haversine_m(origin[0], origin[1], p["lat"], p["lon"]) <= proximity_m):
             present.add(cat)
-    return [c for c in claude_enrich.LOCAL_COMMERCE_CATEGORIES
-            if c in wanted_codes and c not in present]
+    return [c for c in eligible if c in wanted_codes and c not in present]
 
 
 def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
@@ -1615,7 +1627,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # l'étape ne part pas (contre-épreuve La Zenia/Tokyo : aucun changement).
                 void_codes = _void_essentials(
                     all_harvested, {c["code"] for c in wanted}, origin,
-                    settings.local_commerce_proximity_m)
+                    settings.local_commerce_proximity_m, prop.get("country_code"))
                 if void_codes:
                     _discover_and_materialize_local_commerces(
                         conn, prop, ai, job_id, summary, http_client, void_codes, origin)

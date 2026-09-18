@@ -60,6 +60,13 @@ INSERT INTO poi_categories (code, chapter, name_i18n, icon, map_color, default_r
 ('bakery',         'C', '{"fr":"Boulangerie","en":"Bakery","es":"Panadería"}',                              'croissant',       '#2E7D32', 2000,  25000),
 ('atm',            'C', '{"fr":"Distributeur","en":"ATM","es":"Cajero"}',                                   'banknote',        '#2E7D32', 2000,  25000),
 ('post_office',    'C', '{"fr":"Poste","en":"Post office","es":"Correos"}',                                 'mail',            '#2E7D32', 5000,  25000),
+-- V2-77 : le tabac/estanco. En Espagne (et en Italie, France, Portugal, Autriche) c'est
+-- un réseau LICENCIÉ qui vend bien plus que du tabac — timbres, tickets de transport,
+-- recharges téléphoniques, parfois la vignette de stationnement : un touriste ne devine
+-- pas où les trouver. Rayon COURT (2 km, comme la boulangerie) : on n'envoie personne
+-- à 20 km acheter un timbre. Chaque langue nomme l'institution avec SON mot (« Estanco »
+-- en espagnol, « Tabaccheria » en italien via l'overlay) — jamais un mot étranger.
+('tobacco',        'C', '{"fr":"Tabac","en":"Tobacconist","es":"Estanco"}',                                'cigarette',       '#2E7D32', 2000,  25000),
 ('mall',           'C', '{"fr":"Centre commercial","en":"Shopping mall","es":"Centro comercial"}',          'shopping-bag',    '#2E7D32', 15000, 25000),
 ('laundry',        'C', '{"fr":"Laverie","en":"Laundry","es":"Lavandería"}',                                'shirt',           '#2E7D32', 5000,  25000),
 -- D — Urgences & santé
@@ -263,7 +270,7 @@ VALUES
 ('C_shops', 'C', 240, 'banknote',
  '{"fr":"Services de proximité","en":"Nearby services","es":"Servicios cercanos"}',
  '{"fr":"Distributeur de billets, bureau de poste, tabac…"}',
- '{"poi_categories":["atm","post_office"]}', TRUE, FALSE),
+ '{"poi_categories":["atm","post_office","tobacco"]}', TRUE, FALSE),
 
 ('C_malls', 'C', 250, 'shopping-bag',
  '{"fr":"Centres commerciaux","en":"Shopping malls","es":"Centros comerciales"}',

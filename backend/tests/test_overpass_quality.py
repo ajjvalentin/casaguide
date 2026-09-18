@@ -783,3 +783,67 @@ def test_operator_dedup_spares_distinct_agencies_sharing_generic_words():
           _poi("Alquiler de Coches Mar", lat=LAT + 0.003, tags={"amenity": "car_rental"})]
     reduced, dropped = overpass._reduce_category("rental", ag)
     assert dropped == 0 and len(reduced) == 3
+
+
+# ── V2-77 : tabac / estanco et chicha ────────────────────────────────────────
+
+def test_tobacco_tags_simple_and_compound():
+    """La catégorie `tobacco` retient l'établissement dédié (`shop=tobacco` — l'estanco
+    espagnol, la tabaccheria italienne) ET les formes COMPOSÉES (kiosque/supérette qui
+    VEND du tabac). Une paire simple ne peut pas dire une conjonction : c'est le rôle de
+    `CATEGORY_TAG_COMBOS`. Un `tobacco=yes` SEUL (station-service) ne suffit JAMAIS."""
+    m = overpass.category_matches
+    assert m("tobacco", {"shop": "tobacco", "name": "Estanco nº 12"})
+    assert m("tobacco", {"shop": "kiosk", "tobacco": "yes", "name": "Kiosco"})
+    assert m("tobacco", {"shop": "convenience", "tobacco": "yes", "name": "Vival"})
+    assert not m("tobacco", {"shop": "kiosk", "name": "Kiosco"})          # conjonction incomplète
+    assert not m("tobacco", {"amenity": "fuel", "tobacco": "yes", "name": "Repsol"})
+    assert not m("tobacco", {"shop": "bakery", "name": "Panadería"})
+
+
+def test_tobacco_compound_selector_is_valid_overpass():
+    """Le sélecteur composé doit produire une requête Overpass SYNTAXIQUEMENT juste :
+    `nwr["shop"="kiosk"]["tobacco"="yes"](around:…)`. Un guillemet manquant passerait
+    les tests unitaires et casserait la moisson réelle."""
+    sels = overpass.CATEGORY_SELECTORS["tobacco"]
+    assert '"shop"="tobacco"' in sels
+    q = overpass._build_query(sels, 28.09, -16.74, 2000)
+    assert 'nwr["shop"="kiosk"]["tobacco"="yes"](around:2000,28.09,-16.74);' in q
+    assert 'nwr["shop"="convenience"]["tobacco"="yes"](around:2000,28.09,-16.74);' in q
+    assert "[out:json]" in q and q.count("(") >= 1
+
+
+def test_shisha_detected_from_tags_then_name():
+    """V2-77 : la chicha se dit de plusieurs façons dans OSM et aucune n'est un sport.
+    Elle devient le sous-type canonique `shisha` (puce du guide). Le NOM est le dernier
+    recours ; un bar ordinaire ne doit JAMAIS être étiqueté."""
+    f = overpass._norm_subtype
+    assert f({"amenity": "bar", "cuisine": "shisha"}) == "shisha"
+    assert f({"amenity": "bar", "cuisine": "lebanese;shisha"}) == "shisha"
+    assert f({"amenity": "bar", "smoking": "shisha"}) == "shisha"
+    assert f({"amenity": "hookah_lounge"}) == "shisha"
+    assert f({"amenity": "bar", "shisha": "yes"}) == "shisha"
+    assert f({"amenity": "bar", "name": "Shisha Lounge Adeje"}) == "shisha"
+    assert f({"amenity": "bar", "name": "Chicha Bar"}) == "shisha"
+    assert f({"amenity": "bar", "name": "Bar Pepe"}) is None
+    assert f({"amenity": "bar", "cuisine": "tapas"}) is None
+    # Non-régression V2-71 : un équipement sportif garde sa discipline.
+    assert f({"leisure": "pitch", "sport": "padel"}) == "padel"
+
+
+def test_vape_and_cbd_shops_are_not_tobacconists_but_the_network_prevails():
+    """V2-77, constat de recette réelle (Costa Adeje) : OSM porte « Vape shop » en
+    `shop=tobacco`. Or ce qu'on promet sous cette rubrique, c'est le réseau LICENCIÉ —
+    celui qui vend AUSSI timbres, tickets de transport et recharges. Une boutique de vape
+    n'en rend aucun. Filtre ÉTROIT (tag dédié `shop=e-cigarette` ou nom explicite), et le
+    nom du réseau PRIME toujours : « Estanco y Vapeo » reste un estanco."""
+    m = overpass.category_matches
+    assert not m("tobacco", {"shop": "tobacco", "name": "Vape shop"})
+    assert not m("tobacco", {"shop": "e-cigarette", "name": "CBD Store"})
+    assert not m("tobacco", {"shop": "tobacco", "name": "Shisha Bazaar"})
+    # Le réseau licencié, sous tous ses noms, survit — y compris mêlé au vapotage.
+    for name in ("Estanco nº 12", "Estanco y Vapeo Pérez", "Tabaccheria Vape Milano",
+                 "Expendeduría nº 3", "Tabacos Arturo", "Trafik Wien"):
+        assert m("tobacco", {"shop": "tobacco", "name": name}), name
+    # Un nom neutre reste retenu (on ne présume pas contre la donnée).
+    assert m("tobacco", {"shop": "tobacco", "name": "Radikas"})

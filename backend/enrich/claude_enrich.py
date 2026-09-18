@@ -914,6 +914,9 @@ Pour chaque adresse retenue, fournis :
   commune) — indispensable pour situer le lieu sur la carte ;
 - `reason` : UNE phrase courte, EN {lang_name}, disant POURQUOI il est réputé
   (spécialité, ambiance, ce qu'on y va chercher). Factuelle, jamais du remplissage.
+- `shisha` : « yes » UNIQUEMENT si le lieu est un bar à CHICHA (shisha / hookah /
+  narguilé) — c'est une caractéristique que le voyageur cherche et qu'OSM tague
+  rarement ; sinon "". Ne le devine pas : seulement si la source le dit ;
 - `phone`, `website` : si vérifiés en ligne, sinon "" (le pipeline complètera) ;
 - `source_url` : l'URL de la preuve (le guide/l'article/la mention) ;
 - `verified_on` : « {today} ».
@@ -929,7 +932,7 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
   "places": [
     {{"name": "...", "name_local": "", "category": "restaurant",
       "address": "rue et numéro, quartier, commune",
-      "reason": "...", "phone": "...", "website": "...",
+      "reason": "...", "shisha": "", "phone": "...", "website": "...",
       "source_url": "https://...", "verified_on": "{today}"}}
   ]
 }}
@@ -977,6 +980,10 @@ def fetch_reputed_places(city: str, country_code: str,
         name_local = _s("name_local")   # V2-66b : nom en écriture d'origine (pays non latins)
         if name_local:
             entry["name_local"] = name_local
+        # V2-77 : caractéristique FERMÉE (drapeau), jamais la chaîne du modèle → le
+        # sous-type canonique « shisha », celui que le rendu sait étiqueter en 7 langues.
+        if _s("shisha").lower() in ("yes", "oui", "true", "1", "shisha"):
+            entry["subtype"] = "shisha"
         phone, website = _s("phone"), _s("website")
         if phone:
             entry["phone"] = phone
@@ -1258,10 +1265,33 @@ def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
 LOCAL_COMMERCE_FACT_TYPE = "local_commerces"
 # Catégories ESSENTIELLES éligibles : ce qu'un habitant cherche d'abord au village. Les codes
 # correspondent aux `category_code` du seed (materialisés tels quels en POI).
-LOCAL_COMMERCE_CATEGORIES = ("pharmacy", "supermarket", "bakery", "doctor", "post_office")
+LOCAL_COMMERCE_CATEGORIES = ("pharmacy", "supermarket", "bakery", "doctor", "post_office",
+                             "tobacco")
 _LOCAL_COMMERCE_LABELS = {"pharmacy": "pharmacie", "supermarket": "épicerie / supérette",
                           "bakery": "boulangerie", "doctor": "médecin / cabinet médical",
-                          "post_office": "bureau de poste / point poste"}
+                          "post_office": "bureau de poste / point poste",
+                          "tobacco": "bureau de tabac / estanco / tabaccheria"}
+
+# V2-77 — le tabac ne se CHERCHE sur le web que là où le réseau est LICENCIÉ, donc
+# RECENSÉ publiquement : estanco (ES), tabaccheria (IT), bureau de tabac (FR), tabacaria
+# (PT), Trafik (AT). Ailleurs le tabac se vend en supérette ou en supermarché sans
+# annuaire dédié : demander « les estancos de <commune> » ne pourrait rien rendre, et la
+# règle « preuve ou rien » se contenterait de renvoyer une liste vide — au prix d'un appel
+# web par commune. On n'engage donc pas la dépense. La catégorie, elle, reste moissonnée
+# par OSM PARTOUT (`shop=tobacco` existe dans tous les pays) : c'est la seule DÉCOUVERTE
+# WEB qui est bornée. Table ajustable — pas un quota, une réalité institutionnelle.
+TOBACCO_LICENSED_COUNTRIES = frozenset({"ES", "IT", "FR", "PT", "AT"})
+
+
+def local_commerce_categories_for(country_code: str | None) -> tuple[str, ...]:
+    """Catégories éligibles à la DÉCOUVERTE WEB pour ce pays (V2-77).
+
+    Le tabac en est retiré hors des pays à réseau licencié : y chercher un annuaire
+    d'estancos serait une dépense sans objet. PURE (aucune E/S)."""
+    cc = (country_code or "").upper()
+    if cc in TOBACCO_LICENSED_COUNTRIES:
+        return LOCAL_COMMERCE_CATEGORIES
+    return tuple(c for c in LOCAL_COMMERCE_CATEGORIES if c != "tobacco")
 
 _LOCAL_COMMERCE_PROMPT = """\
 Tu prépares la liste des COMMERCES & SERVICES ESSENTIELS de la commune de {city} ({country_code})
@@ -1283,6 +1313,10 @@ locales, presse/annuaire local. Pour chaque commerce :
 RÈGLES STRICTES :
 - PREUVE OU RIEN : pas d'adresse précise + pas de source https → écartée. N'invente JAMAIS.
 - Reste DANS la commune de {city} (ou un hameau qui en dépend), pas la ville voisine.
+- Pour `tobacco`, cherche le réseau LICENCIÉ du pays sous SON nom local (« estanco » /
+  « expendeduría de tabaco y timbre » en Espagne, « tabaccheria » en Italie, « bureau de
+  tabac » en France) — c'est ainsi qu'il est recensé. N'invente pas un estanco : s'il n'y
+  en a pas dans la commune, n'en renvoie aucun.
 - Une liste VIDE est un résultat parfaitement valide (le village n'a peut-être rien).
 
 Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :

@@ -523,7 +523,7 @@ def insert_market_poi(conn, property_id: str, market: dict) -> int:
 
 def insert_local_commerce_poi(conn, property_id: str, poi: dict) -> int:
     """Crée un POI de COMMERCE/SERVICE de village issu de Claude+web (V2-74) : catégorie
-    ESSENTIELLE réelle (pharmacy/supermarket/bakery/doctor/post_office), `source='claude'`,
+    ESSENTIELLE réelle (pharmacy/supermarket/bakery/doctor/post_office/tobacco — V2-77),
     `status='suggested'` (validation propriétaire), position RÉELLE (adresse géocodée) +
     distances pré-calculées + `locality` (commune, honnêteté de la distance V2-38) + preuve
     en `completion_meta`. Idempotent par (property_id, source, source_ref) ; ne réécrit QUE si

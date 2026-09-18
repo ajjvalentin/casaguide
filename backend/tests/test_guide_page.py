@@ -1864,3 +1864,46 @@ def test_og_locale_follows_rendered_language():
                                        [], {}, "tok", lang=lang)
         assert f'<meta property="og:locale" content="{loc}">' in html
         assert 'content="fr_FR"' not in html
+
+
+# ── V2-77 : la chicha est une PUCE sur le bar, jamais une catégorie ───────────
+
+def test_shisha_chip_on_bar_and_not_on_a_plain_bar():
+    """V2-77 : un bar à chicha porte sa puce (motif V2-71, même classe CSS, aucun CSS
+    neuf → aucun bump SW) ; un bar ordinaire n'en porte aucune."""
+    html = guide_page.render_guide(
+        _prop(city="Adeje"), [], [_poi("Cairo Lounge", "bar", "F", subtype="shisha")],
+        {}, "tok")
+    assert '<span class="cuisine-tag">Chicha</span>' in html
+    plain = guide_page.render_guide(
+        _prop(city="Adeje"), [], [_poi("Bar Pepe", "bar", "F")], {}, "tok")
+    assert "cuisine-tag" not in plain
+
+
+def test_shisha_chip_is_localised_and_never_opens_the_equipment_fallback():
+    """Le libellé suit la langue du guide (7 langues en dur, motif `_SUBTYPE_LABELS`).
+    Et la chicha n'ouvre JAMAIS le repli factuel de V2-71b : celui-ci reste réservé aux
+    ÉQUIPEMENTS — on n'invente pas une phrase de nature pour un bar sans description."""
+    pois = [_poi("Cairo Lounge", "bar", "F", subtype="shisha")]
+    es = guide_page.render_guide(_prop(city="Adeje"), [], pois, {}, "tok", lang="es")
+    assert "Chicha / Cachimba" in es
+    en = guide_page.render_guide(_prop(city="Adeje"), [], pois, {}, "tok", lang="en")
+    assert '<span class="cuisine-tag">Shisha</span>' in en
+    fr = guide_page.render_guide(_prop(city="Adeje"), [], pois, {}, "tok")
+    # Le repli factuel de V2-71b ne s'applique qu'aux ÉQUIPEMENTS : un bar à chicha sans
+    # description reçoit sa PUCE, jamais une phrase de nature en guise de description
+    # (c'est la garde `is_equip` du point d'appel qui le tient — on l'éprouve au rendu).
+    assert '<span class="cuisine-tag">Chicha</span>' in fr
+    assert '<div class="prose">Chicha</div>' not in fr
+
+
+def test_tobacco_category_renders_only_when_it_has_places():
+    """V2-77 point 4 — AUCUNE catégorie vide n'apparaît. Le rendu groupe les lieux
+    PRÉSENTS (`by_cat` est bâti depuis les POI, jamais depuis le catalogue) : un pays
+    sans estanco ne voit simplement pas la rubrique. Preuve dans les deux sens."""
+    sans = guide_page.render_guide(_prop(city="Amsterdam"), [], [
+        _poi("Albert Heijn", "supermarket", "C")], {}, "tok")
+    assert "tobacco" not in sans and "Tabac" not in sans
+    avec = guide_page.render_guide(_prop(city="Adeje"), [], [
+        _poi("Estanco nº 12", "tobacco", "C")], {}, "tok")
+    assert "Estanco nº 12" in avec
