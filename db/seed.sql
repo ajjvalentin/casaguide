@@ -84,6 +84,11 @@ INSERT INTO poi_categories (code, chapter, name_i18n, icon, map_color, default_r
 ('restaurant',     'F', '{"fr":"Restaurant","en":"Restaurant","es":"Restaurante"}',                         'utensils',        '#EF6C00', 3000,  25000),
 ('bar',            'F', '{"fr":"Bar","en":"Bar","es":"Bar"}',                                               'martini',         '#EF6C00', 3000,  25000),
 ('cafe',           'F', '{"fr":"Café","en":"Café","es":"Cafetería"}',                                       'coffee',          '#EF6C00', 2000,  25000),
+-- V2-77c : le bar à CHICHA devient sa propre rubrique. Constat de rendu (Adeje) : trois
+-- shisha bars occupaient trois des six places de « Bar », mêlés aux cocktail bars — ni le
+-- même usage, ni le même public, ni la même soirée, et l'offre de bars classiques s'en
+-- trouvait appauvrie. Rayon court (3 km) : on n'y va pas à 20 km.
+('shisha',         'F', '{"fr":"Bar à chicha","en":"Shisha bar","es":"Bar de cachimbas"}',               'flame',           '#EF6C00', 3000,  25000),
 -- G — Activités & tourisme
 ('beach',          'G', '{"fr":"Plage","en":"Beach","es":"Playa"}',                                         'waves',           '#0277BD', 10000, 25000),
 ('sight',          'G', '{"fr":"Site touristique","en":"Sight","es":"Lugar de interés"}',                   'landmark',        '#0277BD', 20000, 25000),
@@ -363,7 +368,7 @@ VALUES
 ('F_bars', 'F', 520, 'martini',
  '{"fr":"Bars & cafés","en":"Bars & cafés","es":"Bares y cafeterías"}',
  '{"fr":"Bars, cafés et vie nocturne selon l’ambiance recherchée."}',
- '{"poi_categories":["bar","cafe"]}', TRUE, FALSE),
+ '{"poi_categories":["bar","cafe","shisha"]}', TRUE, FALSE),
 
 -- ─── G. ACTIVITÉS ET TOURISME ───────────────────────────────────────────────
 ('G_beaches', 'G', 610, 'waves',

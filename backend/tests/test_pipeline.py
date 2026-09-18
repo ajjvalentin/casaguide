@@ -2959,3 +2959,60 @@ def test_web_passes_are_mutualised_per_commune(monkeypatch, property_id):
                                         (28.09, -16.74), harv)
             c.commit()
     assert seen["estancos"] == 1, f"{seen['estancos']} appels web au lieu d'un seul"
+
+
+# ── V2-77c : les lieux découverts ne s'empilent pas ──────────────────────────
+
+def test_web_creations_never_stack_on_the_same_point(monkeypatch, property_id):
+    """V2-77c point 1 — TROISIÈME occurrence du motif (picks V2-56b, activités V2-73e,
+    lieux web ici). Recette Adeje : Ayune, Hayal et Kalani, trois établissements DISTINCTS,
+    sortis au MÊME point. La cause n'est pas une adresse empruntée mais le REPLI AU CENTRE
+    DE LA COMMUNE (V2-74b) : trois adresses irrésolues → trois fois le même centroïde. Le
+    repli est juste pour l'épicerie d'un village, mensonger dès qu'il empile."""
+    from enrich import db as edb
+    _stub_web_pass(monkeypatch, bars=[
+        {"name": "Ayune", "place_address": "a", "source_url": "https://ex.test/1"},
+        {"name": "Hayal", "place_address": "b", "source_url": "https://ex.test/2"},
+        {"name": "Kalani", "place_address": "c", "source_url": "https://ex.test/3"}])
+    # Les trois adresses sont irrésolues → repli au centre de la commune, point IDENTIQUE.
+    monkeypatch.setattr(pipeline, "_commune_center", lambda *a, **k: (28.09, -16.74))
+    monkeypatch.setattr(pipeline, "_geocode_local_commerce",
+                        lambda *a, **k: (28.09, -16.74, "Adeje", True))
+    monkeypatch.setattr(pipeline.distance, "compute_distances", lambda *a, **k: None)
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        c.commit()
+        pipeline._discover_shisha_bars(c, {"id": property_id, "country_code": "ES",
+                                           "city": "Adeje"}, object(), None,
+                                       {"cost_cts": 0.0}, None, (28.09, -16.74), [])
+        c.commit()
+        rows = c.execute("SELECT name, category_code FROM pois WHERE property_id=%s",
+                         (property_id,)).fetchall()
+    assert len(rows) == 1, f"empilement : {[r['name'] for r in rows]}"
+    # …et la création va dans la rubrique DÉDIÉE, pas dans « bar ».
+    assert rows[0]["category_code"] == "shisha"
+
+
+def test_web_pass_step_distinguishes_nothing_found_from_everything_dropped(monkeypatch,
+                                                                          property_id):
+    """V2-77c point 3 — le journal doit permettre le DIAGNOSTIC. « 0 estanco » ne disait
+    pas si le web n'avait rien rendu ou si « preuve ou rien » avait tout écarté : deux
+    causes, deux correctifs opposés. `steps.estancos` porte désormais `raw` et `kept`."""
+    from enrich import db as edb, claude_enrich as ce
+    # Le modèle rend DEUX estancos, mais aucun n'a de source https → tous écartés.
+    monkeypatch.setattr(ce, "fetch_estancos", lambda city, cc, client, today=None: (
+        {ce.ESTANCO_FACT_TYPE: {"estancos": [], "raw": 2}}, {"cost_cts": 0.0, "attempts": []}))
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        jid = str(uuid.uuid4())
+        c.execute("INSERT INTO enrichment_jobs (id, property_id, trigger, status) "
+                  "VALUES (%s,%s,'manual','running')", (jid, property_id))
+        c.commit()
+        pipeline._discover_estancos(c, {"id": property_id, "country_code": "ES",
+                                        "city": "Adeje"}, object(), jid,
+                                    {"cost_cts": 0.0}, None, (28.09, -16.74), [])
+        c.commit()
+        steps = c.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                          (jid,)).fetchone()["steps"]
+    st = steps["estancos"]
+    assert st["raw"] == 2 and st["kept"] == 0 and st["dropped_unproven"] == 2

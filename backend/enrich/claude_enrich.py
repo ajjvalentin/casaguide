@@ -1032,6 +1032,10 @@ pages jaunes locales, presse locale. Pour chaque estanco :
 
 RÈGLES STRICTES :
 - PREUVE OU RIEN : pas d'adresse précise + pas de source https → écartée. N'invente JAMAIS.
+- CHAQUE établissement a SON ADRESSE PROPRE. N'emprunte JAMAIS l'adresse (ni le nom) d'un
+  autre lieu de la liste : deux établissements distincts au même point sont un MENSONGE sur
+  la carte. Si tu n'as pas l'adresse propre d'un lieu, laisse `place_address` VIDE plutôt
+  que d'en recopier une autre — il sera rattaché autrement, ou écarté.
 - Reste DANS la commune de {city}, pas la ville voisine.
 - Une liste VIDE est un résultat parfaitement valide.
 
@@ -1061,6 +1065,10 @@ sortie locaux, presse locale, annuaires. Pour chaque lieu :
 
 RÈGLES STRICTES :
 - PREUVE OU RIEN : pas de source https → écartée. N'invente JAMAIS un bar à chicha.
+- CHAQUE établissement a SON ADRESSE PROPRE. N'emprunte JAMAIS celle d'un autre lieu de la
+  liste : trois bars distincts au même point sont un MENSONGE sur la carte (constat réel
+  d'Adeje). Sans adresse propre, laisse `place_address` VIDE — le lieu sera rattaché au bar
+  déjà connu, ou écarté.
 - Reste DANS la commune de {city}, pas la ville voisine.
 - Une liste VIDE est un résultat parfaitement valide (beaucoup de communes n'en ont aucun).
 
@@ -1075,9 +1083,14 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
 
 
 def _clean_web_places(data: dict, key: str, *, require_address: bool,
-                      today: str) -> list[dict]:
+                      today: str) -> tuple[list[dict], int]:
     """Nettoyage COMMUN des deux passes V2-77b : preuve obligatoire (source https),
-    adresse obligatoire ou non selon la passe, champs normalisés. PUR."""
+    adresse obligatoire ou non selon la passe, champs normalisés. PUR.
+
+    Retourne `(retenus, brut)` — V2-77c : le BRUT est ce que le modèle a rendu AVANT
+    « preuve ou rien ». Sans lui, un journal à « 0 estanco » ne permet pas de distinguer
+    « le web n'a rien trouvé » de « nous avons tout écarté », et le diagnostic tourne en
+    rond (constat de la recette Adeje)."""
     if not isinstance(data, dict):
         raise ValueError("Réponse IA invalide : objet JSON attendu.")
     items = data.get(key)
@@ -1101,7 +1114,7 @@ def _clean_web_places(data: dict, key: str, *, require_address: bool,
         if phone:
             entry["phone"] = phone
         clean.append(entry)
-    return clean
+    return clean, len(items)
 
 
 def fetch_estancos(city: str, country_code: str, client: anthropic.Anthropic,
@@ -1115,8 +1128,8 @@ def fetch_estancos(city: str, country_code: str, client: anthropic.Anthropic,
         city=city, country_code=country_code,
         max_searches=settings.estanco_max_searches,
         max_tokens=settings.estanco_max_tokens)
-    clean = _clean_web_places(data, "estancos", require_address=True, today=today)
-    return {ESTANCO_FACT_TYPE: {"estancos": clean}}, meta
+    clean, raw = _clean_web_places(data, "estancos", require_address=True, today=today)
+    return {ESTANCO_FACT_TYPE: {"estancos": clean, "raw": raw}}, meta
 
 
 def fetch_shisha_bars(city: str, country_code: str, client: anthropic.Anthropic,
@@ -1132,8 +1145,8 @@ def fetch_shisha_bars(city: str, country_code: str, client: anthropic.Anthropic,
         city=city, country_code=country_code,
         max_searches=settings.shisha_max_searches,
         max_tokens=settings.shisha_max_tokens)
-    clean = _clean_web_places(data, "bars", require_address=False, today=today)
-    return {SHISHA_FACT_TYPE: {"bars": clean}}, meta
+    clean, raw = _clean_web_places(data, "bars", require_address=False, today=today)
+    return {SHISHA_FACT_TYPE: {"bars": clean, "raw": raw}}, meta
 
 
 # ── Marchés hebdomadaires par zone : découverte CLAUDE + web (V2-07 volet 3) ──
@@ -1455,6 +1468,10 @@ locales, presse/annuaire local. Pour chaque commerce :
 
 RÈGLES STRICTES :
 - PREUVE OU RIEN : pas d'adresse précise + pas de source https → écartée. N'invente JAMAIS.
+- CHAQUE établissement a SON ADRESSE PROPRE. N'emprunte JAMAIS l'adresse (ni le nom) d'un
+  autre lieu de la liste : deux établissements distincts au même point sont un MENSONGE sur
+  la carte. Si tu n'as pas l'adresse propre d'un lieu, laisse `place_address` VIDE plutôt
+  que d'en recopier une autre — il sera rattaché autrement, ou écarté.
 - Reste DANS la commune de {city} (ou un hameau qui en dépend), pas la ville voisine.
 - Pour `tobacco`, cherche le réseau LICENCIÉ du pays sous SON nom local (« estanco » /
   « expendeduría de tabaco y timbre » en Espagne, « tabaccheria » en Italie, « bureau de

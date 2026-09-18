@@ -847,3 +847,32 @@ def test_vape_and_cbd_shops_are_not_tobacconists_but_the_network_prevails():
         assert m("tobacco", {"shop": "tobacco", "name": name}), name
     # Un nom neutre reste retenu (on ne présume pas contre la donnée).
     assert m("tobacco", {"shop": "tobacco", "name": "Radikas"})
+
+
+def test_pure_shisha_leaves_the_bar_category_mixed_stays_with_its_chip():
+    """V2-77c — trois shisha bars occupaient trois des SIX places de « bar » à Adeje : ni
+    le même usage, ni le même public. Un lieu PUREMENT chicha part donc dans sa rubrique ;
+    un bar MIXTE (cocktails + chicha) reste un bar, avec sa puce — seul cas où elle sert.
+    GARDE-FOU : on ne sort de « bar » QUE ce que la requête `shisha` sait retrouver, sinon
+    le lieu serait rejeté d'un côté sans jamais être moissonné de l'autre (il disparaîtrait)."""
+    m, st = overpass.category_matches, overpass._norm_subtype
+    for tags in ({"amenity": "hookah_lounge", "name": "Ayune"},
+                 {"amenity": "bar", "cuisine": "shisha", "name": "Hayal"},
+                 {"amenity": "bar", "smoking": "shisha", "name": "Kalani"}):
+        assert m("shisha", tags) and not m("bar", tags), tags["name"]
+    # Mixte : reste un bar, et c'est la puce qui le dit.
+    mixte = {"amenity": "bar", "cuisine": "cocktail;shisha", "name": "Mixte"}
+    assert m("bar", mixte) and not m("shisha", mixte) and st(mixte) == "shisha"
+    # Nom seul : AUCUNE requête ne sait le retrouver → il reste un bar (jamais perdu).
+    nomseul = {"amenity": "bar", "name": "Shisha Lounge Adeje"}
+    assert m("bar", nomseul) and st(nomseul) == "shisha"
+    # Non-régression : un bar ordinaire n'est ni l'un ni l'autre.
+    pepe = {"amenity": "bar", "name": "Bar Pepe"}
+    assert m("bar", pepe) and not m("shisha", pepe) and st(pepe) is None
+
+
+def test_shisha_category_query_is_valid_overpass():
+    """Les conjonctions de la rubrique chicha doivent produire une requête juste."""
+    q = overpass._build_query(overpass.CATEGORY_SELECTORS["shisha"], 28.09, -16.74, 3000)
+    assert 'nwr["amenity"="hookah_lounge"](around:3000,28.09,-16.74);' in q
+    assert 'nwr["amenity"="bar"]["cuisine"="shisha"](around:3000,28.09,-16.74);' in q

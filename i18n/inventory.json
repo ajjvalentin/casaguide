@@ -1070,6 +1070,13 @@
     "fr": "Restaurant",
     "key": "poi_category.restaurant"
   },
+  "poi_category.shisha": {
+    "context": "Catégorie de lieu « shisha »",
+    "en": "Shisha bar",
+    "es": "Bar de cachimbas",
+    "fr": "Bar à chicha",
+    "key": "poi_category.shisha"
+  },
   "poi_category.sight": {
     "context": "Catégorie de lieu « sight »",
     "en": "Sight",

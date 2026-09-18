@@ -98,6 +98,10 @@ CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
     "laundry":         [("shop", "laundry"), ("shop", "dry_cleaning")],
     "restaurant":      [("amenity", "restaurant")],
     "bar":             [("amenity", "bar"), ("amenity", "pub")],
+    # V2-77c : le bar à CHICHA a sa rubrique. `amenity=hookah_lounge` est le tag dédié ;
+    # les formes « bar QUI FAIT chicha » passent par la règle PUR vs MIXTE ci-dessous
+    # (`_shisha_is_exclusive`), pas par un tag — c'est une nuance, pas une étiquette.
+    "shisha":          [("amenity", "hookah_lounge")],
     "cafe":            [("amenity", "cafe")],
     "beach":           [("natural", "beach")],
     "sight":           [("tourism", "attraction"), ("tourism", "museum")],
@@ -122,6 +126,16 @@ CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
 # les stations-service. D'où cette table à part, honorée par les sélecteurs Overpass ET
 # par `category_matches`. Chaque entrée est une CONJONCTION (tous les tags requis).
 CATEGORY_TAG_COMBOS: dict[str, list[list[tuple[str, str]]]] = {
+    # V2-77c : un bar à chicha se tague le plus souvent `amenity=bar` + `cuisine=shisha`.
+    # Ces conjonctions sont EXACTEMENT ce que `_shisha_is_exclusive` reconnaît comme PUR :
+    # la requête et la règle de tri disent la même chose, donc aucun lieu ne se perd entre
+    # les deux rubriques.
+    "shisha": [
+        [("amenity", "bar"), ("cuisine", "shisha")],
+        [("amenity", "pub"), ("cuisine", "shisha")],
+        [("amenity", "cafe"), ("cuisine", "shisha")],
+        [("amenity", "bar"), ("smoking", "shisha")],
+    ],
     "tobacco": [
         [("shop", "kiosk"), ("tobacco", "yes")],
         [("shop", "convenience"), ("tobacco", "yes")],
@@ -256,6 +270,7 @@ CATEGORY_TARGETS: dict[str, CategoryTarget] = {
     "sport":           CategoryTarget(3, None),
     "bar":             CategoryTarget(3, 20),
     "cafe":            CategoryTarget(3, 20),
+    "shisha":          CategoryTarget(3, 20),   # V2-77c : 3-4 suffisent
     "rental":          CategoryTarget(3, 20),
     # Minimum 5
     "restaurant":      CategoryTarget(5, 20),
@@ -382,6 +397,11 @@ def _is_disqualified(category: str, tags: dict) -> bool:
         if not _TOBACCONIST_RE.search(name) and (
                 tags.get("shop") == "e-cigarette" or _VAPE_RE.search(name)):
             return True
+    # V2-77c : un bar PUREMENT chicha appartient à sa propre rubrique, pas à « bar » —
+    # sinon il occupe les places des bars classiques (constat Adeje : 3 sur 6). Un bar
+    # MIXTE (cocktails + chicha) reste ici, avec sa puce : c'est bien un bar.
+    if category == "bar" and _shisha_is_exclusive(tags):
+        return True
     # Un vrai marché hebdomadaire n'a pas de tag `shop` (minimarket, commerce…).
     if category == "market" and "shop" in tags:
         return True
@@ -937,6 +957,28 @@ _ACCESS_PRIVATE = frozenset({"private", "no", "members", "customers", "permit"})
 # restaurants. Le nom est le dernier recours (« Shisha Lounge », « Chicha Bar »).
 _SHISHA_VALUES = frozenset({"shisha", "hookah", "narghile", "nargile"})
 _SHISHA_NAME_RE = re.compile(r"\b(shisha|chicha|hookah|narguil|narghil)", re.IGNORECASE)
+
+
+def _shisha_is_exclusive(tags: dict) -> bool:
+    """La chicha est-elle CE QU'EST le lieu, ou l'une de ses offres ? (V2-77c)
+
+    PUR (→ catégorie `shisha`) : le tag dédié `amenity=hookah_lounge`, ou une `cuisine`/
+    `smoking` qui ne dit QUE la chicha, ou un nom qui l'annonce sans autre promesse.
+    MIXTE (→ reste un `bar`, avec sa puce) : `cuisine=cocktail;shisha` — un cocktail bar
+    qui propose aussi la chicha n'est pas un bar à chicha, et le voyageur qui cherche l'un
+    ne cherche pas l'autre. PUR."""
+    if tags.get("amenity") == "hookah_lounge":
+        return True
+    for key in ("cuisine", "smoking"):
+        vals = {v.strip().lower() for v in (tags.get(key) or "").split(";") if v.strip()}
+        if vals and vals <= _SHISHA_VALUES:
+            return True                        # la chicha, et RIEN d'autre
+        if vals & _SHISHA_VALUES:
+            return False                       # annoncée parmi d'autres → mixte
+    # Le NOM ne fait PAS sortir de « bar » : aucune requête Overpass ne sait retrouver un
+    # lieu par son nom, si bien qu'un « Shisha Lounge » sans tag disparaîtrait du guide
+    # (rejeté de `bar`, jamais moissonné en `shisha`). Il reste donc un bar — avec sa puce.
+    return False
 
 
 def _is_shisha(tags: dict) -> bool:

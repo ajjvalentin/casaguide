@@ -702,7 +702,8 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                            origin: tuple, *, fact_type: str, items_key: str, fetch,
                            max_age_days: int, category: str, subtype: str, meta_key: str,
                            harvested: list[dict], step_name: str,
-                           require_address: bool) -> None:
+                           require_address: bool,
+                           create_category: str | None = None) -> None:
     """Moteur COMMUN des deux passes V2-77b. Découverte web mutualisée par (pays, commune)
     — un appel par secteur, réutilisé par tous les guides — puis, pour chaque lieu prouvé :
     (1) APPARIEMENT contre les POI déjà moissonnés de la catégorie (`_activity_name_match`,
@@ -711,6 +712,7 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
     Un lieu sans jumeau ET sans adresse est simplement écarté. Best-effort (SAVEPOINT) :
     un échec n'annule ni la moisson ni le reste du job."""
     cc, city = prop["country_code"], prop["city"]
+    new_cat = create_category or category      # V2-77c : créer ailleurs qu'on apparie
     try:
         with conn.transaction():
             if not db.area_fact_fresh(conn, cc, city, fact_type, max_age_days):
@@ -721,10 +723,27 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                 summary["cost_cts"] += meta["cost_cts"]
             fact = db.get_area_fact(conn, cc, city, fact_type) or {}
             found = fact.get(items_key) or []
+            # BRUT rendu par le web, mémorisé dans le fait (il survit à la mutualisation) :
+            # « 0 retenu sur 7 rendus » et « 0 rendu » appellent des correctifs OPPOSÉS.
+            raw_count = fact.get("raw")
+            if not isinstance(raw_count, int):
+                raw_count = len(found)          # faits d'avant V2-77c : brut inconnu
             # Cibles d'appariement : les POI de CETTE catégorie déjà moissonnés.
-            pool = [h for h in harvested if h.get("category") == category]
+            pool = [h for h in harvested
+                    if h.get("category") in (category, create_category)]
             commune_center = None
-            marked = created = skipped = 0
+            marked = created = skipped = stacked = 0
+            # V2-77c — ANTI-PUNAISES EMPILÉES, 3e occurrence du motif (picks éditoriaux
+            # V2-56b, activités V2-73e, maintenant les lieux web). Recette Adeje : Ayune,
+            # Hayal et Kalani — trois établissements DISTINCTS — sont sortis au MÊME point,
+            # à la minute près. La cause n'est pas une adresse empruntée mais le REPLI AU
+            # CENTRE DE LA COMMUNE (V2-74b) : trois adresses irrésolues → trois fois le même
+            # centroïde. Ce repli est juste pour l'épicerie d'un village ; il devient un
+            # MENSONGE dès qu'il empile. On mémorise donc les points déjà posés dans CETTE
+            # passe : un second lieu à moins de `_ACT_DUP_DIST_M` n'est PAS créé.
+            # (`pois.geom` est NOT NULL : un POI sans position n'est pas représentable —
+            # l'abandon est la seule issue honnête, et de loin préférable à un faux point.)
+            posed: list[tuple[float, float]] = []
             for item in found:
                 name = (item.get("name") or "").strip()
                 if not name:
@@ -755,17 +774,29 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                     skipped += 1
                     continue
                 lat, lon, locality, approx = geo
-                poi = {"name": name, "category": category, "lat": lat, "lon": lon,
+                if any(overpass.haversine_m(lat, lon, plat, plon) < _ACT_DUP_DIST_M
+                       for plat, plon in posed):
+                    stacked += 1
+                    continue                   # empilé sur un lieu déjà posé → abandonné
+                posed.append((lat, lon))
+                poi = {"name": name, "category": new_cat, "lat": lat, "lon": lon,
                        "address": addr, "phone": item.get("phone"),
                        "locality": locality or city, "subtype": subtype, "source_ref": ref,
                        "completion_meta": {meta_key: {**proof, "approx": approx}}}
                 distance.compute_distances(origin, [poi], client=http_client)
                 created += db.insert_local_commerce_poi(conn, prop["id"], poi)
+            # V2-77c point 3 — DIAGNOSTIC. « 0 estanco » ne disait pas si le modèle
+            # n'avait rien trouvé ou si NOUS avions tout écarté. Le journal distingue
+            # désormais le BRUT (ce que le web a rendu) du RETENU (ce qui a passé « preuve
+            # ou rien »), puis le devenir de chaque retenu.
             db.job_step(conn, job_id, step_name,
-                        {"ok": True, "found": len(found), "marked": marked,
-                         "created": created, "skipped": skipped})
-        _progress(f"  ✓ {step_name} : {len(found)} trouvé(s) sur le web — "
-                  f"{marked} fiche(s) qualifiée(s), {created} créée(s)")
+                        {"ok": True, "raw": raw_count, "kept": len(found),
+                         "dropped_unproven": max(raw_count - len(found), 0),
+                         "marked": marked, "created": created,
+                         "skipped_no_place": skipped, "skipped_stacked": stacked})
+        _progress(f"  ✓ {step_name} : {raw_count} rendu(s) par le web, {len(found)} "
+                  f"retenu(s) — {marked} qualifiée(s), {created} créée(s), "
+                  f"{stacked} empilée(s) écartée(s)")
     except Exception as exc:  # noqa: BLE001 — best-effort, le job continue
         log.warning("Passe %s en échec (%s) : %s", step_name, city, exc, exc_info=True)
         # Coût des essais APRÈS le rollback du SAVEPOINT (V2-07 3bis) : l'argent est
@@ -796,16 +827,22 @@ def _discover_estancos(conn, prop, ai, job_id, summary, http_client, origin,
 
 def _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client, origin,
                           harvested: list[dict]) -> None:
-    """Bars à CHICHA de la commune (V2-77b). Aucune garde pays : un shisha lounge existe
-    partout où il y a du tourisme. L'appariement au bar déjà moissonné est le cas NOMINAL
-    (c'est une puce qu'on pose, pas un lieu qu'on ajoute)."""
+    """Bars à CHICHA de la commune (V2-77b/V2-77c). Aucune garde pays : un shisha lounge
+    existe partout où il y a du tourisme.
+
+    DEUX DEVENIRS, et c'est voulu (V2-77c) : un lieu que le web nomme ET qu'OSM connaît
+    DÉJÀ COMME BAR est un bar qui fait AUSSI la chicha — il reste dans « bar » avec sa puce
+    (cas MIXTE, `match_category='bar'`). Un lieu inconnu de la moisson entre dans la
+    rubrique DÉDIÉE `shisha` (`create_category`) : c'est la création qui encombrait « bar »
+    à Adeje (3 shisha bars sur 6 places). La puce ne sert donc plus que le mixte."""
     _web_marks_and_creates(
         conn, prop, ai, job_id, summary, http_client, origin,
         fact_type=claude_enrich.SHISHA_FACT_TYPE, items_key="bars",
         fetch=claude_enrich.fetch_shisha_bars,
         max_age_days=settings.shisha_max_age_days,
         category="bar", subtype="shisha", meta_key="_shisha",
-        harvested=harvested, step_name="shisha_bars", require_address=False)
+        harvested=harvested, step_name="shisha_bars", require_address=False,
+        create_category="shisha")
 
 
 
