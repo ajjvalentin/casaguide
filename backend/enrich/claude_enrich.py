@@ -1008,6 +1008,15 @@ def fetch_reputed_places(city: str, country_code: str,
 # réutilisé par tous les guides. Preuve ou rien, liste vide valide.
 ESTANCO_FACT_TYPE = "estancos"
 SHISHA_FACT_TYPE = "shisha_bars"
+# VERSION DU CONTENU (motif V2-73b, « le cache masque le correctif »). Ces faits sont
+# mutualisés par commune pendant 90 jours : sans version, un fait écrit par le prompt ÉTROIT
+# de V2-77b empêche à jamais le prompt élargi de V2-77e de tourner — on corrige le prompt et
+# rien ne change, parce que l'appel n'a plus lieu. C'est exactement ce qui a produit, en
+# production à Adeje, « 3 candidats sur 6 » et « website/phone NULL ». Bump = re-collecte.
+#   1 → V2-77b/c : prompt étroit, sans site ni ratissage par quartier
+#   2 → V2-77e/f : vocabulaire multilingue, ratissage par quartier, site + téléphone exigés
+ESTANCO_SCHEMA_V = 2
+SHISHA_SCHEMA_V = 2
 
 _ESTANCO_PROMPT = """\
 Tu recenses les ESTANCOS (bureaux de tabac LICENCIÉS) de la commune de {city} ({country_code}).
@@ -1028,6 +1037,7 @@ pages jaunes locales, presse locale. Pour chaque estanco :
 - `place_address` : l'ADRESSE POSTALE telle qu'elle figure sur la source (rue + numéro +
   code postal + commune) — INDISPENSABLE pour le placer ; sans elle, écarte l'entrée ;
 - `phone` : si disponible, sinon "" ;
+- `website` : l'URL du site officiel si le lieu en a un, sinon "" ;
 - `source_url` : l'URL de la preuve (https), `verified_on` : « {today} ».
 
 RÈGLES STRICTES :
@@ -1052,10 +1062,16 @@ _SHISHA_PROMPT = """\
 Tu recenses les BARS À CHICHA du secteur de {city} ({country_code}) — les lieux où l'on
 fume la chicha SUR PLACE.
 
-CHERCHE LARGE, dans la LANGUE LOCALE, PAR LES MOTS QUE CES LIEUX EMPLOIENT EUX-MÊMES :
-« shisha lounge », « hookah lounge », « lounge bar », « cocktail & shisha »,
-« gastrobar », « bar de cachimbas », « cachimbas », « narguile », « chicha ». Beaucoup ne
-se présentent JAMAIS comme « bar à chicha » : ils se disent « lounge » ou « gastrobar ».
+CHERCHE LARGE, ET POSE **TOUTES** LES VARIANTES DANS LA MÊME PASSE — un seul terme rate
+l'essentiel (constat mesuré : 3 lieux trouvés sur 6 avec « shisha » seul) :
+- espagnol : « cachimba », « cachimbas », « bar de cachimbas », « chicha », « shisha » ;
+- anglais : « shisha », « hookah », « shisha lounge », « hookah lounge », « shisha bar » ;
+- français : « chicha », « bar à chicha », « narguilé » ;
+- translittérations : « narguile », « nargile », « narghile » ;
+- formules d'ENSEIGNE, celles qu'ils emploient vraiment : « lounge », « lounge bar »,
+  « gastrobar », « cocktail & shisha », « terraza lounge ».
+Beaucoup ne se présentent JAMAIS comme « bar à chicha » : ils se disent « lounge » ou
+« gastrobar ». Croise ces termes avec la langue du PAYS **et** avec l'anglais.
 
 RATISSE PAR QUARTIER, pas seulement par commune : {city} regroupe souvent plusieurs
 QUARTIERS / URBANIZACIONES / stations balnéaires. Identifie ceux du secteur et
@@ -1149,7 +1165,8 @@ def fetch_estancos(city: str, country_code: str, client: anthropic.Anthropic,
         max_searches=settings.estanco_max_searches,
         max_tokens=settings.estanco_max_tokens)
     clean, raw = _clean_web_places(data, "estancos", require_address=True, today=today)
-    return {ESTANCO_FACT_TYPE: {"estancos": clean, "raw": raw}}, meta
+    return {ESTANCO_FACT_TYPE: {"estancos": clean, "raw": raw,
+                                "v": ESTANCO_SCHEMA_V}}, meta
 
 
 def fetch_shisha_bars(city: str, country_code: str, client: anthropic.Anthropic,
@@ -1166,7 +1183,8 @@ def fetch_shisha_bars(city: str, country_code: str, client: anthropic.Anthropic,
         max_searches=settings.shisha_max_searches,
         max_tokens=settings.shisha_max_tokens)
     clean, raw = _clean_web_places(data, "bars", require_address=False, today=today)
-    return {SHISHA_FACT_TYPE: {"bars": clean, "raw": raw}}, meta
+    return {SHISHA_FACT_TYPE: {"bars": clean, "raw": raw,
+                               "v": SHISHA_SCHEMA_V}}, meta
 
 
 # ── Marchés hebdomadaires par zone : découverte CLAUDE + web (V2-07 volet 3) ──

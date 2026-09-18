@@ -598,6 +598,20 @@ def set_poi_subtype_by_name(conn, property_id: str, category: str, name: str,
     )
     return cur.rowcount
 
+
+def categories_with_pois(conn, property_id: str) -> set[str]:
+    """Catégories réellement GARNIES pour ce logement, tous statuts (V2-77f).
+
+    Le récapitulatif « catégories sans résultat » se calculait à la fin de la MOISSON, soit
+    400 lignes avant les passes web (marchés, commerces de village, estancos, chicha) : une
+    rubrique remplie par le web était donc annoncée VIDE. Défaut trompeur — il a fait
+    chercher un problème inexistant sur le guide d'Adeje, dont la rubrique `shisha`
+    contenait deux POI approuvés. La base est la seule source de vérité après coup."""
+    rows = conn.execute(
+        "SELECT DISTINCT category_code FROM pois WHERE property_id = %s",
+        (property_id,)).fetchall()
+    return {r["category_code"] for r in rows}
+
 def poi_source_ref_exists(conn, property_id: str, source_ref: str) -> bool:
     """True si un POI de ce (logement, source_ref) existe déjà (TOUS statuts) →
     idempotence AVANT géocodage (on ne re-géocode pas un marché déjà matérialisé)."""

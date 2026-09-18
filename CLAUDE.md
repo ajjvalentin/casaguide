@@ -2075,6 +2075,17 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
     `guide-fact-filter`) dont le `chk()` ne journalisait que les échecs. La suite imprime
     aujourd'hui **545 lignes de contrôle** : un harnais qui maigrit se voit à l'œil nu.
 
+- **Une passe web cherche dans PLUSIEURS langues et sous TOUTES les orthographes
+  (V2-77f).** Un seul terme rate l'essentiel. Règle : toute passe de découverte web pose,
+  **dans la même requête**, (a) la langue du PAYS, (b) l'anglais, (c) les variantes
+  orthographiques et translittérations, (d) les **formules d'enseigne** — le mot que les
+  lieux emploient pour se décrire, qui n'est presque jamais le mot de la catégorie. Cas
+  payés : **Brown's** à La Zenia, invisible jusqu'à ce que V2-56b cherche « cocktail bar »
+  et non « bar » ; les **lounges d'Adeje**, 3 trouvés sur 6 avec « shisha » seul, parce
+  qu'ils se présentent en « lounge », « gastrobar » ou « cachimbas ». Corollaire de
+  méthode : quand une passe rend *quelques* résultats plutôt que zéro, le réflexe doit être
+  « ma requête est trop étroite », jamais « la donnée n'existe pas » (leçon V2-73d).
+
 - **Le cache masque le correctif (V2-73b, `6d7b03e`).** Après V2-73, les activités de
   Bégadan n'avaient toujours aucune épingle : l'`area_fact` `activities` de la commune
   datait d'AVANT le correctif, et l'étape est **sautée quand le fait est frais**

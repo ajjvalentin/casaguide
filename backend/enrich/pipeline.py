@@ -647,14 +647,20 @@ def _commune_center(prop: dict, http_client: httpx.Client | None) -> tuple:
 
 def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
                             http_client: httpx.Client | None,
-                            origin: tuple | None = None) -> tuple | None:
+                            origin: tuple | None = None,
+                            allow_centre_fallback: bool = True) -> tuple | None:
     """Position d'un commerce de village (V2-74b), avec GARDE DE COHÉRENCE + ESCALADE.
     (1) géocode l'adresse (avec numéro), (2) escalade sur la RUE SEULE sans numéro (les
     numéros ruraux manquent souvent d'OSM) — accepte une position PRÉCISE (rue/toit)
     cohérente avec le secteur : à moins de 2 km du centre de la commune **OU** à moins de
     10 km du LOGEMENT (`origin`, V2-77e — une grande commune a sa zone touristique loin de
     son centre administratif) ; (3) sinon REPLI sur le centre de la commune, marqué
-    APPROXIMATIF. Renvoie `(lat, lon, locality, approx)` ou None (commune introuvable)."""
+    APPROXIMATIF. Renvoie `(lat, lon, locality, approx)` ou None (commune introuvable).
+
+    `allow_centre_fallback=False` (V2-77f) : pas de repli au centre — un lieu dont
+    l'adresse ne se résout pas est ABANDONNÉ. C'est le régime des passes web (estanco,
+    chicha) ; le repli reste celui des commerces de village, pour qui « au village,
+    position approximative » est vrai."""
     addr = (commerce.get("place_address") or "").strip()
     cc, city = prop["country_code"], prop["city"]
     candidates = [addr] if addr else []
@@ -695,7 +701,11 @@ def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
             if d_geo <= _LOCAL_PROPERTY_MAX_M and d_geo < d_centre:
                 return geo["lat"], geo["lon"], geo.get("locality"), True
     # Repli (part 1) : le centre de la commune, position APPROXIMATIVE (jamais « 59 min »).
-    if commune_center[0] is not None:
+    # V2-77f : ce repli est RÉSERVÉ aux commerces de village. Constat prod Adeje — Kalani
+    # posé à 28.13944/-16.73946, soit EXACTEMENT le centre administratif, 5,2 km du
+    # logement. « Au village » est vrai d'une épicerie de Bégadan ; c'est un mensonge pour
+    # un lounge d'une station balnéaire. Les passes web l'interdisent : le lieu est ABANDONNÉ.
+    if commune_center[0] is not None and allow_centre_fallback:
         return commune_center[0], commune_center[1], city, True
     return None
 
@@ -738,7 +748,7 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                            origin: tuple, *, fact_type: str, items_key: str, fetch,
                            max_age_days: int, category: str, subtype: str, meta_key: str,
                            harvested: list[dict], step_name: str,
-                           require_address: bool,
+                           require_address: bool, schema_v: int,
                            create_category: str | None = None) -> None:
     """Moteur COMMUN des deux passes V2-77b. Découverte web mutualisée par (pays, commune)
     — un appel par secteur, réutilisé par tous les guides — puis, pour chaque lieu prouvé :
@@ -751,7 +761,13 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
     new_cat = create_category or category      # V2-77c : créer ailleurs qu'on apparie
     try:
         with conn.transaction():
-            if not db.area_fact_fresh(conn, cc, city, fact_type, max_age_days):
+            # FRAÎCHEUR **ET** VERSION (V2-77f) : un fait récent mais d'un SCHÉMA périmé
+            # doit être re-collecté, sinon corriger le prompt ne change jamais rien —
+            # le cache masque le correctif (leçon V2-73b, payée deux fois).
+            cached = db.get_area_fact(conn, cc, city, fact_type) or {}
+            up_to_date = (db.area_fact_fresh(conn, cc, city, fact_type, max_age_days)
+                          and cached.get("v") == schema_v)
+            if not up_to_date:
                 fact, meta = fetch(city, cc, ai)
                 db.upsert_area_facts(conn, cc, city, fact, source=settings.anthropic_model)
                 db.record_costs(conn, prop["id"], job_id, "anthropic", step_name,
@@ -806,7 +822,8 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                 if commune_center is None:
                     commune_center = _commune_center(prop, http_client)
                 geo = _geocode_local_commerce({"place_address": addr}, prop,
-                                              commune_center, http_client, origin)
+                                              commune_center, http_client, origin,
+                                              allow_centre_fallback=False)
                 if geo is None:
                     skipped += 1
                     continue
@@ -860,7 +877,8 @@ def _discover_estancos(conn, prop, ai, job_id, summary, http_client, origin,
         fetch=claude_enrich.fetch_estancos,
         max_age_days=settings.estanco_max_age_days,
         category="tobacco", subtype="estanco", meta_key="_estanco",
-        harvested=harvested, step_name="estancos", require_address=True)
+        harvested=harvested, step_name="estancos", require_address=True,
+        schema_v=claude_enrich.ESTANCO_SCHEMA_V)
 
 
 def _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client, origin,
@@ -880,7 +898,7 @@ def _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client, origin,
         max_age_days=settings.shisha_max_age_days,
         category="bar", subtype="shisha", meta_key="_shisha",
         harvested=harvested, step_name="shisha_bars", require_address=False,
-        create_category="shisha")
+        schema_v=claude_enrich.SHISHA_SCHEMA_V, create_category="shisha")
 
 
 
@@ -1842,6 +1860,15 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 if "bar" in wanted_codes:
                     _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client,
                                           origin, all_harvested)
+
+                # V2-77f — LE RÉCAPITULATIF DOIT DIRE LA BASE. `empty_categories` est
+                # calculé à la fin de la moisson, AVANT les passes web : une rubrique
+                # garnie par le web (chicha, estanco, commerce de village, marché) était
+                # annoncée « sans résultat ». On le recalcule ici, contre la base, une fois
+                # TOUTES les passes passées.
+                garnies = db.categories_with_pois(conn, property_id)
+                summary["empty_categories"] = sorted(
+                    set(summary.get("empty_categories") or []) - garnies)
 
                 db.job_step(conn, job_id, "claude",
                             {"ok": True, "cost_cts": round(summary["cost_cts"], 2)})

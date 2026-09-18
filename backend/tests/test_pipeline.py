@@ -2807,15 +2807,21 @@ def _stub_web_pass(monkeypatch, estancos=None, bars=None):
     from enrich import claude_enrich as ce
     seen = {"estancos": 0, "shisha": 0}
 
+    # Le fake STAMPE la version, comme le vrai `fetch_*` (leçon OPS-1 : un mock qui ne se
+    # comporte pas comme le réel masque les bugs de contrat — ici il ferait croire que le
+    # fait mutualisé est périmé à chaque passage).
     def fake_estancos(city, cc, client, today=None):
         seen["estancos"] += 1
-        return {ce.ESTANCO_FACT_TYPE: {"estancos": estancos or []}}, {"cost_cts": 0.0,
-                                                                      "attempts": []}
+        return ({ce.ESTANCO_FACT_TYPE: {"estancos": estancos or [],
+                                        "raw": len(estancos or []),
+                                        "v": ce.ESTANCO_SCHEMA_V}},
+                {"cost_cts": 0.0, "attempts": []})
 
     def fake_shisha(city, cc, client, today=None):
         seen["shisha"] += 1
-        return {ce.SHISHA_FACT_TYPE: {"bars": bars or []}}, {"cost_cts": 0.0,
-                                                             "attempts": []}
+        return ({ce.SHISHA_FACT_TYPE: {"bars": bars or [], "raw": len(bars or []),
+                                       "v": ce.SHISHA_SCHEMA_V}},
+                {"cost_cts": 0.0, "attempts": []})
     monkeypatch.setattr(ce, "fetch_estancos", fake_estancos)
     monkeypatch.setattr(ce, "fetch_shisha_bars", fake_shisha)
     return seen
@@ -2844,6 +2850,11 @@ def test_estanco_pass_fires_even_when_the_category_is_full(monkeypatch, property
                       "category": "tobacco"}]
         prop = {"id": property_id, "country_code": "ES", "city": "Adeje"}
         summary = {"cost_cts": 0.0}
+        # Aucun réseau dans la suite : la position est injectée (discipline du projet).
+        monkeypatch.setattr(pipeline, "_commune_center", lambda *a, **k: (28.12, -16.72))
+        monkeypatch.setattr(pipeline, "_geocode_local_commerce",
+                            lambda *a, **k: (28.10, -16.73, "Adeje", False))
+        monkeypatch.setattr(pipeline.distance, "compute_distances", lambda *a, **k: None)
         jid = str(edb.start_job(c, property_id, "manual")) if hasattr(edb, "start_job") else None
         pipeline._discover_estancos(c, prop, object(), jid, summary, None,
                                     (28.09, -16.74), harvested)
@@ -3029,10 +3040,13 @@ def test_shisha_prompt_sweeps_by_quarter_and_asks_for_contacts():
     QUARTIER, cible large, coordonnées exigées."""
     from enrich import claude_enrich as ce
     pr = ce._SHISHA_PROMPT
-    # 1) Le vocabulaire qu'ils emploient EUX-MÊMES (beaucoup ne disent jamais « chicha »).
-    for mot in ("shisha lounge", "hookah lounge", "lounge bar", "gastrobar", "cachimbas",
-                "narguile"):
+    # 1) TOUTES les variantes dans la MÊME passe (V2-77f) : un seul terme rate l'essentiel
+    #    — 3 lieux trouvés sur 6 avec « shisha » seul, mesuré en production.
+    for mot in ("cachimba", "cachimbas", "bar de cachimbas", "chicha", "shisha",
+                "hookah", "shisha lounge", "hookah lounge", "narguilé", "narguile",
+                "nargile", "narghile", "lounge bar", "gastrobar", "cocktail & shisha"):
         assert mot in pr.lower(), mot
+    assert "langue du PAYS" in pr and "anglais" in pr
     # 2) Ratissage par quartier (le déblocage de V2-56b).
     assert "RATISSE PAR QUARTIER" in pr and "URBANIZACIONES" in pr
     # 3) Cible large — le positionnement strict élague ensuite.
@@ -3129,3 +3143,82 @@ def test_geocode_prefers_an_imprecise_nearby_point_over_the_town_centre(monkeypa
     lat3, lon3, _, approx3 = pipeline._geocode_local_commerce(
         {"place_address": "Adeje"}, prop, centre, None, home)
     assert (lat3, lon3) == centre and approx3 is True
+
+
+def test_stale_schema_refetches_even_when_the_fact_is_fresh(monkeypatch, property_id):
+    """V2-77f — LE CACHE MASQUAIT LE CORRECTIF, seconde fois (leçon V2-73b). Le fait
+    `shisha_bars` d'Adeje avait été écrit par le prompt ÉTROIT de V2-77b ; mutualisé
+    90 jours, il empêchait le prompt élargi de V2-77e de tourner. On corrigeait le prompt
+    et rien ne changeait — l'appel n'avait plus lieu. D'où la VERSION de contenu : un fait
+    récent mais d'un schéma périmé est re-collecté ; à version courante, il est réutilisé."""
+    from enrich import db as edb, claude_enrich as ce
+    seen = _stub_web_pass(monkeypatch, bars=[])
+    monkeypatch.setattr(pipeline, "_commune_center", lambda *a, **k: (28.12, -16.72))
+    prop = {"id": property_id, "country_code": "ES", "city": "Adeje"}
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        # Fait FRAIS mais du schéma d'AVANT (aucune clé `v`) → doit être re-collecté.
+        edb.upsert_area_facts(c, "ES", "Adeje",
+                              {ce.SHISHA_FACT_TYPE: {"bars": [], "raw": 0}}, source="test")
+        c.commit()
+        pipeline._discover_shisha_bars(c, prop, object(), None, {"cost_cts": 0.0}, None,
+                                       (28.09, -16.74), [])
+        c.commit()
+        assert seen["shisha"] == 1, "schéma périmé : le web aurait dû être rappelé"
+        # Désormais au schéma courant : le second passage réutilise (mutualisation intacte).
+        pipeline._discover_shisha_bars(c, prop, object(), None, {"cost_cts": 0.0}, None,
+                                       (28.09, -16.74), [])
+        c.commit()
+    assert seen["shisha"] == 1, "fait à jour : aucun rappel ne devait avoir lieu"
+
+
+def test_web_places_are_abandoned_rather_than_pinned_on_the_town_centre(monkeypatch,
+                                                                       property_id):
+    """V2-77f point 2 — constat prod : Kalani posé à 28.13944/-16.73946, EXACTEMENT le
+    centre administratif d'Adeje, 5,2 km du logement. « Au village, position approximative »
+    est vrai d'une épicerie de Bégadan ; c'est un mensonge pour un lounge d'une station
+    balnéaire. Adresse irrésoluble → le lieu n'entre PAS. Les commerces de village, eux,
+    gardent leur repli."""
+    from enrich import db as edb
+    _stub_web_pass(monkeypatch, bars=[
+        {"name": "Kalani Lounge", "place_address": "adresse introuvable",
+         "source_url": "https://ex.test/k"}])
+    monkeypatch.setattr(pipeline, "_commune_center", lambda *a, **k: (28.1394, -16.7395))
+    monkeypatch.setattr(pipeline.geocode, "geocode",
+                        lambda **kw: (_ for _ in ()).throw(
+                            pipeline.geocode.GeocodeError("introuvable")))
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        c.commit()
+        pipeline._discover_shisha_bars(c, {"id": property_id, "country_code": "ES",
+                                           "city": "Adeje"}, object(), None,
+                                       {"cost_cts": 0.0}, None, (28.0925, -16.74), [])
+        c.commit()
+        n = c.execute("SELECT count(*) AS n FROM pois WHERE property_id=%s",
+                      (property_id,)).fetchone()["n"]
+    assert n == 0, "un lieu sans adresse résoluble a été posé au centre-ville"
+    # Contre-épreuve : le commerce de VILLAGE garde son repli (« au village » y est vrai).
+    r = pipeline._geocode_local_commerce({"place_address": "x"},
+                                         {"city": "Bégadan", "country_code": "FR"},
+                                         (45.356, -0.895), None)
+    assert r is not None and r[:2] == (45.356, -0.895) and r[3] is True
+
+
+def test_summary_no_result_line_reflects_the_database_after_web_passes(property_id):
+    """V2-77f point 1 — LE RÉCAPITULATIF MENTAIT. `empty_categories` est figé à la fin de la
+    MOISSON, 400 lignes avant les passes web : à Adeje, « catégories sans résultat » listait
+    `shisha` alors que la rubrique contenait deux POI approuvés. Défaut trompeur — il a fait
+    chercher un problème inexistant. La base tranche, après TOUTES les passes."""
+    from enrich import db as edb
+    with edb.connect() as c:
+        c.execute("DELETE FROM pois WHERE property_id=%s", (property_id,))
+        c.execute("""INSERT INTO pois (property_id, category_code, name, geom, source, status)
+                     VALUES (%s,'shisha','Kalani Lounge',
+                             ST_SetSRID(ST_MakePoint(-16.73,28.09),4326),'claude','approved')""",
+                  (property_id,))
+        c.commit()
+        garnies = edb.categories_with_pois(c, property_id)
+    assert "shisha" in garnies
+    # Le recalcul du récapitulatif retire ce que la base contient réellement.
+    empty_apres = sorted({"shisha", "tobacco", "laundry"} - garnies)
+    assert empty_apres == ["laundry", "tobacco"], empty_apres
