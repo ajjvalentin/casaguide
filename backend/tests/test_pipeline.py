@@ -3016,3 +3016,116 @@ def test_web_pass_step_distinguishes_nothing_found_from_everything_dropped(monke
                           (jid,)).fetchone()["steps"]
     st = steps["estancos"]
     assert st["raw"] == 2 and st["kept"] == 0 and st["dropped_unproven"] == 2
+
+
+# ── V2-77e : la passe chicha ratissait trop étroit ───────────────────────────
+
+def test_shisha_prompt_sweeps_by_quarter_and_asks_for_contacts():
+    """V2-77e — vérification manuelle d'André : sur SIX shisha bars d'Adeje (Kalani,
+    Lateral Club, Ayune, Voodoo, Hades, Hayal), CINQ ont un site. Le web ouvert les
+    connaît ; la passe n'en rendait que trois. Ce n'est pas une limite de la donnée
+    (leçon V2-73d) mais une requête trop étroite. Le prompt reprend donc le motif V2-56b
+    qui avait débloqué Brown's à La Zenia : vocabulaire RÉEL des lieux, ratissage PAR
+    QUARTIER, cible large, coordonnées exigées."""
+    from enrich import claude_enrich as ce
+    pr = ce._SHISHA_PROMPT
+    # 1) Le vocabulaire qu'ils emploient EUX-MÊMES (beaucoup ne disent jamais « chicha »).
+    for mot in ("shisha lounge", "hookah lounge", "lounge bar", "gastrobar", "cachimbas",
+                "narguile"):
+        assert mot in pr.lower(), mot
+    # 2) Ratissage par quartier (le déblocage de V2-56b).
+    assert "RATISSE PAR QUARTIER" in pr and "URBANIZACIONES" in pr
+    # 3) Cible large — le positionnement strict élague ensuite.
+    assert "10 À 12" in pr and "élaguera" in pr
+    # 4) Coordonnées publiées : site officiel, téléphone, adresse.
+    assert "`website`" in pr and "site OFFICIEL" in pr and "`phone`" in pr
+    assert "tripadvisor" in pr.lower() and "instagram" in pr.lower()
+    # 5) Acquis V2-77c conservés : preuve ou rien, pas d'adresse empruntée.
+    assert "PREUVE OU RIEN" in pr and "N'emprunte JAMAIS" in pr
+
+
+def test_shisha_contacts_reach_the_poi_created_and_matched(monkeypatch, property_id):
+    """V2-77e point 3 — un nom sans site ni téléphone ne sert à rien : le voyageur ne peut
+    ni réserver ni vérifier les horaires. Les coordonnées publiées atteignent le POI dans
+    les DEUX chemins : création (rubrique dédiée) et appariement (fill-NULL-only, régime
+    V2-38bis — une valeur déjà présente n'est jamais touchée)."""
+    from enrich import db as edb
+    _stub_web_pass(monkeypatch, bars=[
+        {"name": "Kalani Lounge", "place_address": "av. Kalani, Costa Adeje",
+         "website": "https://kalani.test", "phone": "+34 111",
+         "source_url": "https://ex.test/k"},
+        {"name": "Mogu", "place_address": "", "website": "https://mogu.test",
+         "phone": "+34 222", "source_url": "https://ex.test/m"}])
+    monkeypatch.setattr(pipeline, "_commune_center", lambda *a, **k: (28.12, -16.72))
+    monkeypatch.setattr(pipeline, "_geocode_local_commerce",
+                        lambda *a, **k: (28.12, -16.72, "Adeje", False))
+    monkeypatch.setattr(pipeline.distance, "compute_distances", lambda *a, **k: None)
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        # Un bar DÉJÀ connu, sans coordonnées… et un téléphone déjà renseigné ailleurs.
+        c.execute("""INSERT INTO pois (property_id, category_code, name, geom, source, status,
+                                       phone)
+                     VALUES (%s,'bar','Mogu',ST_SetSRID(ST_MakePoint(-16.74,28.09),4326),
+                             'osm','approved','+34 DEJA')""", (property_id,))
+        c.commit()
+        harv = [{"name": "Mogu", "lat": 28.09, "lon": -16.74, "category": "bar"}]
+        pipeline._discover_shisha_bars(c, {"id": property_id, "country_code": "ES",
+                                           "city": "Adeje"}, object(), None,
+                                       {"cost_cts": 0.0}, None, (28.09, -16.74), harv)
+        c.commit()
+        rows = {r["name"]: r for r in c.execute(
+            "SELECT name, category_code, phone, website, subtype FROM pois "
+            "WHERE property_id=%s", (property_id,)).fetchall()}
+    # Créé dans la rubrique dédiée, AVEC son site et son téléphone.
+    k = rows["Kalani Lounge"]
+    assert k["category_code"] == "shisha" and k["website"] == "https://kalani.test"
+    assert k["phone"] == "+34 111"
+    # Apparié : le site MANQUANT est comblé, le téléphone DÉJÀ PRÉSENT n'est pas écrasé.
+    m = rows["Mogu"]
+    assert m["category_code"] == "bar" and m["subtype"] == "shisha"
+    assert m["website"] == "https://mogu.test" and m["phone"] == "+34 DEJA"
+
+
+def test_geocode_guard_anchors_on_the_property_not_only_the_town_hall(monkeypatch):
+    """V2-77e — LE GARDE V2-74b MENTAIT SUR UNE GRANDE COMMUNE. Mesuré à Adeje (18/09) :
+    le centre administratif est à 5,2 km du logement de Costa Adeje ; « Avenida de España,
+    Costa Adeje » géocode en ROOFTOP à 6,7 km de ce centre — donc rejetée par la garde des
+    2 km — mais à 1,5 km du LOGEMENT. Six lounges parfaitement adressés retombaient tous au
+    centre-ville, puis cinq étaient écartés par l'anti-empilement. Le logement ancre le
+    guide : une position précise et proche de LUI est cohérente."""
+    prop = {"city": "Adeje", "country_code": "ES"}
+    centre, home = (28.1394, -16.7395), (28.0925, -16.7400)   # 5,2 km d'écart réel
+    monkeypatch.setattr(pipeline.geocode, "geocode",
+                        lambda **kw: {"lat": 28.1060, "lon": -16.7290,
+                                      "accuracy": "rooftop", "locality": "Costa Adeje"})
+    lat, lon, loc, approx = pipeline._geocode_local_commerce(
+        {"place_address": "Avenida de España 5"}, prop, centre, None, home)
+    assert (lat, lon) == (28.1060, -16.7290) and approx is False, "position précise rejetée"
+    # Sans le logement (appelant historique), l'ancien comportement est INTACT : hors des
+    # 2 km du centre → repli marqué approximatif.
+    lat2, lon2, _, approx2 = pipeline._geocode_local_commerce(
+        {"place_address": "Avenida de España 5"}, prop, centre, None)
+    assert (lat2, lon2) == centre and approx2 is True
+
+
+def test_geocode_prefers_an_imprecise_nearby_point_over_the_town_centre(monkeypatch):
+    """V2-77e, 2e tier — « Calle París 3 » et « Avenida Bruselas 4 » géocodent en `city`
+    (Nominatim n'a pas le numéro) mais à 0,6 et 0,3 km DU LOGEMENT. Les rejeter pour
+    retomber sur le centre à 5,2 km, c'est jeter un point à 300 m au profit d'un point à
+    5 km. On les retient, MARQUÉS approximatifs (cercle + mention) : la carte ne ment pas.
+    Garde : un résultat qui EST le centre de la commune ne se promeut pas lui-même."""
+    prop = {"city": "Adeje", "country_code": "ES"}
+    centre, home = (28.1394, -16.7395), (28.0925, -16.7400)
+    monkeypatch.setattr(pipeline.geocode, "geocode",
+                        lambda **kw: {"lat": 28.0900, "lon": -16.7380,
+                                      "accuracy": "city", "locality": "Adeje"})
+    lat, lon, _, approx = pipeline._geocode_local_commerce(
+        {"place_address": "Calle París 3"}, prop, centre, None, home)
+    assert (lat, lon) == (28.0900, -16.7380) and approx is True
+    # Le centroïde de la commune lui-même → PAS plus proche que le centre → repli normal.
+    monkeypatch.setattr(pipeline.geocode, "geocode",
+                        lambda **kw: {"lat": centre[0], "lon": centre[1],
+                                      "accuracy": "city", "locality": "Adeje"})
+    lat3, lon3, _, approx3 = pipeline._geocode_local_commerce(
+        {"place_address": "Adeje"}, prop, centre, None, home)
+    assert (lat3, lon3) == centre and approx3 is True

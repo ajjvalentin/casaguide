@@ -237,8 +237,11 @@ class Settings:
     estanco_max_searches: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_SEARCHES", "5"))
     estanco_max_tokens: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_TOKENS", "4000"))
     shisha_max_age_days: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_AGE_DAYS", "90"))
-    shisha_max_searches: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_SEARCHES", "4"))
-    shisha_max_tokens: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_TOKENS", "3000"))
+    # V2-77e : 4 recherches et 3000 tokens ne suffisaient pas à ratisser par QUARTIER
+    # (six lounges connus à Adeje, trois rendus). Le ratissage par quartier multiplie les
+    # requêtes, et 10-12 candidats avec site+téléphone+adresse allongent la réponse.
+    shisha_max_searches: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_SEARCHES", "8"))
+    shisha_max_tokens: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_TOKENS", "6000"))
     # Cibles ENRICHIES par catégorie pour un guide voyageur (un touriste veut du
     # choix) : proximité (socle OSM/Overture) + picks éditoriaux. Jamais en dur
     # (invariant 8) — surchargeable « restaurant:10,bar:8,cafe:6 ».

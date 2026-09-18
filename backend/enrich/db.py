@@ -530,12 +530,13 @@ def insert_local_commerce_poi(conn, property_id: str, poi: dict) -> int:
     encore 'suggested' (invariant 1). Retourne 1 si inséré, 0 si conflit ignoré."""
     cur = conn.execute(
         """INSERT INTO pois (property_id, category_code, name, geom, address, locality,
-                             phone, dist_walk_m, walk_min, dist_drive_m, drive_min,
+                             phone, website, dist_walk_m, walk_min,
+                             dist_drive_m, drive_min,
                              completion_meta, subtype, source, source_ref,
                              fetched_at, status)
            VALUES (%(pid)s, %(cat)s, %(name)s,
                    ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
-                   %(address)s, %(locality)s, %(phone)s,
+                   %(address)s, %(locality)s, %(phone)s, %(website)s,
                    %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
                    %(meta)s, %(subtype)s, 'claude', %(ref)s, now(),
                    'suggested')
@@ -543,6 +544,7 @@ def insert_local_commerce_poi(conn, property_id: str, poi: dict) -> int:
            DO UPDATE SET name = EXCLUDED.name, geom = EXCLUDED.geom,
                          address = EXCLUDED.address, locality = EXCLUDED.locality,
                          phone = EXCLUDED.phone,
+                         website = COALESCE(EXCLUDED.website, pois.website),
                          dist_walk_m = EXCLUDED.dist_walk_m, walk_min = EXCLUDED.walk_min,
                          dist_drive_m = EXCLUDED.dist_drive_m, drive_min = EXCLUDED.drive_min,
                          completion_meta = EXCLUDED.completion_meta,
@@ -552,6 +554,7 @@ def insert_local_commerce_poi(conn, property_id: str, poi: dict) -> int:
         {"pid": property_id, "cat": poi["category"], "name": poi["name"],
          "lat": poi["lat"], "lon": poi["lon"], "address": poi.get("address"),
          "locality": poi.get("locality"), "phone": poi.get("phone"),
+         "website": poi.get("website"),
          "dist_walk_m": poi.get("dist_walk_m"), "walk_min": poi.get("walk_min"),
          "dist_drive_m": poi.get("dist_drive_m"), "drive_min": poi.get("drive_min"),
          "meta": json.dumps(poi["completion_meta"]) if poi.get("completion_meta") else None,
@@ -562,7 +565,8 @@ def insert_local_commerce_poi(conn, property_id: str, poi: dict) -> int:
 
 
 def set_poi_subtype_by_name(conn, property_id: str, category: str, name: str,
-                            subtype: str, meta_key: str, meta: dict) -> int:
+                            subtype: str, meta_key: str, meta: dict,
+                            fill: dict | None = None) -> int:
     """Pose le SOUS-TYPE d'un POI déjà moissonné, identifié par (logement, catégorie, nom) —
     V2-77b : c'est ainsi que la passe web marque « cet établissement-ci EST un estanco » ou
     « ce bar-ci sert la chicha », sans créer de doublon (cascade V2-73g : on s'accroche au
@@ -575,14 +579,21 @@ def set_poi_subtype_by_name(conn, property_id: str, category: str, name: str,
     intact). Sans cela, un guide déjà arbitré — le cas d'Adeje, dont les POI sont
     `approved` — n'afficherait JAMAIS la puce, puisque le guide ne sert que les fiches
     retenues. La preuve est FUSIONNÉE dans `completion_meta` (jamais remplacée). Retourne
-    le nombre de fiches touchées (0 si le nom ne correspond à aucune)."""
+    le nombre de fiches touchées (0 si le nom ne correspond à aucune).
+
+    `fill` (V2-77e) : coordonnées publiées par le lieu (`phone`, `website`) complétées au
+    MÊME régime fill-NULL-only — un bar qu'OSM connaît sans téléphone gagne celui que
+    l'établissement publie, sans qu'une valeur existante soit jamais touchée."""
     cur = conn.execute(
         """UPDATE pois
               SET subtype = COALESCE(subtype, %(subtype)s),
+                  phone = COALESCE(phone, %(phone)s),
+                  website = COALESCE(website, %(website)s),
                   completion_meta = COALESCE(completion_meta, '{}'::jsonb)
                                     || jsonb_build_object(%(key)s::text, %(meta)s::jsonb)
             WHERE property_id = %(pid)s AND category_code = %(cat)s AND name = %(name)s""",
         {"pid": property_id, "cat": category, "name": name, "subtype": subtype,
+         "phone": (fill or {}).get("phone"), "website": (fill or {}).get("website"),
          "key": meta_key, "meta": json.dumps(meta)},
     )
     return cur.rowcount

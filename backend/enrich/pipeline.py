@@ -620,6 +620,17 @@ def _backfill_activity_positions(conn, prop: dict, harvested: list[dict], origin
 # Nominatim retombe loin, cas « 59 min à pied pour la pharmacie du village »). Repli : le
 # centre de la commune, marqué approximatif — « au village » vaut mieux qu'un point faux.
 _LOCAL_COMMUNE_MAX_M = 2000
+# V2-77e — LE LOGEMENT EST AUSSI UN ANCRAGE VALIDE. Le garde de cohérence V2-74b ne
+# mesurait que depuis le CENTRE ADMINISTRATIF de la commune, ce qui convient à un village
+# compact (Bégadan) mais MENT sur une grande commune dont la zone touristique est ailleurs.
+# Mesuré à Adeje (18/09) : centre de la commune 28.1394,-16.7395 ; le logement de Costa
+# Adeje est à 5,2 km ; « Avenida de España, Costa Adeje » géocode en ROOFTOP à 6,7 km du
+# centre — donc REJETÉE — mais à 1,5 km du logement. Résultat : six lounges parfaitement
+# adressés retombaient TOUS au centre-ville, puis cinq étaient écartés par l'anti-empilement
+# (V2-77c). Une position précise et proche DU LOGEMENT est cohérente : c'est le logement
+# qui ancre le guide. Le garde conserve sa raison d'être — écarter l'homonyme à 40 km
+# (Casa Murcia, V2-46) — car 10 km reste très en deçà.
+_LOCAL_PROPERTY_MAX_M = 10000
 _LEADING_NUMBER_RE = re.compile(r"^\s*\d+\s*(bis|ter|quater)?\s*[,]?\s*", re.IGNORECASE)
 
 
@@ -635,11 +646,14 @@ def _commune_center(prop: dict, http_client: httpx.Client | None) -> tuple:
 
 
 def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
-                            http_client: httpx.Client | None) -> tuple | None:
+                            http_client: httpx.Client | None,
+                            origin: tuple | None = None) -> tuple | None:
     """Position d'un commerce de village (V2-74b), avec GARDE DE COHÉRENCE + ESCALADE.
     (1) géocode l'adresse (avec numéro), (2) escalade sur la RUE SEULE sans numéro (les
-    numéros ruraux manquent souvent d'OSM) — accepte une position PRÉCISE (rue/toit) à moins
-    de 2 km du centre de la commune ; (3) sinon REPLI sur le centre de la commune, marqué
+    numéros ruraux manquent souvent d'OSM) — accepte une position PRÉCISE (rue/toit)
+    cohérente avec le secteur : à moins de 2 km du centre de la commune **OU** à moins de
+    10 km du LOGEMENT (`origin`, V2-77e — une grande commune a sa zone touristique loin de
+    son centre administratif) ; (3) sinon REPLI sur le centre de la commune, marqué
     APPROXIMATIF. Renvoie `(lat, lon, locality, approx)` ou None (commune introuvable)."""
     addr = (commerce.get("place_address") or "").strip()
     cc, city = prop["country_code"], prop["city"]
@@ -652,12 +666,34 @@ def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
             geo = geocode.geocode(street=query, city=city, country_code=cc, client=http_client)
         except geocode.GeocodeError:
             continue
-        # Précis (rue/toit, jamais un centroïde) ET proche du centre → position retenue.
-        if (geocode.is_precise_enough(geo.get("accuracy"))
-                and commune_center[0] is not None
-                and overpass.haversine_m(commune_center[0], commune_center[1],
-                                         geo["lat"], geo["lon"]) <= _LOCAL_COMMUNE_MAX_M):
-            return geo["lat"], geo["lon"], geo.get("locality"), False
+        # Précis (rue/toit, jamais un centroïde) ET cohérent avec le secteur du guide :
+        # proche du centre de la commune OU du LOGEMENT (V2-77e — une grande commune a sa
+        # zone touristique loin de son centre administratif).
+        if geocode.is_precise_enough(geo.get("accuracy")):
+            near_centre = (commune_center[0] is not None
+                           and overpass.haversine_m(commune_center[0], commune_center[1],
+                                                    geo["lat"], geo["lon"])
+                           <= _LOCAL_COMMUNE_MAX_M)
+            near_home = (origin is not None
+                         and overpass.haversine_m(origin[0], origin[1],
+                                                  geo["lat"], geo["lon"])
+                         <= _LOCAL_PROPERTY_MAX_M)
+            if near_centre or near_home:
+                return geo["lat"], geo["lon"], geo.get("locality"), False
+        # V2-77e, 2e tier — MIEUX QUE LE CENTRE-VILLE. Mesuré à Adeje : « Calle París 3 »,
+        # « Avenida Bruselas 4 » géocodent en `city` (Nominatim n'a pas le numéro) mais à
+        # 0,6 et 0,3 km DU LOGEMENT. Les rejeter pour retomber sur le centre de la commune
+        # à 5,2 km, c'est jeter un point à 300 m au profit d'un point à 5 km. On retient
+        # donc une position IMPRÉCISE quand elle est dans le secteur du guide ET STRICTEMENT
+        # plus proche du logement que ne l'est le centre — marquée `approx` (cercle +
+        # « position approximative », V2-73f) : la carte ne ment pas sur ce qu'elle sait.
+        if origin is not None:
+            d_geo = overpass.haversine_m(origin[0], origin[1], geo["lat"], geo["lon"])
+            d_centre = (overpass.haversine_m(origin[0], origin[1],
+                                             commune_center[0], commune_center[1])
+                        if commune_center[0] is not None else float("inf"))
+            if d_geo <= _LOCAL_PROPERTY_MAX_M and d_geo < d_centre:
+                return geo["lat"], geo["lon"], geo.get("locality"), True
     # Repli (part 1) : le centre de la commune, position APPROXIMATIVE (jamais « 59 min »).
     if commune_center[0] is not None:
         return commune_center[0], commune_center[1], city, True
@@ -754,7 +790,8 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                 if twin is not None:
                     # (1) Le lieu EXISTE déjà : on le qualifie, on ne le double pas.
                     marked += db.set_poi_subtype_by_name(
-                        conn, prop["id"], category, twin["name"], subtype, meta_key, proof)
+                        conn, prop["id"], category, twin["name"], subtype, meta_key, proof,
+                        fill={"phone": item.get("phone"), "website": item.get("website")})
                     continue
                 addr = (item.get("place_address") or "").strip()
                 if not addr and require_address:
@@ -769,7 +806,7 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                 if commune_center is None:
                     commune_center = _commune_center(prop, http_client)
                 geo = _geocode_local_commerce({"place_address": addr}, prop,
-                                              commune_center, http_client)
+                                              commune_center, http_client, origin)
                 if geo is None:
                     skipped += 1
                     continue
@@ -781,6 +818,7 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                 posed.append((lat, lon))
                 poi = {"name": name, "category": new_cat, "lat": lat, "lon": lon,
                        "address": addr, "phone": item.get("phone"),
+                       "website": item.get("website"),
                        "locality": locality or city, "subtype": subtype, "source_ref": ref,
                        "completion_meta": {meta_key: {**proof, "approx": approx}}}
                 distance.compute_distances(origin, [poi], client=http_client)
@@ -879,7 +917,8 @@ def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
                 if db.poi_source_ref_exists(conn, prop["id"], ref):
                     continue                   # déjà matérialisé (idempotent, pas de géocodage)
                 # V2-74b : géocodage avec garde de cohérence + escalade + repli au centre.
-                geo = _geocode_local_commerce(c, prop, commune_center, http_client)
+                geo = _geocode_local_commerce(c, prop, commune_center, http_client,
+                                              origin)
                 if geo is None:
                     skipped_pos += 1
                     continue                   # commune introuvable → n'entre pas

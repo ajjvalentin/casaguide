@@ -1049,18 +1049,34 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
 """
 
 _SHISHA_PROMPT = """\
-Tu recenses les BARS À CHICHA (shisha / hookah / narguilé) de la commune de {city}
-({country_code}) — les lieux où l'on fume la chicha sur place : shisha lounges, bars
-orientaux, terrasses à narguilés.
+Tu recenses les BARS À CHICHA du secteur de {city} ({country_code}) — les lieux où l'on
+fume la chicha SUR PLACE.
+
+CHERCHE LARGE, dans la LANGUE LOCALE, PAR LES MOTS QUE CES LIEUX EMPLOIENT EUX-MÊMES :
+« shisha lounge », « hookah lounge », « lounge bar », « cocktail & shisha »,
+« gastrobar », « bar de cachimbas », « cachimbas », « narguile », « chicha ». Beaucoup ne
+se présentent JAMAIS comme « bar à chicha » : ils se disent « lounge » ou « gastrobar ».
+
+RATISSE PAR QUARTIER, pas seulement par commune : {city} regroupe souvent plusieurs
+QUARTIERS / URBANIZACIONES / stations balnéaires. Identifie ceux du secteur et
+interroge-les EXPLICITEMENT (« shisha lounge <quartier> », « cachimbas <quartier> »).
+
+VISE 10 À 12 ADRESSES (échantillonne LARGE — le pipeline vérifie et positionne
+strictement, il élaguera ce qui n'est pas prouvé ; mieux vaut proposer généreusement).
+
+CES LIEUX PUBLIENT LEURS COORDONNÉES : la quasi-totalité a son PROPRE SITE et une fiche
+Google/Instagram/TripAdvisor. Cherche « <nom> {city} », « <nom> instagram », « <nom>
+tripadvisor » pour remonter le site officiel, le téléphone et l'adresse.
 
 CE QU'ON NE VEUT PAS : les boutiques qui VENDENT du matériel de chicha sans service sur
-place, les bars ordinaires, les restaurants sans offre de chicha.
+place, les bars ordinaires sans offre de chicha, les restaurants sans chicha.
 
-MÉTHODE : recherche web. Sources fiables : site ou page officielle du lieu, guides de
-sortie locaux, presse locale, annuaires. Pour chaque lieu :
+Pour chaque lieu :
 - `name` : le nom EXACT de l'établissement, tel qu'il s'écrit sur sa devanture ou sa page ;
-- `place_address` : l'adresse postale si la source la donne, sinon "" (le lieu sera alors
-  rattaché à un bar déjà connu, ou écarté) ;
+- `place_address` : l'adresse postale (rue + numéro + quartier + commune) si la source la
+  donne, sinon "" ;
+- `website` : l'URL du site OFFICIEL du lieu (pas un annuaire, pas TripAdvisor), sinon "" ;
+- `phone` : le téléphone, sinon "" ;
 - `source_url` : l'URL de la preuve (https), `verified_on` : « {today} ».
 
 RÈGLES STRICTES :
@@ -1069,13 +1085,14 @@ RÈGLES STRICTES :
   liste : trois bars distincts au même point sont un MENSONGE sur la carte (constat réel
   d'Adeje). Sans adresse propre, laisse `place_address` VIDE — le lieu sera rattaché au bar
   déjà connu, ou écarté.
-- Reste DANS la commune de {city}, pas la ville voisine.
+- Reste DANS le secteur de {city}, pas une autre station à 30 km.
 - Une liste VIDE est un résultat parfaitement valide (beaucoup de communes n'en ont aucun).
 
 Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
 {{
   "bars": [
-    {{"name": "Backyard Lounge", "place_address": "avenue …, {city}",
+    {{"name": "Kalani Lounge", "place_address": "avenue …, {city}",
+      "website": "https://...", "phone": "+34 …",
       "source_url": "https://...", "verified_on": "{today}"}}
   ]
 }}
@@ -1110,9 +1127,12 @@ def _clean_web_places(data: dict, key: str, *, require_address: bool,
             continue                                   # sans adresse, pas plaçable
         entry = {"name": name, "place_address": addr, "source_url": src,
                  "verified_on": _s("verified_on") or today}
-        phone = _s("phone")
-        if phone:
-            entry["phone"] = phone
+        # V2-77e : ces lieux PUBLIENT leurs coordonnées — la passe doit les rapporter,
+        # sinon le voyageur a un nom sans moyen de réserver ni de vérifier les horaires.
+        for k in ("phone", "website"):
+            v = _s(k)
+            if v:
+                entry[k] = v
         clean.append(entry)
     return clean, len(items)
 
