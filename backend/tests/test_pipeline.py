@@ -951,9 +951,16 @@ def test_editorial_pick_local_name_round_trip_and_poi(monkeypatch):
 
 
 def test_second_run_inherits_first_run_editorial_picks(http_client):
-    """V2-56c : deux générations SUCCESSIVES du même secteur (logements distincts) — la
-    seconde contient AU MOINS les élus positionnés de la première + ses frais, MÊME si
-    le jury web du 2e run ne les redécouvre pas (Casa Manolo stable)."""
+    """V2-56c + V2-78 : deux générations SUCCESSIVES du même secteur (logements distincts).
+
+    La seconde hérite des élus positionnés de la première — c'est l'acquis V2-56c, la
+    mémoire de secteur. **CHANGEMENT ASSUMÉ V2-78** : elle ne relance PLUS le jury web
+    tant que la mémoire est dans sa fenêtre de fraîcheur (21 j). La garde portait sur
+    `api_costs` DU LOGEMENT — deux guides d'un même secteur payaient chacun la passe la
+    plus chère (47,8 ct) alors que `editorial_picks` était déjà plein. Contrepartie :
+    l'échantillonnage cumulatif de V2-56c ne s'enrichit plus à CHAQUE run mais à chaque
+    fenêtre de fraîcheur (ou sur `--refresh-sector`) — et la fusion garantit qu'il ne
+    perd jamais rien (test suivant)."""
     oid = str(uuid.uuid4())
     pid1, pid2 = str(uuid.uuid4()), str(uuid.uuid4())
     with psycopg.connect(settings.db_dsn) as conn:
@@ -990,8 +997,11 @@ def test_second_run_inherits_first_run_editorial_picks(http_client):
             names2 = {r["name"] for r in conn.execute(
                 "SELECT name FROM pois WHERE property_id=%s AND category_code='restaurant'",
                 (pid2,)).fetchall()}
-        # Le 2e guide hérite de Casa Manolo (mémoire du secteur) ET a Brown's (frais).
-        assert "Casa Manolo" in names2 and "Brown's" in names2
+        # Le 2e guide hérite de Casa Manolo (mémoire du secteur)…
+        assert "Casa Manolo" in names2
+        # …et n'a PAS rappelé le web : Brown's, que seul le jury du 2e run connaît,
+        # n'apparaît pas — la mémoire du secteur a servi, la passe n'a rien coûté.
+        assert "Brown's" not in names2
     finally:
         with psycopg.connect(settings.db_dsn) as conn:
             conn.execute("DELETE FROM properties WHERE id = ANY(%s)", ([pid1, pid2],))
@@ -3222,3 +3232,162 @@ def test_summary_no_result_line_reflects_the_database_after_web_passes(property_
     # Le recalcul du récapitulatif retire ce que la base contient réellement.
     empty_apres = sorted({"shisha", "tobacco", "laundry"} - garnies)
     assert empty_apres == ["laundry", "tobacco"], empty_apres
+
+
+# ── V2-78 : mémoire de secteur — fraîcheur, version, fusion, traçabilité ─────
+
+def test_sector_memory_decision_is_pure_and_refuses_for_four_named_reasons():
+    """V2-78 — la règle vit dans `sector.memory_decision` et NULLE PART ailleurs. Elle
+    refuse dans quatre cas NOMMÉS (le motif est repris dans `steps`), et dans tous les cas
+    de refus elle rend quand même la mémoire existante : la collecte fraîche doit
+    FUSIONNER avec elle, jamais l'écraser."""
+    from enrich import sector
+    memo = {"v": 2, "items": [{"name": "A"}]}
+    assert sector.memory_decision(None, None, max_age_days=21, schema_v=2).reason == "absent"
+    d = sector.memory_decision(memo, 3, max_age_days=21, schema_v=2)
+    assert d.use and d.reason == "memory" and d.age_days == 3
+    # Périmée par l'ÂGE — la nature de l'information commande (21 j / 90 j).
+    d = sector.memory_decision(memo, 40, max_age_days=21, schema_v=2)
+    assert not d.use and d.reason == "stale" and d.content == memo
+    # Périmée par la VERSION — leçon payée deux fois (V2-73b activités, V2-77f chicha) :
+    # une mémoire récente d'un prompt périmé rend tout correctif INVISIBLE.
+    d = sector.memory_decision(memo, 1, max_age_days=21, schema_v=3)
+    assert not d.use and d.reason == "version" and d.content == memo
+    # Forcée (--refresh-sector) : recette, ou signalement d'une information périmée.
+    d = sector.memory_decision(memo, 1, max_age_days=21, schema_v=2, refresh=True)
+    assert not d.use and d.reason == "forced" and d.content == memo
+
+
+def test_sector_memory_enriches_and_never_empties():
+    """INVARIANT V2-78 (acquis V2-56c, généralisé) : une collecte fraîche qui rend MOINS
+    que ce qu'on savait ne fait jamais disparaître ce qu'on savait — le web est capricieux,
+    un guide ne doit pas maigrir parce qu'une recherche a moins bien répondu ce jour-là.
+    Le frais gagne sur le champ (plus à jour), l'ancien survit s'il n'est plus rendu."""
+    from enrich import sector
+    memoire = [{"name": "Casa Manolo", "phone": "+34 1"}, {"name": "La Marejada"}]
+    frais = [{"name": "casa manolo", "phone": "+34 NOUVEAU"}, {"name": "Brown's"}]
+    out = sector.merge_items(memoire, frais)
+    noms = [it["name"] for it in out]
+    assert "Brown's" in noms and "La Marejada" in noms          # rien n'est perdu
+    assert out[0]["phone"] == "+34 NOUVEAU"                     # le frais gagne
+    assert len([n for n in noms if n.lower() == "casa manolo"]) == 1   # pas de doublon
+    # Idempotent : refusionner ne change rien (ordre déterministe).
+    assert sector.merge_items(out, frais) == out
+    # Une collecte VIDE ne vide pas la mémoire.
+    assert len(sector.merge_items(memoire, [])) == 2
+
+
+def test_step_note_says_memory_or_fresh_with_cost():
+    """V2-78 point 4 — le coût réel d'un guide doit devenir LISIBLE dans `steps` : chaque
+    passe dit « mémoire (âge N j) » ou « collecte fraîche (X ct) », avec le MOTIF de la
+    re-collecte. Auparavant une passe servie par le cache n'écrivait RIEN : impossible de
+    distinguer « pas exécutée » de « servie par la mémoire »."""
+    from enrich import sector
+    m = sector.memory_decision({"v": 1}, 5, max_age_days=21, schema_v=1)
+    assert m.step_note() == {"source": "memory", "age_days": 5}
+    f = sector.memory_decision({"v": 0}, 5, max_age_days=21, schema_v=1)
+    note = f.step_note(12.437)
+    assert note["source"] == "fresh" and note["why"] == "version"
+    assert note["cost_cts"] == 12.44 and note["previous_age_days"] == 5
+
+
+def test_every_sector_pass_stamps_a_content_version():
+    """V2-78 point 2 — VERSION OBLIGATOIRE. Une passe mutualisée SANS version n'a pas le
+    droit à la mémoire : un fait récent d'un prompt périmé masquerait tout correctif. On
+    vérifie que chaque passe de secteur a bien sa constante."""
+    from enrich import claude_enrich as ce
+    from enrich import pipeline as pl
+    for name in ("FOOD_DELIVERY_SCHEMA_V", "MARKET_SCHEMA_V", "LOCAL_COMMERCE_SCHEMA_V",
+                 "ESTANCO_SCHEMA_V", "SHISHA_SCHEMA_V", "ACTIVITIES_SCHEMA_V"):
+        assert isinstance(getattr(ce, name), int), name
+    assert isinstance(pl.REPUTED_SCHEMA_V, int)
+    # …et que les fetch l'ESTAMPILLENT (sinon la vérification serait toujours fausse).
+    import inspect
+    for fn, const in ((ce.fetch_markets, "MARKET_SCHEMA_V"),
+                      (ce.fetch_local_commerces, "LOCAL_COMMERCE_SCHEMA_V"),
+                      (ce.fetch_estancos, "ESTANCO_SCHEMA_V"),
+                      (ce.fetch_shisha_bars, "SHISHA_SCHEMA_V"),
+                      (ce.fetch_activities, "ACTIVITIES_SCHEMA_V")):
+        assert const in inspect.getsource(fn), f"{fn.__name__} n'estampille pas {const}"
+
+
+def test_freshness_follows_the_nature_of_the_information():
+    """V2-78 point 1 — le délai suit la NATURE de l'information, jamais le coût de la
+    passe : 21 j pour ce qui BOUGE (commerces, réputés, services), 90 j pour ce qui ne
+    bouge pas (activités du secteur, sites et coordonnées). Tous configurables."""
+    from enrich.settings import settings as S
+    for n in ("food_delivery", "babysitter", "rental_web", "market", "reputed",
+              "local_commerce", "estanco", "shisha"):
+        assert getattr(S, f"{n}_max_age_days") == 21, n
+    for n in ("activities", "service_complete"):
+        assert getattr(S, f"{n}_max_age_days") == 90, n
+
+
+def test_recipe_second_guide_same_sector_costs_a_fraction(http_client):
+    """RECETTE V2-78 point 6 — deux générations le MÊME JOUR dans un même secteur (points
+    distincts) : la seconde consomme la mémoire et coûte une FRACTION. Puis la MÊME
+    génération après un changement de version de prompt re-collecte, malgré une mémoire
+    récente. Mesuré sur le coût réel du job (`summary['cost_cts']`)."""
+    from enrich import claude_enrich as ce
+    oid, pid1, pid2 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+        conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        conn.execute("INSERT INTO owners (id,email,full_name) VALUES (%s,%s,'S')",
+                     (oid, f"{oid}@test.local"))
+        for pid, dx in ((pid1, 0.0), (pid2, 0.004)):      # deux points DISTINCTS
+            conn.execute(
+                """INSERT INTO properties (id,owner_id,name,address_line1,city,
+                       country_code,guest_guide,geom,geocode_source,geocode_accuracy)
+                   VALUES (%s,%s,'G','Rue','Orihuela Costa','ES',TRUE,
+                       ST_SetSRID(ST_MakePoint(%s,%s),4326),'manual','manual')""",
+                (pid, oid, PROP_LON + dx, PROP_LAT))
+        conn.commit()
+    picks = [{"name": "Casa Manolo", "category": "restaurant",
+              "address": "Av Manolo, La Zenia", "reason": "Arroces", "source_url": "u1"}]
+    try:
+        s1 = pipeline.run(pid1, use_claude=True, trigger="guest",
+                          only_categories={"restaurant"}, http_client=http_client,
+                          anthropic_client=FakeAnthropic(reputed_places=picks))
+        s2 = pipeline.run(pid2, use_claude=True, trigger="guest",
+                          only_categories={"restaurant"}, http_client=http_client,
+                          anthropic_client=FakeAnthropic(reputed_places=picks))
+        assert s1["cost_cts"] > 0
+        assert s2["cost_cts"] < s1["cost_cts"], (s1["cost_cts"], s2["cost_cts"])
+        # Le step DIT que la mémoire a servi, et depuis quand.
+        with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+            steps = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                                 (s2["job_id"],)).fetchone()["steps"]
+        assert steps["reputed_sorties"]["source"] == "memory"
+        assert steps["reputed_sorties"]["age_days"] == 0
+
+        # BUMP DE VERSION : la mémoire est récente (0 j) mais le prompt a changé → on
+        # re-collecte. C'est le piège payé deux fois (V2-73b, V2-77f), désormais tenu.
+        pid3 = str(uuid.uuid4())
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute(
+                """INSERT INTO properties (id,owner_id,name,address_line1,city,
+                       country_code,guest_guide,geom,geocode_source,geocode_accuracy)
+                   VALUES (%s,%s,'G','Rue','Orihuela Costa','ES',TRUE,
+                       ST_SetSRID(ST_MakePoint(%s,%s),4326),'manual','manual')""",
+                (pid3, oid, PROP_LON + 0.008, PROP_LAT))
+            conn.commit()
+        bumped = pipeline.REPUTED_SCHEMA_V + 1
+        try:
+            pipeline.REPUTED_SCHEMA_V = bumped
+            s3 = pipeline.run(pid3, use_claude=True, trigger="guest",
+                              only_categories={"restaurant"}, http_client=http_client,
+                              anthropic_client=FakeAnthropic(reputed_places=picks))
+        finally:
+            pipeline.REPUTED_SCHEMA_V = bumped - 1
+        with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+            st3 = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                               (s3["job_id"],)).fetchone()["steps"]
+        assert st3["reputed_sorties"].get("source") != "memory", st3["reputed_sorties"]
+        assert s3["cost_cts"] > s2["cost_cts"]
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
+            conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+            conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+            conn.commit()

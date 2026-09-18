@@ -179,6 +179,23 @@ def upsert_area_facts(conn, country_code: str, admin_area: str | None,
         )
 
 
+
+def get_area_fact_with_age(conn, country_code: str, admin_area: str | None,
+                           fact_type: str) -> tuple[dict | None, int | None]:
+    """Contenu d'un fait de secteur ET son ÂGE EN JOURS (V2-78) — `(None, None)` s'il
+    n'existe pas. L'âge est ce qui permet à `sector.memory_decision` de trancher, et à
+    `steps` de dire « mémoire (âge 3 j) » plutôt qu'un opaque « sauté »."""
+    row = conn.execute(
+        """SELECT content,
+                  EXTRACT(EPOCH FROM (now() - fetched_at))::bigint / 86400 AS age_days
+             FROM area_facts
+            WHERE country_code = %s AND admin_area IS NOT DISTINCT FROM %s
+              AND fact_type = %s""",
+        (country_code, admin_area, fact_type)).fetchone()
+    if row is None:
+        return None, None
+    return row["content"], int(row["age_days"])
+
 def area_facts_fresh(conn, country_code: str, admin_area: str | None,
                      max_age_days: int = 180) -> bool:
     """True si les 3 area_facts existent déjà et sont récents (mutualisation)."""
@@ -385,6 +402,24 @@ def upsert_editorial_pick(conn, *, country_code: str, city: str, city_norm: str,
          source_url, verified_on, lon, lat, phone, website, locality, name_local),
     )
 
+
+
+def sector_editorial_age_days(conn, country_code: str, city_norm: str) -> int | None:
+    """Âge (en jours) de la mémoire éditoriale la PLUS RÉCENTE d'un secteur — V2-78.
+
+    La garde d'appel de `reputed_sorties` était posée sur `api_costs` PAR LOGEMENT : deux
+    guides d'un même secteur relançaient chacun la passe (47,8 ct en moyenne, la plus
+    chère), alors que la mémoire de secteur (`editorial_picks`) était déjà pleine. La
+    question juste n'est pas « ce logement a-t-il déjà payé ? » mais « le SECTEUR a-t-il
+    une mémoire récente ? ». `None` = aucune mémoire pour ce secteur."""
+    row = conn.execute(
+        """SELECT EXTRACT(EPOCH FROM (now() - max(last_seen)))::bigint / 86400 AS age_days
+             FROM editorial_picks
+            WHERE country_code = %s AND city_norm = %s""",
+        (country_code.upper(), city_norm)).fetchone()
+    if row is None or row["age_days"] is None:
+        return None
+    return int(row["age_days"])
 
 def sector_editorial_picks(conn, country_code: str, city_norm: str, category: str,
                            max_age_days: int) -> list[dict]:

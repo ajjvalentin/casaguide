@@ -104,8 +104,16 @@ class Settings:
     # Livraison de repas par zone (V2-07 volet 1) : cadence de rafraîchissement
     # PROPRE (les plateformes évoluent lentement) + plafond de recherches web par
     # appel (coût maîtrisé). Mutualisé par (pays, commune) via area_facts.
+    # ── FRAÎCHEUR DE LA MÉMOIRE DE SECTEUR (V2-78) ─────────────────────────────
+    # « La pertinence d'une information à jour prime sur l'économie : une donnée périmée
+    # est un guide qui trompe » (André, 18/09). Le délai suit donc la NATURE de
+    # l'information, jamais le coût de la passe :
+    #   · 21 j — ce qui BOUGE : commerces, réputés, services (un commerce ferme, un
+    #     loueur change de numéro, un bar à chicha ouvre ou disparaît) ;
+    #   · 90 j — ce qui NE bouge pas : activités du secteur, sites et coordonnées.
+    # Tous configurables ; la décision elle-même vit dans `enrich/sector.py`.
     food_delivery_max_age_days: int = int(
-        os.getenv("CASAGUIDE_FOOD_DELIVERY_MAX_AGE_DAYS", "90"))
+        os.getenv("CASAGUIDE_FOOD_DELIVERY_MAX_AGE_DAYS", "21"))
     food_delivery_max_searches: int = int(
         os.getenv("CASAGUIDE_FOOD_DELIVERY_MAX_SEARCHES", "5"))
 
@@ -115,14 +123,14 @@ class Settings:
     # web par appel, et re-vérification d'une fiche au plus tous les N jours
     # (marqueur `_checked_on` → jamais de re-appel en boucle sur un champ introuvable).
     service_complete_max_age_days: int = int(
-        os.getenv("CASAGUIDE_SERVICE_COMPLETE_MAX_AGE_DAYS", "30"))
+        os.getenv("CASAGUIDE_SERVICE_COMPLETE_MAX_AGE_DAYS", "90"))
     service_complete_max_searches: int = int(
         os.getenv("CASAGUIDE_SERVICE_COMPLETE_MAX_SEARCHES", "6"))
     # Baby-sitting (V2-07 volet 2) : POI créés par Claude+web (validation
     # propriétaire), cadence de re-recherche PROPRE (par logement — le vide est un
     # résultat valide qu'on mémorise via api_costs pour ne pas re-appeler).
     babysitter_max_age_days: int = int(
-        os.getenv("CASAGUIDE_BABYSITTER_MAX_AGE_DAYS", "90"))
+        os.getenv("CASAGUIDE_BABYSITTER_MAX_AGE_DAYS", "21"))
     babysitter_max_searches: int = int(
         os.getenv("CASAGUIDE_BABYSITTER_MAX_SEARCHES", "5"))
     # Plafond de plateformes/agences de baby-sitting RETENUES (V2-44) : la règle
@@ -137,7 +145,7 @@ class Settings:
     # FUSIONNÉS avec l'OSM (V2-40). Cadence propre par logement, plafond de recherches,
     # plafond de loueurs retenus (les plus proches).
     rental_web_max_age_days: int = int(
-        os.getenv("CASAGUIDE_RENTAL_WEB_MAX_AGE_DAYS", "90"))
+        os.getenv("CASAGUIDE_RENTAL_WEB_MAX_AGE_DAYS", "21"))
     rental_web_max_searches: int = int(
         os.getenv("CASAGUIDE_RENTAL_WEB_MAX_SEARCHES", "5"))
     rental_web_max_results: int = int(
@@ -154,7 +162,7 @@ class Settings:
     # Marchés hebdomadaires (V2-07 volet 3) : découverte MUTUALISÉE par (pays,
     # commune), cache area_facts (fenêtre comme le volet 1) + plafond de recherches.
     market_max_age_days: int = int(
-        os.getenv("CASAGUIDE_MARKET_MAX_AGE_DAYS", "90"))
+        os.getenv("CASAGUIDE_MARKET_MAX_AGE_DAYS", "21"))
     market_max_searches: int = int(
         os.getenv("CASAGUIDE_MARKET_MAX_SEARCHES", "6"))
     # Plafond de SORTIE relevé pour les marchés (V2-07 volet 3bis) : une commune
@@ -209,7 +217,7 @@ class Settings:
     # V2-56c : échantillonner large (12-15 candidats) — le positionnement strict
     # élague, la mémoire de secteur accumule. Plus de recherches web par appel.
     reputed_max_searches: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_SEARCHES", "8"))
-    reputed_max_age_days: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_AGE_DAYS", "90"))
+    reputed_max_age_days: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_AGE_DAYS", "21"))
     reputed_max_tokens: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_TOKENS", "4000"))
     # Activités du secteur (V2-71) : passe web « que fait-on ici ? » (surf, plongée,
     # randonnée, kayak, via ferrata…) — les activités SANS lieu propre, cœur des vacances,
@@ -221,7 +229,7 @@ class Settings:
     # boulangerie, médecin, poste) est VIDE dans le rayon de proximité, découverte web
     # MUTUALISÉE par (pays, commune) — l'épicerie/pharmacie de village qu'OSM ignore. Même
     # régime que les marchés (cache area_facts, plafonds propres).
-    local_commerce_max_age_days: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_MAX_AGE_DAYS", "90"))
+    local_commerce_max_age_days: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_MAX_AGE_DAYS", "21"))
     local_commerce_max_searches: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_MAX_SEARCHES", "6"))
     local_commerce_max_tokens: int = int(os.getenv("CASAGUIDE_LOCAL_COMMERCE_MAX_TOKENS", "6000"))
     # Rayon de PROXIMITÉ (m) : en deçà, un commerce essentiel est « au village » ; au-delà,
@@ -233,10 +241,10 @@ class Settings:
     # estanco — le système croyait avoir trouvé, exactement le piège de Bégadan. Aucun tag
     # OSM ne distingue le bureau de tabac LICENCIÉ d'une cave à cigares, ni un bar à chicha
     # d'un bar ordinaire : seule une source humaine le dit.
-    estanco_max_age_days: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_AGE_DAYS", "90"))
+    estanco_max_age_days: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_AGE_DAYS", "21"))
     estanco_max_searches: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_SEARCHES", "5"))
     estanco_max_tokens: int = int(os.getenv("CASAGUIDE_ESTANCO_MAX_TOKENS", "4000"))
-    shisha_max_age_days: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_AGE_DAYS", "90"))
+    shisha_max_age_days: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_AGE_DAYS", "21"))
     # V2-77e : 4 recherches et 3000 tokens ne suffisaient pas à ratisser par QUARTIER
     # (six lounges connus à Adeje, trois rendus). Le ratissage par quartier multiplie les
     # requêtes, et 10-12 candidats avec site+téléphone+adresse allongent la réponse.

@@ -80,6 +80,7 @@ def generate_guest_guide(*, city: str, country_code: str,
                          email: str | None = None, ip: str | None = None,
                          use_claude: bool = True, do_translate: bool = True,
                          enforce_limits: bool = True, allow_imprecise: bool = False,
+                         refresh_sector: bool = False,
                          heartbeat: "Callable[[], None] | None" = None) -> dict:
     """Génère (ou ressert depuis le cache) un guide voyageur. Renvoie
     `{"property": <row publiée>, "cached": bool, "summary": <résumé pipeline|None>}`.

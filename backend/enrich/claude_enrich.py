@@ -24,6 +24,8 @@ AREA_FACT_TYPES = ("emergency_numbers", "waste_rules", "noise_rules")
 
 # Fait mutualisé (pays + commune) résolu par CLAUDE + recherche web (V2-07 volet 1).
 FOOD_DELIVERY_FACT_TYPE = "food_delivery"
+# Version de CONTENU (V2-78) : un bump invalide la mémoire du secteur — V2-07 v1 : plateformes + preuve.
+FOOD_DELIVERY_SCHEMA_V = 1
 
 # Tarif de la recherche web de l'API Anthropic : ~10 $ / 1000 requêtes.
 _WEB_SEARCH_USD_PER_REQUEST = 10.0 / 1000
@@ -467,7 +469,8 @@ def fetch_food_delivery(city: str, country_code: str,
             entry["verified_on"] = verified
         clean.append(entry)
     note = (data.get("note") or "").strip() if isinstance(data.get("note"), str) else ""
-    return {FOOD_DELIVERY_FACT_TYPE: {"platforms": clean, "note": note}}, meta
+    return {FOOD_DELIVERY_FACT_TYPE: {"platforms": clean, "note": note,
+                                      "v": FOOD_DELIVERY_SCHEMA_V}}, meta
 
 
 # ── Complétion des fiches de service : tel / site / horaires (V2-07 volet 2) ──
@@ -1194,6 +1197,8 @@ def fetch_shisha_bars(city: str, country_code: str, client: anthropic.Anthropic,
 # MATÉRIALISATION en POI `market` (source='claude', status='suggested') est faite
 # PAR LOGEMENT depuis ce fait — voir `pipeline` + `db.insert_market_poi`.
 MARKET_FACT_TYPE = "markets"
+# Version de CONTENU (V2-78) : un bump invalide la mémoire du secteur — V2-07 v3 : jour obligatoire, preuve, position.
+MARKET_SCHEMA_V = 1
 # Un marché découvert au-delà de cette distance du logement n'est pas « local » —
 # garde-fou anti-position aberrante (coordonnées hallucinées / mauvaise commune).
 MARKET_MAX_DIST_M = 25000
@@ -1322,7 +1327,7 @@ def fetch_markets(city: str, country_code: str, client: anthropic.Anthropic,
         if lat is not None and lon is not None:
             entry["lat"], entry["lon"] = lat, lon
         clean.append(entry)
-    return {MARKET_FACT_TYPE: {"markets": clean}}, meta
+    return {MARKET_FACT_TYPE: {"markets": clean, "v": MARKET_SCHEMA_V}}, meta
 
 
 # ── Activités du secteur : « que fait-on ici ? » (V2-71) ──────────────────────
@@ -1457,6 +1462,8 @@ def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
 # pour une pharmacie. Passe web MUTUALISÉE par commune (mairie, pages jaunes locales, office
 # de tourisme, presse), matérialisée en POI par logement (patron des marchés). Preuve ou rien.
 LOCAL_COMMERCE_FACT_TYPE = "local_commerces"
+# Version de CONTENU (V2-78) : un bump invalide la mémoire du secteur — V2-77f v2 : adresse propre exigée (interdiction d'emprunt).
+LOCAL_COMMERCE_SCHEMA_V = 2
 # Catégories ESSENTIELLES éligibles : ce qu'un habitant cherche d'abord au village. Les codes
 # correspondent aux `category_code` du seed (materialisés tels quels en POI).
 LOCAL_COMMERCE_CATEGORIES = ("pharmacy", "supermarket", "bakery", "doctor", "post_office",
@@ -1564,7 +1571,8 @@ def fetch_local_commerces(city: str, country_code: str, client: anthropic.Anthro
         clean.append({"name": name, "category": cat, "place_address": addr,
                       "phone": _s("phone") or None, "source_url": source_url,
                       "verified_on": _s("verified_on") or today})
-    return {LOCAL_COMMERCE_FACT_TYPE: {"commerces": clean}}, meta
+    return {LOCAL_COMMERCE_FACT_TYPE: {"commerces": clean,
+                                       "v": LOCAL_COMMERCE_SCHEMA_V}}, meta
 
 
 # ── Déduplication des marchés (pure — testée sans base ni réseau) ─────────────

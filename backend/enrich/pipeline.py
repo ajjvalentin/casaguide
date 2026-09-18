@@ -27,6 +27,7 @@ import anthropic
 import httpx
 
 from . import claude_enrich, db, dedup, distance, fusion, geocode, judge, overpass, overture
+from . import sector
 from .settings import settings
 
 log = logging.getLogger("casaguide.pipeline")
@@ -189,8 +190,15 @@ _EDITORIAL_NAME_THR = 0.72
 _EDITORIAL_MAX_DIST_M = claude_enrich.MARKET_MAX_DIST_M   # 25 km
 
 
+# Version du PROMPT éditorial (V2-78) : un bump invalide la mémoire du secteur, sinon
+# corriger le prompt resterait sans effet là où la mémoire est pleine (leçon V2-73b/V2-77f).
+REPUTED_SCHEMA_V = 1
+REPUTED_FACT_TYPE = "reputed_sorties"
+
+
 def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
-                                summary: dict) -> dict[str, list[dict]]:
+                                summary: dict,
+                                refresh_sector: bool = False) -> dict[str, list[dict]]:
     """Sélection éditoriale « sorties » (V2-56) : DÉCOUVERTE web des adresses RÉPUTÉES
     (restaurant/bar/cafe), UNE seule fois par run (couvre les trois catégories),
     mémorisée sur `summary`. Renvoie {code: [pick BRUT]} — nom/catégorie/adresse/raison/
@@ -203,8 +211,26 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
     property_id = prop["id"]
     out: dict[str, list[dict]] = {}
     summary["_editorial_picks"] = out
-    if db.recent_operation(conn, property_id, "reputed_sorties",
-                           settings.reputed_max_age_days):
+    # MÉMOIRE DE SECTEUR (V2-78), pas mémoire de logement. La garde portait sur
+    # `api_costs` DU LOGEMENT : deux guides d'un même secteur relançaient chacun la passe
+    # la plus chère (47,8 ct en moyenne, 9 runs pour 5-6 secteurs) alors que
+    # `editorial_picks` était déjà plein. La bonne question est « le SECTEUR a-t-il une
+    # mémoire récente ? ». La mémoire éditoriale est consommée juste après, par catégorie
+    # (`_merge_sector_picks`) — elle n'est donc jamais perdue, seulement pas re-payée.
+    # La mémoire éditoriale vit dans `editorial_picks` (table, V2-56c) — qui ne porte
+    # AUCUNE version. On la double donc d'un MARQUEUR area_fact `reputed_sorties` qui,
+    # lui, porte la version du prompt : âge et version au même endroit, aucune migration.
+    # Sans ce marqueur, un bump de prompt resterait sans effet là où la mémoire est pleine.
+    marker, age = db.get_area_fact_with_age(conn, prop["country_code"], prop["city"],
+                                            REPUTED_FACT_TYPE)
+    dec = sector.memory_decision(marker, age,
+                                 max_age_days=settings.reputed_max_age_days,
+                                 schema_v=REPUTED_SCHEMA_V, refresh=refresh_sector)
+    if dec.use and db.sector_editorial_age_days(
+            conn, prop["country_code"], dedup._norm(prop["city"])) is not None:
+        db.job_step(conn, job_id, "reputed_sorties", {"ok": True, **dec.step_note()})
+        conn.commit()
+        _progress(f"  ✓ sélection éditoriale : mémoire du secteur (âge {age} j)")
         return out
     today = _dt.date.today().isoformat()
     try:
@@ -227,10 +253,13 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
     for pl in places:
         out.setdefault(pl["category"], []).append(pl)   # pick BRUT (positionné plus tard)
     summary["editorial_found"] = len(places)
+    db.upsert_area_facts(conn, prop["country_code"], prop["city"],
+                         {REPUTED_FACT_TYPE: {"v": REPUTED_SCHEMA_V,
+                                              "discovered": len(places)}},
+                         source=settings.anthropic_model)
     db.job_step(conn, job_id, "reputed_sorties",
-                {"ok": True, "discovered": len(places),
-                 "by_category": {k: len(v) for k, v in out.items()},
-                 "cost_cts": round(meta["cost_cts"], 2)})
+                {"ok": True, **dec.step_note(meta["cost_cts"]), "discovered": len(places),
+                 "by_category": {k: len(v) for k, v in out.items()}})
     conn.commit()
     _progress(f"  ✓ sélection éditoriale : {len(places)} adresse(s) réputée(s) "
               f"trouvée(s) — {meta['cost_cts']:.2f} ct")
@@ -749,7 +778,8 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                            max_age_days: int, category: str, subtype: str, meta_key: str,
                            harvested: list[dict], step_name: str,
                            require_address: bool, schema_v: int,
-                           create_category: str | None = None) -> None:
+                           create_category: str | None = None,
+                           refresh_sector: bool = False) -> None:
     """Moteur COMMUN des deux passes V2-77b. Découverte web mutualisée par (pays, commune)
     — un appel par secteur, réutilisé par tous les guides — puis, pour chaque lieu prouvé :
     (1) APPARIEMENT contre les POI déjà moissonnés de la catégorie (`_activity_name_match`,
@@ -761,18 +791,23 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
     new_cat = create_category or category      # V2-77c : créer ailleurs qu'on apparie
     try:
         with conn.transaction():
-            # FRAÎCHEUR **ET** VERSION (V2-77f) : un fait récent mais d'un SCHÉMA périmé
-            # doit être re-collecté, sinon corriger le prompt ne change jamais rien —
-            # le cache masque le correctif (leçon V2-73b, payée deux fois).
-            cached = db.get_area_fact(conn, cc, city, fact_type) or {}
-            up_to_date = (db.area_fact_fresh(conn, cc, city, fact_type, max_age_days)
-                          and cached.get("v") == schema_v)
-            if not up_to_date:
-                fact, meta = fetch(city, cc, ai)
-                db.upsert_area_facts(conn, cc, city, fact, source=settings.anthropic_model)
+            # MÉMOIRE DE SECTEUR (V2-78) : fraîcheur + version + fusion, une seule règle
+            # pour toutes les passes (`enrich/sector.py`).
+            memo, age = db.get_area_fact_with_age(conn, cc, city, fact_type)
+            dec = sector.memory_decision(memo, age, max_age_days=max_age_days,
+                                         schema_v=schema_v, refresh=refresh_sector)
+            spent = 0.0
+            if not dec.use:
+                fresh, meta = fetch(city, cc, ai)
+                # INVARIANT V2-78/V2-56c : la mémoire s'ENRICHIT, ne se VIDE pas — ce que
+                # la collecte du jour n'a pas rendu survit (le web est capricieux).
+                fresh[fact_type][items_key] = sector.merge_items(
+                    (dec.content or {}).get(items_key), fresh[fact_type].get(items_key))
+                db.upsert_area_facts(conn, cc, city, fresh, source=settings.anthropic_model)
                 db.record_costs(conn, prop["id"], job_id, "anthropic", step_name,
                                 meta["attempts"])
-                summary["cost_cts"] += meta["cost_cts"]
+                spent = meta["cost_cts"]
+                summary["cost_cts"] += spent
             fact = db.get_area_fact(conn, cc, city, fact_type) or {}
             found = fact.get(items_key) or []
             # BRUT rendu par le web, mémorisé dans le fait (il survit à la mutualisation) :
@@ -845,7 +880,8 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
             # désormais le BRUT (ce que le web a rendu) du RETENU (ce qui a passé « preuve
             # ou rien »), puis le devenir de chaque retenu.
             db.job_step(conn, job_id, step_name,
-                        {"ok": True, "raw": raw_count, "kept": len(found),
+                        {"ok": True, **dec.step_note(spent if not dec.use else None),
+                         "raw": raw_count, "kept": len(found),
                          "dropped_unproven": max(raw_count - len(found), 0),
                          "marked": marked, "created": created,
                          "skipped_no_place": skipped, "skipped_stacked": stacked})
@@ -865,7 +901,7 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
 
 
 def _discover_estancos(conn, prop, ai, job_id, summary, http_client, origin,
-                       harvested: list[dict]) -> None:
+                       harvested: list[dict], refresh_sector: bool = False) -> None:
     """Estancos de la commune (V2-77b) — UNIQUEMENT dans les pays à réseau licencié, donc
     recensé (`TOBACCO_LICENSED_COUNTRIES`). Ailleurs, aucun appel : il n'y a pas d'annuaire
     d'estancos aux Pays-Bas. Se déclenche même si la catégorie tabac est PLEINE."""
@@ -878,11 +914,11 @@ def _discover_estancos(conn, prop, ai, job_id, summary, http_client, origin,
         max_age_days=settings.estanco_max_age_days,
         category="tobacco", subtype="estanco", meta_key="_estanco",
         harvested=harvested, step_name="estancos", require_address=True,
-        schema_v=claude_enrich.ESTANCO_SCHEMA_V)
+        schema_v=claude_enrich.ESTANCO_SCHEMA_V, refresh_sector=refresh_sector)
 
 
 def _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client, origin,
-                          harvested: list[dict]) -> None:
+                          harvested: list[dict], refresh_sector: bool = False) -> None:
     """Bars à CHICHA de la commune (V2-77b/V2-77c). Aucune garde pays : un shisha lounge
     existe partout où il y a du tourisme.
 
@@ -898,13 +934,15 @@ def _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client, origin,
         max_age_days=settings.shisha_max_age_days,
         category="bar", subtype="shisha", meta_key="_shisha",
         harvested=harvested, step_name="shisha_bars", require_address=False,
-        schema_v=claude_enrich.SHISHA_SCHEMA_V, create_category="shisha")
+        schema_v=claude_enrich.SHISHA_SCHEMA_V, create_category="shisha",
+        refresh_sector=refresh_sector)
 
 
 
 def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
                                               summary: dict, http_client, void_codes: list[str],
-                                              origin: tuple) -> None:
+                                              origin: tuple,
+                                              refresh_sector: bool = False) -> None:
     """Commerces & services ESSENTIELS de village (V2-74) : découverte web MUTUALISÉE par
     commune (cache area_facts, fenêtre propre) PUIS matérialisation en POI 'suggested' par
     logement, UNIQUEMENT pour les catégories VIDES localement (OSM couvre déjà les autres).
@@ -914,14 +952,23 @@ def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
     cc, city = prop["country_code"], prop["city"]
     try:
         with conn.transaction():
-            if not db.area_fact_fresh(conn, cc, city, claude_enrich.LOCAL_COMMERCE_FACT_TYPE,
-                                      settings.local_commerce_max_age_days):
+            memo, age = db.get_area_fact_with_age(
+                conn, cc, city, claude_enrich.LOCAL_COMMERCE_FACT_TYPE)
+            dec = sector.memory_decision(
+                memo, age, max_age_days=settings.local_commerce_max_age_days,
+                schema_v=claude_enrich.LOCAL_COMMERCE_SCHEMA_V, refresh=refresh_sector)
+            spent = 0.0
+            if not dec.use:
                 fact, meta = claude_enrich.fetch_local_commerces(
                     city, cc, ai, lang=prop.get("default_lang") or "fr")
+                ft = claude_enrich.LOCAL_COMMERCE_FACT_TYPE
+                fact[ft]["commerces"] = sector.merge_items(
+                    (dec.content or {}).get("commerces"), fact[ft].get("commerces"))
                 db.upsert_area_facts(conn, cc, city, fact, source=settings.anthropic_model)
                 db.record_costs(conn, prop["id"], job_id, "anthropic",
                                 "local_commerces", meta["attempts"])
-                summary["cost_cts"] += meta["cost_cts"]
+                spent = meta["cost_cts"]
+                summary["cost_cts"] += spent
             fact = db.get_area_fact(conn, cc, city,
                                     claude_enrich.LOCAL_COMMERCE_FACT_TYPE) or {}
             discovered = fact.get("commerces") or []
@@ -951,7 +998,8 @@ def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
                 created += db.insert_local_commerce_poi(conn, prop["id"], poi)
             summary["local_commerces_created"] += created
             db.job_step(conn, job_id, "local_commerces",
-                        {"ok": True, "void": sorted(void_codes), "discovered": len(discovered),
+                        {"ok": True, **dec.step_note(spent if not dec.use else None),
+                         "void": sorted(void_codes), "discovered": len(discovered),
                          "created": created, "skipped_position": skipped_pos})
         _progress(f"  ✓ commerces de village : {created} créé(s) "
                   f"(catégories vides : {', '.join(sorted(void_codes))})")
@@ -1148,7 +1196,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         job_id: str | None = None,
         http_client: httpx.Client | None = None,
         anthropic_client: anthropic.Anthropic | None = None,
-        overture_fetch: Callable[[float, float, int], list[dict]] | None = None) -> dict:
+        overture_fetch: Callable[[float, float, int], list[dict]] | None = None,
+        refresh_sector: bool = False) -> dict:
     """Exécute le pipeline pour un logement. Retourne un résumé.
 
     Si `job_id` est fourni (job 'pending' pré-créé par l'API pour renvoyer un
@@ -1392,7 +1441,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 if is_guest_sorties:
                     city_norm = dedup._norm(prop["city"])
                     raw = _discover_editorial_sorties(
-                        conn, prop, ai, job_id, summary).get(code, [])
+                        conn, prop, ai, job_id, summary,
+                        refresh_sector=refresh_sector).get(code, [])
                     # A. Positionner les FRAIS et les MÉMORISER pour le secteur (V2-56c).
                     if raw:
                         n_sk = _memorize_fresh_picks(
@@ -1516,9 +1566,13 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # un échec réseau n'écrit rien et NE fait PAS échouer le job (le
                 # reste de l'enrichissement est déjà acquis) — « rejeté sans
                 # écriture », doctrine du prompt intacte (« N'invente jamais »).
-                if not db.area_fact_fresh(conn, prop["country_code"], prop["city"],
-                                          claude_enrich.FOOD_DELIVERY_FACT_TYPE,
-                                          settings.food_delivery_max_age_days):
+                fd_memo, fd_age = db.get_area_fact_with_age(
+                    conn, prop["country_code"], prop["city"],
+                    claude_enrich.FOOD_DELIVERY_FACT_TYPE)
+                fd_dec = sector.memory_decision(
+                    fd_memo, fd_age, max_age_days=settings.food_delivery_max_age_days,
+                    schema_v=claude_enrich.FOOD_DELIVERY_SCHEMA_V, refresh=refresh_sector)
+                if not fd_dec.use:
                     try:
                         # SAVEPOINT : un échec ici n'annule QUE ce bloc — les
                         # area_facts et POI déjà écrits dans cette transaction
@@ -1527,8 +1581,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         with conn.transaction():
                             fd, meta = claude_enrich.fetch_food_delivery(
                                 prop["city"], prop["country_code"], ai)
-                            n_plat = len(fd[claude_enrich.FOOD_DELIVERY_FACT_TYPE]
-                                         ["platforms"])
+                            # La mémoire s'ENRICHIT, ne se vide pas (invariant V2-78).
+                            _ft = claude_enrich.FOOD_DELIVERY_FACT_TYPE
+                            fd[_ft]["platforms"] = sector.merge_items(
+                                (fd_dec.content or {}).get("platforms"),
+                                fd[_ft].get("platforms"))
+                            n_plat = len(fd[_ft]["platforms"])
                             db.upsert_area_facts(conn, prop["country_code"],
                                                  prop["city"], fd,
                                                  source=settings.anthropic_model)
@@ -1537,7 +1595,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             summary["cost_cts"] += meta["cost_cts"]
                             db.job_step(conn, job_id, "food_delivery",
                                         {"ok": True, "platforms": n_plat,
-                                         "cost_cts": round(meta["cost_cts"], 2)})
+                                         **fd_dec.step_note(meta["cost_cts"])})
                         _progress(f"  ✓ livraison de repas : {n_plat} plateforme(s) "
                                   f"— {meta['cost_cts']:.2f} ct")
                     except Exception as fd_exc:  # noqa: BLE001 — best-effort
@@ -1711,12 +1769,20 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # exigée (jamais un marqueur ville). Best-effort (SAVEPOINT).
                 try:
                     with conn.transaction():
-                        if not db.area_fact_fresh(
-                                conn, prop["country_code"], prop["city"],
-                                claude_enrich.MARKET_FACT_TYPE,
-                                settings.market_max_age_days):
+                        mk_memo, mk_age = db.get_area_fact_with_age(
+                            conn, prop["country_code"], prop["city"],
+                            claude_enrich.MARKET_FACT_TYPE)
+                        mk_dec = sector.memory_decision(
+                            mk_memo, mk_age, max_age_days=settings.market_max_age_days,
+                            schema_v=claude_enrich.MARKET_SCHEMA_V,
+                            refresh=refresh_sector)
+                        if not mk_dec.use:
                             mk_fact, meta = claude_enrich.fetch_markets(
                                 prop["city"], prop["country_code"], ai, today=today)
+                            _mt = claude_enrich.MARKET_FACT_TYPE
+                            mk_fact[_mt]["markets"] = sector.merge_items(
+                                (mk_dec.content or {}).get("markets"),
+                                mk_fact[_mt].get("markets"))
                             db.upsert_area_facts(conn, prop["country_code"],
                                                  prop["city"], mk_fact,
                                                  source=settings.anthropic_model)
@@ -1725,7 +1791,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             summary["cost_cts"] += meta["cost_cts"]
                             mk_cost = meta["cost_cts"]
                         else:
-                            mk_cost = 0.0  # découverte mutualisée déjà fraîche
+                            mk_cost = 0.0  # mémoire du secteur : aucune dépense
                         # Matérialisation depuis le fait (frais ou fraîchement écrit).
                         fact = db.get_area_fact(conn, prop["country_code"], prop["city"],
                                                 claude_enrich.MARKET_FACT_TYPE) or {}
@@ -1768,10 +1834,11 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                                              "lat": lat, "lon": lon})
                         summary["markets_created"] = m_created
                         db.job_step(conn, job_id, "markets",
-                                    {"ok": True, "discovered": len(discovered),
+                                    {"ok": True,
+                                     **mk_dec.step_note(mk_cost if not mk_dec.use else None),
+                                     "discovered": len(discovered),
                                      "created": m_created, "skipped_duplicate": m_dup,
-                                     "skipped_position": m_nopos,
-                                     "cost_cts": round(mk_cost, 2)})
+                                     "skipped_position": m_nopos})
                     _progress(
                         f"  ✓ marchés : {m_created} créé(s), {m_dup} doublon(s), "
                         f"{m_nopos} sans position — {mk_cost:.2f} ct")
@@ -1847,7 +1914,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     settings.local_commerce_proximity_m, prop.get("country_code"))
                 if void_codes:
                     _discover_and_materialize_local_commerces(
-                        conn, prop, ai, job_id, summary, http_client, void_codes, origin)
+                        conn, prop, ai, job_id, summary, http_client, void_codes, origin,
+                        refresh_sector=refresh_sector)
 
                 # (4h) V2-77b — ESTANCOS & CHICHA : la FAUSSE plénitude. Contrairement à
                 # 4g, ces passes ne regardent PAS si la catégorie est vide : à Adeje elle
@@ -1856,10 +1924,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 wanted_codes = {c["code"] for c in wanted}
                 if "tobacco" in wanted_codes:
                     _discover_estancos(conn, prop, ai, job_id, summary, http_client,
-                                       origin, all_harvested)
+                                       origin, all_harvested, refresh_sector)
                 if "bar" in wanted_codes:
                     _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client,
-                                          origin, all_harvested)
+                                          origin, all_harvested, refresh_sector)
 
                 # V2-77f — LE RÉCAPITULATIF DOIT DIRE LA BASE. `empty_categories` est
                 # calculé à la fin de la moisson, AVANT les passes web : une rubrique
@@ -1931,12 +1999,13 @@ def run_with_retries(property_id: str, *, use_claude: bool = True,
                      anthropic_client: anthropic.Anthropic | None = None,
                      max_retries: int = MAX_RETRIES,
                      retry_delay_s: int = RETRY_DELAY_S,
-                     sleep: Callable[[float], None] = time.sleep) -> dict:
+                     sleep: Callable[[float], None] = time.sleep,
+                     refresh_sector: bool = False) -> dict:
     """Exécute le pipeline puis, si des catégories ont échoué, les rejoue en
     différé (mêmes réglages, même job). `sleep` est injectable pour les tests."""
     summary = run(property_id, use_claude=use_claude, trigger=trigger, job_id=job_id,
                   only_categories=only_categories, http_client=http_client,
-                  anthropic_client=anthropic_client)
+                  anthropic_client=anthropic_client, refresh_sector=refresh_sector)
     job_id = summary["job_id"]
     failed = set((summary.get("failed_categories") or {}).keys())
     attempt = 0
@@ -2051,13 +2120,17 @@ def main() -> None:
                         help="sauter l'étape IA (test des étapes géo)")
     parser.add_argument("--categories", default=None,
                         help="liste de catégories séparées par des virgules")
+    parser.add_argument("--refresh-sector", action="store_true",
+                        help="ignorer la mémoire de secteur et re-collecter (recette, ou "
+                             "signalement client d'une information périmée)")
     parser.add_argument("--trigger", default="manual",
                         choices=["manual", "initial", "refresh"])
     args = parser.parse_args()
 
     cats = set(args.categories.split(",")) if args.categories else None
     result = run(args.property_id, use_claude=not args.no_claude,
-                 trigger=args.trigger, only_categories=cats)
+                 trigger=args.trigger, only_categories=cats,
+                 refresh_sector=args.refresh_sector)
     # Résumé final ÉTENDU (OPS-4 Pièce 3) : POI moissonnés PAR catégorie, complétions
     # de service, créations baby-sitting, coût total, et échecs éventuels EN CLAIR.
     print(f"\n=== Job {result['job_id']} terminé ===", flush=True)
