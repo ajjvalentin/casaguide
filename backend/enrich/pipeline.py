@@ -74,7 +74,8 @@ def _cap_by_travel(code: str, pois: list[dict]) -> list[dict]:
 
 
 def _apply_service_rules_step(conn, code: str, pois: list[dict], prop: dict, ai,
-                              job_id: str, summary: dict, today: str) -> list[dict]:
+                              job_id: str, summary: dict, today: str,
+                              refresh_sector: bool = False) -> list[dict]:
     """Règles de service (V2-50) sur une catégorie de SERVICE : cherche par web le
     contact + le sous-type des POI, complète les champs MANQUANTS, puis RETIRE tout
     service à la fois non contactable ET non qualifiable. Best-effort : si le web échoue,
@@ -84,18 +85,58 @@ def _apply_service_rules_step(conn, code: str, pois: list[dict], prop: dict, ai,
         return pois
     property_id = prop["id"]
     label = db.category_label_fr(conn, code)
+    step = f"service_rules_{code}"
+    # MÉMOIRE DE SECTEUR (V2-78b) — la dernière passe qui n'en avait AUCUNE, et qui
+    # n'écrivait même pas de `job_step` : elle coûtait 12 ct par guide, invisible au
+    # récapitulatif. Sa mémoire est un DICTIONNAIRE `{nom_normalisé: {tél, site,
+    # sous-type}}` : deux guides voisins partagent l'essentiel de leur moisson, mais pas
+    # tout. On n'interroge donc le web que sur les lieux INCONNUS du secteur — la passe
+    # coûte proportionnellement à ce qu'elle APPREND, et RIEN quand elle n'apprend rien.
+    fact_type = claude_enrich.SERVICE_RULES_FACT_PREFIX + code
+    memo, age = db.get_area_fact_with_age(conn, prop["country_code"], prop["city"],
+                                          fact_type)
+    dec = sector.memory_decision(
+        memo, age, max_age_days=settings.service_complete_max_age_days,
+        schema_v=claude_enrich.SERVICE_RULES_SCHEMA_V, refresh=refresh_sector)
+    known = (dec.content or {}).get("by_name") or {} if dec.use else {}
+    todo = [p for p in pois
+            if claude_enrich._norm_service_name(p.get("name")) not in known]
+    if not todo:
+        # Tout est déjà connu du secteur : aucun appel, et on le DIT.
+        db.job_step(conn, job_id, step,
+                    {"ok": True, **dec.step_note(), "asked": 0,
+                     "from_memory": len(pois)})
+        conn.commit()
+        kept, dropped, qualified = claude_enrich.apply_service_rules(pois, known)
+        summary["service_dropped"] += len(dropped)
+        summary["service_qualified"] += qualified
+        return kept
     try:
         with conn.transaction():
             qual, meta = claude_enrich.qualify_services(
-                code, label, pois, prop["city"], prop["country_code"], ai, today=today)
+                code, label, todo, prop["city"], prop["country_code"], ai, today=today)
             db.record_costs(conn, property_id, job_id, "anthropic",
                             "service_rules", meta["attempts"])
             summary["cost_cts"] += meta["cost_cts"]
+            # La mémoire s'ENRICHIT, ne se vide pas (invariant V2-78).
+            merged = sector.merge_map((dec.content or {}).get("by_name"), qual)
+            db.upsert_area_facts(
+                conn, prop["country_code"], prop["city"],
+                {fact_type: {"by_name": merged,
+                             "v": claude_enrich.SERVICE_RULES_SCHEMA_V}},
+                source=settings.anthropic_model)
+            qual = merged
+            db.job_step(conn, job_id, step,
+                        {"ok": True, **dec.step_note(meta["cost_cts"]),
+                         "asked": len(todo), "from_memory": len(pois) - len(todo)})
     except Exception as exc:  # noqa: BLE001 — best-effort : jamais de retrait faute de web
         log.warning("Règles de service (%s / %s) non résolues : %s",
                     code, prop["city"], exc)
         c = _record_failed_call_cost(conn, property_id, job_id, "service_rules", exc)
         summary["cost_cts"] += c
+        db.job_step(conn, job_id, step,
+                    {"ok": False, "error": overpass._short(str(exc)),
+                     "cost_cts": round(c, 2)})
         conn.commit()
         return pois
     kept, dropped, qualified = claude_enrich.apply_service_rules(pois, qual)
@@ -108,7 +149,8 @@ def _apply_service_rules_step(conn, code: str, pois: list[dict], prop: dict, ai,
 
 
 def _discover_web_rentals(conn, prop: dict, origin: tuple, ai, job_id: str,
-                          http_client: httpx.Client | None, summary: dict) -> list[dict]:
+                          http_client: httpx.Client | None, summary: dict,
+                          refresh_sector: bool = False) -> list[dict]:
     """Découverte web des LOUEURS (V2-44 volet 2), prêts à fusionner avec l'OSM.
 
     Chaque loueur (vérifié avec preuve) est GÉOCODÉ par son adresse (l'adresse existe
@@ -119,14 +161,34 @@ def _discover_web_rentals(conn, prop: dict, origin: tuple, ai, job_id: str,
     et renvoie []. Cadence propre par logement (mémoire via api_costs, comme le
     baby-sitting : un vide n'est pas re-cherché à chaque run)."""
     property_id = prop["id"]
-    if db.recent_operation(conn, property_id, "rental_web",
-                           settings.rental_web_max_age_days):
-        return []
+    # MÉMOIRE DE SECTEUR (V2-78b) : les loueurs d'une commune sont les mêmes d'un logement
+    # à l'autre — la mémoire était pourtant posée PAR LOGEMENT (`api_costs`), si bien que
+    # chaque guide repayait 21 ct. La DÉCOUVERTE est mutualisée ; le géocodage, le plafond
+    # et les distances restent propres au logement (ils dépendent de SON point).
+    cc, city = prop["country_code"], prop["city"]
+    memo, age = db.get_area_fact_with_age(conn, cc, city,
+                                          claude_enrich.RENTAL_WEB_FACT_TYPE)
+    dec = sector.memory_decision(memo, age,
+                                 max_age_days=settings.rental_web_max_age_days,
+                                 schema_v=claude_enrich.RENTAL_WEB_SCHEMA_V,
+                                 refresh=refresh_sector)
     today = _dt.date.today().isoformat()
-    try:
+    spent = 0.0
+    if dec.use:
+        renters = (dec.content or {}).get("renters") or []
+        meta = {"cost_cts": 0.0}
+    else:
+      try:
         renters, meta = claude_enrich.fetch_rentals(
             prop["city"], prop["country_code"], ai, today=today)
-    except Exception as exc:  # noqa: BLE001 — best-effort (web/parse)
+        renters = sector.merge_items((dec.content or {}).get("renters"), renters)
+        db.upsert_area_facts(
+            conn, cc, city,
+            {claude_enrich.RENTAL_WEB_FACT_TYPE:
+                {"renters": renters, "v": claude_enrich.RENTAL_WEB_SCHEMA_V}},
+            source=settings.anthropic_model)
+        spent = meta["cost_cts"]
+      except Exception as exc:  # noqa: BLE001 — best-effort (web/parse)
         log.warning("Loueurs (web) non résolus (%s) : %s", prop["city"], exc)
         c = _record_failed_call_cost(conn, property_id, job_id, "rental_web", exc)
         summary["cost_cts"] += c
@@ -136,9 +198,10 @@ def _discover_web_rentals(conn, prop: dict, origin: tuple, ai, job_id: str,
         conn.commit()
         _progress(f"  ⚠ loueurs (web) non résolus : {overpass._short(str(exc))}")
         return []
-    db.record_costs(conn, property_id, job_id, "anthropic", "rental_web",
-                    meta["attempts"])
-    summary["cost_cts"] += meta["cost_cts"]
+      else:
+        db.record_costs(conn, property_id, job_id, "anthropic", "rental_web",
+                        meta["attempts"])
+        summary["cost_cts"] += spent
     # Géocodage par adresse → position ; échec → écarté journalisé.
     geocoded: list[dict] = []
     skipped_geo = 0
@@ -171,13 +234,14 @@ def _discover_web_rentals(conn, prop: dict, origin: tuple, ai, job_id: str,
             log.warning("Distances loueurs web non calculées : %s", exc)
     summary["rental_web_kept"] = len(kept)
     db.job_step(conn, job_id, "rental_web",
-                {"ok": True, "discovered": len(renters), "kept": len(kept),
-                 "skipped_geocode": skipped_geo,
-                 "cost_cts": round(meta["cost_cts"], 2)})
+                {"ok": True, **dec.step_note(spent if not dec.use else None),
+                 "discovered": len(renters), "kept": len(kept),
+                 "skipped_geocode": skipped_geo})
     conn.commit()
     _progress(f"  ✓ loueurs (web) : {len(kept)} retenu(s) / {len(renters)} trouvé(s)"
               + (f", {skipped_geo} sans position" if skipped_geo else "")
-              + f" — {meta['cost_cts']:.2f} ct")
+              + (f" — mémoire du secteur (âge {age} j)" if dec.use
+                 else f" — {spent:.2f} ct"))
     return kept
 
 
@@ -1349,7 +1413,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # apporte tél+site — gagne souvent).
                 if code == "rental" and use_claude and ai is not None:
                     pois = pois + _discover_web_rentals(
-                        conn, prop, origin, ai, job_id, http_client, summary)
+                        conn, prop, origin, ai, job_id, http_client, summary,
+                                        refresh_sector)
                 # ── V2-52 volet 1 : fusion Overture (contacts + comblement) ──
                 # Gain 3 : enrichir les contacts des POI OSM appariés (tél/site NULL).
                 # Gain 1 : `atm` AUGMENTÉ des banques Overture (toujours). Gain 2 : les
@@ -1427,7 +1492,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 if use_claude and code in settings.service_rule_categories:
                     pois = _apply_service_rules_step(
                         conn, code, pois, prop, ai, job_id, summary,
-                        _dt.date.today().isoformat())
+                        _dt.date.today().isoformat(), refresh_sector)
                     if not pois:
                         continue
                 # ── V2-56 : sélection éditoriale « sorties » (GUIDE VOYAGEUR) ──
@@ -1722,14 +1787,36 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 # Position = celle du logement (service TÉLÉPHONIQUE). Cadence propre
                 # par logement, mémorisée via api_costs (un VIDE est un résultat
                 # valide qu'on ne re-cherche pas à chaque run). Best-effort.
-                if (prop["lat"] is not None
-                        and not db.recent_operation(
-                            conn, property_id, "babysitter",
-                            settings.babysitter_max_age_days)):
+                # MÉMOIRE DE SECTEUR (V2-78b) : les services de baby-sitting d'une
+                # commune sont les mêmes d'un logement à l'autre. La DÉCOUVERTE est
+                # mutualisée ; la MATÉRIALISATION reste propre au logement (le POI est
+                # posé à SA position — service téléphonique) et tourne donc TOUJOURS,
+                # mémoire ou pas : sans quoi le 2e guide du secteur n'aurait aucun POI.
+                if prop["lat"] is not None:
+                    bs_memo, bs_age = db.get_area_fact_with_age(
+                        conn, prop["country_code"], prop["city"],
+                        claude_enrich.BABYSITTER_FACT_TYPE)
+                    bs_dec = sector.memory_decision(
+                        bs_memo, bs_age,
+                        max_age_days=settings.babysitter_max_age_days,
+                        schema_v=claude_enrich.BABYSITTER_SCHEMA_V,
+                        refresh=refresh_sector)
                     try:
                         with conn.transaction():
-                            sitters, meta = claude_enrich.fetch_babysitters(
-                                prop["city"], prop["country_code"], ai, today=today)
+                            if bs_dec.use:
+                                sitters = (bs_dec.content or {}).get("sitters") or []
+                                meta = {"cost_cts": 0.0, "attempts": []}
+                            else:
+                                sitters, meta = claude_enrich.fetch_babysitters(
+                                    prop["city"], prop["country_code"], ai, today=today)
+                                sitters = sector.merge_items(
+                                    (bs_dec.content or {}).get("sitters"), sitters)
+                                db.upsert_area_facts(
+                                    conn, prop["country_code"], prop["city"],
+                                    {claude_enrich.BABYSITTER_FACT_TYPE:
+                                        {"sitters": sitters,
+                                         "v": claude_enrich.BABYSITTER_SCHEMA_V}},
+                                    source=settings.anthropic_model)
                             created = 0
                             for s in sitters:
                                 created += db.insert_service_poi(
@@ -1746,9 +1833,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             summary["babysitters"] = created
                             db.job_step(conn, job_id, "babysitter",
                                         {"ok": True, "created": created,
-                                         "cost_cts": round(meta["cost_cts"], 2)})
+                                         "known": len(sitters),
+                                         **bs_dec.step_note(
+                                             meta["cost_cts"] if not bs_dec.use else None)})
                         _progress(f"  ✓ baby-sitting : {created} créé(s) "
-                                  f"— {meta['cost_cts']:.2f} ct")
+                                  + (f"— mémoire du secteur (âge {bs_age} j)"
+                                     if bs_dec.use else f"— {meta['cost_cts']:.2f} ct"))
                     except Exception as bs_exc:  # noqa: BLE001 — best-effort
                         log.warning("Baby-sitting (%s) non résolu : %s",
                                     prop["city"], bs_exc)

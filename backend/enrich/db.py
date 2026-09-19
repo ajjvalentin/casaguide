@@ -661,6 +661,11 @@ def recent_operation(conn, property_id: str, operation: str,
     """True si une opération `operation` (api_costs) a été enregistrée pour ce
     logement dans la fenêtre — sert de mémoire « on a déjà cherché » (baby-sitting :
     un vide est un résultat valide qu'on ne re-cherche pas à chaque run)."""
+    # V2-78b : PLUS AUCUN APPELANT dans le pipeline — les trois dernières passes qui s'en
+    # servaient (rental_web, babysitter, et la garde de reputed_sorties) sont passées à la
+    # MÉMOIRE DE SECTEUR (`enrich/sector.py`). Conservée : c'est la brique « ce LOGEMENT
+    # a-t-il déjà payé telle opération ? », utile si une passe redevient un jour propre au
+    # logement. La retirer serait une perte sèche pour zéro gain.
     row = conn.execute(
         """SELECT 1 FROM api_costs
            WHERE property_id = %s AND operation = %s

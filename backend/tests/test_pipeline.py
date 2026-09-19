@@ -378,8 +378,11 @@ def test_full_pipeline(property_id, http_client):
         facts = {r["fact_type"]: r["content"] for r in rows}
         # + 'markets' : la DÉCOUVERTE des marchés est mutualisée par commune (V2-07
         # volet 3), mise en cache area_facts comme la livraison de repas.
+        # + 'babysitters' (V2-78b) : dernière passe à quitter la mémoire PAR LOGEMENT —
+        # les services de baby-sitting d'une commune sont les mêmes d'un logement à
+        # l'autre, seule la matérialisation du POI reste propre au logement.
         assert set(facts) == {"emergency_numbers", "waste_rules", "noise_rules",
-                              "food_delivery", "markets", "activities"}
+                              "food_delivery", "markets", "activities", "babysitters"}
         assert facts["markets"]["markets"][0]["weekday"] == 6
         # V2-71 : activités du secteur découvertes (surf) — area_fact mutualisé.
         assert facts["activities"]["activities"][0]["activity"] == "Surf"
@@ -1944,9 +1947,10 @@ def test_food_delivery_malformed_rejected_without_write(property_id, http_client
         facts = {r["fact_type"] for r in conn.execute(
             "SELECT fact_type FROM area_facts WHERE country_code='ES' "
             "AND admin_area='Orihuela Costa'")}
-        # 'markets'/'activities' présents (mutualisés) ; PAS de 'food_delivery' (rejeté).
+        # 'markets'/'activities'/'babysitters' présents (mutualisés, V2-78b) ; PAS de
+        # 'food_delivery' : la réponse malformée est rejetée SANS écriture (acquis V2-07).
         assert facts == {"emergency_numbers", "waste_rules", "noise_rules",
-                         "markets", "activities"}
+                         "markets", "activities", "babysitters"}
         fd_costs = conn.execute(
             "SELECT count(*) c FROM api_costs WHERE job_id=%s AND operation='food_delivery'",
             (result["job_id"],)).fetchone()["c"]
@@ -3391,3 +3395,113 @@ def test_recipe_second_guide_same_sector_costs_a_fraction(http_client):
             conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
             conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
             conn.commit()
+
+
+# ── V2-78b : les trois dernières passes rejoignent la mémoire de secteur ─────
+
+def test_recipe_last_three_passes_served_by_sector_memory(http_client):
+    """RECETTE V2-78b point 3 — deux générations le MÊME JOUR dans un secteur NEUF. La
+    seconde doit afficher `memory` sur les TROIS dernières passes non mutualisées :
+    `rental_web` (21 ct) et `babysitter` (17 ct), dont la mémoire était posée PAR LOGEMENT
+    alors que leurs données sont communales, et `service_rules` (12 ct), qui n'avait NI
+    mémoire NI `job_step` — invisible au récapitulatif. Le coût de la 2e génération doit
+    tomber franchement."""
+    oid, pid1, pid2 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+        conn.execute("INSERT INTO owners (id,email,full_name) VALUES (%s,%s,'S')",
+                     (oid, f"{oid}@test.local"))
+        for pid, dx in ((pid1, 0.0), (pid2, 0.004)):
+            conn.execute(
+                """INSERT INTO properties (id,owner_id,name,address_line1,city,
+                       country_code,geom,geocode_source,geocode_accuracy)
+                   VALUES (%s,%s,'G','Rue','Orihuela Costa','ES',
+                       ST_SetSRID(ST_MakePoint(%s,%s),4326),'manual','manual')""",
+                (pid, oid, PROP_LON + dx, PROP_LAT))
+        conn.commit()
+    try:
+        s1 = pipeline.run(pid1, use_claude=True, trigger="manual",
+                          http_client=http_client, anthropic_client=FakeAnthropic())
+        s2 = pipeline.run(pid2, use_claude=True, trigger="manual",
+                          http_client=http_client, anthropic_client=FakeAnthropic())
+        with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+            st1 = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                               (s1["job_id"],)).fetchone()["steps"]
+            st2 = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                               (s2["job_id"],)).fetchone()["steps"]
+        # 1er guide : secteur neuf → tout est collecté à frais.
+        assert st1["rental_web"]["source"] == "fresh"
+        assert st1["babysitter"]["source"] == "fresh"
+        # `service_rules` n'est exercé que si la moisson a des POI de service
+        # (rental/taxi/laundry) ; cette moisson-ci n'en a pas. Sa mémoire et son step
+        # sont éprouvés directement par le test suivant.
+        rules1 = [k for k in st1 if k.startswith("service_rules_")]
+        # 2e guide, même secteur, même jour : les trois passes sur MÉMOIRE.
+        assert st2["rental_web"]["source"] == "memory", st2["rental_web"]
+        assert st2["babysitter"]["source"] == "memory", st2["babysitter"]
+        for k in rules1:
+            assert st2[k]["source"] == "memory", (k, st2[k])
+            assert st2[k]["asked"] == 0            # rien de neuf à apprendre
+        # …et le baby-sitting est quand même MATÉRIALISÉ pour ce logement-ci.
+        assert st2["babysitter"]["created"] >= 1
+        assert s2["cost_cts"] < s1["cost_cts"], (s1["cost_cts"], s2["cost_cts"])
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
+            conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+            conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+            conn.commit()
+
+
+def test_service_rules_asks_only_about_what_the_sector_does_not_know(monkeypatch,
+                                                                    property_id):
+    """V2-78b — `service_rules` (12 ct/guide) n'avait NI mémoire NI `job_step` : elle
+    dépensait à chaque run, invisible au récapitulatif. Sa mémoire est un DICTIONNAIRE par
+    nom : deux guides voisins partagent l'essentiel de leur moisson, mais pas tout. On
+    n'interroge donc le web que sur les lieux INCONNUS — la passe coûte proportionnellement
+    à ce qu'elle APPREND, et RIEN quand elle n'apprend rien."""
+    from enrich import db as edb, claude_enrich as ce
+    asked: list[list[str]] = []
+
+    def fake_qualify(code, label, pois, city, cc, client, today=None):
+        asked.append([p["name"] for p in pois])
+        return ({ce._norm_service_name(p["name"]): {"phone": "+34 1",
+                                                    "source_url": "https://e.test"}
+                  for p in pois}, {"cost_cts": 3.0, "attempts": []})
+
+    monkeypatch.setattr(ce, "qualify_services", fake_qualify)
+    prop = {"id": property_id, "city": "Adeje", "country_code": "ES"}
+    summary = {"cost_cts": 0.0, "service_dropped": 0, "service_qualified": 0}
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        jid = str(uuid.uuid4())
+        c.execute("INSERT INTO enrichment_jobs (id, property_id, trigger, status) "
+                  "VALUES (%s,%s,'manual','running')", (jid, property_id))
+        c.commit()
+        pois_a = [{"name": "Loca Rent"}, {"name": "Sol Cars"}]
+        pipeline._apply_service_rules_step(c, "rental", pois_a, prop, object(), jid,
+                                           summary, "2026-09-19")
+        c.commit()
+        assert asked == [["Loca Rent", "Sol Cars"]]
+        # 2e guide du secteur : un lieu CONNU, un NOUVEAU → on ne demande que le nouveau.
+        pois_b = [{"name": "Loca Rent"}, {"name": "Adeje Motos"}]
+        pipeline._apply_service_rules_step(c, "rental", pois_b, prop, object(), jid,
+                                           summary, "2026-09-19")
+        c.commit()
+        assert asked[1] == ["Adeje Motos"], asked
+        # 3e guide : tout est connu → AUCUN appel, et le step le dit.
+        pois_c = [{"name": "Loca Rent"}, {"name": "Sol Cars"}]
+        pipeline._apply_service_rules_step(c, "rental", pois_c, prop, object(), jid,
+                                           summary, "2026-09-19")
+        c.commit()
+        assert len(asked) == 2, "un appel web a eu lieu alors que tout était connu"
+        steps = c.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                          (jid,)).fetchone()["steps"]
+    st = steps["service_rules_rental"]
+    assert st["source"] == "memory" and st["asked"] == 0 and st["from_memory"] == 2
+    # La mémoire a bien ENRICHI (les trois noms), jamais remplacé.
+    with edb.connect() as c:
+        fact = edb.get_area_fact(c, "ES", "Adeje", "service_rules_rental")
+    assert set(fact["by_name"]) == {ce._norm_service_name(n) for n in
+                                    ("Loca Rent", "Sol Cars", "Adeje Motos")}

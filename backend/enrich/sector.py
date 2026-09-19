@@ -110,3 +110,21 @@ def merge_items(old: list | None, fresh: list | None) -> list:
     survivors = [it for it in old
                  if _key(it.get("name")) and _key(it.get("name")) not in seen]
     return fresh + survivors
+
+
+def merge_map(old: dict | None, fresh: dict | None) -> dict:
+    """Même invariant que `merge_items`, pour une mémoire en DICTIONNAIRE (V2-78b) —
+    les règles de service mémorisent `{nom_normalisé: {phone, website, subtype…}}`.
+    Le frais gagne clé par clé, ce qui n'a pas été redemandé SURVIT."""
+    out = dict(old or {})
+    out.update({k: v for k, v in (fresh or {}).items() if v})
+    return out
+
+
+def unknown_names(memory: dict | None, names) -> list:
+    """Ce que la mémoire du secteur NE SAIT PAS encore (V2-78b). Les règles de service
+    ne se sautent pas en bloc : deux guides voisins partagent l'essentiel de leur moisson,
+    mais pas tout. On n'interroge donc le web que sur les lieux INCONNUS — la passe coûte
+    alors proportionnellement à ce qu'elle apprend, et zéro quand elle n'apprend rien."""
+    known = set(memory or {})
+    return [n for n in names if n not in known]

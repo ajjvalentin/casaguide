@@ -1461,6 +1461,16 @@ def fetch_activities(city: str, country_code: str, client: anthropic.Anthropic,
 # bbox), le guide sert la ville voisine à 10 km comme « le plus proche » — faux, et dangereux
 # pour une pharmacie. Passe web MUTUALISÉE par commune (mairie, pages jaunes locales, office
 # de tourisme, presse), matérialisée en POI par logement (patron des marchés). Preuve ou rien.
+# V2-78b — les trois dernières passes non mutualisées. Leurs données sont COMMUNALES
+# (les loueurs, les baby-sitters et les règles de service d'un secteur ne changent pas
+# d'un logement à l'autre) mais leur mémoire était posée PAR LOGEMENT (`api_costs`) ou
+# absente : chaque guide repayait. Même régime que les autres désormais.
+RENTAL_WEB_FACT_TYPE = "rental_web"
+RENTAL_WEB_SCHEMA_V = 1
+BABYSITTER_FACT_TYPE = "babysitters"
+BABYSITTER_SCHEMA_V = 1
+SERVICE_RULES_FACT_PREFIX = "service_rules_"     # + code de catégorie (rental, taxi…)
+SERVICE_RULES_SCHEMA_V = 1
 LOCAL_COMMERCE_FACT_TYPE = "local_commerces"
 # Version de CONTENU (V2-78) : un bump invalide la mémoire du secteur — V2-77f v2 : adresse propre exigée (interdiction d'emprunt).
 LOCAL_COMMERCE_SCHEMA_V = 2
