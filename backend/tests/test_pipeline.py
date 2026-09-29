@@ -3505,3 +3505,128 @@ def test_service_rules_asks_only_about_what_the_sector_does_not_know(monkeypatch
         fact = edb.get_area_fact(c, "ES", "Adeje", "service_rules_rental")
     assert set(fact["by_name"]) == {ce._norm_service_name(n) for n in
                                     ("Loca Rent", "Sol Cars", "Adeje Motos")}
+
+
+# ── V2-78c : la mémoire déclarée ne doit plus jamais facturer ────────────────
+
+def test_memory_contradictions_is_pure_and_names_the_lying_pass():
+    """Garde de cohérence (V2-78c), PURE : une passe déclarée `memory` qui a facturé est
+    nommée ; une passe fraîche qui facture est normale ; l'opération partagée
+    `service_rules` n'est contradictoire que si TOUS ses steps disent `memory`."""
+    from enrich import sector
+    steps = {"reputed_sorties": {"source": "memory"},
+             "rental_web": {"source": "fresh"},
+             "babysitter": {"source": "memory"},
+             "service_rules_rental": {"source": "memory"},
+             "service_rules_taxi": {"source": "fresh"},
+             "geocode": {"ok": True}}
+    costs = {"reputed_sorties": 47.74, "rental_web": 16.0, "service_rules": 9.5,
+             "judge": 2.0}
+    assert sector.memory_contradictions(steps, costs) == [
+        {"pass": "reputed_sorties", "cost_cts": 47.74}]
+    steps["service_rules_taxi"] = {"source": "memory"}
+    assert {c["pass"] for c in sector.memory_contradictions(steps, costs)} == {
+        "reputed_sorties", "service_rules"}
+    assert sector.memory_contradictions({}, costs) == []
+
+
+def test_merge_map_keeps_negative_answers_without_erasing_known_ones():
+    """V2-78c — « demandé, rien trouvé » entre en mémoire (sinon le lieu relance l'appel à
+    chaque guide) mais n'écrase jamais une réponse pleine déjà acquise."""
+    from enrich import sector
+    old = {"loca rent": {"phone": "+34 1"}}
+    out = sector.merge_map(old, {"loca rent": {}, "sol cars": {}})
+    assert out == {"loca rent": {"phone": "+34 1"}, "sol cars": {}}
+
+
+def test_service_rules_remembers_what_the_web_did_not_find(monkeypatch, property_id):
+    """V2-78c (Altea : trois appels, 33,5 ct) — un lieu pour lequel le web ne rend RIEN
+    (ou le rend sous une autre graphie) n'entrait jamais en mémoire : il restait inconnu
+    et relançait l'appel à chaque guide. Désormais retenu comme `{}` sous le nom DEMANDÉ."""
+    from enrich import db as edb, claude_enrich as ce
+    asked: list[list[str]] = []
+
+    def fake_qualify(code, label, pois, city, cc, client, today=None):
+        asked.append([p["name"] for p in pois])
+        # Le web ne rend QU'UN lieu, et sous une autre graphie ; l'autre : rien.
+        return ({"radio taxi altea": {"phone": "+34 2", "source_url": "u"}},
+                {"cost_cts": 6.5, "attempts": []})
+
+    monkeypatch.setattr(ce, "qualify_services", fake_qualify)
+    prop = {"id": property_id, "city": "Altea", "country_code": "ES"}
+    summary = {"cost_cts": 0.0, "service_dropped": 0, "service_qualified": 0}
+    with edb.connect() as c:
+        c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        jid = str(uuid.uuid4())
+        c.execute("INSERT INTO enrichment_jobs (id, property_id, trigger, status) "
+                  "VALUES (%s,%s,'manual','running')", (jid, property_id))
+        c.commit()
+        try:
+            for _ in range(2):
+                pipeline._apply_service_rules_step(
+                    c, "taxi", [{"name": "Taxi Altea"}, {"name": "Taxis Pepe"}], prop,
+                    object(), jid, summary, "2026-09-29")
+                c.commit()
+            assert len(asked) == 1, f"re-demandé malgré la mémoire : {asked}"
+            st = c.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                           (jid,)).fetchone()["steps"]["service_rules_taxi"]
+            assert st["source"] == "memory" and st["asked"] == 0
+        finally:
+            c.execute("DELETE FROM area_facts WHERE country_code='ES'")
+            c.commit()
+
+
+@pytest.mark.parametrize("reputed", [
+    [],   # le PIÈGE d'Altea : 1er guide sans pick mémorisé → le 2e rappelait le web
+    [{"name": "Casa Manolo", "category": "restaurant", "address": "Av Manolo, La Zenia",
+      "reason": "Arroces", "source_url": "u1"}],
+])
+def test_recipe_second_guide_memory_means_no_bill(http_client, reputed):
+    """RECETTE V2-78c point 4 — deux générations GUIDE VOYAGEUR dans un secteur NEUF : le
+    2e guide affiche `memory` ET n'a AUCUNE ligne `api_costs` pour ces passes. Mesuré sur
+    la vraie base, en comparant les deux sources de vérité du MÊME job."""
+    from enrich import sector
+    oid, pid1, pid2 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+        conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        conn.execute("INSERT INTO owners (id,email,full_name) VALUES (%s,%s,'S')",
+                     (oid, f"{oid}@test.local"))
+        for pid, dx in ((pid1, 0.0), (pid2, 0.004)):
+            conn.execute(
+                """INSERT INTO properties (id,owner_id,name,address_line1,city,
+                       country_code,guest_guide,geom,geocode_source,geocode_accuracy)
+                   VALUES (%s,%s,'G','Rue','Orihuela Costa','ES',TRUE,
+                       ST_SetSRID(ST_MakePoint(%s,%s),4326),'manual','manual')""",
+                (pid, oid, PROP_LON + dx, PROP_LAT))
+        conn.commit()
+    try:
+        runs = [pipeline.run(pid, use_claude=True, trigger="guest",
+                             http_client=http_client,
+                             anthropic_client=FakeAnthropic(reputed_places=reputed))
+                for pid in (pid1, pid2)]
+        with db.connect() as conn:
+            steps, costs = db.job_steps_and_costs(conn, runs[1]["job_id"])
+        for p in ("reputed_sorties", "rental_web", "babysitter"):
+            assert steps[p]["source"] == "memory", (p, steps[p])
+            assert p not in costs, f"{p} déclaré mémoire mais facturé {costs[p]} ct"
+        memo = [k for k, v in steps.items()
+                if isinstance(v, dict) and v.get("source") == "memory"]
+        assert not ({sector._billed_operation(k) for k in memo} & set(costs)), costs
+        assert steps["memory_coherence"] == {"ok": True, "contradictions": []}
+        assert runs[1]["memory_contradictions"] == []
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
+            conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+            conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+            conn.commit()
+
+
+def test_quality_notes_name_a_memory_contradiction():
+    """V2-78c — la contradiction mémoire/coût remonte dans les `quality_notes` du guide."""
+    from api.guest_guides import _build_quality
+    q = _build_quality({"memory_contradictions": [
+        {"pass": "reputed_sorties", "cost_cts": 47.74}]}, [], None)
+    assert "déclaré mémoire mais facturé : reputed_sorties (47.74 ct)" in q["notes"]
+    assert _build_quality({}, [], None)["notes"] == ""

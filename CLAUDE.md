@@ -2123,6 +2123,17 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
   maison est souvent la meilleure et la plus proche (c'est la leçon finale de V2-73g :
   « l'activité s'accroche au lieu déjà moissonné »).
 
+- **Une trace dit ce qui s'est PASSÉ, jamais ce qui était DÉCIDÉ (V2-78c).** Le step
+  `reputed_sorties` était écrit depuis la *décision* mémoire (`dec.step_note()`) alors qu'une
+  seconde condition, plus loin, renvoyait vers l'appel web : `steps` disait `memory` pendant
+  qu'`api_costs` encaissait 47,74 ct (Altea, 2e guide) — l'économie de −55 % était en partie
+  fictive. Règle : quand deux sources de vérité décrivent le même fait (ici ce que le job
+  **déclare** et ce qu'il a **payé**), on ne se contente pas de corriger le cas vu, on les
+  **confronte mécaniquement** à chaque exécution (`sector.memory_contradictions`, step
+  `memory_coherence`, `quality_notes`) — le prochain écart devient impossible à taire. Corollaire
+  de mémoire : « demandé, rien trouvé » est une RÉPONSE à retenir (mémoire négative), sinon
+  l'inconnu relance l'appel à chaque guide.
+
 - **Le scribe n'est pas optionnel (V2-75, la présente).** `project_tracker.html` était figé
   à V2-44 pour les entrées (et à V2-62 pour son résumé), `CLAUDE.md` à V2-42 : une
   soixantaine de missions non consignées, dont des leçons explicitement marquées « à

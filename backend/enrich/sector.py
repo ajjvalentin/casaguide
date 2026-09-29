@@ -115,9 +115,16 @@ def merge_items(old: list | None, fresh: list | None) -> list:
 def merge_map(old: dict | None, fresh: dict | None) -> dict:
     """Même invariant que `merge_items`, pour une mémoire en DICTIONNAIRE (V2-78b) —
     les règles de service mémorisent `{nom_normalisé: {phone, website, subtype…}}`.
-    Le frais gagne clé par clé, ce qui n'a pas été redemandé SURVIT."""
+    Le frais gagne clé par clé, ce qui n'a pas été redemandé SURVIT.
+
+    MÉMOIRE NÉGATIVE (V2-78c) : une réponse VIDE (`{}` — « demandé, rien trouvé ») entre
+    en mémoire pour une clé INCONNUE (sinon le lieu reste inconnu et relance l'appel à
+    chaque guide), mais n'écrase JAMAIS une réponse pleine déjà acquise (le web est
+    capricieux — le même invariant, clé par clé)."""
     out = dict(old or {})
-    out.update({k: v for k, v in (fresh or {}).items() if v})
+    for k, v in (fresh or {}).items():
+        if v or k not in out:
+            out[k] = v or {}
     return out
 
 
@@ -128,3 +135,36 @@ def unknown_names(memory: dict | None, names) -> list:
     alors proportionnellement à ce qu'elle apprend, et zéro quand elle n'apprend rien."""
     known = set(memory or {})
     return [n for n in names if n not in known]
+
+
+def _billed_operation(step: str) -> str:
+    """Opération `api_costs` qui facture un step. Les noms coïncident, SAUF les règles de
+    service : un step PAR catégorie (`service_rules_rental`…), une seule opération
+    `service_rules` pour toutes."""
+    return "service_rules" if step.startswith("service_rules_") else step
+
+
+def memory_contradictions(steps: dict | None, costs: dict | None) -> list[dict]:
+    """GARDE DE COHÉRENCE (V2-78c). PURE. Compare, pour UN job, ce que `steps` DÉCLARE
+    (`source: memory` = aucun appel) à ce qu'`api_costs` a ENCAISSÉ. Toute passe déclarée
+    mémoire qui a facturé est une contradiction, renvoyée `[{"pass", "cost_cts"}]`.
+
+    POURQUOI. Altea, 2e guide : `reputed_sorties` disait `memory` pendant qu'`api_costs`
+    enregistrait 47,74 ct — l'économie annoncée était en partie fictive, et rien ne le
+    signalait. Une mesure qui se contredit vaut moins que pas de mesure : on ne corrige
+    pas seulement le cas vu, on rend le suivant IMPOSSIBLE À TAIRE.
+
+    Opération partagée (`service_rules`) : la contradiction n'est certaine que si TOUS ses
+    steps disent `memory` — dès qu'un seul a collecté à frais, le coût lui revient."""
+    steps = steps or {}
+    costs = costs or {}
+    by_op: dict[str, list[str]] = {}
+    for name, st in steps.items():
+        if isinstance(st, dict) and st.get("source") in ("memory", "fresh"):
+            by_op.setdefault(_billed_operation(name), []).append(st["source"])
+    out: list[dict] = []
+    for op, sources in sorted(by_op.items()):
+        billed = float(costs.get(op) or 0)
+        if billed > 0 and all(s == "memory" for s in sources):
+            out.append({"pass": op, "cost_cts": round(billed, 2)})
+    return out

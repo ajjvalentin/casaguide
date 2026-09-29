@@ -220,9 +220,15 @@ def _build_quality(summary: dict, missing_langs: list[str],
     if missing_langs:
         why = f" : {translation_error}" if translation_error else ""
         parts.append("traduction " + "/".join(missing_langs) + " échouée" + why)
+    # V2-78c — garde de cohérence : une passe déclarée « mémoire » qui a facturé est
+    # NOMMÉE (une mesure qui se contredit vaut moins que pas de mesure).
+    contra = summary.get("memory_contradictions") or []
+    if contra:
+        parts.append("mesure contradictoire — déclaré mémoire mais facturé : "
+                     + ", ".join(f"{c['pass']} ({c['cost_cts']:.2f} ct)" for c in contra))
     return {"failed_categories": failed, "empty_categories": empty,
             "missing_langs": missing_langs, "translation_error": translation_error,
-            "notes": " ; ".join(parts)}
+            "memory_contradictions": contra, "notes": " ; ".join(parts)}
 
 
 # ── Paiement one-shot Stripe (V2-54 Mission B) ───────────────────────────────

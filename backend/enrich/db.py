@@ -403,24 +403,6 @@ def upsert_editorial_pick(conn, *, country_code: str, city: str, city_norm: str,
     )
 
 
-
-def sector_editorial_age_days(conn, country_code: str, city_norm: str) -> int | None:
-    """Âge (en jours) de la mémoire éditoriale la PLUS RÉCENTE d'un secteur — V2-78.
-
-    La garde d'appel de `reputed_sorties` était posée sur `api_costs` PAR LOGEMENT : deux
-    guides d'un même secteur relançaient chacun la passe (47,8 ct en moyenne, la plus
-    chère), alors que la mémoire de secteur (`editorial_picks`) était déjà pleine. La
-    question juste n'est pas « ce logement a-t-il déjà payé ? » mais « le SECTEUR a-t-il
-    une mémoire récente ? ». `None` = aucune mémoire pour ce secteur."""
-    row = conn.execute(
-        """SELECT EXTRACT(EPOCH FROM (now() - max(last_seen)))::bigint / 86400 AS age_days
-             FROM editorial_picks
-            WHERE country_code = %s AND city_norm = %s""",
-        (country_code.upper(), city_norm)).fetchone()
-    if row is None or row["age_days"] is None:
-        return None
-    return int(row["age_days"])
-
 def sector_editorial_picks(conn, country_code: str, city_norm: str, category: str,
                            max_age_days: int) -> list[dict]:
     """Picks éditoriaux mémorisés du secteur pour une catégorie, récents (< max_age) —
@@ -701,6 +683,18 @@ def job_step(conn, job_id: str, step: str, state: dict) -> None:
         "UPDATE enrichment_jobs SET steps = steps || %s WHERE id = %s",
         (json.dumps({step: state}), job_id),
     )
+
+
+def job_steps_and_costs(conn, job_id: str) -> tuple[dict, dict]:
+    """Les deux sources de vérité d'un job, côte à côte (garde de cohérence V2-78c) :
+    `steps` (ce que le pipeline DÉCLARE) et `{operation: centimes}` (ce qu'`api_costs`
+    a ENCAISSÉ pour CE job)."""
+    row = conn.execute("SELECT steps FROM enrichment_jobs WHERE id = %s",
+                       (job_id,)).fetchone()
+    costs = {r["operation"]: float(r["c"]) for r in conn.execute(
+        """SELECT operation, sum(cost_cts) AS c FROM api_costs
+            WHERE job_id = %s GROUP BY operation""", (job_id,))}
+    return (row["steps"] if row else None) or {}, costs
 
 
 def job_finish(conn, job_id: str, status: str, error: str | None = None) -> None:

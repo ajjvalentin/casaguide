@@ -61,6 +61,28 @@ def _record_failed_call_cost(conn, property_id: str, job_id: str, operation: str
     return round(sum(c["cost_cts"] for c in attempts), 4)
 
 
+def _check_memory_coherence(conn, job_id: str, summary: dict) -> None:
+    """GARDE DE COHÉRENCE de fin de job (V2-78c) : toute passe déclarée `memory` dans
+    `steps` qui a pourtant facturé dans `api_costs` est NOMMÉE — step `memory_coherence`,
+    `summary["memory_contradictions"]` (repris dans les `quality_notes` du guide voyageur)
+    et avertissement au journal. Jamais bloquante : une garde de mesure ne fait pas échouer
+    un guide."""
+    try:
+        steps, costs = db.job_steps_and_costs(conn, job_id)
+        contra = sector.memory_contradictions(steps, costs)
+    except Exception as exc:  # noqa: BLE001 — la garde ne casse jamais le job
+        log.warning("Garde de cohérence mémoire non évaluée : %s", exc)
+        return
+    summary["memory_contradictions"] = contra
+    db.job_step(conn, job_id, "memory_coherence",
+                {"ok": not contra, "contradictions": contra})
+    if contra:
+        detail = ", ".join(f"{c['pass']} ({c['cost_cts']:.2f} ct)" for c in contra)
+        log.warning("Job %s : passe(s) déclarée(s) mémoire mais facturée(s) : %s",
+                    job_id, detail)
+        _progress(f"  ⚠ incohérence mémoire/coût : {detail}")
+
+
 def _cap_by_travel(code: str, pois: list[dict]) -> list[dict]:
     """Cape certaines catégories (aéroport, V2-44) aux N plus proches EN TEMPS DE
     TRAJET, une fois les distances calculées — un aéroport de vacances utile est l'un
@@ -119,7 +141,14 @@ def _apply_service_rules_step(conn, code: str, pois: list[dict], prop: dict, ai,
                             "service_rules", meta["attempts"])
             summary["cost_cts"] += meta["cost_cts"]
             # La mémoire s'ENRICHIT, ne se vide pas (invariant V2-78).
-            merged = sector.merge_map((dec.content or {}).get("by_name"), qual)
+            # V2-78c — MÉMOIRE NÉGATIVE, clé = le nom DEMANDÉ. Un lieu pour lequel le web
+            # n'a rien rendu (ou rendu sous une autre graphie) n'entrait jamais en
+            # mémoire → il restait « inconnu » et relançait l'appel à CHAQUE guide (Altea :
+            # trois appels, 33,5 ct). « Demandé, rien trouvé » est une réponse : on la
+            # retient comme `{}` — jamais redemandée dans le délai de fraîcheur.
+            learned = {claude_enrich._norm_service_name(p.get("name")): {} for p in todo}
+            learned.update(qual)
+            merged = sector.merge_map((dec.content or {}).get("by_name"), learned)
             db.upsert_area_facts(
                 conn, prop["country_code"], prop["city"],
                 {fact_type: {"by_name": merged,
@@ -290,8 +319,14 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
     dec = sector.memory_decision(marker, age,
                                  max_age_days=settings.reputed_max_age_days,
                                  schema_v=REPUTED_SCHEMA_V, refresh=refresh_sector)
-    if dec.use and db.sector_editorial_age_days(
-            conn, prop["country_code"], dedup._norm(prop["city"])) is not None:
+    # V2-78c — LE MARQUEUR FAIT FOI, SEUL. Une seconde condition exigeait aussi des picks
+    # en `editorial_picks` : un secteur au marqueur frais mais SANS pick mémorisé (0 lieu
+    # trouvé, ou aucun positionnable) retombait dans l'appel web… avec une décision
+    # `use=True`, si bien que le step disait `memory` pendant qu'`api_costs` encaissait
+    # 47,74 ct (Altea, 2e guide). Une collecte qui n'a rien rendu est un RÉSULTAT (« une
+    # liste vide est valide ») : la redemander à chaque guide la repayerait pour la même
+    # réponse. `--refresh-sector` reste la voie d'une re-collecte voulue.
+    if dec.use:
         db.job_step(conn, job_id, "reputed_sorties", {"ok": True, **dec.step_note()})
         conn.commit()
         _progress(f"  ✓ sélection éditoriale : mémoire du secteur (âge {age} j)")
@@ -2039,6 +2074,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             if prop.get("guest_guide"):
                 _judge_and_publish_guest(conn, prop, ai, job_id, summary, use_claude)
 
+            _check_memory_coherence(conn, job_id, summary)
             db.job_finish(conn, job_id, "done")
             conn.commit()
             _progress(
