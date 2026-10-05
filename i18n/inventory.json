@@ -328,12 +328,26 @@
     "fr": "Ajuster l'adresse",
     "key": "email.guest_retry_button"
   },
+  "email.guest_retry_button_tech": {
+    "context": "Email d'envoi du guide",
+    "en": "Restart the preparation",
+    "es": "Reiniciar la preparación",
+    "fr": "Relancer la préparation",
+    "key": "email.guest_retry_button_tech"
+  },
   "email.guest_retry_intro": {
     "context": "Email d'envoi du guide",
     "en": "your payment went through, thank you! We couldn't pinpoint the address with certainty. Adjust the point on the map (no new payment) and your guide is generated right away.",
     "es": "¡tu pago se ha recibido, gracias! No hemos podido situar la dirección con certeza. Ajusta el punto en el mapa (sin ningún pago nuevo) y tu guía se genera al instante.",
     "fr": "votre paiement est bien reçu, merci ! Nous n'avons pas pu situer l'adresse avec certitude. Ajustez le point sur la carte (aucun nouveau paiement) et votre guide se génère aussitôt.",
     "key": "email.guest_retry_intro"
+  },
+  "email.guest_retry_intro_tech": {
+    "context": "Email d'envoi du guide",
+    "en": "your payment went through, thank you! Preparing your guide was interrupted by a technical issue on our side — your address is not the problem, there is nothing to correct. Restart the preparation (no new payment); if it happens again, simply reply to this e-mail.",
+    "es": "¡tu pago se ha recibido, gracias! La preparación de tu guía se interrumpió por un incidente técnico por nuestra parte — tu dirección no es el problema, no tienes nada que corregir. Reinicia la preparación (sin ningún pago nuevo); si vuelve a ocurrir, responde simplemente a este correo.",
+    "fr": "votre paiement est bien reçu, merci ! La préparation de votre guide a été interrompue par un incident technique de notre côté — votre adresse n'est pas en cause, vous n'avez rien à corriger. Relancez la préparation (aucun nouveau paiement) ; si cela se reproduit, répondez simplement à cet e-mail.",
+    "key": "email.guest_retry_intro_tech"
   },
   "email.guest_retry_subject": {
     "context": "Email d'envoi du guide",
@@ -342,12 +356,26 @@
     "fr": "Votre Guide Voyageur — une dernière étape",
     "key": "email.guest_retry_subject"
   },
+  "email.guest_retry_subject_tech": {
+    "context": "Email d'envoi du guide",
+    "en": "Your Travel Guide — a hiccup on our side",
+    "es": "Tu Guía de Viaje — un incidente por nuestra parte",
+    "fr": "Votre Guide Voyageur — un incident de notre côté",
+    "key": "email.guest_retry_subject_tech"
+  },
   "email.guest_retry_title": {
     "context": "Email d'envoi du guide",
     "en": "A detail about the address",
     "es": "Un detalle sobre la dirección",
     "fr": "Une précision sur l'adresse",
     "key": "email.guest_retry_title"
+  },
+  "email.guest_retry_title_tech": {
+    "context": "Email d'envoi du guide",
+    "en": "A hiccup on our side",
+    "es": "Un incidente por nuestra parte",
+    "fr": "Un incident de notre côté",
+    "key": "email.guest_retry_title_tech"
   },
   "email.guest_subject": {
     "context": "Email d'envoi du guide",

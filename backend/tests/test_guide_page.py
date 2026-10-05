@@ -1942,3 +1942,24 @@ def test_tobacco_subtypes_are_labelled_and_localised():
     nu = guide_page.render_guide(_prop(city="Adeje"), [],
                                  [_poi("Radikas", "tobacco", "C")], {}, "tok")
     assert "cuisine-tag" not in nu
+
+
+# ── V2-80 : onglet Urgences honnête quand la santé manque ──────────────────────
+
+def test_emergency_tab_says_what_is_missing_on_guest_guides():
+    """Guide voyageur sans pharmacie ni hôpital publiés (Seminyak) : l'onglet Urgences le
+    DIT, dans la langue du guide, et renvoie aux numéros d'urgence. Une pharmacie présente
+    → l'encart ne parle plus que de l'hôpital. Guide propriétaire : jamais d'encart."""
+    html_en = guide_page.render_guide(_prop(), [], [], AREA_FACTS, "tok", lang="en",
+                                      guest_guide=True)
+    assert "vital-gap" in html_en
+    assert "find a mapped pharmacy or hospital nearby" in html_en
+    pharma = {"category_code": "pharmacy", "chapter": "D", "name": "Apotek Kimia Farma",
+              "lat": -8.69, "lon": 115.16}
+    html_fr = guide_page.render_guide(_prop(), [], [pharma], AREA_FACTS, "tok",
+                                      guest_guide=True)
+    assert "hôpital ni de clinique" in html_fr and "ni pharmacie" not in html_fr
+    assert "vital-gap" not in guide_page.render_guide(_prop(), [], [], AREA_FACTS, "tok")
+    # Les 7 langues sont fournies (jamais de fuite FR pour une langue offerte).
+    for key in ("vital_none_pharmacy", "vital_none_hospital", "vital_none_both"):
+        assert set(guide_page._UI7[key]) == {"fr", "en", "es", "it", "de", "nl", "sq"}

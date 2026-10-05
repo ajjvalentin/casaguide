@@ -65,9 +65,20 @@ class CheckoutOut(BaseModel):
     token: str
 
 
+class MapStartOut(BaseModel):
+    lat: float
+    lon: float
+    zoom: int
+
+
 class GuestOrderOut(BaseModel):
     status: str                    # pending|paid|generating|done|failed
     guide_url: str | None = None   # présent seulement quand done
+    # V2-80 — page de reprise : le MOTIF de l'échec (`address` | `technical`, None sinon)
+    # choisit le texte ; `map_start` cadre la carte sur le point ENREGISTRÉ de la commande,
+    # à défaut sur son PAYS (jamais l'Espagne par défaut pour une commande indonésienne).
+    failure_kind: str | None = None
+    map_start: MapStartOut | None = None
 
 
 class GuestRetryIn(BaseModel):
@@ -263,7 +274,32 @@ def get_order(token: str, conn: Conn, request: Request):
     guide_url = None
     if order["status"] == "done" and order["guide_token"]:
         guide_url = f"{_public_base(request)}/g/{order['guide_token']}"
-    return GuestOrderOut(status=order["status"], guide_url=guide_url)
+    failure_kind = (guest_guides.failure_kind_from_error(order.get("error"))
+                    if order["status"] == "failed" else None)
+    return GuestOrderOut(status=order["status"], guide_url=guide_url,
+                         failure_kind=failure_kind,
+                         map_start=_order_map_start(order)
+                         if order["status"] in ("paid", "failed") else None)
+
+
+def _order_map_start(order: dict) -> MapStartOut | None:
+    """Cadrage de la carte de reprise (V2-80) : le point enregistré (zoom rue), sinon un
+    repère du PAYS de la commande (`coarse_locate`, zoom pays), sinon None (la page garde
+    son repli). Best-effort : un repère introuvable ne casse jamais le suivi."""
+    if order.get("lat") is not None and order.get("lon") is not None:
+        return MapStartOut(lat=float(order["lat"]), lon=float(order["lon"]), zoom=16)
+    try:
+        hint = _geocode.coarse_locate(city=order.get("city"),
+                                      postalcode=order.get("postal_code"),
+                                      country_code=order.get("country_code") or "ES")
+    except Exception:  # noqa: BLE001 — repère best-effort
+        log.info("Repère de reprise introuvable (%s)", order.get("country_code"),
+                 exc_info=True)
+        hint = None
+    if hint is None:
+        return None
+    zoom = {"city": 12, "postal": 12, "country": 6}.get(hint["level"], 10)
+    return MapStartOut(lat=hint["lat"], lon=hint["lon"], zoom=zoom)
 
 
 @router.post("/orders/{token}/retry", response_model=OkOut)

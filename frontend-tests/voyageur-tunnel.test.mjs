@@ -113,3 +113,17 @@ test("V2-68c : les quartiers ne bloquent plus l'ouverture de la carte", async (t
     server.close();
   }
 });
+
+test("V2-80 : la reprise s'ouvre sur la commande, dit le bon motif, n'invente aucun point", async (t) => {
+  const chrome = requireChrome("voyageur-tunnel.test.mjs");   // pas de navigateur → LÈVE (V2-76)
+  if (!chrome) { t.skip("aucun navigateur — cf. bandeau final"); return; }   // hatch explicite
+  const server = await startServer();
+  try {
+    const verdict = await runHarness(chrome, server.address().port,
+                                     "voyageur-reprise-harness.html");
+    assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
+    reportVerdict("voyageur-reprise-harness.html", verdict);
+  } finally {
+    server.close();
+  }
+});

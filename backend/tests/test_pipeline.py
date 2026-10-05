@@ -3940,3 +3940,67 @@ def test_pick_street_resolved_in_another_commune_is_refused():
         assert pipeline._geocode_pick_strict(
             {"address": "Carretera de Benitachell, 100, 03730 Jávea"}, prop,
             (38.785, 0.17), client) is None
+
+
+# ── V2-80 : plancher vital — chercher sur le web avant de renoncer ────────────
+
+def test_vital_void_only_in_dense_zone_without_any_vital():
+    """PURE — zone dense SANS aucun hôpital/pharmacie/police moissonné → on cherche
+    pharmacie + hôpital (demandés). Rural, ou une seule vitale présente → rien."""
+    none = [{"category": "restaurant"}, {"category": "bar"}]
+    assert pipeline._vital_void(none, {"hospital", "pharmacy", "police"}, True) \
+        == ["pharmacy", "hospital"]
+    assert pipeline._vital_void(none, {"hospital", "pharmacy"}, False) == []      # rural
+    assert pipeline._vital_void(none + [{"category": "police"}],
+                                {"hospital", "pharmacy"}, True) == []           # une suffit
+    assert pipeline._vital_void(none, {"restaurant"}, True) == []    # non demandées
+
+
+def test_dense_zone_without_vitals_asks_the_web_for_a_hospital(monkeypatch):
+    """V2-80 bout en bout (cas Seminyak) : zone DENSE, OSM ne rend aucun lieu vital →
+    la passe web V2-74 part AVEC l'hôpital ; la clinique trouvée (preuve + adresse) est
+    matérialisée en POI `hospital`. Un village (non dense) sans hôpital ne déclenche rien."""
+    from enrich import overpass as ovp
+    real_fetch = ovp.fetch_grouped
+
+    def dense_fetch(*a, **kw):
+        grouped, failed, harvest = real_fetch(*a, **kw)
+        return grouped, failed, {**harvest, "dense": True}
+    monkeypatch.setattr(ovp, "fetch_grouped", dense_fetch)
+
+    def no_hospital(request):
+        if "overpass" in str(request.url):
+            return httpx.Response(200, json={"elements": []})
+        return _mock_handler(request)
+
+    pid, oid = str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        conn.execute("INSERT INTO owners (id, email, full_name) VALUES (%s,%s,'T')",
+                     (oid, f"{oid}@test.local"))
+        conn.execute(
+            """INSERT INTO properties (id, owner_id, name, address_line1, city, country_code)
+               VALUES (%s,%s,'Villa Vital','Calle 1','Orihuela Costa','ES')""", (pid, oid))
+        conn.commit()
+    ai = FakeAnthropic(local_commerces=[
+        {"name": "Clínica San Jaime", "category": "hospital",
+         "place_address": "Calle Mayor 3, Orihuela Costa", "phone": "+34 966 11 11 11",
+         "source_url": "https://ayto.example/salud", "verified_on": "2026-10-05"}])
+    try:
+        with httpx.Client(transport=httpx.MockTransport(no_hospital)) as client:
+            result = pipeline.run(pid, use_claude=True, trigger="initial",
+                                  only_categories={"hospital", "restaurant"},
+                                  http_client=client, anthropic_client=ai)
+        assert result["vital_web_tried"] == ["hospital"]
+        with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+            hosp = conn.execute("SELECT name FROM pois WHERE property_id=%s "
+                                "AND category_code='hospital'", (pid,)).fetchall()
+            step = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                                (result["job_id"],)).fetchone()["steps"]["local_commerces"]
+        assert [h["name"] for h in hosp] == ["Clínica San Jaime"]
+        assert "hospital" in step["void"]
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
+            conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+            conn.commit()

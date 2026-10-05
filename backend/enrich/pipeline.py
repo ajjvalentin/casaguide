@@ -967,6 +967,20 @@ def _void_essentials(all_harvested: list[dict], wanted_codes: set,
 
 
 
+_VITAL_CATEGORIES = ("hospital", "pharmacy", "police")
+
+
+def _vital_void(all_harvested: list[dict], wanted_codes: set, dense: bool) -> list[str]:
+    """Catégories vitales à chercher sur le web (V2-80) : seulement en zone DENSE (en rural,
+    l'hôpital lointain est la norme) et seulement si AUCUNE des trois catégories vitales n'a
+    été moissonnée. Renvoie les catégories cherchables (hôpital, pharmacie) demandées. PURE."""
+    if not dense:
+        return []
+    if any(p.get("category") in _VITAL_CATEGORIES for p in all_harvested):
+        return []
+    return [c for c in ("pharmacy", "hospital") if c in wanted_codes]
+
+
 # ── V2-77b : estancos & bars à chicha — la FAUSSE PLÉNITUDE ──────────────────
 #
 # V2-74 traitait le VIDE (Bégadan : aucune pharmacie moissonnée). Ici le défaut est
@@ -2159,6 +2173,15 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 void_codes = _void_essentials(
                     all_harvested, {c["code"] for c in wanted}, origin,
                     settings.local_commerce_proximity_m, prop.get("country_code"))
+                # V2-80 — PLANCHER VITAL : en zone DENSE sans AUCUN hôpital/pharmacie/
+                # police moissonné (Seminyak, Bali : OSM ignore apotek et klinik), on
+                # interroge le web AVANT de renoncer — même passe, même appel (un seul
+                # coût), catégories vitales ajoutées aux catégories vides.
+                vital_void = _vital_void(all_harvested, {c["code"] for c in wanted},
+                                         bool(summary.get("dense")))
+                if vital_void:
+                    summary["vital_web_tried"] = vital_void
+                    void_codes = sorted(set(void_codes) | set(vital_void))
                 if void_codes:
                     _discover_and_materialize_local_commerces(
                         conn, prop, ai, job_id, summary, http_client, void_codes, origin,

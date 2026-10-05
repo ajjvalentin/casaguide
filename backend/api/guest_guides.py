@@ -23,21 +23,54 @@ from .config import settings as api_settings
 
 log = logging.getLogger("casaguide.guest_guides")
 
-# Plancher vital (V2-68 p4) : catégories dont l'absence TOTALE en zone urbaine trahit un
-# mauvais ancrage. Une seule d'entre elles présente suffit à livrer (le plus proche).
+# Plancher vital (V2-68 p4 → V2-80) : catégories dont l'absence doit être DITE au voyageur.
+# V2-80 : le plancher ne BLOQUE plus — à Seminyak (Bali), coordonnées parfaites, OSM ignore
+# les apotek et les klinik : la garde calibrée sur l'Europe refusait un guide juste et
+# envoyait au client un e-mail « adresse à préciser » qui le mettait sur une fausse piste.
+# Un guide incomplet, HONNÊTE sur ce qui manque, vaut mieux qu'un client payé sans guide.
 _VITAL_CATEGORIES = ("hospital", "pharmacy", "police")
+_VITAL_LABELS_FR = {"hospital": "hôpital/clinique", "pharmacy": "pharmacie",
+                    "police": "police"}
 
 
-def _vital_floor_ok(summary: dict | None) -> bool:
-    """Le guide a-t-il de quoi être livré (V2-68 p4) ? En zone URBAINE (`dense`), il faut
-    au moins UN lieu vital proche (hôpital, pharmacie ou police) ; sinon l'ancrage est
-    mauvais (centroïde administratif) et on préfère inviter à ajuster le point plutôt que
-    livrer un guide creux. Hors zone dense (rural) : jamais bloquant (dégradation douce,
-    V2-57). `summary=None` (guide resservi du cache) : déjà validé → OK."""
-    if not summary or not summary.get("dense"):
-        return True
-    cats = summary.get("categories") or {}
-    return any(cats.get(c, 0) > 0 for c in _VITAL_CATEGORIES)
+def _vital_missing(property_id: str) -> list[str]:
+    """Catégories vitales SANS aucun lieu PUBLIÉ (retenu par le juge) dans ce guide —
+    mesuré sur la base après toutes les passes (OSM, Overture, web), jamais sur les
+    compteurs de moisson."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT category_code FROM pois
+               WHERE property_id = %s AND status IN ('approved','edited')
+                 AND category_code = ANY(%s)""",
+            (property_id, list(_VITAL_CATEGORIES))).fetchall()
+    present = {r["category_code"] for r in rows}
+    return [c for c in _VITAL_CATEGORIES if c not in present]
+
+
+# Motif d'échec d'une commande (V2-80) — porté en tête de `guest_guide_orders.error`
+# (« [address] … » / « [technical] … », aucune migration). Chaque motif a SON message :
+# l'e-mail ne parle de l'adresse QUE quand l'adresse est en cause.
+FAIL_ADDRESS, FAIL_TECHNICAL = "address", "technical"
+_ADDRESS_CODES = {"geocode_mismatch", "imprecise_location"}
+
+
+def failure_kind_of(exc: BaseException) -> str:
+    """Motif d'un échec de génération : `address` seulement si l'ADRESSE est la cause
+    (commune incohérente, ancrage trop imprécis) ; tout le reste est `technical`."""
+    if isinstance(exc, GuestGuideError) and exc.code in _ADDRESS_CODES:
+        return FAIL_ADDRESS
+    return FAIL_TECHNICAL
+
+
+def failure_kind_from_error(error: str | None) -> str | None:
+    """Relit le motif stocké en tête de `error` (None si pas d'échec ; une erreur
+    antérieure à V2-80, sans préfixe, est lue `technical` — on ne l'impute jamais à
+    l'adresse sans le savoir)."""
+    if not error:
+        return None
+    if error.startswith(f"[{FAIL_ADDRESS}]"):
+        return FAIL_ADDRESS
+    return FAIL_TECHNICAL
 
 
 class GuestGuideError(Exception):
@@ -171,6 +204,8 @@ def generate_guest_guide(*, city: str, country_code: str,
     if do_translate:
         missing_langs, translation_error = _translate_with_retry(property_id)
 
+    # V2-80 : ce qui manque côté santé/sécurité, mesuré sur les lieux PUBLIÉS.
+    summary["vital_missing"] = _vital_missing(property_id)
     quality = _build_quality(summary, missing_langs, translation_error)
     with db.connect() as conn:
         published = repo.get_published_property_by_id(conn, property_id)
@@ -222,6 +257,24 @@ def _build_quality(summary: dict, missing_langs: list[str],
         parts.append("traduction " + "/".join(missing_langs) + " échouée" + why)
     # V2-78c — garde de cohérence : une passe déclarée « mémoire » qui a facturé est
     # NOMMÉE (une mesure qui se contredit vaut moins que pas de mesure).
+    # V2-80 — équipements vitaux introuvables : le guide est LIVRÉ, et le manque est dit
+    # (ici pour l'exploitation ; l'onglet Urgences le dit au voyageur, numéros à l'appui).
+    # NE PAS confondre ABSENCE et ÉCHEC : à Seminyak, OSM connaît 8 pharmacies, 8 hôpitaux
+    # et 7 postes de police (mesuré le 05/10) — un guide qui n'en publie aucun a d'abord
+    # subi un ÉCHEC de moisson (Overpass saturé) ou un rejet du juge. L'échec se dit comme
+    # tel : il appelle un ré-enrichissement, pas un constat d'absence.
+    vm = summary.get("vital_missing") or []
+    failed_v = [c for c in vm if c in (summary.get("failed_categories") or {})]
+    absent_v = [c for c in vm if c not in failed_v]
+    if failed_v:
+        parts.append("moisson EN ÉCHEC pour des catégories vitales (source indisponible, "
+                     "ré-enrichir) : "
+                     + ", ".join(_VITAL_LABELS_FR.get(c, c) for c in failed_v))
+    if absent_v:
+        tried = " (recherche web tentée)" if summary.get("vital_web_tried") else ""
+        parts.append("équipements vitaux introuvables" + tried + " : "
+                     + ", ".join(_VITAL_LABELS_FR.get(c, c) for c in absent_v)
+                     + " — numéros d'urgence fournis")
     # V2-79c — Overture illisible : le guide s'est fait sur OSM seul (moins de contacts,
     # pas de comblement des catégories vides). Le dire, avec la cause.
     if summary.get("overture_error"):
@@ -305,17 +358,19 @@ def fulfill_order_bg(order_id: str, mailer, base_url: str) -> None:
         except Exception:  # noqa: BLE001 — un battement raté ne fait jamais échouer la génération
             log.debug("Battement de cœur commande %s ignoré.", order_id, exc_info=True)
 
-    def _fail_and_offer_retry(reason: str) -> None:
-        """Marque la commande 'failed' + e-mail de reprise (ajuster le point, sans
-        re-paiement). Chemin commun à l'échec de génération ET au plancher vital (p4)."""
-        log.warning("Guide voyageur (commande %s) non livré : %s", order_id, reason)
+    def _fail_and_offer_retry(reason: str, kind: str) -> None:
+        """Marque la commande 'failed' + e-mail de reprise (sans re-paiement). V2-80 :
+        le MOTIF (`address` | `technical`) choisit le message — l'e-mail n'invite à
+        ajuster l'adresse que si l'adresse est en cause."""
+        log.warning("Guide voyageur (commande %s) non livré [%s] : %s",
+                    order_id, kind, reason)
         with db.connect() as conn:
-            repo.fail_guest_order(conn, order_id, reason)
+            repo.fail_guest_order(conn, order_id, f"[{kind}] {reason}")
             conn.commit()
         retry_url = f"{base_url.rstrip('/')}/#/voyageur/reprise/{order['token']}"
         _send_bg_safe(mailer, order["email"],
                       emails.guide_retry_email(retry_url=retry_url,
-                                               lang=order["lang"]))
+                                               lang=order["lang"], kind=kind))
 
     try:
         res = generate_guest_guide(
@@ -326,16 +381,13 @@ def fulfill_order_bg(order_id: str, mailer, base_url: str) -> None:
             use_claude=True, do_translate=True, enforce_limits=False,
             heartbeat=_beat)
     except Exception as exc:  # noqa: BLE001 — mismatch/pipeline : jamais de re-paiement
-        _fail_and_offer_retry(f"{type(exc).__name__}: {exc}")
+        _fail_and_offer_retry(f"{type(exc).__name__}: {exc}", failure_kind_of(exc))
         return
-    # PLANCHER VITAL (V2-68 p4, durcit V2-57) : en zone URBAINE, un guide sans AUCUN
-    # hôpital/pharmacie/police proche trahit un mauvais ancrage (centroïde administratif,
-    # cas Tokyo) → on ne LIVRE PAS un guide creux, on invite à ajuster le point. Jamais
-    # bloquant en rural (le plus proche peut être loin ; dégradation douce, doctrine V2-57).
-    if not _vital_floor_ok(res.get("summary")):
-        _fail_and_offer_retry("plancher vital : zone urbaine sans hôpital/pharmacie/"
-                              "police proche (ancrage à préciser)")
-        return
+    # V2-80 — le PLANCHER VITAL ne bloque plus la livraison : un guide sans pharmacie/
+    # hôpital/police publiés est LIVRÉ, le manque dit dans ses quality_notes et dans
+    # l'onglet Urgences (numéros d'urgence toujours présents). L'ancrage imprécis (le
+    # centroïde de Tokyo, raison d'être de V2-68 p4) est déjà refusé EN AMONT par la garde
+    # de précision du géocodage (V2-68 p1) — le plancher n'était plus qu'un faux positif.
     token = (res.get("property") or {}).get("guide_token")
     pid = (res.get("property") or {}).get("id")
     notes = (res.get("quality") or {}).get("notes") or None

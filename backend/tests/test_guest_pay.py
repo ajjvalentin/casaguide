@@ -100,7 +100,7 @@ def _purge():
         conn.execute("DELETE FROM guest_guide_orders WHERE email LIKE %s",
                      ("%@paytest.com",))
         conn.execute("DELETE FROM stripe_events WHERE id IN "
-                     "('evt_g1','evt_unpaid','evt_fail','evt_resend')")
+                     "('evt_g1','evt_unpaid','evt_fail','evt_resend','evt_t')")
         conn.commit()
 
 
@@ -229,6 +229,7 @@ def test_failed_generation_sends_retry_email_no_repayment(pay, monkeypatch):
                                       str(order["id"])))
     failed = _order_by_token(out["token"])
     assert failed["status"] == "failed" and failed["error"]
+    assert failed["error"].startswith("[address]")          # V2-80 : motif ADRESSE
     # Un seul e-mail : la REPRISE (ajuster l'adresse), pas de re-paiement.
     assert len(mailer.sent) == 1
     assert "reprise" in mailer.sent[0][1].text.lower() or \
@@ -273,27 +274,79 @@ def _recover(mailer, *, older_than_s: int, spawn=lambda fn: fn()) -> int:
             older_than_s=older_than_s, spawn=spawn)
 
 
-def test_vital_floor_fails_urban_guide_without_vitals(pay, monkeypatch):
-    """V2-68 p4 : en zone URBAINE (dense) sans hôpital/pharmacie/police, on ne livre pas
-    un guide creux → commande 'failed' + e-mail de reprise (jamais 'done')."""
+def test_vital_floor_no_longer_blocks_urban_guide_without_vitals(pay, monkeypatch):
+    """V2-80 (renverse V2-68 p4) : zone URBAINE sans hôpital/pharmacie/police publiés —
+    cas réel Seminyak, Bali (05/10, coordonnées parfaites, OSM sans apotek ni klinik). Le
+    guide est LIVRÉ ('done' + e-mail de livraison), jamais un e-mail « adresse à préciser »."""
     client, _, mailer = pay
 
     def _hollow(**kw):
         res = _stub_generate(**kw)
         res["summary"] = {"pois": 40, "dense": True,
-                          "categories": {"restaurant": 8, "bar": 8, "cafe": 8}}
+                          "categories": {"restaurant": 8, "bar": 8, "cafe": 8},
+                          "vital_missing": ["hospital", "pharmacy", "police"]}
+        res["quality"] = guest_guides._build_quality(res["summary"], [], None)
         return res
     monkeypatch.setattr(guest_guides, "generate_guest_guide", _hollow)
 
-    out = _checkout(client, "hollow@paytest.com")
+    out = _checkout(client, "hollow@paytest.com", city="Seminyak", country_code="ID",
+                    lat=-8.6901427, lon=115.1646258)
     order = _order_by_token(out["token"])
     _webhook(client, _completed_event("evt_g1", order["stripe_session_id"],
                                       str(order["id"])))
+    done = _order_by_token(out["token"])
+    assert done["status"] == "done"                          # livré, jamais 'failed'
+    assert "équipements vitaux introuvables" in done["quality_notes"]
+    assert len(mailer.sent) == 1                             # e-mail de LIVRAISON
+    txt = mailer.sent[0][1].text.lower()
+    assert "/g/" in txt and "ajuster" not in txt and "adresse" not in txt
+
+
+def test_failure_message_matches_its_cause(pay, monkeypatch):
+    """V2-80 — chaque motif a SON e-mail : une panne technique ne parle JAMAIS d'adresse ;
+    le motif est stocké (`[technical]`) et relu par le suivi de commande."""
+    client, _, mailer = pay
+
+    def _boom(**kw):
+        raise RuntimeError("Overpass 504 sur tous les miroirs")
+    monkeypatch.setattr(guest_guides, "generate_guest_guide", _boom)
+    out = _checkout(client, "tech@paytest.com")
+    order = _order_by_token(out["token"])
+    _webhook(client, _completed_event("evt_t", order["stripe_session_id"],
+                                      str(order["id"])))
     failed = _order_by_token(out["token"])
-    assert failed["status"] == "failed"                      # jamais 'done'
-    assert len(mailer.sent) == 1                             # e-mail de REPRISE
-    assert "reprise" in mailer.sent[0][1].text.lower() or \
-           "ajuster" in mailer.sent[0][1].text.lower()
+    assert failed["status"] == "failed" and failed["error"].startswith("[technical]")
+    mail = mailer.sent[0][1]
+    assert "incident" in mail.subject.lower()
+    assert "n'est pas en cause" in mail.text and "Ajuster l'adresse" not in mail.html
+    st = client.get(f"/api/guest-guides/orders/{out['token']}").json()
+    assert st["failure_kind"] == "technical"
+    # La carte de reprise s'ouvre sur le point ENREGISTRÉ de la commande.
+    assert st["map_start"] == {"lat": 38.35, "lon": -0.48, "zoom": 16}
+
+
+def test_order_map_start_falls_back_to_the_order_country(pay, monkeypatch):
+    """V2-80 — sans point enregistré, la carte de reprise se cadre sur le PAYS de la
+    commande (repère `coarse_locate`), jamais sur l'Espagne par défaut."""
+    from api.routers import guest_pay
+    client, _, _ = pay
+    seen = {}
+
+    def _coarse(**kw):
+        seen.update(kw)
+        return {"lat": -2.5, "lon": 118.0, "level": "country"}
+    monkeypatch.setattr(guest_pay._geocode, "coarse_locate", _coarse)
+    out = _checkout(client, "nopoint@paytest.com", city="Seminyak", country_code="ID",
+                    lat=-8.69, lon=115.16)
+    order = _order_by_token(out["token"])
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("UPDATE guest_guide_orders SET status='failed', lat=NULL, lon=NULL, "
+                     "error='[address] commune incohérente' WHERE id=%s", (order["id"],))
+        conn.commit()
+    st = client.get(f"/api/guest-guides/orders/{out['token']}").json()
+    assert seen["country_code"] == "ID"
+    assert st["map_start"] == {"lat": -2.5, "lon": 118.0, "zoom": 6}
+    assert st["failure_kind"] == "address"
 
 
 def test_vital_floor_ok_when_one_vital_present(pay, monkeypatch):
@@ -597,3 +650,15 @@ def test_checkout_503_without_stripe(pay):
         assert r.status_code == 503
     finally:
         app.dependency_overrides[get_stripe] = lambda: FakeGuestGateway()
+
+
+def test_quality_note_tells_failure_from_absence():
+    """V2-80 — une catégorie vitale VIDE parce que sa moisson a ÉCHOUÉ (Overpass saturé)
+    n'est pas « introuvable » : la note le dit et appelle un ré-enrichissement. (À
+    Seminyak, OSM connaît 8 pharmacies — mesuré le 05/10.)"""
+    q = guest_guides._build_quality(
+        {"vital_missing": ["hospital", "pharmacy", "police"],
+         "failed_categories": {"pharmacy": "OverpassError: HTTP 504",
+                               "police": "OverpassError: HTTP 504"}}, [], None)["notes"]
+    assert "moisson EN ÉCHEC" in q and "pharmacie, police" in q
+    assert "introuvables : hôpital/clinique" in q

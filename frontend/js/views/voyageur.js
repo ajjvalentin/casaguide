@@ -50,6 +50,7 @@ const STRINGS = {
     reprise_title: "Reprenons votre guide",
     reprise_intro: "Votre paiement est acquis. Ajustez le point du lieu, nous relançons la génération (aucun nouveau paiement).",
     reprise_cta: "Relancer la génération",
+    reprise_intro_tech: "Votre paiement est acquis et votre adresse n'est pas en cause : un incident technique de notre côté a interrompu la préparation. Relancez-la — le point ci-dessous est celui de votre commande (aucun nouveau paiement).",
     reprise_done: "C'est reparti ! Vous recevrez votre guide par e-mail sous peu.",
     renvoi_title: "Retrouver mon guide",
     renvoi_intro: "Saisissez l'e-mail utilisé lors de l'achat, nous vous renvoyons le lien de votre guide.",
@@ -89,6 +90,7 @@ const STRINGS = {
     reprise_title: "Let's finish your guide",
     reprise_intro: "Your payment is secured. Adjust the point of the place and we'll restart generation (no new payment).",
     reprise_cta: "Restart generation",
+    reprise_intro_tech: "Your payment is secured and your address is not the problem: a technical issue on our side interrupted the preparation. Restart it — the point below is the one from your order (no new payment).",
     reprise_done: "Off we go! You'll receive your guide by e-mail shortly.",
     renvoi_title: "Find my guide",
     renvoi_intro: "Enter the e-mail you used at purchase and we'll resend your guide link.",
@@ -128,6 +130,7 @@ const STRINGS = {
     reprise_title: "Terminemos tu guía",
     reprise_intro: "Tu pago está asegurado. Ajusta el punto del lugar y reiniciamos la generación (sin nuevo pago).",
     reprise_cta: "Reiniciar la generación",
+    reprise_intro_tech: "Tu pago está asegurado y tu dirección no es el problema: un incidente técnico por nuestra parte interrumpió la preparación. Reiníciala — el punto de abajo es el de tu pedido (sin nuevo pago).",
     reprise_done: "¡En marcha! Recibirás tu guía por correo en breve.",
     renvoi_title: "Recuperar mi guía",
     renvoi_intro: "Introduce el correo que usaste en la compra y te reenviamos el enlace de tu guía.",
@@ -182,20 +185,28 @@ function exitDoors() {
 // Renvoie un getter () -> {lat, lon} ; `onSet(lat,lon)` notifié à chaque changement.
 // `zoom` (V2-68c) cadre le repère de départ : une rue se montre de près, un repère de
 // pays de loin — centrer un pays au zoom 16 ne montrerait qu'un champ anonyme.
-function mountAdjustMap(container, { lat, lon, zoom }, onSet) {
+// `centerOnly` (V2-80) : cadrer sur un REPÈRE (pays, commune) sans en faire un point.
+// Le getter reste null tant qu'aucun point n'est posé (un centroïde de pays, ou le repli
+// par défaut, n'est jamais une position de commande).
+function mountAdjustMap(container, { lat, lon, zoom, centerOnly }, onSet) {
   if (!window.L) { container.textContent = "(carte indisponible)"; return () => null; }
-  const hasPoint = lat != null && lon != null;
-  let la = hasPoint ? lat : 40.0, lo = hasPoint ? lon : -3.7;
-  const map = window.L.map(container).setView([la, lo], hasPoint ? (zoom || 16) : 5);
+  const hasView = lat != null && lon != null;
+  const hasPoint = hasView && !centerOnly;
+  let la = hasView ? lat : 40.0, lo = hasView ? lon : -3.7;
+  let placed = hasPoint;
+  const map = window.L.map(container).setView([la, lo], hasView ? (zoom || 16) : 5);
   window.L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
     { attribution: "© OpenStreetMap", maxZoom: 19 }).addTo(map);
   const marker = window.L.marker([la, lo], { draggable: true }).addTo(map);
-  const set = (a, o) => { la = a; lo = o; if (onSet) onSet(la, lo); };
+  const set = (a, o) => { la = a; lo = o; placed = true; if (onSet) onSet(la, lo); };
   marker.on("dragend", () => { const p = marker.getLatLng(); set(p.lat, p.lng); });
   map.on("click", (e) => { marker.setLatLng(e.latlng); set(e.latlng.lat, e.latlng.lng); });
   setTimeout(() => map.invalidateSize(), 80);
   if (hasPoint && onSet) onSet(la, lo);
-  return () => ({ lat: la, lon: lo });
+  // V2-80 : sans point posé, AUCUNE position — avant, le getter rendait le repli
+  // (40.0, -3.7) : une reprise cliquée sans toucher la carte régénérait le guide au
+  // centre de l'Espagne. Le serveur garde alors le point de la commande.
+  return () => (placed ? { lat: la, lon: lo } : null);
 }
 
 // Cadrage de la carte selon ce que le géocodage a su rendre (V2-68c). Un repère large
@@ -496,14 +507,28 @@ function renderReprise(root, token) {
       errBox.classList.remove("hidden");
     }
   };
+  const intro = el("p", { class: "muted" }, tr("reprise_intro"));
   mount(root, shell(
     el("h1", {}, tr("reprise_title")),
-    el("p", { class: "muted" }, tr("reprise_intro")),
+    intro,
     okBox, errBox, mapEl,
     el("p", { class: "muted small" }, tr("map_hint")),
     cta,
   ));
-  getPoint = mountAdjustMap(mapEl, { lat: null, lon: null }, () => {});
+  // V2-80 — la carte s'ouvre sur le point ENREGISTRÉ de la commande, à défaut sur son
+  // PAYS (`map_start`, calculé côté serveur) — jamais l'Espagne par défaut pour une
+  // commande indonésienne. Le texte suit le MOTIF : un incident technique n'est pas une
+  // adresse à corriger. Si le suivi est injoignable, la carte garde son repli historique.
+  api.guestOrder(token).then((o) => {
+    if (o && o.failure_kind === "technical") intro.textContent = tr("reprise_intro_tech");
+    const st = o && o.map_start;
+    // zoom < 16 = repère (pays/commune), pas le point de la commande → cadrage seul.
+    getPoint = mountAdjustMap(mapEl, st ? { lat: st.lat, lon: st.lon, zoom: st.zoom,
+                                            centerOnly: st.zoom < 16 }
+                                        : { lat: null, lon: null }, () => {});
+  }).catch(() => {
+    getPoint = mountAdjustMap(mapEl, { lat: null, lon: null }, () => {});
+  });
 }
 
 // ── 5. Renvoi (« Retrouver mon guide ») ──────────────────────────────────────

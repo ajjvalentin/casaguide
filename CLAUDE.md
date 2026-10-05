@@ -2147,6 +2147,29 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
   méthode : quand une passe rend *quelques* résultats plutôt que zéro, le réflexe doit être
   « ma requête est trop étroite », jamais « la donnée n'existe pas » (leçon V2-73d).
 
+- **Une garde calibrée sur un terrain ne voyage pas — et un échec doit dire SA cause
+  (V2-80).** Le plancher vital de V2-68 (« zone urbaine sans hôpital/pharmacie/police =
+  mauvais ancrage ») était juste à Tokyo, où il démasquait un centroïde ; il était faux à
+  Seminyak (Bali, 05/10), où les coordonnées étaient parfaites mais où OSM ignore les
+  *apotek* et les *klinik*. Le client, après paiement, recevait « précisez l'adresse » —
+  une fausse piste. Entre-temps la garde de précision du géocodage (V2-68 p1) avait rendu
+  le plancher redondant pour son vrai cas. Règles : (a) une garde qui **refuse un service
+  payé** doit être réexaminée dès qu'une garde en amont couvre son motif ; (b) une donnée
+  absente chez UNE source n'est pas absente du monde — chercher ailleurs (web, V2-74)
+  **avant** de renoncer, et sinon **livrer en le disant** (quality_notes + onglet
+  Urgences) ; (c) **chaque motif d'échec a son message** (`[address]` / `[technical]` en
+  tête de `guest_guide_orders.error`, e-mail et page de reprise assortis) — un e-mail qui
+  accuse l'adresse quand elle est juste est un mensonge ; (d) un repli d'interface n'est
+  **jamais une donnée** : le getter de la carte de reprise rendait le centre de l'Espagne
+  (40.0/−3.7) quand aucun point n'était posé, et « Relancer » l'aurait envoyé comme
+  position — un repli sert à **cadrer**, pas à **répondre**.
+  **Et la prémisse elle-même était à vérifier** : mesuré le 05/10, OSM connaît à Seminyak
+  8 pharmacies (Kimia Farma à 96 m du point), 8 hôpitaux, 7 postes de police. Un guide
+  qui n'en publie aucun a subi un **échec** (moisson Overpass saturée, ou rejet du juge),
+  pas une **absence** — la note de qualité les distingue désormais (« moisson EN ÉCHEC,
+  ré-enrichir » vs « introuvables »). « Limite de la donnée » est une conclusion, pas
+  une hypothèse (leçon V2-73c, rejouée).
+
 - **Le cache masque le correctif (V2-73b, `6d7b03e`).** Après V2-73, les activités de
   Bégadan n'avaient toujours aucune épingle : l'`area_fact` `activities` de la commune
   datait d'AVANT le correctif, et l'étape est **sautée quand le fait est frais**

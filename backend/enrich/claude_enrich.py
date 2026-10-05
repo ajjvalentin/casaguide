@@ -1473,12 +1473,18 @@ SERVICE_RULES_FACT_PREFIX = "service_rules_"     # + code de catégorie (rental,
 SERVICE_RULES_SCHEMA_V = 1
 LOCAL_COMMERCE_FACT_TYPE = "local_commerces"
 # Version de CONTENU (V2-78) : un bump invalide la mémoire du secteur — V2-77f v2 : adresse propre exigée (interdiction d'emprunt).
-LOCAL_COMMERCE_SCHEMA_V = 2
+LOCAL_COMMERCE_SCHEMA_V = 3   # V2-80 v3 : + hôpital/clinique (plancher vital), langue du pays
 # Catégories ESSENTIELLES éligibles : ce qu'un habitant cherche d'abord au village. Les codes
 # correspondent aux `category_code` du seed (materialisés tels quels en POI).
 LOCAL_COMMERCE_CATEGORIES = ("pharmacy", "supermarket", "bakery", "doctor", "post_office",
                              "tobacco")
-_LOCAL_COMMERCE_LABELS = {"pharmacy": "pharmacie", "supermarket": "épicerie / supérette",
+# V2-80 — catégories VITALES cherchées par la MÊME passe mais HORS du vide rural : elles ne
+# déclenchent l'appel que via le plancher vital (zone dense sans hôpital/pharmacie/police
+# publiés — Seminyak, Bali : OSM ignore les apotek et les klinik). Jamais ajoutées à
+# `local_commerce_categories_for` : un village sans hôpital est la norme, pas un vide.
+VITAL_WEB_CATEGORIES = ("hospital",)
+_LOCAL_COMMERCE_LABELS = {"hospital": "hôpital / clinique avec accueil des urgences",
+                          "pharmacy": "pharmacie", "supermarket": "épicerie / supérette",
                           "bakery": "boulangerie", "doctor": "médecin / cabinet médical",
                           "post_office": "bureau de poste / point poste",
                           "tobacco": "bureau de tabac / estanco / tabaccheria"}
@@ -1532,6 +1538,10 @@ RÈGLES STRICTES :
   « expendeduría de tabaco y timbre » en Espagne, « tabaccheria » en Italie, « bureau de
   tabac » en France) — c'est ainsi qu'il est recensé. N'invente pas un estanco : s'il n'y
   en a pas dans la commune, n'en renvoie aucun.
+- CHERCHE DANS PLUSIEURS LANGUES : la langue du PAYS, l'anglais, et le mot que les
+  établissements emploient pour se décrire (ex. Indonésie : « apotek », « klinik »,
+  « rumah sakit » ; Espagne : « farmacia », « centro de salud » ; Thaïlande : « ร้านขายยา »,
+  « clinic »). Un seul terme rate l'essentiel.
 - Une liste VIDE est un résultat parfaitement valide (le village n'a peut-être rien).
 
 Réponds UNIQUEMENT avec un objet JSON valide, sans markdown ni commentaire :
@@ -1554,7 +1564,8 @@ def fetch_local_commerces(city: str, country_code: str, client: anthropic.Anthro
     **PREUVE OU RIEN** (ni adresse ni source → écartée). **Liste vide valide.** Réponse
     malformée → ValueError (aucune écriture)."""
     today = today or _dt.date.today().isoformat()
-    cats = "\n".join(f"- `{c}` : {_LOCAL_COMMERCE_LABELS[c]}" for c in LOCAL_COMMERCE_CATEGORIES)
+    cats = "\n".join(f"- `{c}` : {_LOCAL_COMMERCE_LABELS[c]}"
+                     for c in LOCAL_COMMERCE_CATEGORIES + VITAL_WEB_CATEGORIES)
     data, meta = _ask_web_search_json(
         client, _LOCAL_COMMERCE_PROMPT.format(city=city, country_code=country_code,
                                               today=today, cats=cats),
@@ -1576,7 +1587,8 @@ def fetch_local_commerces(city: str, country_code: str, client: anthropic.Anthro
         name, cat, addr = _s("name"), _s("category"), _s("place_address")
         source_url = _s("source_url")
         # PREUVE OU RIEN + catégorie connue + adresse (sinon non plaçable).
-        if not (name and addr and source_url and cat in LOCAL_COMMERCE_CATEGORIES):
+        if not (name and addr and source_url
+                and cat in LOCAL_COMMERCE_CATEGORIES + VITAL_WEB_CATEGORIES):
             continue
         clean.append({"name": name, "category": cat, "place_address": addr,
                       "phone": _s("phone") or None, "source_url": source_url,

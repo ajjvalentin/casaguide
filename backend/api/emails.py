@@ -268,6 +268,15 @@ _EMAIL: dict[str, dict[str, str]] = {
                              "la carte (aucun nouveau paiement) et votre guide se "
                              "génère aussitôt.",
         "guest_retry_button": "Ajuster l'adresse",
+        "guest_retry_subject_tech": "Votre Guide Voyageur — un incident de notre côté",
+        "guest_retry_title_tech": "Un incident de notre côté",
+        "guest_retry_intro_tech": "votre paiement est bien reçu, merci ! La préparation "
+                                  "de votre guide a été interrompue par un incident "
+                                  "technique de notre côté — votre adresse n'est pas en "
+                                  "cause, vous n'avez rien à corriger. Relancez la "
+                                  "préparation (aucun nouveau paiement) ; si cela se "
+                                  "reproduit, répondez simplement à cet e-mail.",
+        "guest_retry_button_tech": "Relancer la préparation",
     },
     "en": {
         "stay_subject": "Your guide for {property} — stay from {start} to {end}",
@@ -302,6 +311,15 @@ _EMAIL: dict[str, dict[str, str]] = {
                              "on the map (no new payment) and your guide is generated "
                              "right away.",
         "guest_retry_button": "Adjust the address",
+        "guest_retry_subject_tech": "Your Travel Guide — a hiccup on our side",
+        "guest_retry_title_tech": "A hiccup on our side",
+        "guest_retry_intro_tech": "your payment went through, thank you! Preparing your "
+                                  "guide was interrupted by a technical issue on our "
+                                  "side — your address is not the problem, there is "
+                                  "nothing to correct. Restart the preparation (no new "
+                                  "payment); if it happens again, simply reply to this "
+                                  "e-mail.",
+        "guest_retry_button_tech": "Restart the preparation",
     },
     "es": {
         "stay_subject": "Tu guía para {property} — estancia del {start} al {end}",
@@ -336,6 +354,15 @@ _EMAIL: dict[str, dict[str, str]] = {
                              "mapa (sin ningún pago nuevo) y tu guía se genera al "
                              "instante.",
         "guest_retry_button": "Ajustar la dirección",
+        "guest_retry_subject_tech": "Tu Guía de Viaje — un incidente por nuestra parte",
+        "guest_retry_title_tech": "Un incidente por nuestra parte",
+        "guest_retry_intro_tech": "¡tu pago se ha recibido, gracias! La preparación de tu "
+                                  "guía se interrumpió por un incidente técnico por "
+                                  "nuestra parte — tu dirección no es el problema, no "
+                                  "tienes nada que corregir. Reinicia la preparación "
+                                  "(sin ningún pago nuevo); si vuelve a ocurrir, "
+                                  "responde simplemente a este correo.",
+        "guest_retry_button_tech": "Reiniciar la preparación",
     },
 }
 
@@ -404,18 +431,24 @@ def guide_purchase_email(*, url: str, lang: str = "fr",
         footer=_html.escape(_et(lang, "footer")), hero_url=image_url))
 
 
-def guide_retry_email(*, retry_url: str, lang: str = "fr") -> Email:
+def guide_retry_email(*, retry_url: str, lang: str = "fr",
+                      kind: str = "address") -> Email:
     """Reprise après échec de génération (V2-54 Mission B, §3) : le paiement est
-    acquis, le vacancier ajuste le point sur la carte via `retry_url` — AUCUN nouveau
-    paiement. Aucune donnée de logement (la génération n'a pas abouti)."""
-    lead = f"{_et(lang, 'stay_hello_generic')} {_et(lang, 'guest_retry_intro')}"
-    button = _et(lang, "guest_retry_button")
-    subject = _et(lang, "guest_retry_subject")
+    acquis, AUCUN nouveau paiement. Aucune donnée de logement.
+
+    V2-80 — CHAQUE MOTIF A SON MESSAGE. `address` (commune incohérente, ancrage trop
+    imprécis) : ajuster le point. `technical` (tout le reste) : l'adresse n'est PAS en
+    cause, on relance — jamais « précisez l'adresse » quand elle était juste (Seminyak,
+    05/10 : le client a été mis sur une fausse piste)."""
+    sfx = "_tech" if kind == "technical" else ""
+    lead = f"{_et(lang, 'stay_hello_generic')} {_et(lang, 'guest_retry_intro' + sfx)}"
+    button = _et(lang, "guest_retry_button" + sfx)
+    subject = _et(lang, "guest_retry_subject" + sfx)
     text = f"{lead}\n\n{retry_url}\n\n— {_BRAND}"
     body_html = (f'<p style="margin:0 0 12px;">{_html.escape(lead)}</p>'
                  f"{_button(retry_url, button)}")
     return Email(subject=subject, text=text, html=_shell(
-        _et(lang, "guest_retry_title"), body_html,
+        _et(lang, "guest_retry_title" + sfx), body_html,
         footer=_html.escape(_et(lang, "footer"))))
 
 

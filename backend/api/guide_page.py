@@ -90,6 +90,33 @@ _UI7: dict[str, dict[str, str]] = {
                         "es": "Ubicación aproximada", "it": "Posizione approssimativa",
                         "de": "Ungefährer Standort", "nl": "Locatie bij benadering",
                         "sq": "Vendndodhje e përafërt"},
+    # V2-80 : onglet Urgences d'un guide voyageur sans pharmacie/hôpital publiés (Seminyak :
+    # OSM ignore apotek et klinik, le web n'a rien rendu de plaçable). Dit ce qui manque,
+    # rappelle que les numéros d'urgence — rendus juste en dessous — restent valables.
+    "vital_none_pharmacy": {
+        "fr": "Nous n'avons pas trouvé de pharmacie cartographiée à proximité — les numéros d'urgence ci-dessous restent valables.",
+        "en": "We couldn't find a mapped pharmacy nearby — the emergency numbers below remain valid.",
+        "es": "No hemos encontrado ninguna farmacia cartografiada cerca — los números de emergencia de abajo siguen siendo válidos.",
+        "it": "Non abbiamo trovato farmacie mappate nelle vicinanze — i numeri di emergenza qui sotto restano validi.",
+        "de": "Wir haben in der Nähe keine kartierte Apotheke gefunden — die Notrufnummern unten gelten weiterhin.",
+        "nl": "We hebben in de buurt geen gekarteerde apotheek gevonden — de alarmnummers hieronder blijven geldig.",
+        "sq": "Nuk gjetëm asnjë farmaci të hartografuar në afërsi — numrat e urgjencës më poshtë mbeten të vlefshëm."},
+    "vital_none_hospital": {
+        "fr": "Nous n'avons pas trouvé d'hôpital ni de clinique cartographiés à proximité — les numéros d'urgence ci-dessous restent valables.",
+        "en": "We couldn't find a mapped hospital or clinic nearby — the emergency numbers below remain valid.",
+        "es": "No hemos encontrado ningún hospital ni clínica cartografiados cerca — los números de emergencia de abajo siguen siendo válidos.",
+        "it": "Non abbiamo trovato ospedali o cliniche mappati nelle vicinanze — i numeri di emergenza qui sotto restano validi.",
+        "de": "Wir haben in der Nähe kein kartiertes Krankenhaus und keine Klinik gefunden — die Notrufnummern unten gelten weiterhin.",
+        "nl": "We hebben in de buurt geen gekarteerd ziekenhuis of kliniek gevonden — de alarmnummers hieronder blijven geldig.",
+        "sq": "Nuk gjetëm asnjë spital apo klinikë të hartografuar në afërsi — numrat e urgjencës më poshtë mbeten të vlefshëm."},
+    "vital_none_both": {
+        "fr": "Nous n'avons trouvé ni pharmacie ni hôpital cartographiés à proximité — les numéros d'urgence ci-dessous restent valables.",
+        "en": "We couldn't find a mapped pharmacy or hospital nearby — the emergency numbers below remain valid.",
+        "es": "No hemos encontrado ninguna farmacia ni hospital cartografiados cerca — los números de emergencia de abajo siguen siendo válidos.",
+        "it": "Non abbiamo trovato né farmacie né ospedali mappati nelle vicinanze — i numeri di emergenza qui sotto restano validi.",
+        "de": "Wir haben in der Nähe weder eine kartierte Apotheke noch ein Krankenhaus gefunden — die Notrufnummern unten gelten weiterhin.",
+        "nl": "We hebben in de buurt geen gekarteerde apotheek of ziekenhuis gevonden — de alarmnummers hieronder blijven geldig.",
+        "sq": "Nuk gjetëm as farmaci as spital të hartografuar në afërsi — numrat e urgjencës më poshtë mbeten të vlefshëm."},
     # V2-73g : lien de la popup d'activité vers la fiche du POI apparié (cohérence interne).
     "see_in_guide": {"fr": "Voir dans le guide", "en": "See in the guide",
                      "es": "Ver en la guía", "it": "Vedi nella guida",
@@ -2342,6 +2369,21 @@ def _cap_emergency_map_pois(pois: list[dict]) -> list[dict]:
     return kept
 
 
+def _vital_gap_note(pois: list[dict], lang: str) -> str:
+    """Encart de l'onglet Urgences (V2-80) quand un guide voyageur ne publie AUCUNE
+    pharmacie et/ou AUCUN hôpital : le manque est DIT, sobrement, et renvoie aux numéros
+    d'urgence (toujours rendus en dessous). Mêmes classes que les faits de zone
+    (`.sec-facts`) → aucune CSS neuve, aucun bump SW. Vide si rien ne manque."""
+    cats = {p.get("category_code") for p in pois}
+    no_ph, no_ho = "pharmacy" not in cats, "hospital" not in cats
+    if not (no_ph or no_ho):
+        return ""
+    key = ("vital_none_both" if no_ph and no_ho
+           else "vital_none_pharmacy" if no_ph else "vital_none_hospital")
+    return (f'<div class="sec-facts vital-gap" role="note">'
+            f'{_esc(_t7(lang, key))}</div>')
+
+
 def render_guide(prop: dict, sections: list[dict], pois: list[dict],
                  area_facts: dict, token: str, lang: str = "fr", *,
                  base_url: str = "", og_image_url: str | None = None,
@@ -2537,7 +2579,9 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
     # à cadrer (sinon une épingle maison seule dans « Urgences » n'aide pas).
     emap_html = ('<div id="emap"></div>'
                  if home_has_coords and emergency_map_pois else "")
+    vital_note = _vital_gap_note(pois, lang) if guest_guide else ""
     emergency_inner = (([big_sos] if big_sos else []) + ([emap_html] if emap_html else [])
+                       + ([vital_note] if vital_note else [])
                        + panels["emergency"] + ([numbers] if numbers else []))
 
     # Autour de vous : carte + puces de filtre (bâties sur les POI de cet espace).
