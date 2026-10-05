@@ -2075,6 +2075,21 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
     `guide-fact-filter`) dont le `chk()` ne journalisait que les échecs. La suite imprime
     aujourd'hui **545 lignes de contrôle** : un harnais qui maigrit se voit à l'œil nu.
 
+  - **(7) Le mock du fournisseur avait une autre FORME que le fournisseur (V2-79).**
+    Depuis le 01/09, `geocode._search` interroge Nominatim en `format=jsonv2`, qui range la
+    classe OSM sous **`category`** (pas `class`) ; et l'adresse d'un restaurant y résout
+    souvent **le restaurant lui-même** (`amenity/restaurant`, `place_rank` 30) ou **la route**
+    (`highway/secondary`, rang 26). Aucun de ces types n'était dans `_ACCURACY` → « city » →
+    le géocodage strict des picks éditoriaux les jetait **tous** (Altea, Jávea : 15 trouvés,
+    0 placé, ~49 ct chacun). Le mock des tests renvoyait `{"type": "house", "class":
+    "building"}` — une forme que le vrai service ne produit plus — donc tout pick y était
+    placé et la suite restait verte. Règle : un mock de fournisseur se **recopie d'une
+    réponse réelle capturée** (clés comprises), jamais de mémoire ; et quand un compteur
+    « trouvé » ne devient jamais « écrit », mesurer **chaque étage** (trouvé → placé →
+    persisté) avant d'accuser la chronologie des commits. Corollaire : un marqueur de
+    mémoire ne se pose **que dans la transaction qui a persisté ce qu'il annonce**
+    (`_discover_editorial_sorties`) — sinon il verrouille du vide.
+
 - **Une passe web cherche dans PLUSIEURS langues et sous TOUTES les orthographes
   (V2-77f).** Un seul terme rate l'essentiel. Règle : toute passe de découverte web pose,
   **dans la même requête**, (a) la langue du PAYS, (b) l'anglais, (c) les variantes

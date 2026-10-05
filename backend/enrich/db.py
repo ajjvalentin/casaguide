@@ -419,6 +419,29 @@ def sector_editorial_picks(conn, country_code: str, city_norm: str, category: st
     ).fetchall()
 
 
+def sector_editorial_count(conn, country_code: str, city_norm: str,
+                           max_age_days: int) -> int:
+    """Nombre de picks éditoriaux mémorisés (récents) du secteur, toutes catégories —
+    sert à démasquer un marqueur de secteur ORPHELIN (V2-79 : marqueur sans pick)."""
+    row = conn.execute(
+        """SELECT count(*) AS n FROM editorial_picks
+           WHERE country_code = %s AND city_norm = %s
+             AND last_seen > now() - make_interval(days => %s)""",
+        (country_code.upper(), city_norm, max_age_days)).fetchone()
+    return int(row["n"] if isinstance(row, dict) else row[0])
+
+
+def sector_editorial_touched_now(conn, country_code: str, city_norm: str) -> int:
+    """Picks du secteur écrits par la TRANSACTION COURANTE (`last_seen = now()`, et
+    `now()` est figé au début de la transaction). C'est le compteur « persisted » de
+    V2-79 : ce que la base a réellement reçu, pas ce que le code croit avoir écrit."""
+    row = conn.execute(
+        """SELECT count(*) AS n FROM editorial_picks
+           WHERE country_code = %s AND city_norm = %s AND last_seen = now()""",
+        (country_code.upper(), city_norm)).fetchone()
+    return int(row["n"] if isinstance(row, dict) else row[0])
+
+
 def insert_service_poi(conn, property_id: str, category: str, name: str,
                        lat: float, lon: float, *, phone: str | None,
                        website: str | None, source_ref: str,

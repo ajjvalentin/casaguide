@@ -222,6 +222,12 @@ def _build_quality(summary: dict, missing_langs: list[str],
         parts.append("traduction " + "/".join(missing_langs) + " échouée" + why)
     # V2-78c — garde de cohérence : une passe déclarée « mémoire » qui a facturé est
     # NOMMÉE (une mesure qui se contredit vaut moins que pas de mesure).
+    # V2-79 — des lieux réputés payés mais aucun placé : le guide n'en montre aucun et la
+    # mémoire n'est pas posée. Le dire plutôt que laisser « discovered: 15 » passer pour un succès.
+    found = summary.get("editorial_found") or 0
+    if found and not summary.get("editorial_persisted"):
+        parts.append(f"sélection éditoriale : {found} lieu(x) réputé(s) trouvé(s), "
+                     "aucun positionné — mémoire du secteur non posée")
     contra = summary.get("memory_contradictions") or []
     if contra:
         parts.append("mesure contradictoire — déclaré mémoire mais facturé : "

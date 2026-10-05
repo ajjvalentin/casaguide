@@ -169,6 +169,46 @@ def _search(params: dict, country_code: str, client: httpx.Client) -> dict | Non
     return results[0] if results else None
 
 
+def _osm_class(r: dict) -> str:
+    """Classe OSM d'un résultat. V2-79 : en `format=jsonv2` (notre format depuis le
+    01/09), Nominatim la renvoie sous la clé **`category`** — `class` n'existe qu'en
+    `format=json`. Lire `class` seul rendait TOUJOURS « » : la table `_ACCURACY` ne
+    voyait jamais la classe, et la garde anti-centroïde des activités était morte."""
+    return r.get("category") or r.get("class") or ""
+
+
+# Rangs Nominatim : 30 = bâtiment/POI (le restaurant lui-même), 26-27 = rue. En dessous,
+# quartier/commune/région — le « centroïde » qu'on refuse.
+_RANK_ROOFTOP, _RANK_STREET = 30, 26
+
+
+def _accuracy_of(r: dict) -> str:
+    """Précision d'un résultat Nominatim. Le TYPE d'abord (table historique), puis la
+    CLASSE (`highway` = une rue, `building` = un bâtiment), puis le RANG (`place_rank`).
+    V2-79 — constat réel (Altea, 05/10) : « Calle Mayor 5, Altea » renvoie le restaurant
+    Oustau (`amenity/restaurant`, rang 30), « Carrer La Mar 127 » une route
+    (`highway/secondary`, rang 26) ; aucun de ces types n'était dans la table → « city »
+    → chaque pick éditorial rejeté comme centroïde, 15 sur 15. Un type inconnu ne vaut
+    « city » que si son rang est celui d'une zone, jamais d'une adresse."""
+    acc = _ACCURACY.get(r.get("type", "")) or _ACCURACY.get(_osm_class(r))
+    if acc:
+        return acc
+    cls = _osm_class(r)
+    if cls == "highway":
+        return "street"
+    if cls in ("place", "boundary"):
+        return "city"
+    try:
+        rank = int(r.get("place_rank"))
+    except (TypeError, ValueError):
+        return "city"
+    if rank >= _RANK_ROOFTOP:
+        return "rooftop"
+    if rank >= _RANK_STREET:
+        return "street"
+    return "city"
+
+
 def _locality_of(r: dict) -> str | None:
     """Commune/localité d'un résultat Nominatim (addressdetails) — même ordre de
     préférence que le proxy de recherche de POI (`poi_search._candidate`)."""
@@ -215,8 +255,7 @@ def geocode(address: str | None = None, country_code: str = "ES",
             r = _search(params, country_code, client)
             if not r:
                 continue
-            accuracy = forced_accuracy or _ACCURACY.get(
-                r.get("type", ""), _ACCURACY.get(r.get("class", ""), "city"))
+            accuracy = forced_accuracy or _accuracy_of(r)
             # V2-46 : contrôle de cohérence commune/CP. Un écart (rue homonyme dans une
             # autre commune) force `accuracy='mismatch'` — jamais « précis ».
             mismatch = check_geocode_consistency(city, postalcode, r.get("address"))
@@ -235,7 +274,7 @@ def geocode(address: str | None = None, country_code: str = "ES",
                 # (boundary / place=city|town|village) que `accuracy` ne sépare pas —
                 # un type non cartographié retombe sur « city » alors que sa position,
                 # elle, est spécifique. Le placement strict des activités s'en sert.
-                "osm_class": r.get("class", ""),
+                "osm_class": _osm_class(r),
                 "osm_type": r.get("type", ""),
             }
 

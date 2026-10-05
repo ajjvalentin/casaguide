@@ -46,6 +46,7 @@ class MemoryDecision:
     use: bool                      # consommer la mémoire (aucun appel web)
     age_days: int | None           # âge de la mémoire, None si aucune
     reason: str                    # 'memory' | 'absent' | 'stale' | 'version' | 'forced'
+                                   # | 'empty' (V2-79 : marqueur sans pick, reputed_sorties)
     content: dict | None = None    # contenu mémorisé (même quand on re-collecte : fusion)
 
     def step_note(self, cost_cts: float | None = None) -> dict:

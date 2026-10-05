@@ -291,7 +291,12 @@ REPUTED_FACT_TYPE = "reputed_sorties"
 
 def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
                                 summary: dict,
-                                refresh_sector: bool = False) -> dict[str, list[dict]]:
+                                refresh_sector: bool = False, *,
+                                grouped: dict[str, list[dict]] | None = None,
+                                overture_by_code: dict[str, list[dict]] | None = None,
+                                origin: tuple | None = None,
+                                http_client: httpx.Client | None = None
+                                ) -> dict[str, list[dict]]:
     """Sélection éditoriale « sorties » (V2-56) : DÉCOUVERTE web des adresses RÉPUTÉES
     (restaurant/bar/cafe), UNE seule fois par run (couvre les trois catégories),
     mémorisée sur `summary`. Renvoie {code: [pick BRUT]} — nom/catégorie/adresse/raison/
@@ -319,6 +324,16 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
     dec = sector.memory_decision(marker, age,
                                  max_age_days=settings.reputed_max_age_days,
                                  schema_v=REPUTED_SCHEMA_V, refresh=refresh_sector)
+    # V2-79 — AUTO-GUÉRISON des marqueurs orphelins. Avant V2-79, le marqueur était posé
+    # AVANT le placement des picks : un secteur dont aucun pick n'était placé (Altea,
+    # Jávea) se verrouillait 21 jours sur une mémoire VIDE. Un marqueur sans aucun pick
+    # mémorisé n'est donc pas une mémoire : on re-collecte, et le step le DIT (`empty`).
+    # Depuis V2-79 le marqueur n'est plus posé sans pick persisté (même transaction) —
+    # ce cas ne vise que l'héritage.
+    city_norm = dedup._norm(prop["city"])
+    if dec.use and db.sector_editorial_count(
+            conn, prop["country_code"], city_norm, settings.reputed_max_age_days) == 0:
+        dec = sector.MemoryDecision(False, dec.age_days, "empty", dec.content)
     # V2-78c — LE MARQUEUR FAIT FOI, SEUL. Une seconde condition exigeait aussi des picks
     # en `editorial_picks` : un secteur au marqueur frais mais SANS pick mémorisé (0 lieu
     # trouvé, ou aucun positionnable) retombait dans l'appel web… avec une décision
@@ -346,22 +361,49 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
         conn.commit()
         _progress(f"  ⚠ sélection éditoriale non résolue : {overpass._short(str(exc))}")
         return out
+    # Le coût est acquis quoi qu'il arrive ensuite (comptabilité à la réponse, V2-07 3bis).
     db.record_costs(conn, property_id, job_id, "anthropic", "reputed_sorties",
                     meta["attempts"])
     summary["cost_cts"] += meta["cost_cts"]
-    for pl in places:
-        out.setdefault(pl["category"], []).append(pl)   # pick BRUT (positionné plus tard)
-    summary["editorial_found"] = len(places)
-    db.upsert_area_facts(conn, prop["country_code"], prop["city"],
-                         {REPUTED_FACT_TYPE: {"v": REPUTED_SCHEMA_V,
-                                              "discovered": len(places)}},
-                         source=settings.anthropic_model)
-    db.job_step(conn, job_id, "reputed_sorties",
-                {"ok": True, **dec.step_note(meta["cost_cts"]), "discovered": len(places),
-                 "by_category": {k: len(v) for k, v in out.items()}})
     conn.commit()
-    _progress(f"  ✓ sélection éditoriale : {len(places)} adresse(s) réputée(s) "
-              f"trouvée(s) — {meta['cost_cts']:.2f} ct")
+    for pl in places:
+        out.setdefault(pl["category"], []).append(pl)   # pick BRUT
+    summary["editorial_found"] = len(places)
+    # V2-79 — PLACER, MÉMORISER et MARQUER dans la MÊME transaction. Avant, le marqueur
+    # était écrit ICI, avant tout placement, et les picks plus loin, catégorie par
+    # catégorie : si aucun ne se plaçait, le marqueur verrouillait 21 jours une mémoire
+    # vide (Altea 48,11 ct, Jávea 48,95 ct : « discovered 15 », zéro ligne en base).
+    # Désormais : soit les picks ET le marqueur sont écrits, soit aucun des deux.
+    grouped = grouped or {}
+    overture_by_code = overture_by_code or {}
+    positioned = 0
+    with conn.transaction():
+        for code, raw in out.items():
+            positioned += len(raw) - _memorize_fresh_picks(
+                conn, prop, code, grouped.get(code) or [],
+                overture_by_code.get(code), raw, origin, http_client, city_norm)
+        # PERSISTÉ = ce que la BASE dit avoir écrit dans CETTE transaction (`last_seen`
+        # = now() = début de transaction), pas ce que le code croit avoir fait.
+        persisted = db.sector_editorial_touched_now(conn, prop["country_code"], city_norm)
+        if persisted > 0:
+            db.upsert_area_facts(conn, prop["country_code"], prop["city"],
+                                 {REPUTED_FACT_TYPE: {"v": REPUTED_SCHEMA_V,
+                                                      "discovered": len(places),
+                                                      "persisted": persisted}},
+                                 source=settings.anthropic_model)
+    summary["editorial_skipped"] = len(places) - positioned
+    summary["editorial_persisted"] = persisted
+    step = {"ok": True, **dec.step_note(meta["cost_cts"]), "discovered": len(places),
+            "positioned": positioned, "persisted": persisted,
+            "marker": persisted > 0,
+            "by_category": {k: len(v) for k, v in out.items()}}
+    if places and not persisted:
+        step["warning"] = ("aucun lieu réputé positionné : mémoire du secteur NON posée "
+                           "(sera re-collectée au prochain guide)")
+    db.job_step(conn, job_id, "reputed_sorties", step)
+    conn.commit()
+    _progress(f"  ✓ sélection éditoriale : {len(places)} trouvée(s), {positioned} "
+              f"positionnée(s), {persisted} mémorisée(s) — {meta['cost_cts']:.2f} ct")
     return out
 
 
@@ -1311,7 +1353,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                      "service_qualified": 0,
                      "overture_added": 0, "overture_contacts": 0,
                      "editorial_found": 0, "editorial_added": 0,
-                     "editorial_skipped": 0}
+                     "editorial_skipped": 0, "editorial_persisted": 0}
     # OPS-4 Pièce 4 (sortie propre) : si le client Anthropic est créé ICI (CLI), il
     # DOIT être fermé — son pool de connexions httpx, laissé ouvert, empêchait le
     # process de rendre la main après le commit final (~1 h de terminal muet le 12/08).
@@ -1540,17 +1582,15 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 guest_capped = False
                 if is_guest_sorties:
                     city_norm = dedup._norm(prop["city"])
-                    raw = _discover_editorial_sorties(
+                    # A. Découvrir, positionner et MÉMORISER pour le secteur — une seule
+                    # fois par run, les trois catégories ensemble, picks + marqueur dans
+                    # la même transaction (V2-79). Appariement de nom contre la moisson
+                    # OSM/Overture BRUTE de chaque catégorie.
+                    _discover_editorial_sorties(
                         conn, prop, ai, job_id, summary,
-                        refresh_sector=refresh_sector).get(code, [])
-                    # A. Positionner les FRAIS et les MÉMORISER pour le secteur (V2-56c).
-                    if raw:
-                        n_sk = _memorize_fresh_picks(
-                            conn, prop, code, pois, ovt, raw, origin, http_client,
-                            city_norm)
-                        summary["editorial_skipped"] = (
-                            summary.get("editorial_skipped", 0) + n_sk)
-                        conn.commit()   # mémoire du secteur persistée avant lecture
+                        refresh_sector=refresh_sector, grouped=grouped,
+                        overture_by_code=overture_by_code, origin=origin,
+                        http_client=http_client)
                     # B. Consommer l'UNION mémorisée du secteur (frais + anciens < 90 j).
                     memory = db.sector_editorial_picks(
                         conn, prop["country_code"], city_norm, code,

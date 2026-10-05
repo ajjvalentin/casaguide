@@ -3577,7 +3577,9 @@ def test_service_rules_remembers_what_the_web_did_not_find(monkeypatch, property
 
 
 @pytest.mark.parametrize("reputed", [
-    [],   # le PIÈGE d'Altea : 1er guide sans pick mémorisé → le 2e rappelait le web
+    # NB V2-79 : le cas « 1er guide SANS pick » ne relève plus de cette recette — sans pick
+    # persisté, AUCUN marqueur n'est posé, le 2e guide re-collecte (et le dit) : voir
+    # `test_no_marker_without_persisted_pick_and_counters_are_honest`.
     [{"name": "Casa Manolo", "category": "restaurant", "address": "Av Manolo, La Zenia",
       "reason": "Arroces", "source_url": "u1"}],
 ])
@@ -3630,3 +3632,178 @@ def test_quality_notes_name_a_memory_contradiction():
         {"pass": "reputed_sorties", "cost_cts": 47.74}]}, [], None)
     assert "déclaré mémoire mais facturé : reputed_sorties (47.74 ct)" in q["notes"]
     assert _build_quality({}, [], None)["notes"] == ""
+
+
+# ── V2-79 : les picks éditoriaux sont persistés, ou rien ne l'est ─────────────
+
+def test_nominatim_jsonv2_accuracy_reads_category_and_rank():
+    """V2-79 — surface RÉELLE de Nominatim `format=jsonv2` (mesurée sur Altea, 05/10) : la
+    classe est sous `category` (pas `class`), et l'adresse d'un restaurant résout le
+    restaurant lui-même (rang 30) ou la route (rang 26). Avant : tout cela valait « city »
+    → 15 picks sur 15 rejetés comme centroïdes. Les zones restent « city »."""
+    from enrich import geocode as g
+    oustau = {"category": "amenity", "type": "restaurant", "place_rank": 30,
+              "addresstype": "amenity"}
+    la_mar = {"category": "highway", "type": "secondary", "place_rank": 26,
+              "addresstype": "road"}
+    altea = {"category": "boundary", "type": "administrative", "place_rank": 16}
+    town = {"category": "place", "type": "town", "place_rank": 16}
+    assert g._accuracy_of(oustau) == "rooftop"
+    assert g._accuracy_of(la_mar) == "street"
+    assert g._accuracy_of(altea) == "city" and g._accuracy_of(town) == "city"
+    assert g._osm_class(town) == "place"          # la garde anti-centroïde revit
+    assert pipeline._geo_is_centroid({"osm_class": g._osm_class(town),
+                                      "osm_type": "town", "accuracy": "city"})
+    # Rétro-compat format=json (`class`) et table historique.
+    assert g._accuracy_of({"type": "house", "class": "building"}) == "rooftop"
+    assert g._accuracy_of({"category": "place", "type": "square"}) == "street"
+
+
+def _altea_transport(*, rank: int, category: str, typ: str):
+    """Nominatim à la surface jsonv2 RÉELLE (category/place_rank) — le mock historique
+    renvoyait `class: building`, ce qui plaçait tout pick et masquait le défaut."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "nominatim" in url:
+            return httpx.Response(200, json=[{
+                "lat": str(PROP_LAT + 0.001), "lon": str(PROP_LON), "category": category,
+                "type": typ, "place_rank": rank, "display_name": "x",
+                "address": {"town": "Orihuela Costa"}}])
+        return _mock_handler(request)
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+_ALTEA_PICKS = [
+    {"name": "Oustau de Altea", "category": "restaurant", "address": "Calle Mayor 5",
+     "reason": "Cuisine de marché", "source_url": "u1"},
+    {"name": "Bar La Mar", "category": "bar", "address": "Carrer La Mar 127",
+     "reason": "Terrasse", "source_url": "u2"},
+]
+
+
+def _guest_props(n):
+    oid, pids = str(uuid.uuid4()), [str(uuid.uuid4()) for _ in range(n)]
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+        conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        conn.execute("INSERT INTO owners (id,email,full_name) VALUES (%s,%s,'S')",
+                     (oid, f"{oid}@test.local"))
+        for i, pid in enumerate(pids):
+            conn.execute(
+                """INSERT INTO properties (id,owner_id,name,address_line1,city,
+                       country_code,guest_guide,geom,geocode_source,geocode_accuracy)
+                   VALUES (%s,%s,'G','Rue','Orihuela Costa','ES',TRUE,
+                       ST_SetSRID(ST_MakePoint(%s,%s),4326),'manual','manual')""",
+                (pid, oid, PROP_LON + 0.004 * i, PROP_LAT))
+        conn.commit()
+    return oid, pids
+
+
+def _cleanup(oid):
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
+        conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
+        conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
+        conn.commit()
+
+
+def test_altea_picks_are_persisted_with_real_nominatim_surface():
+    """V2-79 — RECETTE du défaut prod (Altea/Jávea) : la collecte trouve des picks, le
+    géocodage réel les résout en `amenity/restaurant` (rang 30) / `highway` (rang 26). Ils
+    doivent être PERSISTÉS en `editorial_picks`, le marqueur posé, et `steps` doit dire
+    discovered / positioned / persisted. Contrôle négatif : l'ancien `_accuracy` rejetait
+    les deux → 0 persisté."""
+    oid, (pid1, pid2) = _guest_props(2)
+    try:
+        with _altea_transport(rank=30, category="amenity", typ="restaurant") as client:
+            r1 = pipeline.run(pid1, use_claude=True, trigger="guest", http_client=client,
+                              only_categories={"restaurant", "bar"},
+                              anthropic_client=FakeAnthropic(reputed_places=_ALTEA_PICKS))
+            r2 = pipeline.run(pid2, use_claude=True, trigger="guest", http_client=client,
+                              only_categories={"restaurant", "bar"},
+                              anthropic_client=FakeAnthropic(reputed_places=[]))
+        with db.connect() as conn:
+            st1, costs1 = db.job_steps_and_costs(conn, r1["job_id"])
+            st2, costs2 = db.job_steps_and_costs(conn, r2["job_id"])
+            picks = {r["name"] for r in conn.execute(
+                "SELECT name FROM editorial_picks WHERE country_code='ES'").fetchall()}
+            names2 = {r["name"] for r in conn.execute(
+                "SELECT name FROM pois WHERE property_id=%s", (pid2,)).fetchall()}
+        rs = st1["reputed_sorties"]
+        assert (rs["discovered"], rs["positioned"], rs["persisted"]) == (2, 2, 2), rs
+        assert rs["marker"] is True and "reputed_sorties" in costs1
+        assert picks == {"Oustau de Altea", "Bar La Mar"}
+        # Le 2e guide du secteur RETROUVE les picks par la mémoire, sans facturer.
+        assert st2["reputed_sorties"]["source"] == "memory"
+        assert "reputed_sorties" not in costs2
+        assert {"Oustau de Altea", "Bar La Mar"} <= names2
+    finally:
+        _cleanup(oid)
+
+
+def test_no_marker_without_persisted_pick_and_counters_are_honest():
+    """V2-79 point 2/3 — aucun pick positionnable (géocodage = centroïde de commune) :
+    ZÉRO ligne `editorial_picks` ET ZÉRO marqueur (les deux écritures vont ensemble), un
+    `steps` qui dit 2 trouvés / 0 positionné / 0 persisté + avertissement. Le 2e guide
+    re-collecte et l'AFFICHE (`fresh`, `absent`) : aucune mémoire vide verrouillée."""
+    from enrich import db as edb
+    oid, (pid1, pid2) = _guest_props(2)
+    try:
+        with _altea_transport(rank=16, category="boundary", typ="administrative") as client:
+            r1 = pipeline.run(pid1, use_claude=True, trigger="guest", http_client=client,
+                              only_categories={"restaurant", "bar"},
+                              anthropic_client=FakeAnthropic(reputed_places=_ALTEA_PICKS))
+            r2 = pipeline.run(pid2, use_claude=True, trigger="guest", http_client=client,
+                              only_categories={"restaurant", "bar"},
+                              anthropic_client=FakeAnthropic(reputed_places=_ALTEA_PICKS))
+        with db.connect() as conn:
+            st1, _ = db.job_steps_and_costs(conn, r1["job_id"])
+            st2, costs2 = db.job_steps_and_costs(conn, r2["job_id"])
+            n = conn.execute("SELECT count(*) AS n FROM editorial_picks "
+                             "WHERE country_code='ES'").fetchone()["n"]
+            marker = edb.get_area_fact(conn, "ES", "Orihuela Costa",
+                                       pipeline.REPUTED_FACT_TYPE)
+        rs = st1["reputed_sorties"]
+        assert (rs["discovered"], rs["positioned"], rs["persisted"]) == (2, 0, 0), rs
+        assert rs["marker"] is False and "NON posée" in rs["warning"]
+        assert n == 0 and marker is None
+        assert st2["reputed_sorties"]["source"] == "fresh"
+        assert st2["reputed_sorties"]["why"] == "absent"
+        assert "reputed_sorties" in costs2            # payé ET déclaré : pas de mensonge
+        assert r2["memory_contradictions"] == []
+    finally:
+        _cleanup(oid)
+
+
+def test_orphan_marker_from_before_v279_is_not_memory(http_client):
+    """V2-79 — héritage prod (Altea, Jávea) : un marqueur `reputed_sorties` frais SANS
+    aucun pick mémorisé n'est pas une mémoire. Le guide re-collecte, le step dit `empty`,
+    et les picks sont cette fois persistés (auto-guérison, sans purge manuelle)."""
+    from enrich import db as edb
+    oid, (pid,) = _guest_props(1)
+    try:
+        with psycopg.connect(settings.db_dsn) as conn:
+            edb.upsert_area_facts(conn, "ES", "Orihuela Costa",
+                                  {pipeline.REPUTED_FACT_TYPE: {"v": pipeline.REPUTED_SCHEMA_V,
+                                                                "discovered": 15}},
+                                  source="test")
+            conn.commit()
+        r = pipeline.run(pid, use_claude=True, trigger="guest", http_client=http_client,
+                         only_categories={"restaurant", "bar"},
+                         anthropic_client=FakeAnthropic())
+        with db.connect() as conn:
+            st, costs = db.job_steps_and_costs(conn, r["job_id"])
+        rs = st["reputed_sorties"]
+        assert rs["source"] == "fresh" and rs["why"] == "empty", rs
+        assert rs["persisted"] == 2 and "reputed_sorties" in costs
+    finally:
+        _cleanup(oid)
+
+
+def test_quality_notes_name_unpositioned_reputed_places():
+    """V2-79 — « 15 trouvés, 0 placé » remonte dans les `quality_notes` du guide."""
+    from api.guest_guides import _build_quality
+    q = _build_quality({"editorial_found": 15, "editorial_persisted": 0}, [], None)
+    assert "15 lieu(x) réputé(s) trouvé(s), aucun positionné" in q["notes"]
+    assert _build_quality({"editorial_found": 15, "editorial_persisted": 9},
+                          [], None)["notes"] == ""
