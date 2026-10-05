@@ -2090,6 +2090,22 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
     mémoire ne se pose **que dans la transaction qui a persisté ce qu'il annonce**
     (`_discover_editorial_sorties`) — sinon il verrouille du vide.
 
+  - **(7 bis) Un compteur corrigé n'est pas un résultat corrigé (V2-79b).** V2-79 a réparé le
+    géocodage et rendu les compteurs honnêtes ; la recette réelle (Jávea) a aussitôt dit
+    « 11 trouvés, 0 placé » puis 429. Trois défauts que les tests ne pouvaient pas voir :
+    l'adresse ENTIÈRE passait dans le champ `street` de la recherche structurée (zéro
+    résultat) ; le repli `q=<commune>` était rejoué une fois PAR pick (11 fois la même
+    question → 429 → job payé mort) ; et surtout, **les quatre restaurants de la recette
+    étaient dans OSM** — mais hors des 8 plus proches que garde la moisson, et sous une
+    autre graphie (« Bon Amb » / « BonAmb », « La Perla de Jávea » / « La Perla »). Le
+    géocodage d'adresse, même réparé, les posait à 3-5 km (route homonyme d'une autre
+    commune). Règles : la **meilleure source d'une position est la fiche qu'on possède
+    déjà, pas une adresse** (même leçon que V2-73g) — chercher d'abord dans le vivier
+    COMPLET, non plafonné ; un service public tiers passe par **une file d'attente
+    partagée** (`geocode._nominatim_get` : 1 req/s, reprise sur 429, cache par job) ; et
+    devant une recette réelle, vérifier **la position obtenue**, pas seulement son
+    existence.
+
 - **Une passe web cherche dans PLUSIEURS langues et sous TOUTES les orthographes
   (V2-77f).** Un seul terme rate l'essentiel. Règle : toute passe de découverte web pose,
   **dans la même requête**, (a) la langue du PAYS, (b) l'anglais, (c) les variantes

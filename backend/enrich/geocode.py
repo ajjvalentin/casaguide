@@ -14,8 +14,12 @@ sur la carte dans le back-office (prévu au CdC, champ geocode_accuracy).
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import re
+import threading
+import time
 import unicodedata
 from dataclasses import dataclass
 
@@ -49,6 +53,11 @@ def is_precise_enough(accuracy: str | None) -> bool:
 
 class GeocodeError(Exception):
     pass
+
+
+class GeocodeRateLimited(GeocodeError):
+    """Nominatim refuse encore (429/503) après les essais (V2-79b). Un GeocodeError :
+    les appelants du pipeline l'absorbent (le lieu tombe, le job continue)."""
 
 
 # ── V2-46 : contrôle de cohérence post-géocodage ──────────────────────────────
@@ -154,19 +163,151 @@ def _strip_house_number(street: str) -> str:
     return s.strip() or street
 
 
+# ── V2-79b : file d'attente Nominatim partagée + reprise sur 429 + cache par job ──
+#
+# Constat (Jávea, job 98cdff38) : 11 picks géocodés à la suite, chacun avec son échelle de
+# repli, dont `q=<commune>` rejoué 11 fois → 429 Too Many Requests → `raise_for_status`
+# non rattrapé → job PAYÉ mort. Politique d'usage OSM : 1 req/s, une seule file par IP.
+_NOMINATIM_LOCK = threading.Lock()
+_state = {"last": 0.0, "blocked_until": 0.0}
+_sleep = time.sleep            # injectables (tests : aucun vrai sommeil)
+_now = time.monotonic
+_RETRYABLE = frozenset({429, 503})
+# Cache des requêtes IDENTIQUES le temps d'un job (`request_cache()`) : la même question
+# reçoit la même réponse — le centroïde d'une commune ne bouge pas pendant un run.
+_JOB_CACHE: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "nominatim_job_cache", default=None)
+
+
+@contextlib.contextmanager
+def request_cache():
+    """Active, pour la durée du bloc (un job du pipeline), le cache des requêtes
+    Nominatim identiques. Imbriquable : un bloc interne réutilise le cache externe."""
+    if _JOB_CACHE.get() is not None:
+        yield
+        return
+    token = _JOB_CACHE.set({})
+    try:
+        yield
+    finally:
+        _JOB_CACHE.reset(token)
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    try:
+        return max(0.0, float(resp.headers.get("Retry-After")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _nominatim_get(url: str, params: dict, client: httpx.Client):
+    """GET Nominatim POLI : file partagée par le processus (un appel à la fois, espacés
+    de `nominatim_min_interval_s`), reprise sur 429/503 (Retry-After, sinon backoff
+    exponentiel plafonné — et TOUT le processus attend, l'IP est bannie pour tous), cache
+    par job. Lève `GeocodeRateLimited` si le service refuse encore après les essais."""
+    key = (url, tuple(sorted((k, str(v)) for k, v in params.items())))
+    cache = _JOB_CACHE.get()
+    if cache is not None and key in cache:
+        return cache[key]
+    attempts = max(1, settings.nominatim_max_attempts)
+    for attempt in range(1, attempts + 1):
+        with _NOMINATIM_LOCK:
+            wait = max(settings.nominatim_min_interval_s - (_now() - _state["last"]),
+                       _state["blocked_until"] - _now())
+            if wait > 0:
+                _sleep(wait)
+            try:
+                resp = client.get(url, params=params,
+                                  headers={"User-Agent": settings.user_agent})
+            finally:
+                _state["last"] = _now()
+            if resp.status_code in _RETRYABLE:
+                delay = _retry_after(resp)
+                if delay is None:
+                    delay = settings.nominatim_backoff_s * 2 ** (attempt - 1)
+                delay = min(delay, settings.nominatim_backoff_max_s)
+                _state["blocked_until"] = _now() + delay
+        if resp.status_code in _RETRYABLE:
+            if attempt == attempts:
+                raise GeocodeRateLimited(
+                    f"Nominatim {resp.status_code} après {attempts} essai(s)")
+            log.warning("Nominatim %s — attente %.0f s puis reprise (essai %d/%d)",
+                        resp.status_code, delay, attempt + 1, attempts)
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        if cache is not None:
+            cache[key] = data
+        return data
+    raise GeocodeRateLimited("Nominatim indisponible")   # inatteignable
+
+
 def _search(params: dict, country_code: str, client: httpx.Client) -> dict | None:
     # addressdetails=1 : Nominatim renvoie la ventilation d'adresse (ville/commune) —
     # sert à remplir `locality` (V2-38, servie sur la carte du guide). Sans coût
     # supplémentaire pour les appels existants (le champ est simplement présent).
-    resp = client.get(
+    results = _nominatim_get(
         settings.nominatim_url,
-        params={**params, "countrycodes": country_code.lower(),
-                "format": "jsonv2", "limit": 1, "addressdetails": 1},
-        headers={"User-Agent": settings.user_agent},
-    )
-    resp.raise_for_status()
-    results = resp.json()
+        {**params, "countrycodes": country_code.lower(),
+         "format": "jsonv2", "limit": 1, "addressdetails": 1},
+        client)
     return results[0] if results else None
+
+
+# ── V2-79b : découpage d'une adresse libre en composants structurés ───────────
+#
+# La recherche structurée de Nominatim attend `street` = numéro + rue SEULEMENT. Les picks
+# éditoriaux portent l'adresse ENTIÈRE (« Carretera de Benitachell, 100, 03730 Jávea,
+# Alicante ») : passée telle quelle dans `street`, zéro résultat → repli centroïde → rejet.
+_POSTCODE_RE = re.compile(r"\b(\d{4,5}(?:-\d{3,4})?)\b")
+_NUMBER_RE = re.compile(r"^(?:n[º°o]\.?\s*)?\d+[a-zA-Z]?(?:\s*[-/]\s*\d+[a-zA-Z]?)?$|^s/?n$",
+                        re.IGNORECASE)
+# Segments qui ne sont PAS une rue : lieux-dits, lotissements, mentions de zone.
+_NOISE_RE = re.compile(
+    r"^(urbanizaci[oó]n|urb\.?|urbanitzaci[oó]|partida|pda\.?|edificio|edif\.?|"
+    r"residencial|local|bajo|planta|piso|puerta|lieu-dit|zone|zona|pol[ií]gono)\b",
+    re.IGNORECASE)
+
+
+def split_address(address: str | None, city: str | None = None) -> dict:
+    """Découpe une adresse libre en `{"street", "postalcode", "city"}` (PUR).
+
+    - mentions entre parenthèses retirées (« (Platja de l'Arenal) ») ;
+    - segment de zone SANS numéro (« urbanización … ») ignoré ;
+    - le CODE POSTAL va dans `postalcode`, la ville qui l'accompagne dans `city` ;
+    - un numéro isolé (« 100 », « s/n ») est rattaché à la rue qui le précède ;
+    - tout ce qui suit la ville (province, pays) est ignoré.
+    `city` (celle du logement) sert de repli quand l'adresse n'en porte pas."""
+    text = re.sub(r"\([^)]*\)", " ", address or "")
+    segs = [re.sub(r"\s+", " ", x).strip(" .") for x in text.split(",")]
+    # Zone SANS numéro (« Urbanización El Tosalet ») = pas une rue ; « Partida Pla 22 »,
+    # forme d'adresse rurale valencienne, porte un numéro → gardée.
+    segs = [x for x in segs if x and not (_NOISE_RE.match(x) and not re.search(r"\d", x))]
+    street, postal, town = None, None, None
+    city_n = _norm_place(city) if city else ""
+    for i, seg in enumerate(segs):
+        m = _POSTCODE_RE.search(seg)
+        if m and not _NUMBER_RE.match(seg):
+            postal = m.group(1)
+            rest = (seg[:m.start()] + seg[m.end():]).strip(" -")
+            town = rest or (segs[i + 1] if i + 1 < len(segs) else None)
+            break
+        if city_n and _norm_place(seg) == city_n:
+            town = seg
+            break
+        if street is None:
+            street = seg
+        elif _NUMBER_RE.match(seg):
+            street = f"{street} {seg}" if not seg.lower().startswith("s") else street
+        else:
+            # Deuxième segment non numérique avant le CP/la ville : quartier, lieu-dit…
+            # On garde la rue, on ignore le reste.
+            continue
+    if street:
+        street = re.sub(r"\s+s/?n$", "", street, flags=re.IGNORECASE).strip() or None
+    if street and city_n and _norm_place(street) == city_n:
+        street = None
+    return {"street": street or None, "postalcode": postal, "city": town or city}
 
 
 def _osm_class(r: dict) -> str:
@@ -220,7 +361,7 @@ def _locality_of(r: dict) -> str | None:
 def geocode(address: str | None = None, country_code: str = "ES",
             client: httpx.Client | None = None, *,
             street: str | None = None, postalcode: str | None = None,
-            city: str | None = None) -> dict:
+            city: str | None = None, area_fallback: bool = True) -> dict:
     """Retourne {"lat", "lon", "accuracy", "display_name", "locality", "source",
     "mismatch"}.
 
@@ -244,9 +385,11 @@ def geocode(address: str | None = None, country_code: str = "ES",
             no_num = _strip_house_number(street)
             if no_num != street:
                 attempts.append(({"street": no_num, "city": city}, "street"))  # 2.
-        if postalcode and city:
+        # 3-4. Replis de ZONE (centroïde). `area_fallback=False` (V2-79b) : l'appelant
+        # refuse de toute façon un centroïde (pick éditorial) — inutile de le demander.
+        if area_fallback and postalcode and city:
             attempts.append(({"q": f"{postalcode} {city}"}, "city"))           # 3.
-        if city:
+        if area_fallback and city:
             attempts.append(({"q": city}, "city"))                             # 4.
         if address:
             attempts.insert(0, ({"q": address}, None))          # requête libre d'abord
@@ -283,6 +426,23 @@ def geocode(address: str | None = None, country_code: str = "ES",
     finally:
         if own_client:
             client.close()
+
+
+def geocode_place(address: str | None, city: str | None, country_code: str,
+                  client: httpx.Client | None = None) -> dict:
+    """Géocode l'adresse LIBRE d'un lieu (pick éditorial, marché, commerce web) — V2-79b.
+
+    Découpe d'abord l'adresse (`split_address` : rue+numéro / code postal / ville, sans
+    province ni mention entre parenthèses) puis interroge la recherche STRUCTURÉE, SANS
+    repli de zone : ces appelants refusent un centroïde de toute façon, le demander ne
+    ferait que charger Nominatim (le `q=<commune>` rejoué 11 fois de Jávea). Lève
+    GeocodeError si la rue ne se résout pas."""
+    parts = split_address(address, city)
+    if not parts["street"]:
+        raise GeocodeError(f"Adresse sans rue exploitable : {address!r}")
+    return geocode(street=parts["street"], postalcode=parts["postalcode"],
+                   city=parts["city"], country_code=country_code, client=client,
+                   area_fallback=False)
 
 
 # ── V2-68c : repère de départ quand l'adresse est introuvable ─────────────────
@@ -345,12 +505,8 @@ def reverse(lat: float, lon: float, country_code: str | None = None,
     client = client or httpx.Client(timeout=15)
     try:
         url = settings.nominatim_url.replace("/search", "/reverse")
-        resp = client.get(
-            url, params={"lat": lat, "lon": lon, "format": "jsonv2",
-                         "addressdetails": 1, "zoom": 18},
-            headers={"User-Agent": settings.user_agent})
-        resp.raise_for_status()
-        data = resp.json()
+        data = _nominatim_get(url, {"lat": lat, "lon": lon, "format": "jsonv2",
+                                    "addressdetails": 1, "zoom": 18}, client)
         return data.get("address") if isinstance(data, dict) else None
     finally:
         if own_client:

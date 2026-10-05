@@ -1228,6 +1228,45 @@ _NATURAL_PLACE_SELECTORS = [
 ]
 
 
+_SORTIES_AMENITY = {"restaurant": "restaurant", "bar": "bar", "pub": "bar", "cafe": "cafe"}
+
+
+def fetch_named_sorties(lat: float, lon: float, client: httpx.Client | None = None,
+                        radius_m: int = 15000, limit: int = 2000) -> list[dict]:
+    """TOUS les restaurants/bars/cafés NOMMÉS d'un secteur (V2-79b), SANS plafond — le
+    vivier d'appariement par NOM des picks éditoriaux. La moisson d'une catégorie ne garde
+    que les 8 plus proches : un restaurant réputé à 3 km (Bon Amb, Jávea) n'y figure
+    jamais, et le pick retombait sur un géocodage d'adresse que Nominatim ne connaît pas
+    (3 à 5 km d'erreur mesurés). UNE requête par COLLECTE de secteur (pas par guide).
+    Best-effort : liste vide en cas d'échec."""
+    query = (f"[out:json][timeout:{settings.overpass_timeout_s}];"
+             f'nwr["amenity"~"^(restaurant|bar|pub|cafe)$"]["name"]'
+             f"(around:{radius_m},{lat},{lon});out center {limit};")
+    own_client = client is None
+    client = client or httpx.Client(timeout=settings.overpass_timeout_s + 5)
+    try:
+        els = _post_overpass(client, query)
+    except Exception:  # noqa: BLE001 — best-effort : jamais bloquant
+        return []
+    finally:
+        if own_client:
+            client.close()
+    out: list[dict] = []
+    for el in els:
+        tags = el.get("tags", {})
+        name = (tags.get("name") or "").strip()
+        plat = el.get("lat") or el.get("center", {}).get("lat")
+        plon = el.get("lon") or el.get("center", {}).get("lon")
+        if not name or plat is None or plon is None:
+            continue
+        out.append({"name": name, "lat": float(plat), "lon": float(plon),
+                    "category": _SORTIES_AMENITY.get(tags.get("amenity"), "restaurant"),
+                    "phone": tags.get("phone") or tags.get("contact:phone"),
+                    "website": tags.get("website") or tags.get("contact:website"),
+                    "locality": tags.get("addr:city")})
+    return out
+
+
 def fetch_natural_places(lat: float, lon: float, client: httpx.Client | None = None,
                          radius_m: int = 25000, limit: int = 250) -> list[dict]:
     """Lieux NATURELS / de plein air NOMMÉS autour d'un point (V2-73d), par leurs TAGS OSM

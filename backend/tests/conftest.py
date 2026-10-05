@@ -25,3 +25,15 @@ def _overture_off_by_default():
         yield
     finally:
         settings.overture_enabled = prev
+
+
+@pytest.fixture(autouse=True)
+def _nominatim_no_wait():
+    """V2-79b : la file d'attente Nominatim (1 req/s, backoff sur 429) ne doit jamais
+    faire dormir la suite — les tests qui l'exercent injectent leur propre horloge."""
+    prev = (settings.nominatim_min_interval_s, settings.nominatim_backoff_s)
+    settings.nominatim_min_interval_s, settings.nominatim_backoff_s = 0.0, 0.0
+    try:
+        yield
+    finally:
+        settings.nominatim_min_interval_s, settings.nominatim_backoff_s = prev

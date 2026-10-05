@@ -3681,7 +3681,7 @@ _ALTEA_PICKS = [
 ]
 
 
-def _guest_props(n):
+def _guest_props(n, city="Orihuela Costa"):
     oid, pids = str(uuid.uuid4()), [str(uuid.uuid4()) for _ in range(n)]
     with psycopg.connect(settings.db_dsn) as conn:
         conn.execute("DELETE FROM editorial_picks WHERE country_code='ES'")
@@ -3692,9 +3692,9 @@ def _guest_props(n):
             conn.execute(
                 """INSERT INTO properties (id,owner_id,name,address_line1,city,
                        country_code,guest_guide,geom,geocode_source,geocode_accuracy)
-                   VALUES (%s,%s,'G','Rue','Orihuela Costa','ES',TRUE,
+                   VALUES (%s,%s,'G','Rue',%s,'ES',TRUE,
                        ST_SetSRID(ST_MakePoint(%s,%s),4326),'manual','manual')""",
-                (pid, oid, PROP_LON + 0.004 * i, PROP_LAT))
+                (pid, oid, city, PROP_LON + 0.004 * i, PROP_LAT))
         conn.commit()
     return oid, pids
 
@@ -3807,3 +3807,115 @@ def test_quality_notes_name_unpositioned_reputed_places():
     assert "15 lieu(x) réputé(s) trouvé(s), aucun positionné" in q["notes"]
     assert _build_quality({"editorial_found": 15, "editorial_persisted": 9},
                           [], None)["notes"] == ""
+
+
+def test_paid_job_survives_nominatim_429_on_picks(monkeypatch):
+    """V2-79b — un job PAYÉ ne meurt pas sur un 429 : Nominatim refuse obstinément les
+    picks → ils tombent (comptés), le job finit `done`, coût enregistré."""
+    monkeypatch.setattr(settings, "nominatim_max_attempts", 2)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "nominatim" in url and "street=" in url:
+            return httpx.Response(429)
+        return _mock_handler(request)
+    oid, (pid,) = _guest_props(1)
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            r = pipeline.run(pid, use_claude=True, trigger="guest", http_client=client,
+                             only_categories={"restaurant", "bar"},
+                             anthropic_client=FakeAnthropic(reputed_places=_ALTEA_PICKS))
+        with db.connect() as conn:
+            st, costs = db.job_steps_and_costs(conn, r["job_id"])
+            status = conn.execute("SELECT status FROM enrichment_jobs WHERE id=%s",
+                                  (r["job_id"],)).fetchone()["status"]
+        assert status == "done"
+        rs = st["reputed_sorties"]
+        assert (rs["discovered"], rs["positioned"], rs["persisted"]) == (2, 0, 0)
+        assert "reputed_sorties" in costs
+    finally:
+        _cleanup(oid)
+
+
+_JAVEA_PICKS = [
+    {"name": "BonAmb", "category": "restaurant", "reason": "Deux étoiles",
+     "address": "Carretera de Benitachell, 100, 03730 Jávea, Alicante", "source_url": "u1"},
+    {"name": "Restaurante Tula", "category": "restaurant", "reason": "Cuisine de marché",
+     "address": "Av. del Mediterráneo, 1 (Platja de l'Arenal), 03730 Xàbia",
+     "source_url": "u2"},
+    {"name": "La Perla", "category": "restaurant", "reason": "Arroces",
+     "address": "Urbanización El Tosalet, 03730 Jávea", "source_url": "u3"},
+    {"name": "Cala Bandida", "category": "bar", "reason": "Coucher de soleil",
+     "address": "Carrer de la Cala, 03730 Jávea", "source_url": "u4"},
+]
+# Le vivier OSM du secteur : les quatre y sont (relevé réel Overpass, 05/10), sous des
+# graphies différentes de celles du web — mais HORS de la moisson (8 plus proches).
+_JAVEA_POOL = [
+    ("Bon Amb", 38.7697855, 0.1483051, "restaurant"),
+    ("Tula", 38.7706849, 0.1927177, "restaurant"),
+    ("La Perla de Jávea", 38.7713969, 0.1925352, "restaurant"),
+    ("Cala Bandida", 38.7962713, 0.1837954, "restaurant"),
+    ("La Perla Negra", 38.80, 0.18, "bar"),
+]
+
+
+def test_javea_picks_are_matched_in_the_full_osm_pool_not_geocoded():
+    """V2-79b — RECETTE Jávea : les quatre picks du journal réel (BonAmb, Tula, La Perla,
+    Cala Bandida) sont POSITIONNÉS par leur fiche OSM du secteur, à la position OSM, puis
+    PERSISTÉS. Nominatim ne connaît pas leurs adresses : la rue de BonAmb était résolue
+    dans une AUTRE commune (`mismatch`, ~5 km) — refusée, jamais posée."""
+    sorties_q: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "nominatim" in url:
+            if "street=" in url:     # la rue homonyme d'El Poble Nou de Benitatxell
+                return httpx.Response(200, json=[{
+                    "lat": "38.7275", "lon": "0.1577", "category": "highway",
+                    "type": "secondary", "place_rank": 26, "display_name": "x",
+                    "address": {"village": "el Poble Nou de Benitatxell"}}])
+            return httpx.Response(200, json=NOMINATIM)
+        if "overpass" in url:
+            body = urllib.parse.unquote_plus(request.read().decode())
+            if "restaurant|bar|pub|cafe" in body:
+                sorties_q.append(body)
+                return httpx.Response(200, json={"elements": [
+                    {"type": "node", "id": 900 + i, "lat": la, "lon": lo,
+                     "tags": {"name": n, "amenity": a}}
+                    for i, (n, la, lo, a) in enumerate(_JAVEA_POOL)]})
+        return _mock_handler(request)
+
+    oid, (pid,) = _guest_props(1, city="Jávea")
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            r = pipeline.run(pid, use_claude=True, trigger="guest", http_client=client,
+                             only_categories={"restaurant", "bar"},
+                             anthropic_client=FakeAnthropic(reputed_places=_JAVEA_PICKS))
+        with db.connect() as conn:
+            st, _ = db.job_steps_and_costs(conn, r["job_id"])
+            rows = {x["name"]: (round(x["lat"], 4), round(x["lon"], 4)) for x in conn.execute(
+                "SELECT name, ST_Y(geom) AS lat, ST_X(geom) AS lon FROM editorial_picks "
+                "WHERE country_code='ES'").fetchall()}
+        rs = st["reputed_sorties"]
+        assert (rs["discovered"], rs["positioned"], rs["persisted"]) == (4, 4, 4), rs
+        assert len(sorties_q) == 1                        # UNE requête par collecte
+        assert rows["BonAmb"] == (38.7698, 0.1483)        # position OSM, pas la rue homonyme
+        assert rows["La Perla"] == (38.7714, 0.1925)      # « de Jávea », pas « Negra »
+        assert rows["Restaurante Tula"] == (38.7707, 0.1927)
+        assert rows["Cala Bandida"] == (38.7963, 0.1838)
+    finally:
+        _cleanup(oid)
+
+
+def test_pick_street_resolved_in_another_commune_is_refused():
+    """V2-79b — `mismatch` (rue homonyme dans une autre commune, V2-46) : refusé."""
+    def handler(request):
+        return httpx.Response(200, json=[{
+            "lat": "38.7275", "lon": "0.1577", "category": "highway", "type": "secondary",
+            "place_rank": 26, "display_name": "x",
+            "address": {"village": "el Poble Nou de Benitatxell"}}])
+    prop = {"city": "Jávea", "country_code": "ES"}
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert pipeline._geocode_pick_strict(
+            {"address": "Carretera de Benitachell, 100, 03730 Jávea"}, prop,
+            (38.785, 0.17), client) is None

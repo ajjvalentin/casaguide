@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import functools
 import logging
 import os
 import re
@@ -377,11 +378,14 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
     grouped = grouped or {}
     overture_by_code = overture_by_code or {}
     positioned = 0
+    # V2-79b : vivier OSM complet des sorties du secteur (une requête par collecte).
+    pool = (overpass.fetch_named_sorties(origin[0], origin[1], client=http_client)
+            if places and origin else [])
     with conn.transaction():
         for code, raw in out.items():
             positioned += len(raw) - _memorize_fresh_picks(
                 conn, prop, code, grouped.get(code) or [],
-                overture_by_code.get(code), raw, origin, http_client, city_norm)
+                overture_by_code.get(code), raw, origin, http_client, city_norm, pool)
         # PERSISTÉ = ce que la BASE dit avoir écrit dans CETTE transaction (`last_seen`
         # = now() = début de transaction), pas ce que le code croit avoir fait.
         persisted = db.sector_editorial_touched_now(conn, prop["country_code"], city_norm)
@@ -394,7 +398,7 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
     summary["editorial_skipped"] = len(places) - positioned
     summary["editorial_persisted"] = persisted
     step = {"ok": True, **dec.step_note(meta["cost_cts"]), "discovered": len(places),
-            "positioned": positioned, "persisted": persisted,
+            "positioned": positioned, "persisted": persisted, "osm_pool": len(pool),
             "marker": persisted > 0,
             "by_category": {k: len(v) for k, v in out.items()}}
     if places and not persisted:
@@ -416,6 +420,54 @@ def _name_match(name: str, candidates: list[dict]) -> dict | None:
         s = fusion.name_similarity(name, c.get("name"))
         if s >= _EDITORIAL_NAME_THR and s > best_s:
             best, best_s = c, s
+    return best
+
+
+def _compact_core(name: str | None, city_tokens: set[str]) -> str:
+    """Cœur de nom COMPACT (V2-79b) : mots de type/articles retirés (`dedup._name_core`),
+    nom de la commune retiré, espaces supprimés. « BonAmb » = « Bon Amb » ; « La Perla » =
+    « La Perla de Jávea » ; « Restaurante Tula » = « Tula »."""
+    toks = [t for t in dedup._name_core(name).split()
+            if t not in city_tokens and t not in _PICK_TYPE_WORDS]
+    return "".join(toks)
+
+
+# Mots de type absents de `dedup._TYPE_WORDS` (FR) mais courants dans les noms d'enseigne
+# rendus par la recherche web (ES/CA/IT/EN).
+_PICK_TYPE_WORDS = {"restaurante", "restaurant", "ristorante", "taberna", "cafeteria",
+                    "cerveceria", "arroceria", "marisqueria", "chiringuito", "gastrobar",
+                    "trattoria", "osteria", "bodega", "meson", "tapas", "cocktail",
+                    "lounge", "beach", "club"}
+
+
+def _pick_name_match(name: str, candidates: list[dict] | None,
+                     city: str | list[str] | None,
+                     origin: tuple | None = None) -> dict | None:
+    """Appariement par NOM d'un pick éditorial (V2-79b) : similarité globale (seuil
+    historique V2-56b) OU cœur compact IDENTIQUE (≥ 3 lettres). Le meilleur score gagne ;
+    à égalité, le plus proche du logement. Jamais de condition de distance stricte : la
+    position du pick n'est pas fiable, celle de la base fait foi."""
+    if not candidates:
+        return None
+    # Communes à retirer des noms : celle du logement ET celle de l'adresse du pick
+    # (« Xàbia » quand le logement dit « Jávea ») — « La Perla de Jávea » = « La Perla ».
+    cities = city if isinstance(city, list) else [city]
+    city_tokens = {t for c in cities if c for t in dedup._norm(c).split()}
+    core = _compact_core(name, city_tokens)
+    best, best_key = None, None
+    for c in candidates:
+        if c.get("lat") is None or c.get("lon") is None:
+            continue
+        s = fusion.name_similarity(name, c.get("name"))
+        if len(core) >= 3 and core == _compact_core(c.get("name"), city_tokens):
+            s = max(s, 1.0)
+        if s < _EDITORIAL_NAME_THR:
+            continue
+        d = (overpass.haversine_m(origin[0], origin[1], c["lat"], c["lon"])
+             if origin else 0.0)
+        key = (s, -d)
+        if best_key is None or key > best_key:
+            best, best_key = c, key
     return best
 
 
@@ -479,11 +531,15 @@ def _geocode_pick_strict(pk: dict, prop: dict, origin: tuple,
     if not addr:
         return None
     try:
-        geo = geocode.geocode(street=addr, city=prop["city"],
-                              country_code=prop["country_code"], client=http_client)
+        # V2-79b : adresse DÉCOUPÉE (rue / CP / ville) et aucun repli de zone — l'adresse
+        # entière passée en `street` ne résolvait jamais (Jávea : 11 picks sur 11 sautés).
+        geo = geocode.geocode_place(addr, prop["city"], prop["country_code"], http_client)
     except geocode.GeocodeError:
         return None
-    if geo.get("accuracy") == "city":
+    # V2-79b : `mismatch` = la rue a été résolue dans une AUTRE commune (homonymie, V2-46)
+    # — « Carretera de Benitachell » de Jávea posée à El Poble Nou de Benitatxell, 5 km
+    # plus au sud. Un pick mal placé est pire qu'absent.
+    if geo.get("accuracy") in ("city", "mismatch"):
         return None
     if overpass.haversine_m(origin[0], origin[1], geo["lat"], geo["lon"]) \
             > _EDITORIAL_MAX_DIST_M:
@@ -493,21 +549,29 @@ def _geocode_pick_strict(pk: dict, prop: dict, origin: tuple,
 
 def _position_pick(pk: dict, pois: list[dict], ovt: list[dict] | None,
                    prop: dict, origin: tuple,
-                   http_client: httpx.Client | None) -> tuple | None:
+                   http_client: httpx.Client | None,
+                   pool: list[dict] | None = None) -> tuple | None:
     """Position FIABLE d'un pick, cascade STRICTE (V2-56b) : appariement par NOM contre
     l'OSM moissonné PUIS Overture (sans distance — la position du pick n'est pas fiable,
     celle de la base fait foi), sinon géocodage de rue STRICT (jamais le centroïde).
     Renvoie `(lat, lon, locality, phone_base, website_base, name_local)` ou None (le pick
     tombe). `name_local` (V2-66b cas a) = nom en écriture d'origine de la fiche OSM appariée
     (elle porte `completion_meta._name_local`) ; None hors appariement OSM."""
-    m = _name_match(pk["name"], pois)                     # 1. OSM moissonné
+    city = [prop.get("city"), geocode.split_address(pk.get("address"), None)["city"]]
+    m = _pick_name_match(pk["name"], pois, city, origin)  # 1. OSM moissonné
     if m is not None:
         local = (m.get("completion_meta") or {}).get("_name_local")
         return m["lat"], m["lon"], m.get("locality"), m.get("phone"), m.get("website"), local
-    ov = _name_match(pk["name"], ovt) if ovt else None    # 2. Overture (pas de nom local)
-    if ov is not None and ov.get("lat") is not None and ov.get("lon") is not None:
+    ov = _pick_name_match(pk["name"], ovt, city, origin)  # 2. Overture (pas de nom local)
+    if ov is not None:
         return (ov["lat"], ov["lon"], ov.get("locality"),
                 ov.get("phone"), ov.get("website"), None)
+    # 2bis. V2-79b : vivier OSM COMPLET du secteur (non plafonné) — le restaurant réputé
+    # à 3 km absent des 8 plus proches de la moisson (Bon Amb, Tula, La Perla, Cala
+    # Bandida à Jávea : tous dans OSM, aucun dans la moisson).
+    pl = _pick_name_match(pk["name"], pool, city, origin)
+    if pl is not None:
+        return pl["lat"], pl["lon"], pl.get("locality"), pl.get("phone"), pl.get("website"), None
     geo = _geocode_pick_strict(pk, prop, origin, http_client)   # 3. rue stricte
     if geo is not None:
         return geo["lat"], geo["lon"], geo.get("locality"), None, None, None
@@ -839,7 +903,7 @@ def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
         candidates.append(no_num)                          # escalade : rue sans numéro (part 2)
     for query in candidates:
         try:
-            geo = geocode.geocode(street=query, city=city, country_code=cc, client=http_client)
+            geo = geocode.geocode_place(query, city, cc, http_client)   # V2-79b
         except geocode.GeocodeError:
             continue
         # Précis (rue/toit, jamais un centroïde) ET cohérent avec le secteur du guide :
@@ -1157,13 +1221,13 @@ def _discover_and_materialize_local_commerces(conn, prop: dict, ai, job_id: str,
 def _memorize_fresh_picks(conn, prop: dict, code: str, pois: list[dict],
                           ovt: list[dict] | None, raw_picks: list[dict],
                           origin: tuple, http_client: httpx.Client | None,
-                          city_norm: str) -> int:
+                          city_norm: str, pool: list[dict] | None = None) -> int:
     """Positionne les picks FRAIS du run et les MÉMORISE pour le secteur (V2-56c) :
     chaque run enrichit la mémoire commune. Un pick non positionnable TOMBE (jamais un
     centroïde). Renvoie le nombre écarté (sans position)."""
     skipped = 0
     for pk in raw_picks:
-        pos = _position_pick(pk, pois, ovt, prop, origin, http_client)
+        pos = _position_pick(pk, pois, ovt, prop, origin, http_client, pool)
         if pos is None:
             skipped += 1
             log.warning("Pick réputé « %s » sauté : position non fiable (%s)",
@@ -1242,8 +1306,8 @@ def _resolve_market_position(market: dict, prop: dict,
     addr = (market.get("address") or "").strip()
     if addr:
         try:
-            geo = geocode.geocode(street=addr, city=prop["city"],
-                                  country_code=prop["country_code"], client=http_client)
+            geo = geocode.geocode_place(addr, prop["city"], prop["country_code"],
+                                        http_client)
         except geocode.GeocodeError:
             return None, None
         if (geo["accuracy"] != "city"
@@ -1332,6 +1396,17 @@ def _judge_and_publish_guest(conn, prop: dict, ai, job_id: str,
               f"(seuil {threshold}) — {judge_cost:.2f} ct ; guide publié")
 
 
+def _nominatim_job_cache(fn):
+    """V2-79b : un job = un cache des requêtes Nominatim identiques (le centroïde d'une
+    commune ne change pas pendant un run — il était redemandé une fois PAR pick)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with geocode.request_cache():
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+@_nominatim_job_cache
 def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         only_categories: set[str] | None = None,
         job_id: str | None = None,
@@ -2186,6 +2261,7 @@ def run_with_retries(property_id: str, *, use_claude: bool = True,
     return summary
 
 
+@_nominatim_job_cache
 def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: int,
                   *, use_claude: bool, http_client: httpx.Client | None,
                   anthropic_client: anthropic.Anthropic | None) -> dict[str, str]:

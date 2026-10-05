@@ -61,6 +61,15 @@ class Settings:
     overpass_max_attempts: int = int(os.getenv("CASAGUIDE_OVERPASS_ATTEMPTS", "2"))
     overpass_backoff_s: float = float(os.getenv("CASAGUIDE_OVERPASS_BACKOFF", "2.0"))
     politeness_delay_s: float = float(os.getenv("CASAGUIDE_DELAY", "1.0"))
+    # Nominatim (V2-79b) : FILE D'ATTENTE partagée par le processus — au plus une requête
+    # par intervalle (politique d'usage OSM : 1 req/s ; un peu de marge), et sur 429/503
+    # attente + reprise (Retry-After respecté, sinon backoff exponentiel plafonné) au lieu
+    # de faire échouer le job. Au-delà des essais : `GeocodeRateLimited` (un GeocodeError,
+    # que tous les appelants du pipeline savent absorber).
+    nominatim_min_interval_s: float = float(os.getenv("CASAGUIDE_NOMINATIM_INTERVAL", "1.1"))
+    nominatim_max_attempts: int = int(os.getenv("CASAGUIDE_NOMINATIM_ATTEMPTS", "5"))
+    nominatim_backoff_s: float = float(os.getenv("CASAGUIDE_NOMINATIM_BACKOFF", "5.0"))
+    nominatim_backoff_max_s: float = float(os.getenv("CASAGUIDE_NOMINATIM_BACKOFF_MAX", "60"))
     max_pois_per_category: int = int(os.getenv("CASAGUIDE_MAX_POIS", "8"))
     # Collecte adaptée à la ruralité (V2-44) : minimum de lieux garanti par
     # catégorie. Si le rayon de PRÉFÉRENCE (default_radius_m) n'en trouve pas
