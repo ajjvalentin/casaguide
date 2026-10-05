@@ -7,7 +7,7 @@
    retirées), bascule entre les deux (gating Solo → encart d'upsell), jauges de
    complétude séparées. Verdict lu dans le DOM dumpé (ignoré si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

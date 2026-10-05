@@ -1,6 +1,6 @@
 /* Tests du mapping d'erreurs d'API → message FR (V2-16) — `frontend/js/apierrors.js`.
 
-   Exécuter : node --test frontend-tests/
+   Exécuter : node --test frontend-tests/*.test.mjs
 
    Couvre notamment le constat (c) : une erreur de validation 422 (LISTE Pydantic)
    ne doit plus afficher « Erreur serveur (422) » mais le détail lisible. */

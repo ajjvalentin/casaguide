@@ -8,7 +8,7 @@
    V2-12), la recherche vers la section avec un filtre actif lève le filtre, et un
    deep-link nu reste une ancre. Verdict dans le DOM dumpé (ignoré si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

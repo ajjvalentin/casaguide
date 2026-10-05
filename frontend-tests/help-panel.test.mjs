@@ -4,7 +4,7 @@
    ⌘K ouvre/ferme, rendu des résultats + « M'y emmener », zéro-résultat →
    approches + repli (jamais un écran vide), journalisation best-effort avec le bon
    compte de résultats, et résolution de :id vers le logement courant. Verdict lu
-   dans le DOM dumpé (ignoré si aucun Chrome). Exécuter : node --test frontend-tests/ */
+   dans le DOM dumpé (ignoré si aucun Chrome). Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

@@ -6,7 +6,7 @@
    de quartiers est proposé, le paiement reste bloqué tant qu'aucun ancrage, et le bouton
    « Situer » est réarmé ; choisir un quartier débloque le paiement. Reproduit et prévient
    le gel prod 14/09 (TDZ syncPay). Verdict lu dans le DOM dumpé (ignoré si aucun Chrome).
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

@@ -8,7 +8,7 @@
    On espionne location.replace (jamais de navigation réelle). Verdict lu dans le
    DOM dumpé (ignoré proprement si aucun Chrome). Patron calendar-harness.
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

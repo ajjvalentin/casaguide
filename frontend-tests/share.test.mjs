@@ -1,7 +1,7 @@
 /* Tests du lien de partage multilingue (V2-10) — `frontend/js/share.js`.
 
    Hors `frontend/` (servi publiquement en statique). Exécuter avec :
-       node --test frontend-tests/
+       node --test frontend-tests/*.test.mjs
 
    Couvre : lien slug conservé, ?lang=xx ajouté quand la langue diffère de la
    langue par défaut du logement, lien nu pour la langue par défaut / absente. */

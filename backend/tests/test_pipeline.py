@@ -28,7 +28,7 @@ PROP_LAT, PROP_LON = 37.9280, -0.7482  # Orihuela Costa
 # ── Réponses simulées des API géo ────────────────────────────────────────────
 
 NOMINATIM = [{"lat": str(PROP_LAT), "lon": str(PROP_LON),
-              "type": "house", "class": "building",
+              "type": "house", "category": "building", "place_rank": 30,
               "display_name": "Calle Ejemplo 1, Orihuela Costa"}]
 
 OVERPASS_BY_CATEGORY = {
@@ -2102,7 +2102,7 @@ def _rental_handler(*, renter_coords, osm_rental=None, renter_key="Kloosterweg")
                 if key in dec:
                     return httpx.Response(200, json=[{
                         "lat": str(lat), "lon": str(lon), "type": "house",
-                        "class": "building", "display_name": key, "address": addr}])
+                        "category": "building", "place_rank": 30, "display_name": key, "address": addr}])
             return httpx.Response(200, json=[])   # loueur non géocodable → écarté
         if "overpass" in url:
             body = urllib.parse.unquote_plus(request.read().decode())
@@ -2396,7 +2396,7 @@ def test_pipeline_aborts_on_geocode_mismatch_and_harvests_nothing(property_id):
     orig = _no_mirrors(); orig_backoff = settings.overpass_backoff_s
     settings.overpass_backoff_s = 0
     # Le logement est saisi « Orihuela Costa » ; Nominatim renvoie Torre-Pacheco.
-    mismatched = [{"lat": "37.74", "lon": "-0.95", "type": "house", "class": "building",
+    mismatched = [{"lat": "37.74", "lon": "-0.95", "type": "house", "category": "building", "place_rank": 30,
                    "display_name": "Rue homonyme",
                    "address": {"town": "Torre-Pacheco", "municipality": "Torre-Pacheco",
                                "county": "Murcia", "postcode": "30700"}}]
@@ -2566,9 +2566,24 @@ def test_v250_service_rules_qualify_and_drop(property_id):
 # Overture est un flux réseau (DuckDB/S3) → INJECTÉ ici (aucun réseau). Le flag
 # `overture_enabled` reste OFF (conftest) : passer un fetcher l'emporte sur le flag.
 
+# Hiérarchies RÉELLES de la release 2026-09-23.1 (relevé S3 du 05/10, V2-76b) : un faux
+# Overture porte la feuille ACTUELLE `taxonomy.primary` ET son ascendance.
+_OVT_HIERARCHY = {
+    "bank_or_credit_union": ["services_and_business", "financial_service",
+                             "bank_or_credit_union"],
+    "grocery_store": ["shopping", "food_and_beverage_store", "grocery_store"],
+}
+
+
 def _ovt_place(name, category, lat, lon, **f):
-    """Un lieu Overture à la surface du fetcher de production (`enrich.overture`)."""
+    """Un lieu Overture à la surface du fetcher de production (`enrich.overture`).
+    STRICT (V2-76b) : une feuille sans hiérarchie RELEVÉE dans `_OVT_HIERARCHY` est
+    refusée — un faux Overture ne s'invente pas, il se recopie d'une release réelle."""
+    assert category in _OVT_HIERARCHY, (
+        f"feuille Overture {category!r} non relevée : ajoutez sa hiérarchie RÉELLE "
+        "(DESCRIBE/SELECT sur la release courante) à _OVT_HIERARCHY")
     return {"name": name, "lat": lat, "lon": lon, "category": category,
+            "category_hierarchy": _OVT_HIERARCHY.get(category),
             "phone": f.get("phone"), "website": f.get("website"),
             "source_ref": f.get("ref", f"gers:{name}")}
 
@@ -2578,9 +2593,9 @@ def test_overture_fills_empty_atm_with_banks(property_id, http_client):
     Overture comble avec des banques NOMMÉES (téléphone présent), source 'overture'."""
     def fetch(lat, lon, radius):
         # Espacés > 150 m (sinon la dédup V2-40 les prendrait pour le même lieu).
-        return [_ovt_place("Banco Santander", "bank_credit_union",
+        return [_ovt_place("Banco Santander", "bank_or_credit_union",
                            PROP_LAT + 0.001, PROP_LON, phone="+34 900 111", ref="gers:s"),
-                _ovt_place("CaixaBank", "bank_credit_union",
+                _ovt_place("CaixaBank", "bank_or_credit_union",
                            PROP_LAT + 0.003, PROP_LON + 0.002, phone="+34 900 222",
                            ref="gers:c")]
 
@@ -2677,9 +2692,9 @@ def test_overture_respects_arbitrated_pois(property_id, http_client):
         conn.commit()
 
     def fetch(lat, lon, radius):
-        return [_ovt_place("Banco Santander", "bank_credit_union",
+        return [_ovt_place("Banco Santander", "bank_or_credit_union",
                            PROP_LAT + 0.0001, PROP_LON, phone="+34 1", ref="gers:s"),
-                _ovt_place("CaixaBank", "bank_credit_union",
+                _ovt_place("CaixaBank", "bank_or_credit_union",
                            PROP_LAT + 0.003, PROP_LON + 0.003, phone="+34 2", ref="gers:c")]
 
     result = pipeline.run(property_id, use_claude=False, only_categories={"atm"},
@@ -3661,7 +3676,7 @@ def test_nominatim_jsonv2_accuracy_reads_category_and_rank():
     assert pipeline._geo_is_centroid({"osm_class": g._osm_class(town),
                                       "osm_type": "town", "accuracy": "city"})
     # Rétro-compat format=json (`class`) et table historique.
-    assert g._accuracy_of({"type": "house", "class": "building"}) == "rooftop"
+    assert g._accuracy_of({"type": "house", "class": "building"}) == "rooftop"  # format=json
     assert g._accuracy_of({"category": "place", "type": "square"}) == "street"
 
 

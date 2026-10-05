@@ -4,7 +4,7 @@
    directement dans node. On vérifie l'alignement avec backend/api/care.py :
    suggestion d'équipement d'après les âges (SUGGÈRE, sans doublon).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

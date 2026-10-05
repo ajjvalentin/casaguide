@@ -4,7 +4,7 @@
    exacte, tolérance aux fautes/accents, synonymes du terrain, zéro-résultat →
    approches (jamais un tableau vide), validité & résolution des routes « M'y
    emmener ». Ne nécessite pas Chrome → toujours exécuté (jamais « skip »).
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

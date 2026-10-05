@@ -4,7 +4,7 @@
    guide-activities-harness.html). Vérifie le GARDE-FOU (aucun bouton tant qu'aucune voix de
    la langue n'existe), l'apparition du bouton sur le NOM local à l'arrivée d'une voix ja
    (jamais sur l'adresse), et la prononciation (texte/lang/voix corrects). Verdict lu dans
-   le DOM dumpé (ignoré si aucun Chrome). Exécuter : node --test frontend-tests/ */
+   le DOM dumpé (ignoré si aucun Chrome). Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

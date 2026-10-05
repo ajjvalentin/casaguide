@@ -60,7 +60,7 @@ PROP_LAT, PROP_LON = 37.9280, -0.7482  # Orihuela Costa
 # ── Simulations réseau (reprises de test_pipeline) ───────────────────────────
 
 NOMINATIM = [{"lat": str(PROP_LAT), "lon": str(PROP_LON),
-              "type": "house", "class": "building",
+              "type": "house", "category": "building", "place_rank": 30,
               "display_name": "Calle Ejemplo 1, Orihuela Costa"}]
 
 OVERPASS_BY_CATEGORY = {
@@ -520,7 +520,7 @@ def test_poi_search_function_biases_and_guesses(client):
         captured["url"] = str(request.url)
         captured["ua"] = request.headers.get("User-Agent")
         return httpx.Response(200, json=[{
-            "lat": "37.978", "lon": "-0.682", "class": "amenity", "type": "restaurant",
+            "lat": "37.978", "lon": "-0.682", "category": "amenity", "type": "restaurant", "place_rank": 30,
             "name": "El Meson de la Costa", "display_name": "El Meson…, Torrevieja",
             "address": {"road": "Calle Mayor", "town": "Torrevieja",
                         "state": "Alicante"},   # V2-38 : Nominatim porte la commune

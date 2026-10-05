@@ -4,7 +4,7 @@
    interne : un élément câblé mais non inséré dans le retour était « vert » et a
    laissé passer le bug en prod.
 
-   Exécuter : node --test frontend-tests/
+   Exécuter : node --test frontend-tests/*.test.mjs
    (test ignoré proprement si aucun Chrome n'est disponible). */
 
 import { test } from "node:test";

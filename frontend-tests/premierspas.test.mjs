@@ -6,7 +6,7 @@
    par étape couvrant tout l'index (aucune orpheline hors « Et aussi »), l'expansion
    d'une rubrique, le repli du panneau ⌘K qui ouvre la page, et l'état vide de
    « Mes logements » (accueil, zéro logement). Verdict lu dans le DOM dumpé (ignoré
-   si aucun Chrome). Exécuter : node --test frontend-tests/ */
+   si aucun Chrome). Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

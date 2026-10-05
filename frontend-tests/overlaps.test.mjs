@@ -5,7 +5,7 @@
    la règle d'intervalle semi-ouvert du backend : rotation ≠ chevauchement, et que
    seule une OCCUPATION (reservation/private) est classée « rouge ».
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

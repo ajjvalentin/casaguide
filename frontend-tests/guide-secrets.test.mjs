@@ -8,7 +8,7 @@
    toute chaîne française dans le rendu ET dans la source (anciens littéraux
    d'affichage disparus). Verdict lu dans le DOM dumpé (ignoré si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

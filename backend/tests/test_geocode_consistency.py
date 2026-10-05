@@ -90,7 +90,7 @@ def test_postcode_conflict_only_triggers_without_a_city():
 def _transport(address: dict, lat=37.74, lon=-0.95):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[{
-            "lat": str(lat), "lon": str(lon), "type": "house", "class": "building",
+            "lat": str(lat), "lon": str(lon), "type": "house", "category": "building", "place_rank": 30,
             "display_name": "Príncipe de Asturias 38", "address": address}])
     return httpx.MockTransport(handler)
 

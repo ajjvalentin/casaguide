@@ -257,8 +257,9 @@ duckdb = pytest.importorskip("duckdb")
 
 
 def _write_parquet(tmp_path, geom_sql: str) -> str:
-    """Écrit un parquet façon Overture (names/categories struct, phones/websites list,
-    bbox struct) avec la géométrie produite par `geom_sql`. Renvoie le chemin."""
+    """Écrit un parquet façon Overture ANCIEN SCHÉMA (≤ 2026-08 : `categories` struct,
+    supprimé par la release 2026-09-23 — gardé pour la rétro-compat de `detect_schema` ;
+    le schéma COURANT est `_write_taxonomy_parquet`), géométrie produite par `geom_sql`."""
     pq = str(tmp_path / "places.parquet")
     con = duckdb.connect()
     con.execute("INSTALL spatial; LOAD spatial;")

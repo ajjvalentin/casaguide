@@ -4,7 +4,7 @@
  * ß→ss), tokenisation PARAMÉTRÉE par les stopwords de l'appelant, et recherche
  * tolérante (exact, sous-chaîne, trigrammes) avec le repli « jamais vide ».
  *
- * Exécuter : node --test frontend-tests/
+ * Exécuter : node --test frontend-tests/*.test.mjs
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

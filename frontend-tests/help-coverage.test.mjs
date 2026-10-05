@@ -5,7 +5,7 @@
    par l'index d'aide (+ « le test du test » : un libellé bidon doit rester non
    couvert). Suite ROUGE si un libellé n'a pas d'entrée d'aide → un futur bouton
    sans aide ne peut plus passer. Verdict lu dans le DOM dumpé (ignoré si aucun
-   Chrome). Exécuter : node --test frontend-tests/ */
+   Chrome). Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

@@ -7,7 +7,7 @@
    et le badge repasse « à jour » SANS rechargement. Verdict lu dans le DOM dumpé
    (ignoré si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

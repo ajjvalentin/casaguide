@@ -5,7 +5,7 @@
    conteneur 0×0 → cadrage faux (centre arrière-pays, villa hors cadre). On vérifie qu'à
    CHAQUE activation de « Autour » — onglet direct ET bascule mini-carte (_activateTab) —
    la carte se RECADRE sur villa + tous les POI. Verdict lu dans le DOM dumpé (ignoré si
-   aucun Chrome). Exécuter : node --test frontend-tests/ */
+   aucun Chrome). Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

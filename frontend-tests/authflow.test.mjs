@@ -1,6 +1,6 @@
 /* Tests de l'enchaînement d'inscription / connexion (V2-16) — `frontend/js/authflow.js`.
 
-   Exécuter : node --test frontend-tests/
+   Exécuter : node --test frontend-tests/*.test.mjs
 
    Reproduit, hors navigateur, le parcours EXACT constaté en production le 24/07 :
    création → jeton → /me → Checkout → redirection, et chaque cas d'erreur. */

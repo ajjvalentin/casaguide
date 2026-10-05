@@ -2120,6 +2120,22 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
     à condition qu'elle soit **visible** (`steps.overture.unavailable`, `quality_notes`
     du guide) : une dégradation silencieuse est une panne.
 
+  - **(9) Audit des faux (V2-76b, 05/10) — et la commande qui ne lançait rien.** Revue des
+    faux de chaque service externe contre sa réponse ACTUELLE : **Nominatim** — 5 faux
+    encore en `class` (forme `format=json`) alors que le code demande `jsonv2` (`category`
+    + `place_rank`) → alignés, et **garde mécanique** `tests/test_mock_fidelity.py` (un
+    `"class":` dans un test fait rougir la suite, sauf ligne marquée `format=json` pour la
+    rétro-compat explicite). **Overture** — faux en `bank_credit_union` (feuille disparue)
+    sans hiérarchie → feuilles et `category_hierarchy` relevées sur la release 2026-09-23.1
+    (`_OVT_HIERARCHY`, helper `_ovt_place` STRICT : une feuille non relevée est refusée) ;
+    fixture parquet `taxonomy` recopiée du DESCRIBE réel. **Overpass**, **OSRM**,
+    **Anthropic** (champs lus du SDK 0.116) : fidèles. Et un trou de la même famille : la
+    commande documentée dans 37 fichiers, `node --test frontend-tests/`, **ne lance aucun
+    test** sous Node 22 (le dossier est pris pour un module → un unique « Cannot find
+    module », rouge pour une mauvaise raison). Commande juste :
+    **`node --test frontend-tests/*.test.mjs`** (92 tests, 545 lignes de contrôle ;
+    `CHROME_BIN=/nonexistent` → 37 échecs, code 1).
+
 - **Une passe web cherche dans PLUSIEURS langues et sous TOUTES les orthographes
   (V2-77f).** Un seul terme rate l'essentiel. Règle : toute passe de découverte web pose,
   **dans la même requête**, (a) la langue du PAYS, (b) l'anglais, (c) les variantes

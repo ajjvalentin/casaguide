@@ -7,7 +7,7 @@
    Autour de vous ; le mode filtré V2-12e la masque toujours (inchangé). Verdict
    lu dans le DOM dumpé (test ignoré si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

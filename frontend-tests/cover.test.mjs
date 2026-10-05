@@ -8,7 +8,7 @@
    reliquat : même geste que les zones photos des sections). Verdict lu dans le DOM
    dumpé (test ignoré proprement si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

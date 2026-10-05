@@ -6,7 +6,7 @@
    iPhone). Complète guide-nav.test.mjs (qui éprouve la LOGIQUE sans CSS) : ici on
    éprouve le RENDU. Verdict lu dans le DOM dumpé (ignoré si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

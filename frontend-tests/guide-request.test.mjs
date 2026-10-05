@@ -7,7 +7,7 @@
    volet 1bis) transmet la section + le message, et le succès affiche un accusé de
    réception. Verdict lu dans le DOM dumpé (ignoré si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

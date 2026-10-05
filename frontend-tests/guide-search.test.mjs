@@ -6,7 +6,7 @@
    séjours annulés repliés, flux masqué, création d'un séjour direct. Verdict lu
    dans le DOM dumpé (test ignoré proprement si aucun Chrome).
 
-   Exécuter : node --test frontend-tests/ */
+   Exécuter : node --test frontend-tests/*.test.mjs */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
