@@ -56,6 +56,22 @@ def load_category_map(path: Path | None = None) -> dict:
     return {"exact": exact, "suffix": [], "ignore": ignore}
 
 
+def map_overture_place(place: dict, cmap: dict) -> str | None:
+    """Catégorie d'un lieu Overture (V2-79c) : la FEUILLE d'abord (`category`), puis ses
+    ANCÊTRES de la plus spécifique à la plus générale (`category_hierarchy`, schéma
+    taxonomy ≥ 2026-09). Une feuille renommée par Overture (« car_rental_service ») se
+    rattrape ainsi par un parent connu (« vehicle_rental_service »), sans attendre une
+    mise à jour de la table."""
+    code = map_overture_category(place.get("category"), cmap)
+    if code:
+        return code
+    for anc in reversed(place.get("category_hierarchy") or []):
+        code = map_overture_category(anc, cmap)
+        if code:
+            return code
+    return None
+
+
 def map_overture_category(primary: str | None, cmap: dict) -> str | None:
     """Valeur Overture `categories.primary` → notre `code` (poi_categories). Prend le
     DERNIER segment pointé (robuste aux schémas plat et pointé), EXACT d'abord, SUFFIXE
@@ -162,19 +178,64 @@ def _bbox(lat: float, lon: float, radius_m: int) -> tuple[float, float, float, f
     return (lon - dlon, lat - dlat, lon + dlon, lat + dlat)
 
 
-def _places_sql(release: str, geom_expr: str, bbox: tuple,
+# ── V2-79c : le SCHÉMA de la release est DÉTECTÉ, jamais supposé ──────────────
+#
+# Constat (05/10, release 2026-09-23.1) : Overture a SUPPRIMÉ la colonne `categories`
+# (remplacée par `basic_category` + `taxonomy{primary, hierarchy, alternates}`). La
+# requête codée en dur `categories.primary` levait une BinderException ; le journal ne
+# gardait que le TYPE de l'exception et l'étiquetait « géométrie incompatible » — le
+# repli WKB, inutile (la géométrie était native), échouait à son tour, et chaque guide
+# se faisait sans Overture. On lit donc le schéma (DESCRIBE, métadonnées parquet
+# seulement) et on construit la requête depuis ce qui EXISTE.
+
+def detect_schema(con, src: str) -> dict:
+    """Expressions SQL adaptées au schéma RÉEL de la source :
+    `{"geom": …, "category": …, "hierarchy": …, "id": …, "columns": {nom: type}}`.
+    Géométrie : `geometry` si le type est GEOMETRY (duckdb-spatial récent), sinon
+    `ST_GeomFromWKB(geometry)` (WKB/BLOB). Catégorie : `taxonomy.primary` (schéma ≥
+    2026-09), sinon `categories.primary` (ancien), sinon `basic_category`, sinon NULL.
+    Lève RuntimeError si ni nom ni géométrie ne sont lisibles."""
+    cols = {r[0]: str(r[1]) for r in con.execute(
+        f"DESCRIBE SELECT * FROM read_parquet('{src}', hive_partitioning=1)").fetchall()}
+    if "geometry" not in cols or "names" not in cols:
+        raise RuntimeError("Schéma Overture inattendu : colonnes 'geometry'/'names' "
+                           f"absentes (vues : {', '.join(sorted(cols))})")
+    gtype = cols["geometry"].upper()
+    geom = "geometry" if gtype.startswith("GEOMETRY") else "ST_GeomFromWKB(geometry)"
+    if "taxonomy" in cols:
+        category, hierarchy = "taxonomy.primary", "taxonomy.hierarchy"
+    elif "categories" in cols:
+        category, hierarchy = "categories.primary", "NULL"
+    elif "basic_category" in cols:
+        category, hierarchy = "basic_category", "NULL"
+    else:
+        log.warning("Overture : aucune colonne de catégorie reconnue (%s)",
+                    ", ".join(sorted(cols)))
+        category, hierarchy = "NULL", "NULL"
+    return {"geom": geom, "category": category, "hierarchy": hierarchy,
+            "id": "id" if "id" in cols else "NULL", "columns": cols}
+
+
+def _places_src(release: str, source: str | None = None) -> str:
+    return source or f"{_OVERTURE_S3}/{release}/theme=places/type=place/*"
+
+
+def _places_sql(release: str, schema: dict, bbox: tuple,
                 source: str | None = None) -> str:
     """Requête Overture `places` — comme le benchmark, PLUS l'`id` GERS (→ `source_ref`
-    stable, idempotence de l'upsert). `source` surchargeable (parquet local, tests)."""
+    stable, idempotence de l'upsert) et la HIÉRARCHIE de catégorie (V2-79c). Expressions
+    issues de `detect_schema`. `source` surchargeable (parquet local, tests)."""
     minlon, minlat, maxlon, maxlat = bbox
-    src = source or f"{_OVERTURE_S3}/{release}/theme=places/type=place/*"
+    g = schema["geom"]
     return f"""
         SELECT names.primary AS name,
-               ST_Y({geom_expr}) AS lat, ST_X({geom_expr}) AS lon,
-               categories.primary AS category,
+               ST_Y({g}) AS lat, ST_X({g}) AS lon,
+               {schema["category"]} AS category,
                phones[1] AS phone, websites[1] AS website,
-               id AS gers_id
-        FROM read_parquet('{src}', filename=true, hive_partitioning=1)
+               {schema["id"]} AS gers_id,
+               {schema["hierarchy"]} AS hierarchy
+        FROM read_parquet('{_places_src(release, source)}', filename=true,
+                          hive_partitioning=1)
         WHERE bbox.xmin BETWEEN {minlon} AND {maxlon}
           AND bbox.ymin BETWEEN {minlat} AND {maxlat}
         """
@@ -182,17 +243,18 @@ def _places_sql(release: str, geom_expr: str, bbox: tuple,
 
 def _query_places(con, release: str, bbox: tuple,
                   source: str | None = None) -> list[tuple]:
-    """Exécute la requête `places` — géométrie NATIVE d'abord, repli WKB (V2-48b)."""
-    errors = []
-    for geom_expr in ("geometry", "ST_GeomFromWKB(geometry)"):
-        try:
-            return con.execute(_places_sql(release, geom_expr, bbox, source)).fetchall()
-        except Exception as exc:  # noqa: BLE001 — incompat de type geometry → repli
-            errors.append(f"{geom_expr}: {type(exc).__name__}")
-            log.info("· géométrie « %s » incompatible (%s) — repli…",
-                     geom_expr, type(exc).__name__)
-    raise RuntimeError("Lecture de la géométrie Overture impossible (natif ET WKB) : "
-                       + " ; ".join(errors))
+    """Exécute la requête `places` sur le schéma DÉTECTÉ (V2-79c). En cas d'échec, le
+    MESSAGE réel de DuckDB remonte (plus seulement son type — c'est ce qui avait fait
+    chercher un problème de géométrie inexistant)."""
+    src = _places_src(release, source)
+    schema = detect_schema(con, src)
+    try:
+        return con.execute(_places_sql(release, schema, bbox, source)).fetchall()
+    except Exception as exc:  # noqa: BLE001 — message réel, pas seulement le type
+        msg = " ".join(str(exc).split())[:300]
+        raise RuntimeError(f"Lecture Overture impossible ({type(exc).__name__}) : {msg} "
+                           f"[géométrie={schema['geom']}, catégorie="
+                           f"{schema['category']}]") from exc
 
 
 def fetch_places(lat: float, lon: float, radius_m: int, *,
@@ -209,12 +271,14 @@ def fetch_places(lat: float, lon: float, radius_m: int, *,
     finally:
         con.close()
     out: list[dict] = []
-    for name, plat, plon, category, phone, website, gers in rows:
+    for name, plat, plon, category, phone, website, gers, hierarchy in rows:
         if name is None or plat is None or plon is None:
             continue
         out.append({
             "name": name, "lat": float(plat), "lon": float(plon),
             "category": category,
+            # V2-79c : ascendance taxonomique (feuille → racine), pour le mapping.
+            "category_hierarchy": list(hierarchy) if hierarchy else None,
             "phone": (phone or None), "website": (website or None),
             "source_ref": f"gers:{gers}" if gers else None,
         })

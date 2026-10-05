@@ -303,20 +303,21 @@ latest_overture_release = _overture.latest_overture_release
 resolve_release = _overture.resolve_release
 
 
-def _places_sql(release: str, geom_expr: str, bbox: tuple,
+def _places_sql(release: str, schema: dict, bbox: tuple,
                 source: str | None = None) -> str:
-    """Requête Overture `places` pour une expression de géométrie donnée (V2-48b :
-    `geometry` natif d'abord, repli `ST_GeomFromWKB(geometry)` pour les vieux
-    duckdb-spatial). `source` (chemin `read_parquet`) surchargeable pour les tests
-    (parquet local au lieu du chemin S3 de la release)."""
+    """Requête Overture `places` du benchmark (contrat 6 colonnes, sans id GERS), sur le
+    schéma DÉTECTÉ par `enrich.overture.detect_schema` (V2-79c : la release 2026-09-23
+    a supprimé `categories` — plus jamais une forme codée en dur). `source` surchargeable
+    pour les tests (parquet local au lieu du chemin S3 de la release)."""
     minlon, minlat, maxlon, maxlat = bbox
-    src = source or f"{_OVERTURE_S3}/{release}/theme=places/type=place/*"
+    g = schema["geom"]
     return f"""
         SELECT names.primary AS name,
-               ST_Y({geom_expr}) AS lat, ST_X({geom_expr}) AS lon,
-               categories.primary AS category,
+               ST_Y({g}) AS lat, ST_X({g}) AS lon,
+               {schema["category"]} AS category,
                phones[1] AS phone, websites[1] AS website
-        FROM read_parquet('{src}', filename=true, hive_partitioning=1)
+        FROM read_parquet('{_overture._places_src(release, source)}', filename=true,
+                          hive_partitioning=1)
         WHERE bbox.xmin BETWEEN {minlon} AND {maxlon}
           AND bbox.ymin BETWEEN {minlat} AND {maxlat}
         """
@@ -324,19 +325,10 @@ def _places_sql(release: str, geom_expr: str, bbox: tuple,
 
 def _query_places(con, release: str, bbox: tuple,
                   source: str | None = None) -> list[tuple]:
-    """Exécute la requête `places` en essayant la géométrie NATIVE (duckdb-spatial
-    récent expose `geometry` en GEOMETRY) puis, en repli, le WKB (`ST_GeomFromWKB`).
-    V2-48b : `ST_GeomFromWKB(geometry)` échouait sur duckdb 1.5.5 (geometry natif)."""
-    errors = []
-    for geom_expr in ("geometry", "ST_GeomFromWKB(geometry)"):
-        try:
-            return con.execute(_places_sql(release, geom_expr, bbox, source)).fetchall()
-        except Exception as exc:  # noqa: BLE001 — incompat de type geometry → repli
-            errors.append(f"{geom_expr}: {type(exc).__name__}")
-            log.info("· géométrie « %s » incompatible (%s) — repli…",
-                     geom_expr, type(exc).__name__)
-    raise RuntimeError("Lecture de la géométrie Overture impossible (natif ET WKB) : "
-                       + " ; ".join(errors))
+    """Exécute la requête `places` sur le schéma détecté (géométrie native OU WKB,
+    catégorie taxonomy/categories/basic_category) — V2-48b généralisé par V2-79c."""
+    schema = _overture.detect_schema(con, _overture._places_src(release, source))
+    return con.execute(_places_sql(release, schema, bbox, source)).fetchall()
 
 
 def fetch_overture_duckdb(lat: float, lon: float, radius_m: int,

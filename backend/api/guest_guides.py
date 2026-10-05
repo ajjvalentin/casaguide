@@ -222,6 +222,11 @@ def _build_quality(summary: dict, missing_langs: list[str],
         parts.append("traduction " + "/".join(missing_langs) + " échouée" + why)
     # V2-78c — garde de cohérence : une passe déclarée « mémoire » qui a facturé est
     # NOMMÉE (une mesure qui se contredit vaut moins que pas de mesure).
+    # V2-79c — Overture illisible : le guide s'est fait sur OSM seul (moins de contacts,
+    # pas de comblement des catégories vides). Le dire, avec la cause.
+    if summary.get("overture_error"):
+        parts.append("Overture indisponible — guide généré sur OSM seul (contacts "
+                     "commerciaux et comblement absents) : " + summary["overture_error"])
     # V2-79 — des lieux réputés payés mais aucun placé : le guide n'en montre aucun et la
     # mémoire n'est pas posée. Le dire plutôt que laisser « discovered: 15 » passer pour un succès.
     found = summary.get("editorial_found") or 0

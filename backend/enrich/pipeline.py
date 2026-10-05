@@ -1518,7 +1518,7 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     raw = fetch_ovt(origin[0], origin[1], max_r)
                     cmap = overture.load_category_map()
                     for v in raw:
-                        code = overture.map_overture_category(v.get("category"), cmap)
+                        code = overture.map_overture_place(v, cmap)   # V2-79c
                         if code in fusion.SCOPE:
                             overture_by_code.setdefault(code, []).append(v)
                     mapped = sum(len(x) for x in overture_by_code.values())
@@ -1529,8 +1529,15 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                     _progress(f"  ✓ Overture : {len(raw)} lieu(x), "
                               f"{mapped} en périmètre commercial")
                 except Exception as exc:  # noqa: BLE001 — dégradation douce sur OSM seul
+                    # V2-79c : la dégradation reste douce, mais elle se VOIT — step
+                    # `unavailable` + `summary.overture_error`, repris dans les
+                    # quality_notes du guide voyageur (avant : une ligne de journal que
+                    # personne ne lisait, et des guides sans contacts commerciaux).
+                    err = overpass._short(str(exc), 300)
+                    summary["overture_error"] = err
+                    log.warning("Overture indisponible — OSM seul : %s", err)
                     db.job_step(conn, job_id, "overture",
-                                {"ok": False, "error": overpass._short(str(exc))})
+                                {"ok": False, "unavailable": True, "error": err})
                     _progress(f"  ⚠ Overture indisponible "
                               f"({overpass._short(str(exc))}) — OSM seul")
                     overture_by_code = {}

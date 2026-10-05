@@ -425,3 +425,107 @@ def test_release_extraction_from_deep_paths_and_latest():
         def close(self):
             pass
     assert SB.latest_overture_release(connect=_FakeCon) == "2026-08-19.0"
+
+
+# ── V2-79c : schéma Overture ≥ 2026-09-23 (taxonomy, plus de `categories`) ──────
+# Fixture recopiée du DESCRIBE RÉEL de la release 2026-09-23.1 (05/10) : `categories`
+# n'existe plus ; `basic_category` + `taxonomy{primary, hierarchy, alternates}` ;
+# géométrie native GEOMETRY ; `id` GERS. Leçon V2-79 : un faux se recopie du réel.
+
+def _write_taxonomy_parquet(tmp_path, geom_sql="ST_Point(0.1483, 38.7698)"):
+    pq = str(tmp_path / "places_2026_09.parquet")
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    con.execute(f"""
+      COPY (
+        SELECT * FROM (VALUES
+          ('gers-1', {{'primary': 'Bon Amb'}}, 'restaurant',
+           {{'primary': 'european_restaurant',
+             'hierarchy': ['food_and_drink', 'restaurant', 'european_restaurant'],
+             'alternates': ['restaurant']}}, ['+34 965 08 44 40'], ['https://bonamb.com']),
+          ('gers-2', {{'primary': 'Autos Xàbia'}}, 'vehicle_rental_service',
+           {{'primary': 'scooter_and_car_hire_desk',
+             'hierarchy': ['services_and_business', 'rental_service',
+                           'vehicle_rental_service', 'scooter_and_car_hire_desk'],
+             'alternates': []}}, ['+34 600 000 000'], [])
+        ) t(id, names, basic_category, taxonomy, phones, websites)
+      ) TO '{pq}' (FORMAT PARQUET)""")
+    # géométrie + bbox ajoutées via une 2e passe (VALUES ne porte pas GEOMETRY)
+    con.execute(f"""
+      COPY (SELECT *, {geom_sql} AS geometry,
+                   {{'xmin': 0.1483, 'xmax': 0.1483, 'ymin': 38.7698, 'ymax': 38.7698}} AS bbox
+            FROM read_parquet('{pq}')) TO '{pq}.2' (FORMAT PARQUET)""")
+    con.close()
+    return pq + ".2"
+
+
+def _prod_query(pq):
+    from enrich import overture
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    try:
+        return overture._query_places(con, "x", (0.1, 38.7, 0.2, 38.8), source=pq)
+    finally:
+        con.close()
+
+
+def test_overture_taxonomy_schema_is_detected_and_read(tmp_path):
+    """V2-79c — la release courante (taxonomy, sans `categories`) se LIT : catégorie =
+    taxonomy.primary, hiérarchie portée, id GERS. Contrôle négatif implicite : l'ancienne
+    requête `categories.primary` levait « Referenced table "categories" not found »."""
+    from enrich import overture
+    pq = _write_taxonomy_parquet(tmp_path)
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    sch = overture.detect_schema(con, pq)
+    con.close()
+    assert sch["category"] == "taxonomy.primary" and sch["geom"] == "geometry"
+    rows = _prod_query(pq)
+    bon = next(r for r in rows if r[0] == "Bon Amb")
+    assert bon[3] == "european_restaurant" and bon[4] == "+34 965 08 44 40"
+    assert bon[6] == "gers-1" and list(bon[7])[-1] == "european_restaurant"
+
+
+def test_overture_wkb_geometry_still_detected(tmp_path):
+    """Géométrie en WKB (vieux duckdb-spatial) : détectée par son TYPE, pas par essai."""
+    from enrich import overture
+    pq = _write_taxonomy_parquet(tmp_path, "ST_AsWKB(ST_Point(0.1483, 38.7698))::BLOB")
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    assert overture.detect_schema(con, pq)["geom"] == "ST_GeomFromWKB(geometry)"
+    con.close()
+    assert len(_prod_query(pq)) == 2
+
+
+def test_overture_place_mapping_walks_the_hierarchy():
+    """V2-79c — feuille inconnue (« scooter_and_car_hire_desk ») → l'ancêtre connu
+    (« vehicle_rental_service ») classe le lieu ; la feuille connue prime toujours."""
+    from enrich import overture
+    cmap = overture.load_category_map()
+    assert overture.map_overture_place(
+        {"category": "scooter_and_car_hire_desk",
+         "category_hierarchy": ["services_and_business", "rental_service",
+                                "vehicle_rental_service", "scooter_and_car_hire_desk"]},
+        cmap) == "rental"
+    assert overture.map_overture_place(
+        {"category": "tapas_bar",
+         "category_hierarchy": ["food_and_drink", "casual_eatery", "tapas_bar"]},
+        cmap) == "restaurant"
+    assert overture.map_overture_place({"category": "bank_or_credit_union"}, cmap) == "atm"
+    assert overture.map_overture_place(
+        {"category": "lodging", "category_hierarchy": ["lodging"]}, cmap) is None
+
+
+def test_overture_failure_message_carries_the_real_cause(tmp_path):
+    """V2-79c — un échec de lecture remonte le MESSAGE de DuckDB (plus seulement
+    « BinderException », qui avait fait chercher un problème de géométrie)."""
+    from enrich import overture
+    pq = _write_taxonomy_parquet(tmp_path)
+    con = duckdb.connect()
+    con.execute("INSTALL spatial; LOAD spatial;")
+    bad = {"geom": "geometry", "category": "categories.primary", "hierarchy": "NULL",
+           "id": "id", "columns": {}}
+    with pytest.raises(Exception) as ei:
+        con.execute(overture._places_sql("x", bad, (0.1, 38.7, 0.2, 38.8), source=pq))
+    assert "categories" in str(ei.value)
+    con.close()

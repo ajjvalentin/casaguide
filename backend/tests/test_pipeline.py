@@ -2656,6 +2656,12 @@ def test_overture_failure_degrades_to_osm_only(property_id, http_client):
     assert job["steps"]["overture"]["ok"] is False
     assert "S3" in job["steps"]["overture"]["error"]
     assert {r["name"] for r in rows} == {"Mercadona", "Lidl"}   # OSM seul
+    # V2-79c : l'indisponibilité se VOIT — step marqué + note de qualité du guide.
+    assert job["steps"]["overture"]["unavailable"] is True
+    assert "S3" in result["overture_error"]
+    from api.guest_guides import _build_quality
+    notes = _build_quality(result, [], None)["notes"]
+    assert "Overture indisponible" in notes and "S3 indisponible" in notes
 
 
 def test_overture_respects_arbitrated_pois(property_id, http_client):

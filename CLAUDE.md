@@ -2106,6 +2106,20 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
     devant une recette réelle, vérifier **la position obtenue**, pas seulement son
     existence.
 
+  - **(8) Un journal qui garde le TYPE de l'exception et jette son MESSAGE ment par
+    omission (V2-79c).** Le 05/10, chaque guide se faisait sans Overture ; le journal
+    disait « géométrie incompatible (BinderException) », deux fois. La géométrie n'y était
+    pour rien : la release `2026-09-23.1` avait **supprimé la colonne `categories`**
+    (remplacée par `basic_category` + `taxonomy{primary, hierarchy, alternates}`) et le
+    message que le code jetait disait « Referenced table "categories" not found ». Le
+    repli WKB, lui, échouait parce que la géométrie était déjà native. Règles : un journal
+    d'erreur garde le **message**, pas seulement le type ; le schéma d'un jeu de données
+    tiers se **détecte** (`overture.detect_schema`, DESCRIBE sur les métadonnées parquet),
+    il ne se suppose pas — c'est la même erreur que `class`/`category` chez Nominatim
+    (V2-79) ; et une source secondaire indisponible peut rester une **dégradation douce**,
+    à condition qu'elle soit **visible** (`steps.overture.unavailable`, `quality_notes`
+    du guide) : une dégradation silencieuse est une panne.
+
 - **Une passe web cherche dans PLUSIEURS langues et sous TOUTES les orthographes
   (V2-77f).** Un seul terme rate l'essentiel. Règle : toute passe de découverte web pose,
   **dans la même requête**, (a) la langue du PAYS, (b) l'anglais, (c) les variantes
