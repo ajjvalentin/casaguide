@@ -2183,6 +2183,22 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
   re-collecte UNE fois au prochain guide (leçon V2-73b — un prompt changé sans bump reste
   sans effet là où la mémoire est pleine).
 
+- **Avant d'ajouter une source, interroger celles qu'on a (V2-82).** Constat Seminyak :
+  « La Favela et The Bistrot sont absents d'OSM, 13 picks perdus sur 31 » — la piste
+  était d'intégrer Foursquare. Mesure faite d'abord : les deux sont dans **Overture**
+  (« La Favela Bali », 710 m, tél + site, confiance 0,94 ; « The Bistrot », 720 m) et
+  The Bistrot est même dans **OSM** (« THE BISTROT », 723 m). Le défaut était dans notre
+  chaîne : (1) le pick n'était comparé qu'aux lieux Overture de **sa** catégorie — l'IA
+  dit « bar », Overture dit `bar_and_grill_restaurant` → l'étiquette ne doit jamais
+  conditionner une **position** (union des catégories sorties, comme le vivier OSM) ;
+  (2) « Ku De Ta » / « Kudeta » : même nom, autre découpage, similarité 0,38 → comparaison
+  du nom compacté (`_squash`, ≥ 5 lettres, entier — jamais un préfixe) ; (3) la
+  chronologie : Overture était illisible ce jour-là (V2-79c) et le vivier OSM non plafonné
+  n'existait pas encore (V2-79b). Recette sur données réelles : La Favela, Potato Head et
+  Ku De Ta, perdus, désormais placés. Pas de benchmark Foursquare : rien ne le justifie
+  tant qu'Overture couvre (décision documentée, à rouvrir sur un terrain où Overture
+  serait muet).
+
 - **Le cache masque le correctif (V2-73b, `6d7b03e`).** Après V2-73, les activités de
   Bégadan n'avaient toujours aucune épingle : l'`area_fact` `activities` de la commune
   datait d'AVANT le correctif, et l'étape est **sautée quand le fait est frais**

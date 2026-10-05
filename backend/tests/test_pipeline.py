@@ -2572,6 +2572,10 @@ _OVT_HIERARCHY = {
     "bank_or_credit_union": ["services_and_business", "financial_service",
                              "bank_or_credit_union"],
     "grocery_store": ["shopping", "food_and_beverage_store", "grocery_store"],
+    # Relevés S3 du 05/10 sur Seminyak (V2-82) : La Favela Bali, The Bistrot.
+    "bar_and_grill_restaurant": ["food_and_drink", "restaurant", "bar_and_grill_restaurant"],
+    "french_restaurant": ["food_and_drink", "restaurant", "european_restaurant",
+                          "western_european_restaurant", "french_restaurant"],
 }
 
 
@@ -4090,3 +4094,63 @@ def test_reputed_collection_target_is_calibrated_and_traced(monkeypatch, n_place
         assert marker["cost_cts"] >= 0 and marker["v"] == pipeline.REPUTED_SCHEMA_V
     finally:
         _cleanup(oid)
+
+
+
+# ── V2-82 : les lieux qu'OSM ignore se placent par Overture, toutes catégories ─
+
+def test_pick_absent_from_osm_is_placed_by_overture_across_categories():
+    """V2-82 — cas réel Seminyak : La Favela et The Bistrot sont ABSENTS d'OSM mais dans
+    Overture (« La Favela Bali », 710 m, bar_and_grill_restaurant ; « The Bistrot »,
+    french_restaurant). L'IA classe La Favela « bar » ; Overture la range en restaurant.
+    Avant V2-82, le pick n'était comparé qu'aux bars Overture → jamais placé. Désormais
+    les deux sont PERSISTÉS à la position Overture. Nominatim ne résout pas leur rue."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "nominatim" in url and "street=" in url:
+            return httpx.Response(200, json=[])            # rue inconnue de Nominatim
+        if "overpass" in url:
+            return httpx.Response(200, json={"elements": []})   # OSM muet (bbox réelle : 0)
+        return _mock_handler(request)
+
+    def fetch(lat, lon, radius):
+        return [_ovt_place("La Favela Bali", "bar_and_grill_restaurant",
+                           PROP_LAT + 0.0064, PROP_LON + 0.0016, phone="+62361730010",
+                           website="https://lafavelabali.com", ref="gers:favela"),
+                _ovt_place("The Bistrot", "french_restaurant",
+                           PROP_LAT + 0.0063, PROP_LON + 0.0017, website="http://www.bistrot-bali.com",
+                           ref="gers:bistrot")]
+    picks = [{"name": "La Favela", "category": "bar", "address": "Jl. Kayu Aya No.177X, Seminyak",
+              "reason": "Institution", "source_url": "u1"},
+             {"name": "The Bistrot", "category": "restaurant",
+              "address": "Jl. Kayu Aya No.117, Seminyak", "reason": "Bistrot", "source_url": "u2"}]
+    oid, (pid,) = _guest_props(1, city="Seminyak")
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            r = pipeline.run(pid, use_claude=True, trigger="guest", http_client=client,
+                             only_categories={"restaurant", "bar"}, overture_fetch=fetch,
+                             anthropic_client=FakeAnthropic(reputed_places=picks))
+        with db.connect() as conn:
+            st, _ = db.job_steps_and_costs(conn, r["job_id"])
+            rows = {x["name"]: (round(x["lat"], 4), x["website"]) for x in conn.execute(
+                "SELECT name, ST_Y(geom) AS lat, website FROM editorial_picks "
+                "WHERE country_code='ES'").fetchall()}
+        rs = st["reputed_sorties"]
+        assert (rs["discovered"], rs["positioned"], rs["persisted"]) == (2, 2, 2), rs
+        assert rows["La Favela"] == (round(PROP_LAT + 0.0064, 4), "https://lafavelabali.com")
+        assert rows["The Bistrot"][0] == round(PROP_LAT + 0.0063, 4)
+    finally:
+        _cleanup(oid)
+
+
+def test_pick_name_match_squashes_spacing_variants():
+    """V2-82 — « Ku De Ta » (presse) = « Kudeta » (Overture, Seminyak) : même nom, autre
+    découpage (similarité trigramme 0,38). Comparé entier sans espaces ; jamais un nom
+    seulement PRÉFIXE (« Kudeta 01 »), jamais un nom trop court (« Tula » / « Tu La »)."""
+    o = (-8.69, 115.16)
+    cands = [{"name": "Kudeta 01", "lat": -8.68, "lon": 115.16},
+             {"name": "Kudeta", "lat": -8.681, "lon": 115.161}]
+    assert pipeline._pick_name_match("Ku De Ta", cands, ["Seminyak"], o)["name"] == "Kudeta"
+    assert pipeline._pick_name_match("Ku De Ta", cands[:1], ["Seminyak"], o) is None
+    assert pipeline._pick_name_match("Tula", [{"name": "Tu La", "lat": 1, "lon": 1}],
+                                     ["Jávea"], (0, 0)) is None

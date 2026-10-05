@@ -384,11 +384,17 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
     # vide (Altea 48,11 ct, Jávea 48,95 ct : « discovered 15 », zéro ligne en base).
     # Désormais : soit les picks ET le marqueur sont écrits, soit aucun des deux.
     positioned = 0
+    # V2-82 — Overture TOUTES catégories « sorties » confondues, comme le vivier OSM : la
+    # catégorie d'un pick est un avis de l'IA (« bar »), celle d'Overture un autre
+    # (« La Favela Bali » = bar_and_grill_restaurant → restaurant). Comparer seulement à
+    # la même catégorie perdait le lieu ; la POSITION, elle, ne dépend pas de l'étiquette.
+    ovt_sorties = [v for c in claude_enrich.EDITORIAL_SORTIES
+                   for v in (overture_by_code.get(c) or [])]
     with conn.transaction():
         for code, raw in out.items():
             positioned += len(raw) - _memorize_fresh_picks(
                 conn, prop, code, grouped.get(code) or [],
-                overture_by_code.get(code), raw, origin, http_client, city_norm, pool)
+                ovt_sorties, raw, origin, http_client, city_norm, pool)
         # PERSISTÉ = ce que la BASE dit avoir écrit dans CETTE transaction (`last_seen`
         # = now() = début de transaction), pas ce que le code croit avoir fait.
         persisted = db.sector_editorial_touched_now(conn, prop["country_code"], city_norm)
@@ -470,6 +476,11 @@ _PICK_TYPE_WORDS = {"restaurante", "restaurant", "ristorante", "taberna", "cafet
                     "lounge", "beach", "club"}
 
 
+def _squash(name: str | None) -> str:
+    """Nom normalisé ENTIER, sans espaces ni ponctuation (V2-82) : « Ku De Ta » → « kudeta »."""
+    return "".join(dedup._norm(name).split())
+
+
 def _pick_name_match(name: str, candidates: list[dict] | None,
                      city: str | list[str] | None,
                      origin: tuple | None = None) -> dict | None:
@@ -484,12 +495,18 @@ def _pick_name_match(name: str, candidates: list[dict] | None,
     cities = city if isinstance(city, list) else [city]
     city_tokens = {t for c in cities if c for t in dedup._norm(c).split()}
     core = _compact_core(name, city_tokens)
+    squash = _squash(name)
     best, best_key = None, None
     for c in candidates:
         if c.get("lat") is None or c.get("lon") is None:
             continue
         s = fusion.name_similarity(name, c.get("name"))
         if len(core) >= 3 and core == _compact_core(c.get("name"), city_tokens):
+            s = max(s, 1.0)
+        # V2-82 — même nom, autre découpage : « Ku De Ta » = « Kudeta » (Seminyak). Les
+        # mots courts (« de », « ta ») tombent dans le cœur, et les espaces ruinent la
+        # similarité trigramme (0,38). Comparé ENTIER, sans espaces ni ponctuation.
+        if len(squash) >= 5 and squash == _squash(c.get("name")):
             s = max(s, 1.0)
         if s < _EDITORIAL_NAME_THR:
             continue
