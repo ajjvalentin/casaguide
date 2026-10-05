@@ -228,6 +228,36 @@ class Settings:
     reputed_max_searches: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_SEARCHES", "8"))
     reputed_max_age_days: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_AGE_DAYS", "21"))
     reputed_max_tokens: int = int(os.getenv("CASAGUIDE_REPUTED_MAX_TOKENS", "4000"))
+    # V2-81 — CIBLE ADAPTÉE À LA DENSITÉ. Une cible fixe (12-15) rendait 8 picks à
+    # Seminyak (Bali), l'un des quartiers les plus denses en restauration d'Asie du
+    # Sud-Est, et 13 à Jávea. La cible se calibre sur la densité CONSTATÉE : nombre de
+    # restaurants/bars/cafés nommés dans `reputed_density_radius_m` (vivier OSM non
+    # plafonné, ou Overture s'il en voit plus). Paliers « seuil:cible », croissants —
+    # même principe que les paliers dense-first de V2-68. Recherches et jetons de sortie
+    # suivent la cible (`settings.reputed_budget`).
+    reputed_density_radius_m: int = int(os.getenv("CASAGUIDE_REPUTED_DENSITY_RADIUS_M",
+                                                  "5000"))
+    reputed_density_tiers: dict = field(default_factory=lambda: _parse_targets(
+        os.getenv("CASAGUIDE_REPUTED_DENSITY_TIERS", "0:10,60:15,250:22,600:30")))
+
+    def reputed_target(self, density: int) -> int:
+        """Nombre d'adresses réputées à demander pour une densité donnée (V2-81) : la
+        cible du plus haut palier atteint. PURE."""
+        target = 10
+        for threshold, tgt in sorted((int(k), v) for k, v in
+                                     self.reputed_density_tiers.items()):
+            if density >= threshold:
+                target = tgt
+        return target
+
+    def reputed_budget(self, target: int) -> tuple[int, int]:
+        """(recherches web, jetons de sortie) pour une cible (V2-81). Le plancher reste le
+        réglage historique (8 recherches, 4000 jetons) : un village ne coûte pas plus. Au-
+        delà, ~1 recherche pour 2 adresses (ratissage par quartier) et ~350 jetons par
+        adresse (nom, adresse, raison, contacts, preuve) + l'enveloppe JSON."""
+        searches = max(self.reputed_max_searches, -(-target // 2))
+        tokens = max(self.reputed_max_tokens, 350 * target + 1500)
+        return searches, tokens
     # Activités du secteur (V2-71) : passe web « que fait-on ici ? » (surf, plongée,
     # randonnée, kayak, via ferrata…) — les activités SANS lieu propre, cœur des vacances,
     # que ni OSM ni la carte ne montrent. Mutualisée par commune (area_fact), cadence propre.

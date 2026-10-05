@@ -4004,3 +4004,89 @@ def test_dense_zone_without_vitals_asks_the_web_for_a_hospital(monkeypatch):
             conn.execute("DELETE FROM owners WHERE id=%s", (oid,))
             conn.execute("DELETE FROM area_facts WHERE country_code='ES'")
             conn.commit()
+
+
+# ── V2-81 : la cible éditoriale s'adapte à la densité du secteur ──────────────
+
+def test_reputed_target_follows_density_tiers_and_budget_floor():
+    """PURE — village → cible basse au budget historique (8 recherches, ~4000 jetons) ;
+    secteur dense (Seminyak) → 30 adresses, budget élargi pour ne pas tronquer."""
+    assert settings.reputed_target(0) == 10 and settings.reputed_target(59) == 10
+    assert settings.reputed_target(60) == 15 and settings.reputed_target(250) == 22
+    assert settings.reputed_target(600) == 30 and settings.reputed_target(5000) == 30
+    s10, t10 = settings.reputed_budget(10)
+    assert s10 == settings.reputed_max_searches                 # village : pas plus cher
+    s30, t30 = settings.reputed_budget(30)
+    assert s30 >= 15 and t30 >= 350 * 30
+
+
+def test_sorties_density_counts_named_places_in_radius_best_source():
+    """PURE — densité = lieux NOMMÉS dans le rayon, selon la source qui en voit le plus
+    (OSM non plafonné ou Overture) ; un lieu hors rayon ou sans nom ne compte pas."""
+    o = (38.0, 0.0)
+    near = {"name": "A", "lat": 38.001, "lon": 0.0}
+    far = {"name": "B", "lat": 38.2, "lon": 0.0}
+    anon = {"name": None, "lat": 38.001, "lon": 0.0}
+    assert pipeline._sorties_density([near, far, anon], {}, o) == (1, "osm")
+    ovt = {"restaurant": [near, near], "bar": [near], "atm": [near] * 9}
+    assert pipeline._sorties_density([near], ovt, o) == (3, "overture")
+    assert pipeline._sorties_density([], {}, None) == (0, "none")
+
+
+def test_reputed_prompt_carries_target_and_destination_vocabulary():
+    """Le prompt demande la fourchette CALIBRÉE et le vocabulaire de destination (langue
+    du pays + anglais + mots d'usage : beach club, rooftop, warung…)."""
+    from enrich import claude_enrich as ce
+    p = ce._REPUTED_PROMPT.format(city="Seminyak", country_code="ID", today="2026-10-05",
+                                  lang_name="français", target_lo=30, target_hi=33)
+    assert "VISE 30 À 33 ADRESSES" in p
+    for word in ("beach club", "rooftop", "gastrobar", "warung", "LANGUE DU PAYS ET EN ANGLAIS"):
+        assert word in p, word
+
+
+def _dense_handler(n_places: int):
+    """Overpass : le vivier « sorties » rend `n_places` restaurants nommés autour du
+    logement (densité), le reste suit le mock historique."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "overpass" in str(request.url):
+            body = urllib.parse.unquote_plus(request.read().decode())
+            if "restaurant|bar|pub|cafe" in body:
+                return httpx.Response(200, json={"elements": [
+                    {"type": "node", "id": 5000 + i, "lat": PROP_LAT + i * 1e-5,
+                     "lon": PROP_LON, "tags": {"name": f"Resto {i}", "amenity": "restaurant"}}
+                    for i in range(n_places)]})
+        return _mock_handler(request)
+    return handler
+
+
+@pytest.mark.parametrize("n_places, expected_target", [(700, 30), (12, 10)])
+def test_reputed_collection_target_is_calibrated_and_traced(monkeypatch, n_places,
+                                                            expected_target):
+    """V2-81 bout en bout — Seminyak (700 lieux dans le rayon) → cible 30 ; Bégadan (12)
+    → cible 10, inchangée. La densité, la cible et le coût RÉEL de la collecte sont tracés
+    dans `steps` ET dans le marqueur du secteur (vérification du coût par secteur)."""
+    from enrich import claude_enrich as ce, db as edb
+    seen = {}
+    real = ce.fetch_reputed_places
+
+    def spy(*a, **kw):
+        seen["target"] = kw.get("target")
+        return real(*a, **kw)
+    monkeypatch.setattr(ce, "fetch_reputed_places", spy)
+    oid, (pid,) = _guest_props(1)
+    try:
+        with httpx.Client(transport=httpx.MockTransport(_dense_handler(n_places))) as client:
+            r = pipeline.run(pid, use_claude=True, trigger="guest", http_client=client,
+                             only_categories={"restaurant", "bar"},
+                             anthropic_client=FakeAnthropic())
+        with db.connect() as conn:
+            st, _ = db.job_steps_and_costs(conn, r["job_id"])
+            marker = edb.get_area_fact(conn, "ES", "Orihuela Costa",
+                                       pipeline.REPUTED_FACT_TYPE)
+        rs = st["reputed_sorties"]
+        assert seen["target"] == expected_target
+        assert rs["target"] == expected_target and rs["density"] == n_places
+        assert marker["target"] == expected_target and marker["density"] == n_places
+        assert marker["cost_cts"] >= 0 and marker["v"] == pipeline.REPUTED_SCHEMA_V
+    finally:
+        _cleanup(oid)

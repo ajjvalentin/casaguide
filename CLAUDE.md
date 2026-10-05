@@ -2170,6 +2170,19 @@ ils se répètent. Ils ont été payés en incidents réels — chacun porte son
   ré-enrichir » vs « introuvables »). « Limite de la donnée » est une conclusion, pas
   une hypothèse (leçon V2-73c, rejouée).
 
+- **Une cible fixe se calibre sur le terrain moyen et rate les extrêmes (V2-81).** La passe
+  éditoriale demandait 12-15 adresses partout : 8 retenues à Seminyak (1 033 restaurants/
+  bars/cafés nommés à 5 km — La Favela, The Bistrot manquaient), 13 à Jávea (188). La
+  cible suit désormais la DENSITÉ mesurée (`settings.reputed_target` : paliers
+  `0:10,60:15,250:22,600:30`, mesure = vivier OSM NON plafonné ou Overture, jamais la
+  moisson plafonnée à 8), et le budget (recherches, jetons) suit la cible avec un PLANCHER
+  au réglage historique — un village ne coûte pas plus. Densités réelles (05/10) :
+  Bégadan 2, Jávea 188, La Zenia 217, Seminyak 1 033. Le marqueur de secteur porte
+  `density`/`target`/`cost_cts` ; `ops/sector_costs.py` (lecture seule) confronte
+  collecte et facturation par secteur. `REPUTED_SCHEMA_V` 1 → 2 : chaque secteur
+  re-collecte UNE fois au prochain guide (leçon V2-73b — un prompt changé sans bump reste
+  sans effet là où la mémoire est pleine).
+
 - **Le cache masque le correctif (V2-73b, `6d7b03e`).** Après V2-73, les activités de
   Bégadan n'avaient toujours aucune épingle : l'`area_fact` `activities` de la commune
   datait d'AVANT le correctif, et l'étape est **sautée quand le fait est frais**

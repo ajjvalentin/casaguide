@@ -890,9 +890,12 @@ articles « meilleurs restaurants/bars de {city} », mentions RÉPÉTÉES d'une 
 adresse. L'objectif est la NOTORIÉTÉ : les lieux dont les habitants et les guides
 parlent, pas un annuaire exhaustif.
 
-VISE 12 À 15 ADRESSES au total (échantillonne LARGE — le pipeline vérifie et
-positionne strictement, il élaguera ce qui n'est pas prouvé ; mieux vaut proposer
-généreusement et laisser filtrer).
+VISE {target_lo} À {target_hi} ADRESSES au total (échantillonne LARGE — le pipeline
+vérifie et positionne strictement, il élaguera ce qui n'est pas prouvé ; mieux vaut
+proposer généreusement et laisser filtrer). Cette cible est CALIBRÉE sur la densité du
+secteur : un secteur riche en restaurants et bars mérite une sélection longue — ne
+t'arrête pas aux cinq noms que toutes les listes répètent, va chercher les institutions
+de chaque rue animée.
 
 RATISSE PAR QUARTIER, pas seulement par commune : {city} regroupe souvent plusieurs
 QUARTIERS / URBANIZACIONES / stations balnéaires (par ex. sur la Costa Blanca : La
@@ -900,6 +903,15 @@ Zenia, Playa Flamenca, Cabo Roig, Punta Prima, Villamartín…). Identifie ceux 
 secteur et interroge-les EXPLICITEMENT (« mejores bares La Zenia », « cocktail bar
 Cabo Roig »…). Couvre des types VARIÉS : restaurants, bars, BARS À COCKTAILS,
 BEACH CLUBS / chiringuitos, cafés/salons de thé réputés.
+
+VOCABULAIRE : un lieu se décrit rarement par le mot de la catégorie. Interroge dans la
+LANGUE DU PAYS ET EN ANGLAIS, et avec les MOTS D'USAGE des lieux eux-mêmes : « beach
+club », « rooftop », « gastrobar », « venue », « lounge », « bistro », « brasserie »,
+« tapas bar », « wine bar », « speakeasy », « brunch spot », « specialty coffee », et
+les mots locaux (« warung » en Indonésie, « chiringuito » / « bodega » / « tasca » en
+Espagne, « trattoria » / « enoteca » en Italie, « taverna » en Grèce, « izakaya » au
+Japon…). Cherche aussi par RUE ANIMÉE (« restaurants Jalan Kayu Aya », « bars calle
+… ») : les institutions se regroupent sur quelques artères.
 
 N'OUBLIE PAS LES LIEUX À FORTE PRÉSENCE SUR LES RÉSEAUX SOCIAUX (Instagram,
 TripAdvisor, Google) même s'ils sont discrets dans la presse : bars à cocktails et
@@ -945,7 +957,8 @@ Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
 def fetch_reputed_places(city: str, country_code: str,
                          client: anthropic.Anthropic,
                          today: str | None = None,
-                         lang: str = "fr") -> tuple[list[dict], dict]:
+                         lang: str = "fr",
+                         target: int = 12) -> tuple[list[dict], dict]:
     """Adresses réputées « sorties » (restaurant/bar/cafe) du secteur, vérifiées par
     recherche web (V2-56). Retourne (liste de {name, category, address, reason,
     phone?, website?, source_url, verified_on}, méta coût). **PREUVE OU RIEN** : une
@@ -954,12 +967,15 @@ def fetch_reputed_places(city: str, country_code: str,
     Réponse malformée → ValueError (robustesses V2-37 héritées)."""
     today = today or _dt.date.today().isoformat()
     lang_name = _REPUTED_LANG_NAMES.get(lang, "français")
+    # V2-81 : la cible (calibrée sur la densité) fixe la fourchette demandée ET le budget
+    # (recherches, jetons) — une réponse longue tronquée serait perdue entière.
+    searches, tokens = settings.reputed_budget(target)
     data, meta = _ask_web_search_json(
         client, _REPUTED_PROMPT.format(city=city, country_code=country_code,
-                                       today=today, lang_name=lang_name),
+                                       today=today, lang_name=lang_name,
+                                       target_lo=target, target_hi=target + 3),
         city=city, country_code=country_code,
-        max_searches=settings.reputed_max_searches,
-        max_tokens=settings.reputed_max_tokens)
+        max_searches=searches, max_tokens=tokens)
     if not isinstance(data, dict):
         raise ValueError("Réponse IA invalide : objet JSON attendu.")
     places = data.get("places")

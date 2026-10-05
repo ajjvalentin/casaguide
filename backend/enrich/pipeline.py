@@ -286,7 +286,7 @@ _EDITORIAL_MAX_DIST_M = claude_enrich.MARKET_MAX_DIST_M   # 25 km
 
 # Version du PROMPT éditorial (V2-78) : un bump invalide la mémoire du secteur, sinon
 # corriger le prompt resterait sans effet là où la mémoire est pleine (leçon V2-73b/V2-77f).
-REPUTED_SCHEMA_V = 1
+REPUTED_SCHEMA_V = 2   # V2-81 : cible calibrée sur la densité + vocabulaire de destination
 REPUTED_FACT_TYPE = "reputed_sorties"
 
 
@@ -348,17 +348,25 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
         _progress(f"  ✓ sélection éditoriale : mémoire du secteur (âge {age} j)")
         return out
     today = _dt.date.today().isoformat()
+    grouped = grouped or {}
+    overture_by_code = overture_by_code or {}
+    # V2-79b : vivier OSM complet des sorties du secteur (une requête par collecte). V2-81 :
+    # récupéré AVANT l'appel — il mesure aussi la DENSITÉ qui calibre la cible.
+    pool = (overpass.fetch_named_sorties(origin[0], origin[1], client=http_client)
+            if origin else [])
+    density, density_src = _sorties_density(pool, overture_by_code, origin)
+    target = settings.reputed_target(density)
     try:
         places, meta = claude_enrich.fetch_reputed_places(
             prop["city"], prop["country_code"], ai, today=today,
-            lang=prop.get("default_lang") or "fr")
+            lang=prop.get("default_lang") or "fr", target=target)
     except Exception as exc:  # noqa: BLE001 — best-effort (web/parse)
         log.warning("Sélection éditoriale (%s) non résolue : %s", prop["city"], exc)
         c = _record_failed_call_cost(conn, property_id, job_id, "reputed_sorties", exc)
         summary["cost_cts"] += c
         db.job_step(conn, job_id, "reputed_sorties",
                     {"ok": False, "error": overpass._short(str(exc)),
-                     "cost_cts": round(c, 2)})
+                     "cost_cts": round(c, 2), "density": density, "target": target})
         conn.commit()
         _progress(f"  ⚠ sélection éditoriale non résolue : {overpass._short(str(exc))}")
         return out
@@ -375,12 +383,7 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
     # catégorie : si aucun ne se plaçait, le marqueur verrouillait 21 jours une mémoire
     # vide (Altea 48,11 ct, Jávea 48,95 ct : « discovered 15 », zéro ligne en base).
     # Désormais : soit les picks ET le marqueur sont écrits, soit aucun des deux.
-    grouped = grouped or {}
-    overture_by_code = overture_by_code or {}
     positioned = 0
-    # V2-79b : vivier OSM complet des sorties du secteur (une requête par collecte).
-    pool = (overpass.fetch_named_sorties(origin[0], origin[1], client=http_client)
-            if places and origin else [])
     with conn.transaction():
         for code, raw in out.items():
             positioned += len(raw) - _memorize_fresh_picks(
@@ -393,12 +396,18 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
             db.upsert_area_facts(conn, prop["country_code"], prop["city"],
                                  {REPUTED_FACT_TYPE: {"v": REPUTED_SCHEMA_V,
                                                       "discovered": len(places),
-                                                      "persisted": persisted}},
+                                                      "persisted": persisted,
+                                                      # V2-81 : coût RÉEL de la collecte
+                                                      # du secteur, et ce qui l'a dimensionnée
+                                                      "cost_cts": round(meta["cost_cts"], 2),
+                                                      "density": density,
+                                                      "target": target}},
                                  source=settings.anthropic_model)
     summary["editorial_skipped"] = len(places) - positioned
     summary["editorial_persisted"] = persisted
     step = {"ok": True, **dec.step_note(meta["cost_cts"]), "discovered": len(places),
             "positioned": positioned, "persisted": persisted, "osm_pool": len(pool),
+            "density": density, "density_source": density_src, "target": target,
             "marker": persisted > 0,
             "by_category": {k: len(v) for k, v in out.items()}}
     if places and not persisted:
@@ -406,9 +415,30 @@ def _discover_editorial_sorties(conn, prop: dict, ai, job_id: str,
                            "(sera re-collectée au prochain guide)")
     db.job_step(conn, job_id, "reputed_sorties", step)
     conn.commit()
-    _progress(f"  ✓ sélection éditoriale : {len(places)} trouvée(s), {positioned} "
-              f"positionnée(s), {persisted} mémorisée(s) — {meta['cost_cts']:.2f} ct")
+    _progress(f"  ✓ sélection éditoriale (densité {density} → cible {target}) : "
+              f"{len(places)} trouvée(s), {positioned} positionnée(s), {persisted} "
+              f"mémorisée(s) — {meta['cost_cts']:.2f} ct")
     return out
+
+
+def _sorties_density(pool: list[dict], overture_by_code: dict, origin: tuple | None
+                     ) -> tuple[int, str]:
+    """Densité « sorties » du secteur (V2-81) : nombre de restaurants/bars/cafés NOMMÉS à
+    moins de `reputed_density_radius_m`, selon la source qui en voit LE PLUS — le vivier
+    OSM non plafonné, ou Overture (souvent plus riche hors d'Europe). La moisson par
+    catégorie ne convient pas : elle est plafonnée à 8. PURE. `(densité, source)`."""
+    if not origin:
+        return 0, "none"
+    r = settings.reputed_density_radius_m
+
+    def near(items):
+        return sum(1 for p in items or []
+                   if p.get("name") and p.get("lat") is not None and p.get("lon") is not None
+                   and overpass.haversine_m(origin[0], origin[1], p["lat"], p["lon"]) <= r)
+    osm = near(pool)
+    ovt = near([p for code in claude_enrich.EDITORIAL_SORTIES
+                for p in (overture_by_code or {}).get(code) or []])
+    return (ovt, "overture") if ovt > osm else (osm, "osm")
 
 
 def _name_match(name: str, candidates: list[dict]) -> dict | None:
