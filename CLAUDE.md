@@ -1508,6 +1508,18 @@ exposé, peer auth).
   avec les **blocs de trajet** M-14 (airport/train → planification depuis le lieu,
   affordance distincte). Toute modif de `guide/*` (app.js, guide.css) → **bumper
   `sw.js VERSION`** (ici v15 → v16).
+- **Seuil de plausibilité piétonne (V2-85)** : en mode auto (`travel_mode` NULL), on affiche
+  la marche jusqu'à **20 min** (`guide_page._WALK_AUTO_MAX`), la voiture au-delà — 30 min
+  laissaient passer des temps de marche décourageants en zone étalée (Le Grau-du-Roi,
+  camping de l'Espiguette : pharmacie 4 km). Si `drive_min` manque, le temps voiture est
+  **estimé au rendu** depuis `dist_drive_m`/`dist_walk_m` à 40 km/h (comme le repli du
+  pipeline) — jamais un « hôpital 81 min à pied ». TROIS implémentations alignées
+  (`_fmt_dist`, `guide/app.js fmtDist`, `js/ui.js fmtDist` : `WALK_AUTO_MAX` +
+  `driveOrEstimate`), verrouillées par `test_walk_threshold_is_aligned_across_the_three_
+  renderers` ; `map_data` porte les distances pour l'estimation client. NB : avec les données
+  OSRM réelles du 06/10, le code d'avant affichait DÉJÀ la voiture à l'Espiguette ; le
+  « 39/56/81 min à pied » du guide 6ef3bbeb implique des `drive_min` vides en base — cause
+  à confirmer sur la production.
 - Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
   _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
   en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`

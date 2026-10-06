@@ -23,15 +23,26 @@ catch (_) { /* données de carte absentes : la page reste utilisable */ }
 
 /* Distance « voyageur » (V2-24) : le mode préféré de la catégorie (travel_mode)
    prime sur l'auto — 'driving' toujours voiture, 'walking' à pied tant que
-   raisonnable, sinon à pied si ≤ 30 min puis voiture (§M-01). */
+   raisonnable, sinon à pied si ≤ WALK_AUTO_MAX (20 min, V2-85) puis voiture. */
 const WALK_MODE_MAX = 45;
+// V2-85 — seuil de plausibilité piétonne (mode auto) : au-delà, la voiture. MÊME valeur que
+// `guide_page._WALK_AUTO_MAX` (SSR) et l'autre fmtDist du front — alignés par test.
+const WALK_AUTO_MAX = 20;
+// Temps voiture : calculé, sinon ESTIMÉ depuis la distance (40 km/h, comme le pipeline) —
+// jamais un repli sur un long temps de marche quand la voiture met le lieu à portée.
+function driveOrEstimate(p) {
+  if (p.drive_min != null) return p.drive_min;
+  const d = p.dist_drive_m || p.dist_walk_m;
+  return d ? Math.max(1, Math.round(d / 1000 / 40 * 60)) : null;
+}
 function fmtDist(p) {
   const mode = p.travel_mode;
-  if (mode === "driving" && p.drive_min != null) return `${p.drive_min} min en voiture`;
-  if (mode === "walking" && p.walk_min != null && (p.drive_min == null || p.walk_min <= WALK_MODE_MAX))
+  const drive = driveOrEstimate(p);
+  if (mode === "driving" && drive != null) return `${drive} min en voiture`;
+  if (mode === "walking" && p.walk_min != null && (drive == null || p.walk_min <= WALK_MODE_MAX))
     return `${p.walk_min} min à pied`;
-  if (p.walk_min != null && p.walk_min <= 30) return `${p.walk_min} min à pied`;
-  if (p.drive_min != null) return `${p.drive_min} min en voiture`;
+  if (p.walk_min != null && p.walk_min <= WALK_AUTO_MAX) return `${p.walk_min} min à pied`;
+  if (drive != null) return `${drive} min en voiture`;
   if (p.walk_min != null) return `${p.walk_min} min à pied`;
   return "";
 }

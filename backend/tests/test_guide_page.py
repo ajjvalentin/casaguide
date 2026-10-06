@@ -367,10 +367,14 @@ def test_fmt_dist_driving_mode_always_shows_car_even_when_close():
     assert n == "2" and u == "min en voiture"
 
 
-def test_fmt_dist_driving_mode_falls_back_to_walk_when_no_car_time():
-    # POI ancien sans temps voiture : repli propre sur le temps à pied.
+def test_fmt_dist_driving_mode_estimates_car_time_when_missing():
+    # POI ancien sans temps voiture : V2-85 — le temps voiture est ESTIMÉ depuis la
+    # distance stockée (on va à la station-service en voiture) ; repli sur la marche
+    # seulement si aucune distance n'est connue.
     n, u = guide_page._fmt_dist(_catpoi("fuel", walk=5, drive=None, mode="driving"), "fr")
-    assert n == "5" and u == "min à pied"
+    assert u == "min en voiture" and int(n) >= 1
+    bare = {"walk_min": 5, "drive_min": None, "travel_mode": "driving"}
+    assert guide_page._fmt_dist(bare, "fr") == ("5", "min à pied")
 
 
 def test_fmt_dist_walking_mode_keeps_walk_in_the_30_45_band():
@@ -1963,3 +1967,39 @@ def test_emergency_tab_says_what_is_missing_on_guest_guides():
     # Les 7 langues sont fournies (jamais de fuite FR pour une langue offerte).
     for key in ("vital_none_pharmacy", "vital_none_hospital", "vital_none_both"):
         assert set(guide_page._UI7[key]) == {"fr", "en", "es", "it", "de", "nl", "sq"}
+
+
+# ── V2-85 : en zone étalée, le temps affiché est celui qu'on met vraiment ──────
+
+def test_walk_beyond_20_minutes_shows_the_car_time():
+    """Le Grau-du-Roi (camping de l'Espiguette, valeurs OSRM réelles du 06/10) : une
+    pharmacie à 4 km ne s'affiche jamais en minutes de marche ; Barcelone (tout à 2-4 min
+    à pied) reste à pied. Les plages (`walking`) gardent leur plafond de 45 min."""
+    f = guide_page._fmt_dist
+    assert f({"walk_min": 67, "drive_min": 8}) == ("8", "min en voiture")      # pharmacie
+    assert f({"walk_min": 25, "drive_min": 6}) == ("6", "min en voiture")      # 30 → 20
+    assert f({"walk_min": 20, "drive_min": 4}) == ("20", "min à pied")         # borne
+    assert f({"walk_min": 3, "drive_min": 2}) == ("3", "min à pied")           # Barcelone
+    assert f({"walk_min": 40, "drive_min": 8, "travel_mode": "walking"}) == ("40", "min à pied")
+    assert f({"walk_min": 5, "drive_min": 2, "travel_mode": "driving"}) == ("2", "min en voiture")
+
+
+def test_missing_drive_time_is_estimated_never_a_long_walk():
+    """Le cas observé (guide 6ef3bbeb) : « hôpital 81 min à pied » n'est possible que si
+    `drive_min` manque. Le temps voiture est alors ESTIMÉ depuis la distance stockée."""
+    f = guide_page._fmt_dist
+    assert f({"walk_min": 81, "drive_min": None, "dist_drive_m": 6500}) == ("10", "min en voiture")
+    assert f({"walk_min": 56, "dist_walk_m": 4500}) == ("7", "min en voiture")
+    assert f({"walk_min": 39}) == ("39", "min à pied")    # aucune distance : rien à estimer
+
+
+def test_walk_threshold_is_aligned_across_the_three_renderers():
+    """SSR, popups de carte (guide/app.js) et back-office (js/ui.js) : MÊME seuil et
+    même estimation — sinon la liste et la carte se contrediraient."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    for rel in ("frontend/guide/app.js", "frontend/js/ui.js"):
+        src = (root / rel).read_text(encoding="utf-8")
+        assert f"const WALK_AUTO_MAX = {guide_page._WALK_AUTO_MAX};" in src, rel
+        assert "/ 40 * 60" in src and "p.walk_min <= 30" not in src, rel
+    assert guide_page._DRIVE_EST_KMH == 40.0

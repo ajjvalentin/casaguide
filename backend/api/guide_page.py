@@ -972,11 +972,30 @@ def _bold(text: str) -> str:
     return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
 
 
-# ── Distance « voyageur » : à pied si ≤ 30 min, sinon voiture (§M-01) ─────────
+# ── Distance « voyageur » : à pied si ≤ 20 min (V2-85), sinon voiture ──────────
 
 # Au-delà de ce temps à pied, une catégorie 'walking' (ex. plage) bascule quand
 # même en voiture : rester cohérent (une plage à 90 min ne se fait pas à pied).
 _WALK_MODE_MAX = 45
+
+
+# V2-85 — seuil de PLAUSIBILITÉ PIÉTONNE (mode auto). Au-delà, le temps affiché est celui
+# qu'on met vraiment : en voiture. 30 min laissaient passer « pharmacie à 25 min à pied »
+# pour un lieu à 2 km d'un camping (Le Grau-du-Roi). Même valeur dans `frontend/guide/
+# app.js` et `frontend/js/ui.js` — les trois DOIVENT rester alignés (test source).
+_WALK_AUTO_MAX = 20
+# Vitesse de l'estimation voiture quand `drive_min` manque (= `enrich.distance._DRIVE_KMH`).
+_DRIVE_EST_KMH = 40.0
+
+
+def _drive_or_estimate(poi: dict) -> int | None:
+    """Temps en voiture : le calculé (OSRM), sinon une ESTIMATION depuis la distance
+    stockée (route, sinon piétonne) — jamais un repli sur un long temps de marche quand la
+    voiture met le lieu à portée (V2-85)."""
+    if poi.get("drive_min") is not None:
+        return poi["drive_min"]
+    d = poi.get("dist_drive_m") or poi.get("dist_walk_m")
+    return max(1, round(d / 1000 / _DRIVE_EST_KMH * 60)) if d else None
 
 
 def _fmt_dist(poi: dict, lang: str = "fr") -> tuple[str, str]:
@@ -985,16 +1004,17 @@ def _fmt_dist(poi: dict, lang: str = "fr") -> tuple[str, str]:
       - 'driving'  : toujours en voiture, avec la distance (ex. station-service —
         on y va en voiture même à 400 m) ;
       - 'walking'  : à pied tant que raisonnable (≤ `_WALK_MODE_MAX`), sinon voiture ;
-      - None        : auto historique (à pied si ≤ 30 min, sinon voiture).
-    Repli propre si le temps du mode demandé manque (POI ancien)."""
+      - None        : auto — à pied si ≤ `_WALK_AUTO_MAX` (20 min, V2-85), sinon voiture.
+    Le temps voiture manquant est estimé depuis la distance (V2-85) : une pharmacie à 4 km
+    ne s'affiche jamais « 39 min à pied »."""
     walk = poi.get("walk_min")
-    drive = poi.get("drive_min")
+    drive = _drive_or_estimate(poi)
     mode = poi.get("travel_mode")
     if mode == "driving" and drive is not None:
         return str(drive), _t(lang, "drive")
     if mode == "walking" and walk is not None and (drive is None or walk <= _WALK_MODE_MAX):
         return str(walk), _t(lang, "walk")
-    if walk is not None and walk <= 30:
+    if walk is not None and walk <= _WALK_AUTO_MAX:
         return str(walk), _t(lang, "walk")
     if drive is not None:
         return str(drive), _t(lang, "drive")
@@ -2552,6 +2572,8 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                 "category": _seed_label(lang, _i18n_mod.poi_category_key(p["category_code"]),
                                         p.get("category_name"), p["category_code"]),
                 "walk_min": p.get("walk_min"), "drive_min": p.get("drive_min"),
+                # V2-85 : distances, pour estimer la voiture si `drive_min` manque.
+                "dist_drive_m": p.get("dist_drive_m"), "dist_walk_m": p.get("dist_walk_m"),
                 # Distance utile en mètres (V2-63) : cadrage « le proche d'abord »
                 # de la carte des urgences côté client (`fitEmergency`).
                 "dist_m": _poi_dist_m(p),
