@@ -89,3 +89,17 @@ test("onglet Urgences V2-12f : barre SOS d'en-tête masquée (plus de doublon), 
     server.close();
   }
 });
+
+test("V2-86 : le popup de carte porte le site web (Autour + Urgences), jamais de lien mort", async (t) => {
+  const chrome = requireChrome("guide-sos-tab.test.mjs");   // pas de navigateur → LÈVE (V2-76)
+  if (!chrome) { t.skip("aucun navigateur — cf. bandeau final"); return; }   // hatch explicite
+  const server = await startServer();
+  try {
+    const verdict = await runHarness(chrome, server.address().port,
+                                     "guide-popup-website-harness.html");
+    assert.ok(verdict, "verdict du harnais introuvable dans le DOM dumpé");
+    reportVerdict("guide-popup-website-harness.html", verdict);
+  } finally {
+    server.close();
+  }
+});

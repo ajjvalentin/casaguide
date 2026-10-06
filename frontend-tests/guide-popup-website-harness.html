@@ -1,0 +1,99 @@
+<!doctype html>
+<!-- Harnais headless du SITE WEB dans les popups de carte (V2-86). Pilote le VRAI
+     /frontend/guide/app.js ; Leaflet simulé CAPTE le HTML de chaque popup (bindPopup).
+     Guide rendu en ANGLAIS (data-website-label="Website", servi par le SSR) :
+       · « Autour » : Brown's (site http) → lien « Website », nouvel onglet, noopener ;
+         un lieu SANS site → aucun lien ; une URL `javascript:` → aucun lien (jamais mort,
+         jamais dangereux) ;
+       · « Urgences » : la pharmacie avec site → même lien, même libellé (cohérence des
+         deux cartes, qui partagent `makePoiMarker`).
+     Verdict dans #result. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>guide-popup-website-harness</title>
+<script>document.documentElement.className += " js";</script>
+<script>
+  window.scrollTo = () => {};
+  Element.prototype.scrollIntoView = function () {};
+  try { Object.defineProperty(navigator, "serviceWorker", { value: undefined }); } catch (_) {}
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(0), 0);
+  // Leaflet simulé : tout appel rend l'objet lui-même ; bindPopup CAPTE le HTML.
+  window.__popups = [];
+  const stub = () => {
+    const o = new Proxy({}, {
+      get(t, k) {
+        if (k === "bindPopup") return (html) => { window.__popups.push(String(html)); return o; };
+        if (k === "getLatLng") return () => ({ lat: 0, lng: 0 });
+        if (k === "getBounds") return () => stub();
+        if (k === "then") return undefined;
+        return () => o;
+      },
+    });
+    return o;
+  };
+  window.L = new Proxy({}, { get: () => () => stub() });
+</script>
+</head>
+<body data-token="tok" data-lang="en" data-default-lang="fr" data-website-label="Website">
+<div class="wrap">
+  <nav class="guide-tabs" role="tablist">
+    <button class="tab on" role="tab" data-tab="home" aria-selected="true">Home</button>
+    <button class="tab" role="tab" data-tab="emergency" aria-selected="false">Emergencies</button>
+    <button class="tab" role="tab" data-tab="around" aria-selected="false">Around you</button>
+  </nav>
+  <main>
+    <section class="tab-panel tab-active" data-tab="home" id="tab-home">home</section>
+    <section class="tab-panel" data-tab="emergency" id="tab-emergency"><div id="emap"></div></section>
+    <section class="tab-panel" data-tab="around" id="tab-around"><div id="map"></div></section>
+  </main>
+</div>
+<pre id="result">PENDING</pre>
+<script id="guide-data" type="application/json">{
+  "property": { "name": "Villa Test", "lat": 37.93, "lon": -0.73 },
+  "pois": [
+    { "name": "Brown's Cocktail Bar", "lat": 37.931, "lon": -0.731, "chapter": "F",
+      "category_code": "bar", "category": "Bar", "phone": "+34 966 111 222",
+      "website": "https://browns-cocktailbar.com", "walk_min": 6, "drive_min": 2 },
+    { "name": "Sin Web", "lat": 37.932, "lon": -0.732, "chapter": "F",
+      "category_code": "bar", "category": "Bar", "walk_min": 7, "drive_min": 2 },
+    { "name": "Piège", "lat": 37.933, "lon": -0.733, "chapter": "F",
+      "category_code": "bar", "category": "Bar", "website": "javascript:alert(1)" }
+  ],
+  "emergency": [
+    { "name": "Farmacia Zenia Boulevard", "lat": 37.934, "lon": -0.734, "chapter": "D",
+      "category_code": "pharmacy", "category": "Pharmacy", "website": "https://farmacia.example" }
+  ]
+}</script>
+<script type="module">
+  const log = []; let pass = true;
+  const chk = (c, m) => { if (!c) pass = false; log.push((c ? "✓ " : "✗ ") + m); };
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const popupOf = (name) => window.__popups.find((h) => h.includes(name));
+  const link = (html) => {
+    const d = document.createElement("div"); d.innerHTML = html || "";
+    return [...d.querySelectorAll("a")].find((a) => a.textContent === "Website");
+  };
+  try {
+    await import("/frontend/guide/app.js");
+    await wait(120);
+    if (window._buildEmergencyMap) window._buildEmergencyMap();
+    await wait(120);
+    const b = link(popupOf("Cocktail Bar"));
+    chk(!!b, "« Autour » : le popup de Brown's porte le lien « Website » (libellé du SSR, langue du guide)");
+    chk(b && b.getAttribute("href") === "https://browns-cocktailbar.com", "le lien ouvre la bonne page");
+    chk(b && b.target === "_blank" && /noopener/.test(b.rel), "nouvel onglet + rel=noopener");
+    chk(/tel:/.test(popupOf("Cocktail Bar") || ""), "le téléphone reste dans le popup");
+    chk(/google\.com\/maps\/dir/.test(popupOf("Cocktail Bar") || ""), "l'itinéraire reste dans le popup");
+    chk(!!popupOf("Sin Web") && !link(popupOf("Sin Web")), "lieu SANS site : aucun lien (jamais de lien mort)");
+    chk(!!popupOf("Piège") && !/javascript:/i.test(popupOf("Piège")), "URL non http(s) : aucun lien");
+    const f = link(popupOf("Farmacia Zenia Boulevard"));
+    chk(!!f && f.getAttribute("href") === "https://farmacia.example",
+        "« Urgences » : même lien, même libellé (cohérence des deux cartes)");
+  } catch (e) {
+    chk(false, "exception : " + (e && e.message));
+  }
+  document.getElementById("result").textContent = (pass ? "PASS\n" : "FAIL\n") + log.join("\n");
+</script>
+</body>
+</html>

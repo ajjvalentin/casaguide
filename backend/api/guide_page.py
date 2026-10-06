@@ -2578,6 +2578,10 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
                 # de la carte des urgences côté client (`fitEmergency`).
                 "dist_m": _poi_dist_m(p),
                 "travel_mode": p.get("travel_mode"), "phone": p.get("phone"),
+                # V2-86 : le site, comme dans la fiche — seulement une URL http(s) (jamais
+                # un `javascript:` dans un lien de popup).
+                "website": (p.get("website") if re.match(r"(?i)^https?://", p.get("website") or "")
+                            else None),
                 # Jour du marché (V2-33) : le client rend le badge localisé (Intl)
                 # dans les popups de la carte, aligné sur le SSR (Babel/CLDR).
                 "weekday": p.get("weekday"), "weekday_note": p.get("weekday_note"),
@@ -2785,7 +2789,7 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{versioned('/guide/guide.css')}">
 </head>
-<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}" data-approx-label="{_esc(_t7(lang, "approx_position"))}" data-in-guide-label="{_esc(_t7(lang, "see_in_guide"))}"{speak_attr}>
+<body data-token="{_esc(token)}" data-api-base="{_esc(api_base)}" data-lang="{_esc(lang)}" data-default-lang="{_esc(default_lang)}"{guest_lang_attr}{guest_guide_attr} data-search-ph="{_esc(_t(lang, "search_placeholder"))}" data-search-none="{_esc(_t(lang, "search_none"))}" data-search-clear="{_esc(_t(lang, "search_clear"))}" data-secret-labels="{_esc(_secret_labels_json(lang))}" data-approx-label="{_esc(_t7(lang, "approx_position"))}" data-website-label="{_esc(_t(lang, "website"))}" data-in-guide-label="{_esc(_t7(lang, "see_in_guide"))}"{speak_attr}>
 <div class="wrap">
   {showcase_banner}
   <header class="guide-head">

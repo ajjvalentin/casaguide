@@ -1520,6 +1520,15 @@ exposé, peer auth).
   OSRM réelles du 06/10, le code d'avant affichait DÉJÀ la voiture à l'Espiguette ; le
   « 39/56/81 min à pied » du guide 6ef3bbeb implique des `drive_min` vides en base — cause
   à confirmer sur la production.
+- **Site web dans le popup de carte (V2-86)** : `makePoiMarker` (partagé par les cartes
+  « Autour » ET « Urgences ») ajoute « 🔗 Site web » après le téléphone — même libellé que
+  les fiches (`_t(lang,"website")`, servi en `data-website-label` sur le `<body>`, motif
+  `data-approx-label`), nouvel onglet, `rel="noopener nofollow"`. `map_data.website` n'est
+  posé que pour une URL **http(s)** (jamais un `javascript:`), et le client re-vérifie.
+  Aucun site → aucun lien. Le popup d'activité garde son lien de SOURCE (V2-73) — pas de
+  champ site. Harnais `guide-popup-website` (vrai `app.js`, popups capturés). NB, constaté
+  et NON traité : « Itinéraire ↗ » et « min à pied / en voiture » des popups sont encore
+  en dur en FRANÇAIS dans les 7 langues (dette i18n des popups, hors périmètre).
 - Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
   _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
   en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`

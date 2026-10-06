@@ -135,6 +135,10 @@ function makePoiMarker(p) {
     if (day) html += `<br>📅 <b>${escapeHtml(day)}</b>${note ? " · " + escapeHtml(note) : ""}`;
   }
   if (p.phone) html += `<br>📞 <a href="tel:${tel(p.phone)}">${escapeHtml(p.phone)}</a>`;
+  // V2-86 : le site, comme dans la fiche (même libellé, langue du guide, nouvel onglet) —
+  // on consulte le site avant d'appeler. Rien sans URL http(s) : jamais de lien mort.
+  if (p.website && /^https?:\/\//i.test(p.website))
+    html += `<br>🔗 <a href="${escapeHtml(p.website)}" target="_blank" rel="noopener nofollow">${escapeHtml(WEBSITE_LABEL)}</a>`;
   // V2-74b : commerce de village à position APPROXIMATIVE (adresse non résoluble → replié au
   // centre de la commune) → mention en popup + cercle d'approximation (réutilise V2-73f).
   if (p.approx) html += `<br><span class="approx-note">${escapeHtml(ACT_APPROX_LABEL)}</span>`;
@@ -172,6 +176,8 @@ const ACT_APPROX_LABEL = (document.body && document.body.dataset.approxLabel)
   || "Position approximative";
 const ACT_IN_GUIDE_LABEL = (document.body && document.body.dataset.inGuideLabel)
   || "Voir dans le guide";
+// V2-86 : libellé « Site web » des fiches, servi par le SSR dans la langue du guide.
+const WEBSITE_LABEL = (document.body && document.body.dataset.websiteLabel) || "Site web";
 
 // Marqueur d'ACTIVITÉ (V2-73/f/g) : DISTINCT des pastilles rondes de commerce — épingle
 // boussole à la couleur de la famille. Position APPROCHÉE (géocodage) → cercle d'approximation

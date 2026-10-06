@@ -2003,3 +2003,24 @@ def test_walk_threshold_is_aligned_across_the_three_renderers():
         assert f"const WALK_AUTO_MAX = {guide_page._WALK_AUTO_MAX};" in src, rel
         assert "/ 40 * 60" in src and "p.walk_min <= 30" not in src, rel
     assert guide_page._DRIVE_EST_KMH == 40.0
+
+
+# ── V2-86 : le popup de carte affiche le site ──────────────────────────────────
+
+def test_map_data_carries_the_website_and_the_label_in_the_guide_language():
+    """Le SSR met le site dans les données de carte (http(s) SEULEMENT) et sert le libellé
+    « Site web » des fiches dans la langue du guide (`data-website-label`)."""
+    import json as _json
+    import re as _re
+    pois = [dict(_resto("Brown's", "cocktail", 3), website="https://browns-cocktailbar.com",
+                 lat=37.93, lon=-0.73),
+            dict(_resto("Piège", "x", 4), website="javascript:alert(1)", lat=37.931, lon=-0.731)]
+    html = guide_page.render_guide(_prop(), [], pois, {}, "tok", lang="en")
+    assert 'data-website-label="Website"' in html
+    data = _json.loads(_re.search(r'<script id="guide-data" type="application/json">(.*?)</script>',
+                                  html, _re.S).group(1))
+    by = {p["name"]: p for p in data["pois"]}
+    assert by["Brown's"]["website"] == "https://browns-cocktailbar.com"
+    assert by["Piège"]["website"] is None
+    assert 'data-website-label="Sitio web"' in guide_page.render_guide(
+        _prop(), [], pois, {}, "tok", lang="es")
