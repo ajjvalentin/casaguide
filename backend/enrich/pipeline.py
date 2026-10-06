@@ -999,9 +999,9 @@ def _void_essentials(all_harvested: list[dict], wanted_codes: set,
     village. On ne considère QUE les catégories `wanted` (jamais inventer un besoin non prévu ;
     et une catégorie couverte, même par un seul commerce proche, n'est pas « vide »).
 
-    V2-77 : l'éligibilité dépend aussi du PAYS (`local_commerce_categories_for`) — le tabac
-    ne se cherche sur le web que là où le réseau est licencié, donc recensé. Ailleurs, la
-    catégorie reste moissonnée par OSM mais ne déclenche aucun appel web."""
+    V2-87 : l'éligibilité passe par `local_commerce_categories_for`, qui inclut désormais
+    le tabac dans TOUS les pays — c'est l'absence locale qui compte, pas le monopole (V2-77
+    le bornait aux pays à réseau licencié ; Nendaz, CH, restait sans tabac)."""
     eligible = claude_enrich.local_commerce_categories_for(country_code)
     present = set()
     for p in all_harvested:
@@ -1575,7 +1575,8 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 wanted, origin[0], origin[1], client=http_client,
                 # Nom local pour le chauffeur (V2-66) : langue du pays → capture du
                 # nom/adresse en écriture d'origine (JP → name:ja…), non latin uniquement.
-                country_lang=overpass.country_language(prop.get("country_code")))
+                country_lang=overpass.country_language(prop.get("country_code")),
+                country_code=prop.get("country_code"))     # V2-87 : catégories par pays
 
             # ── V2-52 volet 1 : acquisition Overture (une seule extraction bbox) ──
             # Décision de sources (benchmark 2026-09-09) : OSM le factuel, Overture le
@@ -2394,7 +2395,8 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
                       and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
             grouped, failed, _harvest = overpass.fetch_grouped(
                 wanted, origin[0], origin[1], client=http_client,
-                country_lang=overpass.country_language(prop.get("country_code")))
+                country_lang=overpass.country_language(prop.get("country_code")),
+                country_code=prop.get("country_code"))     # V2-87 : catégories par pays
 
             editorial: list[dict] = []
             for cat in wanted:

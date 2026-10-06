@@ -2024,3 +2024,22 @@ def test_map_data_carries_the_website_and_the_label_in_the_guide_language():
     assert by["Piège"]["website"] is None
     assert 'data-website-label="Sitio web"' in guide_page.render_guide(
         _prop(), [], pois, {}, "tok", lang="es")
+
+
+
+# ── V2-87 : le tri suit le temps AFFICHÉ ───────────────────────────────────────
+
+def test_lists_are_sorted_on_the_displayed_time():
+    """Nendaz, Sport & loisirs : affiché « 16, 21, 30, 23, 30 » — trié sur la marche alors
+    que la voiture s'affichait. Le tri suit désormais le temps EFFECTIVEMENT affiché."""
+    def sport(name, walk_m, walk, drive):
+        return {"name": name, "category_code": "sport", "chapter": "G",
+                "category_name": {"fr": "Sport"}, "lat": 46.18, "lon": 7.29,
+                "dist_walk_m": walk_m, "walk_min": walk, "drive_min": drive}
+    # dist_walk_m dans l'ordre A<B<C<D, mais temps affichés (voiture) 30, 16, 23, 21.
+    pois = [sport("A", 1000, 40, 30), sport("B", 2000, 60, 16),
+            sport("C", 3000, 70, 23), sport("D", 4000, 80, 21), sport("E", 500, 8, 3)]
+    html = guide_page._render_pois(pois, "fr")
+    order = [n for n in "ABCDE" if f">{n}<" in html]
+    pos = {n: html.index(f">{n}<") for n in order}
+    assert sorted(order, key=pos.get) == ["E", "B", "D", "C", "A"]   # 8 à pied, puis 16, 21, 23, 30

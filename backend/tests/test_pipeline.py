@@ -2756,35 +2756,28 @@ def test_translate_run_delivers_succeeded_langs_when_one_lang_fails():
 
 # ── V2-77 : le tabac se cherche sur le web LÀ OÙ le réseau est licencié ───────
 
-def test_tobacco_web_discovery_only_in_licensed_countries():
-    """V2-77 : `shop=tobacco` est moissonné par OSM PARTOUT, mais la DÉCOUVERTE WEB du
-    tabac n'a de sens que là où le réseau est licencié, donc recensé (estanco ES,
-    tabaccheria IT, bureau de tabac FR…). Ailleurs, chercher « les estancos de X » ne
-    pourrait rien rendre : on n'engage pas l'appel. La catégorie, elle, reste demandée."""
+def test_tobacco_void_is_searched_in_every_country():
+    """V2-87 (renverse V2-77) : la découverte web du VIDE local inclut le tabac dans TOUS
+    les pays — c'est l'absence locale qui déclenche, pas le monopole (Nendaz, CH : tabacs
+    proposés à 26-43 min alors que le village a ses kiosques). La passe « fausse
+    plénitude » des estancos reste, elle, bornée aux pays licenciés."""
     from enrich import claude_enrich as ce
     f = ce.local_commerce_categories_for
-    for cc in ("ES", "es", "IT", "FR", "PT", "AT"):
+    for cc in ("ES", "CH", "NL", "DE", "JP", "", None):
         assert "tobacco" in f(cc), cc
-    for cc in ("NL", "DE", "GB", "JP", "XK", "", None):
-        assert "tobacco" not in f(cc), cc
-    # Les cinq essentielles historiques ne bougent JAMAIS, quel que soit le pays.
-    for cc in ("ES", "NL", None):
         assert {"pharmacy", "supermarket", "bakery", "doctor", "post_office"} <= set(f(cc))
+    assert "CH" not in ce.TOBACCO_LICENSED_COUNTRIES          # estancos : inchangé
 
 
-def test_void_essentials_honours_the_country_gate():
-    """La garde pays passe par `_void_essentials` : en Espagne un tabac absent du rayon
-    est « vide » (donc à découvrir) ; aux Pays-Bas il ne l'est jamais — aucun appel web
-    ne sera déclenché pour lui. Un estanco PROCHE couvre la catégorie, comme les autres."""
-    origin = (28.09, -16.74)
+def test_void_essentials_tobacco_void_everywhere_but_covered_when_near():
+    """`_void_essentials` : un tabac absent du rayon est « vide » en Suisse comme en Espagne ;
+    un tabac PROCHE couvre la catégorie (règle commune V2-74)."""
+    origin = (46.1858, 7.2917)
     wanted = {"pharmacy", "tobacco"}
-    assert "tobacco" in pipeline._void_essentials([], wanted, origin, 5000, "ES")
-    assert "tobacco" not in pipeline._void_essentials([], wanted, origin, 5000, "NL")
-    # Sans pays précisé : prudence — pas de dépense web pour le tabac.
-    assert "tobacco" not in pipeline._void_essentials([], wanted, origin, 5000, None)
-    # Un estanco dans le rayon couvre la catégorie (règle commune V2-74).
-    harv = [{"name": "Estanco nº 12", "lat": 28.091, "lon": -16.741, "category": "tobacco"}]
-    assert "tobacco" not in pipeline._void_essentials(harv, wanted, origin, 5000, "ES")
+    for cc in ("CH", "ES", None):
+        assert "tobacco" in pipeline._void_essentials([], wanted, origin, 5000, cc), cc
+    harv = [{"name": "k kiosk", "lat": 46.186, "lon": 7.292, "category": "tobacco"}]
+    assert "tobacco" not in pipeline._void_essentials(harv, wanted, origin, 5000, "CH")
 
 
 def test_editorial_shisha_flows_to_subtype_both_paths():
@@ -4173,3 +4166,48 @@ def test_pipeline_step_says_where_overture_was_read_and_flags_stale(property_id,
     assert st["source"] == "cache" and st["zone"] == "costa_blanca"
     assert st["read_from"] == "cache local (zone costa_blanca, release 2026-09-23.1, âge 75 j)"
     assert st["stale"] is True and "ops/overture_cache.py --zone costa_blanca" in st["warning"]
+
+
+
+# ── V2-87 : tabac suisse (kiosques), vapotage/CBD, lieux fermés ───────────────
+
+def test_swiss_kiosk_counts_as_tobacco_only_in_switzerland():
+    """En Suisse le tabac s'achète au kiosque, tagué `shop=kiosk` SANS `tobacco=yes`
+    (relevé Nendaz : « k kiosk », « Kiosque ») : c'est un tabac. En Espagne, un kiosque à
+    journaux n'en vend pas : il ne l'est pas. Le sélecteur Overpass suit le pays."""
+    from enrich import overpass as o
+    kiosk = {"shop": "kiosk", "name": "k kiosk", "brand": "k kiosk"}
+    assert o.category_matches("tobacco", kiosk, "CH")
+    assert not o.category_matches("tobacco", kiosk, "ES")
+    assert not o.category_matches("tobacco", kiosk)
+    assert '"shop"="kiosk"' in o._selectors_for("tobacco", "CH")
+    assert '"shop"="kiosk"' not in o._selectors_for("tobacco", "ES")
+
+
+def test_cbd_vape_shop_is_not_a_tobacconist_even_if_only_its_site_says_so():
+    """« Sweet spot » (Conthey) — tags RÉELS : shop=tobacco, description=CBD, website
+    sweetspot-vape.com, rien dans le nom. Ce n'est pas un tabac. Un vrai tabac reste."""
+    from enrich import overpass as o
+    sweet = {"shop": "tobacco", "name": "Sweet spot", "description": "CBD",
+             "website": "https://sweetspot-vape.com/fr"}
+    assert not o.category_matches("tobacco", sweet, "CH")
+    assert not o.category_matches("tobacco", {"shop": "tobacco", "name": "Sweet spot",
+                                               "website": "https://sweetspot-vape.com"}, "CH")
+    assert o.category_matches("tobacco", {"shop": "tobacco", "name": "Tabac du Centre"}, "CH")
+
+
+def test_osm_closed_tags_are_honoured():
+    """Un lieu que OSM dit FERMÉ ne s'affiche pas : `opening_hours=closed|off`,
+    `disused=yes`, `shop=vacant`, date de fin passée. Une date future ne ferme rien."""
+    import datetime as _d
+    from enrich import overpass as o
+    today = _d.date(2026, 10, 6)
+    assert o.is_closed({"opening_hours": "closed"}, today)
+    assert o.is_closed({"opening_hours": " off "}, today)
+    assert o.is_closed({"disused": "yes"}, today)
+    assert o.is_closed({"shop": "vacant"}, today)
+    assert o.is_closed({"end_date": "2025-12"}, today)
+    assert o.is_closed({"closed:date": "2026-10-01"}, today)
+    assert not o.is_closed({"end_date": "2027"}, today)
+    assert not o.is_closed({"opening_hours": "Mo-Fr 08:00-18:00"}, today)
+    assert not o.is_closed({}, today)

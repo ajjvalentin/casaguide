@@ -1529,6 +1529,21 @@ exposé, peer auth).
   champ site. Harnais `guide-popup-website` (vrai `app.js`, popups capturés). NB, constaté
   et NON traité : « Itinéraire ↗ » et « min à pied / en voiture » des popups sont encore
   en dur en FRANÇAIS dans les 7 langues (dette i18n des popups, hors périmètre).
+- **Tri, tabac par pays, lieux fermés (V2-87)** : (1) les listes de POI se trient sur le
+  temps **AFFICHÉ** (`guide_page._shown_minutes`, même calcul que `_fmt_dist`), jamais sur
+  `dist_walk_m` — en montagne trajets piéton et routier divergent (Nendaz : « 16, 21, 30,
+  23, 30 »). (2) Ce qu'une catégorie recouvre dépend du PAYS : `overpass.COUNTRY_EXTRA_TAGS`
+  (CH : `shop=kiosk` = tabac — les kiosques suisses ne portent pas `tobacco=yes`) ;
+  `fetch_grouped(country_code=…)` → `_selectors_for` + `category_matches(…, country_code)`.
+  Jamais une règle globale (un kiosque espagnol ne vend pas de tabac). La découverte web du
+  VIDE local inclut le tabac PARTOUT (`local_commerce_categories_for`) ; la passe estancos
+  (fausse plénitude) reste bornée aux pays licenciés. (3) `overpass.is_closed` écarte un
+  lieu que OSM dit fermé (`opening_hours=closed|off`, `disused|abandoned|closed=yes`,
+  `shop=vacant`, date de fin passée) ; le filtre vapotage/CBD du tabac lit aussi
+  `description` et le site (Sweet spot, Conthey : `description=CBD`, sweetspot-vape.com,
+  rien dans le nom). LIMITE : Sweet spot ne portait AUCUNE étiquette de fermeture ; son
+  domaine ne résout plus (DNS) — signal de fermeture non exploité à ce jour (piste : vérifier
+  la résolution du site à la moisson, sans le supprimer sur ce seul indice).
 - Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
   _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
   en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`

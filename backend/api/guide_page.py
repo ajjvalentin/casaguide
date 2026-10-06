@@ -1023,6 +1023,16 @@ def _fmt_dist(poi: dict, lang: str = "fr") -> tuple[str, str]:
     return "–", ""
 
 
+def _shown_minutes(poi: dict) -> tuple:
+    """Clé de tri = le temps EFFECTIVEMENT AFFICHÉ (V2-87), même calcul que `_fmt_dist`
+    (marche ≤ 20 min, sinon voiture, voiture estimée si absente). Égalité : distance utile,
+    puis nom (ordre stable). Inconnu en dernier."""
+    n, _u = _fmt_dist(poi)
+    shown = int(n) if n.isdigit() else 10 ** 9
+    d = _poi_dist_m(poi)
+    return (shown, d if d is not None else 10 ** 9, poi.get("name") or "")
+
+
 def _norm_locality(s: Any) -> str:
     """Normalise une commune pour COMPARAISON (casse + accents ignorés) — « Vétroz »
     et « vetroz » sont la même commune (V2-38). Ne sert qu'à décider de l'affichage,
@@ -1492,7 +1502,7 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # sont triés lundi→dimanche (jour absent en dernier), puis par distance.
             lst.sort(key=lambda p: (
                 p.get("weekday") if p.get("weekday") is not None else 8,
-                p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
+                _shown_minutes(p)))
         elif code == "tobacco":
             # V2-77b — ce qu'on cherche sous cette rubrique, c'est l'ESTANCO (timbres,
             # tickets de transport, recharges) : il passe devant, même un peu plus loin.
@@ -1500,13 +1510,15 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # « Radikas ») s'intercale entre les deux — retenu, mais jamais promu.
             lst.sort(key=lambda p: (
                 {"estanco": 0, "cigar": 2}.get((p.get("subtype") or "").lower(), 1),
-                p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
+                _shown_minutes(p)))
         else:
-            # Autres catégories : coup de cœur (owner_comment) en tête (M-16), puis
-            # distance à pied — le repère naturel d'un lieu reste « à quelle distance ».
+            # Autres catégories : coup de cœur (owner_comment) en tête (M-16), puis le
+            # TEMPS AFFICHÉ (V2-87) — le voyageur lit « 16, 21, 23, 30 », jamais un ordre
+            # pris sur la marche quand c'est la voiture qui s'affiche (Nendaz, Sport :
+            # « 16, 21, 30, 23, 30 » — trajets piéton et routier divergent en montagne).
             lst.sort(key=lambda p: (
                 0 if (p.get("owner_comment") or "").strip() else 1,
-                p.get("dist_walk_m") if p.get("dist_walk_m") is not None else 9e9))
+                _shown_minutes(p)))
         cat_name = _esc(_seed_label(lang, _i18n_mod.poi_category_key(code),
                                     lst[0].get("category_name"), code))
         is_resto = code == "restaurant"

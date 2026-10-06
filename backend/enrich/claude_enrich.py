@@ -1489,7 +1489,7 @@ SERVICE_RULES_FACT_PREFIX = "service_rules_"     # + code de catégorie (rental,
 SERVICE_RULES_SCHEMA_V = 1
 LOCAL_COMMERCE_FACT_TYPE = "local_commerces"
 # Version de CONTENU (V2-78) : un bump invalide la mémoire du secteur — V2-77f v2 : adresse propre exigée (interdiction d'emprunt).
-LOCAL_COMMERCE_SCHEMA_V = 3   # V2-80 v3 : + hôpital/clinique (plancher vital), langue du pays
+LOCAL_COMMERCE_SCHEMA_V = 4   # V2-87 v4 : tabac partout (kiosques, tabac-journaux) ; v3 : hôpital (V2-80)
 # Catégories ESSENTIELLES éligibles : ce qu'un habitant cherche d'abord au village. Les codes
 # correspondent aux `category_code` du seed (materialisés tels quels en POI).
 LOCAL_COMMERCE_CATEGORIES = ("pharmacy", "supermarket", "bakery", "doctor", "post_office",
@@ -1503,7 +1503,8 @@ _LOCAL_COMMERCE_LABELS = {"hospital": "hôpital / clinique avec accueil des urge
                           "pharmacy": "pharmacie", "supermarket": "épicerie / supérette",
                           "bakery": "boulangerie", "doctor": "médecin / cabinet médical",
                           "post_office": "bureau de poste / point poste",
-                          "tobacco": "bureau de tabac / estanco / tabaccheria"}
+                          "tobacco": "bureau de tabac / estanco / tabaccheria / KIOSQUE "
+                                     "vendant du tabac (tabac-journaux)"}
 
 # V2-77 — le tabac ne se CHERCHE sur le web que là où le réseau est LICENCIÉ, donc
 # RECENSÉ publiquement : estanco (ES), tabaccheria (IT), bureau de tabac (FR), tabacaria
@@ -1517,14 +1518,14 @@ TOBACCO_LICENSED_COUNTRIES = frozenset({"ES", "IT", "FR", "PT", "AT"})
 
 
 def local_commerce_categories_for(country_code: str | None) -> tuple[str, ...]:
-    """Catégories éligibles à la DÉCOUVERTE WEB pour ce pays (V2-77).
+    """Catégories éligibles à la DÉCOUVERTE WEB du VIDE local (V2-74), pour ce pays.
 
-    Le tabac en est retiré hors des pays à réseau licencié : y chercher un annuaire
-    d'estancos serait une dépense sans objet. PURE (aucune E/S)."""
-    cc = (country_code or "").upper()
-    if cc in TOBACCO_LICENSED_COUNTRIES:
-        return LOCAL_COMMERCE_CATEGORIES
-    return tuple(c for c in LOCAL_COMMERCE_CATEGORIES if c != "tobacco")
+    V2-87 — TOUTES, tabac compris, dans TOUS les pays. V2-77 bornait le tabac aux pays à
+    réseau licencié (« ailleurs, pas d'annuaire ») ; mais ce qui déclenche cette passe est
+    l'ABSENCE locale, pas le monopole : à Nendaz (CH), OSM ne proposait que des tabacs à
+    26-43 min alors que le village a ses kiosques. La passe « fausse plénitude » des
+    estancos (V2-77b) reste, elle, bornée à `TOBACCO_LICENSED_COUNTRIES`. PURE."""
+    return LOCAL_COMMERCE_CATEGORIES
 
 _LOCAL_COMMERCE_PROMPT = """\
 Tu prépares la liste des COMMERCES & SERVICES ESSENTIELS de la commune de {city} ({country_code})
@@ -1550,10 +1551,13 @@ RÈGLES STRICTES :
   la carte. Si tu n'as pas l'adresse propre d'un lieu, laisse `place_address` VIDE plutôt
   que d'en recopier une autre — il sera rattaché autrement, ou écarté.
 - Reste DANS la commune de {city} (ou un hameau qui en dépend), pas la ville voisine.
-- Pour `tobacco`, cherche le réseau LICENCIÉ du pays sous SON nom local (« estanco » /
-  « expendeduría de tabaco y timbre » en Espagne, « tabaccheria » en Italie, « bureau de
-  tabac » en France) — c'est ainsi qu'il est recensé. N'invente pas un estanco : s'il n'y
-  en a pas dans la commune, n'en renvoie aucun.
+- Pour `tobacco`, cherche le point de vente du tabac SOUS LE NOM DU PAYS : le réseau
+  LICENCIÉ là où il existe (« estanco » / « expendeduría de tabaco y timbre » en Espagne,
+  « tabaccheria » en Italie, « bureau de tabac » en France), et ailleurs le KIOSQUE ou le
+  commerce tabac-journaux qui le vend (Suisse : « kiosque », « kiosk », « k kiosk »,
+  « Naville », « tabac-journaux » ; Allemagne : « Kiosk », « Tabakladen » ; Belgique :
+  « librairie-tabac »). Une boutique de cigarette électronique ou de CBD n'est PAS un
+  tabac. N'invente rien : s'il n'y en a pas dans la commune, n'en renvoie aucun.
 - CHERCHE DANS PLUSIEURS LANGUES : la langue du PAYS, l'anglais, et le mot que les
   établissements emploient pour se décrire (ex. Indonésie : « apotek », « klinik »,
   « rumah sakit » ; Espagne : « farmacia », « centro de salud » ; Thaïlande : « ร้านขายยา »,

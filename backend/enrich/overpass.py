@@ -394,8 +394,12 @@ def _is_disqualified(category: str, tags: dict) -> bool:
     # rendu (timbres, tickets, recharges) — cf. `_VAPE_RE`.
     if category == "tobacco":
         name = tags.get("name") or ""
+        # V2-87 : le nom ne dit pas tout — « Sweet spot » (Conthey) n'annonçait le CBD que
+        # dans `description` et dans son site (sweetspot-vape.com).
+        said = " ".join(tags.get(k) or "" for k in ("name", "description", "website",
+                                                     "contact:website"))
         if not _TOBACCONIST_RE.search(name) and (
-                tags.get("shop") == "e-cigarette" or _VAPE_RE.search(name)):
+                tags.get("shop") == "e-cigarette" or _VAPE_RE.search(said)):
             return True
     # V2-77c : un bar PUREMENT chicha appartient à sa propre rubrique, pas à « bar » —
     # sinon il occupe les places des bars classiques (constat Adeje : 3 sur 6). Un bar
@@ -435,13 +439,67 @@ def _is_disqualified(category: str, tags: dict) -> bool:
     return False
 
 
-def category_matches(category: str, tags: dict) -> bool:
+# V2-87 — ce qu'une catégorie recouvre DÉPEND DU PAYS. En Suisse, le tabac s'achète au
+# KIOSQUE (k kiosk, Naville, « Kiosque » de village) : OSM les tague `shop=kiosk`, sans
+# `tobacco=yes` (relevé Nendaz, 06/10 : « k kiosk », « Kiosque », « Aux Arcanes »… tous
+# sans l'étiquette). Le sélecteur mondial (kiosque + tabac=oui) les écartait tous, et le
+# guide proposait des « tabacs » à 26-43 min. Ailleurs (Espagne…), un kiosque à journaux ne
+# vend PAS de tabac : la règle reste par pays, dans une table — jamais globale.
+COUNTRY_EXTRA_TAGS: dict[str, dict[str, list[tuple[str, str]]]] = {
+    "CH": {"tobacco": [("shop", "kiosk")]},
+}
+
+
+def _extra_tags(category: str, country_code: str | None) -> list[tuple[str, str]]:
+    return COUNTRY_EXTRA_TAGS.get((country_code or "").upper(), {}).get(category, [])
+
+
+def _selectors_for(code: str, country_code: str | None = None) -> list[str]:
+    """Sélecteurs Overpass d'une catégorie, plus ceux propres au pays (V2-87)."""
+    sels = list(CATEGORY_SELECTORS[code])
+    for k, v in _extra_tags(code, country_code):
+        sel = f'"{k}"="{v}"'
+        if sel not in sels:
+            sels.append(sel)
+    return sels
+
+
+# V2-87 — un lieu que OSM dit FERMÉ ne s'affiche pas. OSM n'est pas toujours tenu à jour
+# (Sweet spot, Conthey : aucune étiquette de fermeture, site éteint) mais quand l'étiquette
+# EXISTE, l'ignorer est une faute : `opening_hours=closed|off`, `disused=yes`,
+# `abandoned=yes`, `shop=vacant`, ou une date de fin (`end_date`, `closed:date`,
+# `disused:date`) passée.
+_CLOSED_FLAGS = ("disused", "abandoned", "closed")
+_END_DATE_KEYS = ("end_date", "closed:date", "disused:date", "opening_date:end")
+
+
+def is_closed(tags: dict, today: "datetime.date | None" = None) -> bool:
+    """Vrai si les étiquettes OSM disent le lieu FERMÉ. PURE."""
+    import datetime as _dtm   # noqa: PLC0415
+    if (tags.get("opening_hours") or "").strip().lower() in ("closed", "off"):
+        return True
+    if any((tags.get(k) or "").strip().lower() == "yes" for k in _CLOSED_FLAGS):
+        return True
+    if tags.get("shop") == "vacant":
+        return True
+    today = today or _dtm.date.today()
+    for k in _END_DATE_KEYS:
+        v = (tags.get(k) or "").strip()
+        m = re.match(r"^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$", v)
+        if m:
+            end = _dtm.date(int(m.group(1)), int(m.group(2) or 12), int(m.group(3) or 28))
+            if end <= today:
+                return True
+    return False
+
+
+def category_matches(category: str, tags: dict, country_code: str | None = None) -> bool:
     """Vrai si les tags OSM correspondent réellement à la catégorie demandée.
 
-    1. au moins un tag positif de la catégorie ;
+    1. au moins un tag positif de la catégorie (y compris ceux PROPRES AU PAYS, V2-87) ;
     2. aucun tag disqualifiant ;
     3. cas particulier des aéroports (publics/IATA uniquement)."""
-    positives = CATEGORY_TAGS.get(category, [])
+    positives = list(CATEGORY_TAGS.get(category, [])) + _extra_tags(category, country_code)
     # V2-77 : un tag positif simple OU une conjonction complète (kiosque + tabac=oui).
     combos = CATEGORY_TAG_COMBOS.get(category, [])
     if not (any(tags.get(k) == v for k, v in positives)
@@ -1110,6 +1168,7 @@ def fetch_category(category: str, lat: float, lon: float, radius_m: int,
         parsed = (_element_to_poi(el, lat, lon, country_lang) for el in elements)
         matched = [p for p in parsed
                    if p and not is_generic_name(p["name"])  # V2-44 : noms génériques
+                   and not is_closed(p["_tags"])            # V2-87 : fermé selon OSM
                    and category_matches(category, p["_tags"])]
         reduced, _ = _reduce_category(category, matched)     # V2-47 : réductions
         return _finalize(reduced, settings.max_pois_per_category)
@@ -1122,6 +1181,7 @@ def fetch_category(category: str, lat: float, lon: float, radius_m: int,
 def _run_buckets(client: httpx.Client, codes: list[str],
                  query_radius: dict[str, int], lat: float, lon: float,
                  country_lang: str | None = None,
+                 country_code: str | None = None,
                  ) -> tuple[dict[str, list[dict]], dict[str, str], int]:
     """Interroge Overpass pour `codes`, groupés par palier de rayon selon
     `query_radius[code]` (une requête par palier, union de sélecteurs). Renvoie
@@ -1138,7 +1198,7 @@ def _run_buckets(client: httpx.Client, codes: list[str],
     for bucket, bcodes in buckets.items():
         selectors: list[str] = []
         for code in bcodes:
-            for sel in CATEGORY_SELECTORS[code]:
+            for sel in _selectors_for(code, country_code):
                 if sel not in selectors:
                     selectors.append(sel)
         # M-18 : un palier lointain (≥ 50 km, aéroport) reçoit un timeout dédié plus long.
@@ -1165,11 +1225,13 @@ def _run_buckets(client: httpx.Client, codes: list[str],
             if is_generic_name(p["name"]):   # V2-44 : nom générique de type -> rejeté
                 generic_dropped += 1
                 continue
+            if is_closed(p["_tags"]):         # V2-87 : OSM le dit fermé -> rejeté
+                continue
             parsed.append(p)
         for code in bcodes:
             matched[code] = [
                 p for p in parsed
-                if category_matches(code, p["_tags"])
+                if category_matches(code, p["_tags"], country_code)
                 and p["crow_m"] <= query_radius[code]  # re-filtrage au rayon exact
             ]
     return matched, failures, generic_dropped
@@ -1302,6 +1364,7 @@ def fetch_natural_places(lat: float, lon: float, client: httpx.Client | None = N
 def fetch_grouped(categories: list[dict], lat: float, lon: float,
                   client: httpx.Client | None = None,
                   country_lang: str | None = None,
+                  country_code: str | None = None,
                   ) -> tuple[dict[str, list[dict]], dict[str, str], dict]:
     """Récupère les POI de plusieurs catégories, ADAPTÉ à la ruralité (V2-44).
 
@@ -1343,7 +1406,7 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
         start_of = {c: (pref_of[c] if pref_of[c] >= settings.overpass_far_bucket_m
                         else min(pref_of[c], _DENSE_START_M)) for c in codes}
         m1, failures, generic = _run_buckets(client, codes, start_of, lat, lon,
-                                             country_lang)
+                                             country_lang, country_code)
         # `dropped_of` par catégorie (V2-68) : l'escalade REMPLACE le résultat d'une
         # catégorie → son compte de réductions doit remplacer, jamais s'additionner
         # (sinon double comptage des mêmes fiches re-moissonnées).
@@ -1371,7 +1434,7 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
         if deficient:
             esc_of = {c: max_of[c] for c in deficient}
             m2, f2, _g2 = _run_buckets(client, deficient, esc_of, lat, lon,
-                                       country_lang)
+                                       country_lang, country_code)
             # `_g2` (génériques du 2e palier) NON additionné : ce sont en quasi-totalité
             # les mêmes éléments re-moissonnés qu'en passe 1 (déjà comptés) — l'ajouter
             # double-compterait. Le stat reste la mesure de la passe comprehensive (1).
