@@ -1177,6 +1177,23 @@ exposé, peer auth).
   localité + localité par POI au prompt, restauration tél+site) + `test_service_complete.py`
   (restaurant : horaires jamais écrits même si proposés) + `test_pipeline.py` (ops :
   communes suspectes, lecture seule). Hors périmètre : sélecteur de catégorie (V2-37 volet 2).
+- **Cache Overture par zone (V2-84)** : `overture.fetch_places_traced` lit d'abord le
+  parquet local de la zone (`backend/var/overture/<zone>.parquet`, zones en CONFIGURATION
+  `ops/overture_zones.json`, reconstruit par `ops/overture_cache.py`) **seulement si la zone
+  contient ENTIÈREMENT** la bbox demandée (logement ± 25 km) — une couverture partielle
+  ferait manquer des lieux en bordure ; sinon lecture S3, inchangée. Une release EXPLICITE
+  différente de celle du cache force S3. `steps.overture.read_from` dit « cache local (zone,
+  release, âge) » ou « lecture S3 » ; au-delà de `CASAGUIDE_OVERTURE_CACHE_MAX_AGE_DAYS`
+  (60) → `stale` + commande de reconstruction. **Mémoire** : toute connexion DuckDB passe
+  par `_bound_memory` (plafond `CASAGUIDE_DUCKDB_MEMORY_LIMIT` 1 Go, `temp_directory` sur
+  disque, 2 threads, `preserve_insertion_order=false` pour que le COPY streame) — ne jamais
+  ouvrir un `duckdb.connect()` nu sur le VPS (3,8 Go). Écriture du cache **atomique**
+  (`*.tmp` puis renommage). Mesures du 06/10 : Costa Blanca 134 230 lieux / 15,5 Mo / 133 s /
+  pic 513 Mo à la construction ; lecture La Zenia 0,19-0,27 s (cache) contre 49-69 s (S3),
+  **mêmes 21 723 lieux** ; génération complète, pic 212 Mo. **Timer proposé, pas imposé** :
+  `ops/optionnel/` — `deploy.sh` n'active QUE `ops/*.timer` à plat ; ne jamais y déplacer ce
+  timer sans décision d'André. Le fetcher injecté des tests peut rendre une liste (sans
+  trace) ou `(lieux, trace)`.
 - L'upsert des POI exige la migration 001 (ON CONFLICT sur index partiel :
   la clause `WHERE source_ref IS NOT NULL` doit être répétée dans la requête).
 - Guide public : `noindex` + token ≥ 128 bits, ne jamais exposer

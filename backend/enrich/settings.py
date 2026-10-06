@@ -5,6 +5,7 @@ Tout est surchargeable par variable d'environnement — aucun secret en dur.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 
 
@@ -196,6 +197,23 @@ class Settings:
     # des catégories en périmètre.
     overture_bbox_max_radius_m: int = int(
         os.getenv("CASAGUIDE_OVERTURE_BBOX_MAX_M", "25000"))
+    # V2-84 — CACHE PAR ZONE : un extrait parquet local par zone active, lu en
+    # millisecondes au lieu de 15-92 s de lecture S3 (étude V2-83). Zones déclarées dans un
+    # fichier de CONFIGURATION (`ops/overture_zones.json`, surchargeable), jamais en dur ;
+    # cache reconstruit par `ops/overture_cache.py`. Hors zone couverte → lecture S3.
+    overture_cache_dir: str = os.getenv(
+        "CASAGUIDE_OVERTURE_CACHE_DIR",
+        str(Path(__file__).resolve().parents[1] / "var" / "overture"))
+    overture_zones_file: str = os.getenv(
+        "CASAGUIDE_OVERTURE_ZONES",
+        str(Path(__file__).resolve().parents[2] / "ops" / "overture_zones.json"))
+    overture_cache_max_age_days: int = int(
+        os.getenv("CASAGUIDE_OVERTURE_CACHE_MAX_AGE_DAYS", "60"))
+    # Contrainte MÉMOIRE (VPS 3,8 Go de RAM) : DuckDB plafonné, débordement EN FLUX sur
+    # disque (`temp_directory`), parallélisme borné, ordre d'insertion non préservé (permet
+    # au COPY de streamer au lieu de tout tamponner). Jamais de chargement intégral en RAM.
+    duckdb_memory_limit: str = os.getenv("CASAGUIDE_DUCKDB_MEMORY_LIMIT", "1GB")
+    duckdb_threads: int = int(os.getenv("CASAGUIDE_DUCKDB_THREADS", "2"))
 
     # Juge IA du flux POI (V2-45 → V2-54) : dans l'offre « Guide Voyageur », chaque POI
     # moissonné est jugé et un rejet à confiance ≥ seuil est écarté d'office (statut

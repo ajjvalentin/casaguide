@@ -334,6 +334,57 @@ enrichir une fiche jetable urbaine (distributeurs = banques nommées avec télé
 et une fiche rurale (une catégorie vide au run OSM seul est comblée). Le benchmark
 lecture seule reste `ops/source_benchmark.py`.
 
+### 2ter-bis. Cache Overture par zone (V2-84)
+
+Sans cache, chaque génération lit Overture **en ligne sur S3** : 15 à 92 s (69 s mesurées
+sur La Zenia), et une panne S3 prive le guide de ses contacts commerciaux. Avec le cache
+de la zone, la même lecture prend **0,2 s** et rend **exactement les mêmes lieux** (21 723
+sur 21 723, recette du 06/10). Le pipeline lit le cache **seulement si la zone couvre
+entièrement** la requête (logement ± 25 km) ; sinon il lit S3 comme avant.
+
+**Zones** : `ops/overture_zones.json` (Costa Blanca, Bali, Gironde au départ). Ajouter une
+destination = ajouter une zone (id, nom, bbox avec ~0,3° de marge) — aucun code.
+
+**Construire / reconstruire** (sur le serveur, utilisateur `casaguide`) :
+
+```bash
+sudo -u casaguide /opt/casaguide/.venv/bin/python /opt/casaguide/ops/overture_cache.py --list
+sudo -u casaguide /opt/casaguide/.venv/bin/python /opt/casaguide/ops/overture_cache.py --all
+sudo -u casaguide /opt/casaguide/.venv/bin/python /opt/casaguide/ops/overture_cache.py --zone bali
+sudo -u casaguide /opt/casaguide/.venv/bin/python /opt/casaguide/ops/overture_cache.py --stale
+```
+
+Mesure de référence (Costa Blanca, 06/10) : 134 230 lieux, **15,5 Mo**, 133 s,
+**pic mémoire 513 Mo** (plafond DuckDB 1 Go). Les fichiers vivent dans
+`backend/var/overture/` (hors git) : `<zone>.parquet` + `<zone>.json` (release d'origine,
+date de construction). Écriture **atomique** : reconstruire pendant une génération est sans
+risque.
+
+**Mémoire (VPS 3,8 Go)** : DuckDB est plafonné et déborde **en flux sur disque**
+(`backend/var/overture/duckdb_tmp/`). Réglages dans `backend/.env` :
+
+```ini
+# CASAGUIDE_DUCKDB_MEMORY_LIMIT=1GB        # plafond DuckDB (défaut 1 Go)
+# CASAGUIDE_DUCKDB_THREADS=2
+# CASAGUIDE_OVERTURE_CACHE_MAX_AGE_DAYS=60 # au-delà : steps.overture.stale + avertissement
+# CASAGUIDE_OVERTURE_CACHE_DIR=            # défaut backend/var/overture
+# CASAGUIDE_OVERTURE_ZONES=                # défaut ops/overture_zones.json
+```
+
+**Fraîcheur** : un cache de plus de 60 jours reste utilisé mais est **signalé** dans le
+journal du job (`steps.overture.stale`, avec la commande de reconstruction). Chaque job dit
+d'où il a lu : `steps.overture.read_from` = « cache local (zone X, release Y, âge N j) » ou
+« lecture S3 (release Y) ».
+
+**Timer : proposé, pas imposé.** `ops/optionnel/casaguide-overture-cache.{service,timer}`
+(hebdomadaire, `--stale` : ne reconstruit que les zones absentes ou périmées, `MemoryMax`
+1,8 Go). `deploy.sh` **n'installe pas** ce dossier ; pour l'activer :
+
+```bash
+sudo cp /opt/casaguide/ops/optionnel/casaguide-overture-cache.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-overture-cache.timer
+```
+
 ### 2quater. Déploiement pendant une génération de guide voyageur (V2-64)
 
 `deploy.sh` fait un `systemctl restart casaguide` **franc** : il n'attend pas la fin

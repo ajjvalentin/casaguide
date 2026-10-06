@@ -1,0 +1,12 @@
+# Déclencheur OPTIONNEL du cache Overture (V2-84) — cf. l'en-tête du .service.
+# Hebdomadaire : Overture publie une release par mois ; `--stale` ne reconstruit qu'une
+# zone absente ou de plus de 60 jours, donc la plupart des passages ne font rien.
+[Unit]
+Description=Reconstruction hebdomadaire du cache Overture (zones périmées)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00 Europe/Madrid
+Persistent=true
+
+[Install]
+WantedBy=timers.target

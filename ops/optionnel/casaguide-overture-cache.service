@@ -1,0 +1,23 @@
+# Reconstruction du cache Overture par zone (V2-84) — OPTIONNEL.
+# Rangé dans ops/optionnel/ : deploy.sh N'INSTALLE PAS ce dossier (il n'active que
+# ops/*.timer). La reconstruction peut rester manuelle :
+#   sudo -u casaguide /opt/casaguide/.venv/bin/python /opt/casaguide/ops/overture_cache.py --stale
+# Pour l'automatiser (choix d'exploitation, pas une obligation) :
+#   sudo cp /opt/casaguide/ops/optionnel/casaguide-overture-cache.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-overture-cache.timer
+[Unit]
+Description=Reconstruction du cache Overture par zone (zones absentes ou périmées)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=casaguide
+Group=casaguide
+EnvironmentFile=-/opt/casaguide/backend/.env
+WorkingDirectory=/opt/casaguide/backend
+# --stale : ne reconstruit QUE les zones absentes ou plus vieilles que le seuil (60 j).
+ExecStart=/opt/casaguide/.venv/bin/python /opt/casaguide/ops/overture_cache.py --stale
+# Garde-fou mémoire (VPS 3,8 Go) en plus du plafond DuckDB (CASAGUIDE_DUCKDB_MEMORY_LIMIT).
+MemoryMax=1800M
+Nice=10

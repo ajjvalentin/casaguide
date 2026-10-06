@@ -4154,3 +4154,22 @@ def test_pick_name_match_squashes_spacing_variants():
     assert pipeline._pick_name_match("Ku De Ta", cands[:1], ["Seminyak"], o) is None
     assert pipeline._pick_name_match("Tula", [{"name": "Tu La", "lat": 1, "lon": 1}],
                                      ["Jávea"], (0, 0)) is None
+
+
+# ── V2-84 : cache Overture par zone — traçabilité dans le job ───────────────
+
+def test_pipeline_step_says_where_overture_was_read_and_flags_stale(property_id,
+                                                                    http_client):
+    """Traçabilité dans le job : « cache local (zone, release, âge) » + avertissement si
+    périmé ; un fetcher sans trace (tests historiques) reste accepté."""
+    trace = {"source": "cache", "zone": "costa_blanca", "release": "2026-09-23.1",
+             "age_days": 75, "stale": True, "seconds": 0.01}
+    r = pipeline.run(property_id, use_claude=False, only_categories={"supermarket"},
+                     http_client=http_client,
+                     overture_fetch=lambda la, lo, rad: ([], trace))
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        st = conn.execute("SELECT steps FROM enrichment_jobs WHERE id=%s",
+                          (r["job_id"],)).fetchone()["steps"]["overture"]
+    assert st["source"] == "cache" and st["zone"] == "costa_blanca"
+    assert st["read_from"] == "cache local (zone costa_blanca, release 2026-09-23.1, âge 75 j)"
+    assert st["stale"] is True and "ops/overture_cache.py --zone costa_blanca" in st["warning"]

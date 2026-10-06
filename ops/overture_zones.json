@@ -1,0 +1,21 @@
+{
+  "version": "V2-84",
+  "note": "Zones du cache Overture local (V2-84). Une zone = un extrait parquet du thème `places`, reconstruit par `ops/overture_cache.py`. bbox = [min_lon, min_lat, max_lon, max_lat]. Le pipeline ne lit le cache QUE si la bbox de sa requête (logement ± 25 km, `CASAGUIDE_OVERTURE_BBOX_MAX_M`) tient ENTIÈREMENT dans la zone — d'où une marge d'environ 0,3° autour des destinations visées ; sinon il lit S3 comme avant. Ajouter une zone = l'ajouter ici puis lancer `ops/overture_cache.py --zone <id>` ; aucune modification de code.",
+  "zones": [
+    {
+      "id": "costa_blanca",
+      "name": "Costa Blanca (province d'Alicante + Vega Baja)",
+      "bbox": [-1.40, 37.55, 0.45, 39.10]
+    },
+    {
+      "id": "bali",
+      "name": "Bali (île)",
+      "bbox": [114.20, -9.10, 115.95, -7.80]
+    },
+    {
+      "id": "gironde",
+      "name": "Gironde (dont Médoc)",
+      "bbox": [-1.55, 43.95, 0.60, 45.85]
+    }
+  ]
+}

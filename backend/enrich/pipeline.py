@@ -1378,10 +1378,25 @@ def _resolve_market_position(market: dict, prop: dict,
     return None, None
 
 
-def _default_overture_fetch(lat: float, lon: float, radius_m: int) -> list[dict]:
-    """Fetcher Overture de PRODUCTION (DuckDB/S3, réseau). Résout la release depuis la
-    config. Injectable via le paramètre `overture_fetch` de `run` (tests sans réseau)."""
-    return overture.fetch_places(lat, lon, radius_m, release=settings.overture_release)
+def _default_overture_fetch(lat: float, lon: float, radius_m: int
+                            ) -> tuple[list[dict], dict]:
+    """Fetcher Overture de PRODUCTION : cache de zone LOCAL d'abord, S3 sinon (V2-84).
+    Renvoie `(lieux, trace)`. Injectable via le paramètre `overture_fetch` de `run` (les
+    fetchers de test rendent une simple liste : accepté, sans trace)."""
+    return overture.fetch_places_traced(lat, lon, radius_m,
+                                        release=settings.overture_release)
+
+
+def _overture_source_note(trace: dict | None) -> str:
+    """Libellé humain de la provenance Overture (V2-84) : « cache local (zone X, release Y,
+    âge N j) » ou « lecture S3 (release Y) »."""
+    if not trace:
+        return ""
+    if trace.get("source") == "cache":
+        age = trace.get("age_days")
+        return (f"cache local (zone {trace.get('zone')}, release {trace.get('release')}, "
+                f"âge {age if age is not None else '?'} j)")
+    return f"lecture S3 (release {trace.get('release')})"
 
 
 def _judge_and_publish_guest(conn, prop: dict, ai, job_id: str,
@@ -1577,18 +1592,35 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                                 max(c["default_radius_m"] for c in wanted
                                     if c["code"] in wanted_scope))
                     raw = fetch_ovt(origin[0], origin[1], max_r)
+                    trace = None
+                    if isinstance(raw, tuple):          # fetcher de production (V2-84)
+                        raw, trace = raw
                     cmap = overture.load_category_map()
                     for v in raw:
                         code = overture.map_overture_place(v, cmap)   # V2-79c
                         if code in fusion.SCOPE:
                             overture_by_code.setdefault(code, []).append(v)
                     mapped = sum(len(x) for x in overture_by_code.values())
-                    db.job_step(conn, job_id, "overture",
-                                {"ok": True, "fetched": len(raw), "mapped": mapped,
-                                 "by_category": {k: len(v)
-                                                 for k, v in overture_by_code.items()}})
+                    step = {"ok": True, "fetched": len(raw), "mapped": mapped,
+                            "by_category": {k: len(v)
+                                            for k, v in overture_by_code.items()}}
+                    # V2-84 — TRAÇABILITÉ : d'où l'on a lu, et un cache périmé se VOIT.
+                    if trace:
+                        step.update({k: trace[k] for k in
+                                     ("source", "zone", "release", "age_days", "seconds")
+                                     if k in trace})
+                        step["read_from"] = _overture_source_note(trace)
+                        if trace.get("stale"):
+                            step["stale"] = True
+                            step["warning"] = (
+                                f"cache Overture de plus de "
+                                f"{settings.overture_cache_max_age_days} j — reconstruire "
+                                f"(ops/overture_cache.py --zone {trace.get('zone')})")
+                        summary["overture_source"] = step["read_from"]
+                    db.job_step(conn, job_id, "overture", step)
                     _progress(f"  ✓ Overture : {len(raw)} lieu(x), "
-                              f"{mapped} en périmètre commercial")
+                              f"{mapped} en périmètre commercial"
+                              + (f" — {step['read_from']}" if trace else ""))
                 except Exception as exc:  # noqa: BLE001 — dégradation douce sur OSM seul
                     # V2-79c : la dégradation reste douce, mais elle se VOIT — step
                     # `unavailable` + `summary.overture_error`, repris dans les

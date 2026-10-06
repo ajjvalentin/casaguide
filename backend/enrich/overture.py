@@ -128,7 +128,21 @@ def _duckdb_connect():
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs; INSTALL spatial; LOAD spatial;")
     con.execute("SET s3_region='us-west-2';")
+    _bound_memory(con)
     return con
+
+
+def _bound_memory(con) -> None:
+    """Contrainte MÉMOIRE (V2-84 — VPS 3,8 Go) : plafond DuckDB, débordement EN FLUX sur
+    disque, parallélisme borné, ordre d'insertion libéré (le COPY streame au lieu de
+    tamponner). Réglages lus de la config, jamais en dur."""
+    from .settings import settings   # noqa: PLC0415 — import différé (pas de cycle)
+    tmp = Path(settings.overture_cache_dir) / "duckdb_tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    con.execute(f"SET memory_limit='{settings.duckdb_memory_limit}';")
+    con.execute(f"SET temp_directory='{tmp}';")
+    con.execute(f"SET threads={int(settings.duckdb_threads)};")
+    con.execute("SET preserve_insertion_order=false;")
 
 
 def _release_from_path(path: str) -> str | None:
@@ -257,19 +271,185 @@ def _query_places(con, release: str, bbox: tuple,
                            f"{schema['category']}]") from exc
 
 
+# ── V2-84 : cache par zone (parquet local) ─────────────────────────────────────
+#
+# Étude V2-83 : une lecture S3 par génération coûte 15 à 92 s (et a lâché le 05/10) ; un
+# extrait local de zone pèse ~10 Mo et répond en millisecondes. Une zone = un parquet
+# `<cache_dir>/<id>.parquet` + une fiche `<id>.json` (release d'origine, date de
+# construction, bbox, nombre de lieux). Zones déclarées en CONFIGURATION.
+
+def load_zones(path: str | Path | None = None) -> list[dict]:
+    """Zones du cache (`ops/overture_zones.json`, ou `CASAGUIDE_OVERTURE_ZONES`). Une zone
+    mal formée est ignorée avec un avertissement — jamais un crash de génération."""
+    from .settings import settings   # noqa: PLC0415
+    p = Path(path or settings.overture_zones_file)
+    if not p.exists():
+        return []
+    out = []
+    for z in json.loads(p.read_text(encoding="utf-8")).get("zones") or []:
+        bbox = z.get("bbox")
+        if (isinstance(z.get("id"), str) and re.fullmatch(r"[a-z0-9_]+", z["id"])
+                and isinstance(bbox, list) and len(bbox) == 4
+                and bbox[0] < bbox[2] and bbox[1] < bbox[3]):
+            out.append({"id": z["id"], "name": z.get("name") or z["id"],
+                        "bbox": [float(v) for v in bbox]})
+        else:
+            log.warning("Zone Overture ignorée (mal formée) : %r", z)
+    return out
+
+
+def _cache_paths(zone_id: str, cache_dir: str | Path | None = None) -> tuple[Path, Path]:
+    from .settings import settings   # noqa: PLC0415
+    d = Path(cache_dir or settings.overture_cache_dir)
+    return d / f"{zone_id}.parquet", d / f"{zone_id}.json"
+
+
+def cache_meta(zone_id: str, cache_dir: str | Path | None = None) -> dict | None:
+    """Fiche d'un cache construit (None s'il n'existe pas ou est incomplet)."""
+    pq, meta = _cache_paths(zone_id, cache_dir)
+    if not (pq.exists() and meta.exists()):
+        return None
+    try:
+        return json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def build_zone_cache(zone: dict, *, release: str | None = None,
+                     cache_dir: str | Path | None = None,
+                     connect: Callable = _duckdb_connect,
+                     now: Callable | None = None,
+                     source: str | None = None) -> dict:
+    """(Re)construit le cache d'une zone : filtre S3 sur la bbox de la zone, ÉCRIT EN FLUX
+    un parquet local (COPY … TO, mémoire plafonnée, débordement disque), puis la fiche.
+    ATOMIQUE : écrit `*.tmp` puis renomme — une génération concurrente lit l'ancien cache
+    entier ou le nouveau entier, jamais un fichier à moitié écrit. Renvoie la fiche."""
+    import datetime as _dt   # noqa: PLC0415
+    import time as _time     # noqa: PLC0415
+    release = release if source else resolve_release(release)
+    pq, meta_p = _cache_paths(zone["id"], cache_dir)
+    pq.parent.mkdir(parents=True, exist_ok=True)
+    tmp = pq.with_suffix(".parquet.tmp")
+    x0, y0, x1, y1 = zone["bbox"]
+    con = connect()
+    t0 = _time.monotonic()
+    try:
+        con.execute(f"""COPY (SELECT * FROM read_parquet('{_places_src(release, source)}',
+                                                          hive_partitioning=1)
+                             WHERE bbox.xmin BETWEEN {x0} AND {x1}
+                               AND bbox.ymin BETWEEN {y0} AND {y1})
+                        TO '{tmp}' (FORMAT PARQUET, COMPRESSION ZSTD)""")
+        rows = con.execute(f"SELECT count(*) FROM read_parquet('{tmp}')").fetchone()[0]
+    finally:
+        con.close()
+    tmp.replace(pq)
+    built = (now() if now else _dt.datetime.now(_dt.timezone.utc)).isoformat(
+        timespec="seconds")
+    meta = {"zone": zone["id"], "name": zone["name"], "bbox": zone["bbox"],
+            "release": release, "built_at": built, "places": rows,
+            "size_bytes": pq.stat().st_size,
+            "build_seconds": round(_time.monotonic() - t0, 1)}
+    tmp_meta = meta_p.with_suffix(".json.tmp")
+    tmp_meta.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp_meta.replace(meta_p)
+    return meta
+
+
+def _contains(zone_bbox: list, query_bbox: tuple) -> bool:
+    zx0, zy0, zx1, zy1 = zone_bbox
+    qx0, qy0, qx1, qy1 = query_bbox
+    return zx0 <= qx0 and zy0 <= qy0 and qx1 <= zx1 and qy1 <= zy1
+
+
+def find_cached_zone(query_bbox: tuple, *, zones: list[dict] | None = None,
+                     cache_dir: str | Path | None = None) -> tuple[dict, dict] | None:
+    """Zone CONSTRUITE dont la bbox contient ENTIÈREMENT la requête → `(zone, fiche)`.
+    Une couverture partielle ne compte pas (des lieux manqueraient en bord de zone) : on
+    lit alors S3. La plus petite zone couvrante gagne (la plus spécifique)."""
+    best = None
+    for z in (zones if zones is not None else load_zones()):
+        if not _contains(z["bbox"], query_bbox):
+            continue
+        meta = cache_meta(z["id"], cache_dir)
+        if meta is None:
+            continue
+        area = (z["bbox"][2] - z["bbox"][0]) * (z["bbox"][3] - z["bbox"][1])
+        if best is None or area < best[0]:
+            best = (area, z, meta)
+    return (best[1], best[2]) if best else None
+
+
+def cache_age_days(meta: dict, now: Callable | None = None) -> int | None:
+    import datetime as _dt   # noqa: PLC0415
+    try:
+        built = _dt.datetime.fromisoformat(meta["built_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    cur = now() if now else _dt.datetime.now(_dt.timezone.utc)
+    if built.tzinfo is None:
+        built = built.replace(tzinfo=_dt.timezone.utc)
+    return max(0, (cur - built).days)
+
+
+def fetch_places_traced(lat: float, lon: float, radius_m: int, *,
+                        release: str | None = None,
+                        connect: Callable = _duckdb_connect,
+                        zones: list[dict] | None = None,
+                        cache_dir: str | Path | None = None,
+                        now: Callable | None = None) -> tuple[list[dict], dict]:
+    """V2-84 — LECTURE LOCALE D'ABORD : le cache de la zone qui couvre la bbox, sinon S3
+    (comportement d'avant, inchangé). Renvoie `(lieux, trace)` ; la trace dit d'où l'on
+    a lu (`source` = `cache` | `s3`), la zone, la release, l'âge et si le cache est périmé
+    (> `overture_cache_max_age_days`). Une release EXPLICITE (`CASAGUIDE_OVERTURE_RELEASE`)
+    différente de celle du cache force la lecture S3 (on lit ce qui est demandé)."""
+    from .settings import settings   # noqa: PLC0415
+    import time as _time             # noqa: PLC0415
+    bbox = _bbox(lat, lon, radius_m)
+    hit = find_cached_zone(bbox, zones=zones, cache_dir=cache_dir)
+    if hit is not None and (release is None or release == hit[1].get("release")):
+        zone, meta = hit
+        pq, _ = _cache_paths(zone["id"], cache_dir)
+        t0 = _time.monotonic()
+        con = connect()
+        try:
+            rows = _query_places(con, meta.get("release") or "local", bbox, source=str(pq))
+        finally:
+            con.close()
+        age = cache_age_days(meta, now)
+        trace = {"source": "cache", "zone": zone["id"], "release": meta.get("release"),
+                 "age_days": age,
+                 "stale": age is None or age > settings.overture_cache_max_age_days,
+                 "seconds": round(_time.monotonic() - t0, 2)}
+        return _rows_to_places(rows), trace
+    t0 = _time.monotonic()
+    release = resolve_release(release)
+    con = connect()
+    try:
+        rows = _query_places(con, release, bbox)
+    finally:
+        con.close()
+    return _rows_to_places(rows), {"source": "s3", "release": release,
+                                   "seconds": round(_time.monotonic() - t0, 2)}
+
+
 def fetch_places(lat: float, lon: float, radius_m: int, *,
                  release: str | None = None,
                  connect: Callable = _duckdb_connect) -> list[dict]:
     """Extraction BBOX du thème `places` d'Overture via DuckDB (pushdown bbox S3). Ne
     télécharge JAMAIS la release complète. Renvoie des dicts prêts pour la fusion :
     `{name, lat, lon, category, phone, website, source_ref}` (`source_ref` = « gers:<id> »).
-    Résout la release si absente (réseau). Requiert `duckdb`."""
+    Résout la release si absente (réseau). Requiert `duckdb`. (Lecture S3 SEULE — le
+    pipeline passe par `fetch_places_traced`, qui lit d'abord le cache de zone.)"""
     release = resolve_release(release)
     con = connect()
     try:
         rows = _query_places(con, release, _bbox(lat, lon, radius_m))
     finally:
         con.close()
+    return _rows_to_places(rows)
+
+
+def _rows_to_places(rows: list[tuple]) -> list[dict]:
     out: list[dict] = []
     for name, plat, plon, category, phone, website, gers, hierarchy in rows:
         if name is None or plat is None or plon is None:
