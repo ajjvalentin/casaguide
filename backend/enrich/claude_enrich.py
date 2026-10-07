@@ -17,7 +17,7 @@ import unicodedata
 
 import anthropic
 
-from .overpass import haversine_m
+from .overpass import TOBACCO_LICENSED_COUNTRIES, haversine_m
 from .settings import settings
 
 AREA_FACT_TYPES = ("emergency_numbers", "waste_rules", "noise_rules")
@@ -1206,6 +1206,56 @@ def fetch_shisha_bars(city: str, country_code: str, client: anthropic.Anthropic,
                                "v": SHISHA_SCHEMA_V}}, meta
 
 
+# ── Boutiques de tabac SPÉCIALISÉES (V2-89) ─────────────────────────────────────
+#
+# Une DESTINATION, pas un dépannage : cave à cigares, tabac-journaux de référence,
+# fournitures pour chicha. Le rayon est régional (~30 km) — La Bouffarde est à Sion pour un
+# logement de Nendaz. Ne part que si OSM n'en connaît AUCUNE dans le rayon.
+TOBACCO_SHOP_FACT_TYPE = "tobacco_shops"
+TOBACCO_SHOP_SCHEMA_V = 1
+
+_TOBACCO_SHOP_PROMPT = """\
+Tu prépares, pour un guide de vacances autour de {city} ({country_code}), la liste des
+BOUTIQUES DE TABAC SPÉCIALISÉES de la région (jusqu'à ~30 km) : CAVES À CIGARES, tabacs de
+référence (pipes, tabacs fins, cigares), boutiques de FOURNITURES POUR CHICHA (tabac à
+chicha, charbon, narguilés). C'est une destination pour un amateur, pas un dépannage.
+
+CHERCHE DANS LA LANGUE DU PAYS ET EN ANGLAIS, avec les mots d'usage : « cave à cigares »,
+« civette », « tabac spécialisé », « Zigarrenfachgeschäft », « Tabak & Pfeifen »,
+« sigaretteria / tabaccheria specializzata », « casa del habano », « estanco de puros »,
+« cigar shop », « cigar lounge », « shisha tobacco », « charbon narguilé », « hookah shop ».
+
+Pour chaque boutique :
+- `name` ; `place_address` : ADRESSE POSTALE complète (rue + n° + code postal + localité) —
+  INDISPENSABLE ; `phone`, `website` si vérifiés, sinon "" ;
+- `source_url` : l'URL de la preuve (https) ; `verified_on` : « {today} ».
+
+RÈGLES STRICTES :
+- PREUVE OU RIEN ; n'invente jamais une boutique. Une liste VIDE est un résultat valide.
+- PAS de boutique de CBD / chanvre, PAS de simple supermarché ni de station-service.
+- Reste dans un rayon d'environ 30 km de {city}.
+
+Réponds UNIQUEMENT avec un objet JSON valide, sans markdown :
+{{"shops": [{{"name": "...", "place_address": "...", "phone": "", "website": "",
+              "source_url": "https://...", "verified_on": "{today}"}}]}}
+"""
+
+
+def fetch_tobacco_shops(city: str, country_code: str, client: anthropic.Anthropic,
+                        today: str | None = None) -> tuple[dict, dict]:
+    """Boutiques de tabac SPÉCIALISÉES de la région (V2-89), vérifiées par recherche web.
+    Adresse EXIGÉE (destination à placer). Preuve ou rien ; liste vide valide."""
+    today = today or _dt.date.today().isoformat()
+    data, meta = _ask_web_search_json(
+        client, _TOBACCO_SHOP_PROMPT.format(city=city, country_code=country_code, today=today),
+        city=city, country_code=country_code,
+        max_searches=settings.tobacco_shop_max_searches,
+        max_tokens=settings.tobacco_shop_max_tokens)
+    clean, raw = _clean_web_places(data, "shops", require_address=True, today=today)
+    return {TOBACCO_SHOP_FACT_TYPE: {"shops": clean, "raw": raw,
+                                     "v": TOBACCO_SHOP_SCHEMA_V}}, meta
+
+
 # ── Marchés hebdomadaires par zone : découverte CLAUDE + web (V2-07 volet 3) ──
 #
 # Découverte MUTUALISÉE par (pays, commune), mise en cache area_facts sous
@@ -1514,7 +1564,7 @@ _LOCAL_COMMERCE_LABELS = {"hospital": "hôpital / clinique avec accueil des urge
 # web par commune. On n'engage donc pas la dépense. La catégorie, elle, reste moissonnée
 # par OSM PARTOUT (`shop=tobacco` existe dans tous les pays) : c'est la seule DÉCOUVERTE
 # WEB qui est bornée. Table ajustable — pas un quota, une réalité institutionnelle.
-TOBACCO_LICENSED_COUNTRIES = frozenset({"ES", "IT", "FR", "PT", "AT"})
+# (Source unique : `overpass.TOBACCO_LICENSED_COUNTRIES`, importée en tête — V2-89.)
 
 
 def tobacco_rubric_applies(country_code: str | None) -> bool:
@@ -1525,7 +1575,8 @@ def tobacco_rubric_applies(country_code: str | None) -> bool:
     à Nendaz trois « tabacs » à 24-30 min dans la plaine — trompeuse. Une puce « vend du
     tabac » sur les supermarchés serait FAUSSE (Migros n'en vend pas, Coop oui) : la
     rubrique est donc simplement absente. Point de décision UNIQUE (moisson + guide). PURE."""
-    return (country_code or "").upper() in TOBACCO_LICENSED_COUNTRIES
+    from .overpass import tobacco_country_has_rubric   # noqa: PLC0415 — source unique
+    return tobacco_country_has_rubric(country_code)
 
 
 def local_commerce_categories_for(country_code: str | None) -> tuple[str, ...]:

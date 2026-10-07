@@ -1554,6 +1554,23 @@ exposé, peer auth).
   Arcanes* est à 3,8 km à vol d'oiseau de Haute-Nendaz mais à 14,8 km / 20 min par la route,
   dans la plaine (Conthey). Ne jamais rapporter une distance à vol d'oiseau comme une
   proximité (erreur commise dans le rapport V2-87, corrigée en V2-88).
+- **Tabac : DÉPANNAGE ≠ BOUTIQUE SPÉCIALISÉE (V2-89)** — deux besoins incompatibles que la
+  rubrique unique mélangeait. (1) **Dépannage** (`tobacco`, seed : 2,5 km, `max_radius_m`
+  NULL = aucune escalade, plafond 4 via `NEAREST_BY_TRAVEL`) : rubrique **seulement** dans les
+  pays à réseau licencié (`overpass.tobacco_country_has_rubric`, source unique
+  `TOBACCO_LICENSED_COUNTRIES`, réexportée par `claude_enrich`) ; ailleurs, la puce
+  **« Vend du tabac »** (`_UI7`, 7 langues) sur le commerce, posée seulement quand c'est
+  SÛR — `tobacco=yes` d'OSM (capté en `completion_meta._sells_tobacco`) ou enseigne de
+  `TOBACCO_SELLING_BRANDS` (CH : Coop, Denner, Volg, k kiosk, avec, migrolino ; **jamais
+  Migros**, ni Coop City/Vitality). (2) **Spécialisé** (`tobacco_shop`, chapitre C, 25 km
+  sans escalade, plafond 4, `travel_mode='driving'`, libellé 7 langues DANS le seed) :
+  caves à cigares, tabac de référence, chicha, e-cigarette (sous-types cigar → shisha → —
+  → vape) ; jamais le CBD. Un même `shop=tobacco` se partage dans `category_matches` : en
+  pays à monopole, l'estanco ordinaire = dépannage, un nom spécialisé (`_SPECIALIST_RE`) =
+  spécialisé ; ailleurs, tout `shop=tobacco` = spécialisé. Passe web RÉGIONALE
+  (`fetch_tobacco_shops`, mémoire de secteur 90 j) seulement si OSM n'en connaît AUCUNE ; le
+  garde de géocodage accepte alors jusqu'à `tobacco_shop_radius_m` (30 km) au lieu des 10 km
+  des commerces de village (`_geocode_local_commerce(max_home_m=…)`).
 - Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
   _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
   en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`

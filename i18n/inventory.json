@@ -1140,6 +1140,13 @@
     "fr": "Tabac",
     "key": "poi_category.tobacco"
   },
+  "poi_category.tobacco_shop": {
+    "context": "Catégorie de lieu « tobacco_shop »",
+    "en": "Cigar & specialist tobacco shop",
+    "es": "Tienda de puros / Tabaco especializado",
+    "fr": "Cave à cigares / Tabac spécialisé",
+    "key": "poi_category.tobacco_shop"
+  },
   "poi_category.train_station": {
     "context": "Catégorie de lieu « train_station »",
     "en": "Train station",

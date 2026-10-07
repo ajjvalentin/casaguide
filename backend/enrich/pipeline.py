@@ -92,6 +92,13 @@ def _cap_by_travel(code: str, pois: list[dict]) -> list[dict]:
     (repli distance à vol d'oiseau)."""
     cap = overpass.NEAREST_BY_TRAVEL.get(code)
     if cap and len(pois) > cap:
+        if code == "tobacco_shop":
+            # V2-89 — le plafond garde d'abord la SPÉCIALITÉ (cigares, chicha, tabac de
+            # référence), la cigarette électronique ensuite — même ordre que l'affichage.
+            # Sinon deux vapoteries plus proches évinçaient une cave à cigares (Nendaz).
+            return sorted(pois, key=lambda p: (
+                {"cigar": 0, "shisha": 1, "vape": 3}.get((p.get("subtype") or "").lower(), 2),
+                dedup._travel(p)))[:cap]
         return sorted(pois, key=dedup._travel)[:cap]
     return pois
 
@@ -929,7 +936,8 @@ def _commune_center(prop: dict, http_client: httpx.Client | None) -> tuple:
 def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
                             http_client: httpx.Client | None,
                             origin: tuple | None = None,
-                            allow_centre_fallback: bool = True) -> tuple | None:
+                            allow_centre_fallback: bool = True,
+                            max_home_m: int | None = None) -> tuple | None:
     """Position d'un commerce de village (V2-74b), avec GARDE DE COHÉRENCE + ESCALADE.
     (1) géocode l'adresse (avec numéro), (2) escalade sur la RUE SEULE sans numéro (les
     numéros ruraux manquent souvent d'OSM) — accepte une position PRÉCISE (rue/toit)
@@ -964,7 +972,7 @@ def _geocode_local_commerce(commerce: dict, prop: dict, commune_center: tuple,
             near_home = (origin is not None
                          and overpass.haversine_m(origin[0], origin[1],
                                                   geo["lat"], geo["lon"])
-                         <= _LOCAL_PROPERTY_MAX_M)
+                         <= (max_home_m or _LOCAL_PROPERTY_MAX_M))   # V2-89 : régional
             if near_centre or near_home:
                 return geo["lat"], geo["lon"], geo.get("locality"), False
         # V2-77e, 2e tier — MIEUX QUE LE CENTRE-VILLE. Mesuré à Adeje : « Calle París 3 »,
@@ -1045,7 +1053,8 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                            harvested: list[dict], step_name: str,
                            require_address: bool, schema_v: int,
                            create_category: str | None = None,
-                           refresh_sector: bool = False) -> None:
+                           refresh_sector: bool = False,
+                           max_home_m: int | None = None) -> None:
     """Moteur COMMUN des deux passes V2-77b. Découverte web mutualisée par (pays, commune)
     — un appel par secteur, réutilisé par tous les guides — puis, pour chaque lieu prouvé :
     (1) APPARIEMENT contre les POI déjà moissonnés de la catégorie (`_activity_name_match`,
@@ -1124,7 +1133,8 @@ def _web_marks_and_creates(conn, prop: dict, ai, job_id: str, summary: dict, htt
                     commune_center = _commune_center(prop, http_client)
                 geo = _geocode_local_commerce({"place_address": addr}, prop,
                                               commune_center, http_client, origin,
-                                              allow_centre_fallback=False)
+                                              allow_centre_fallback=False,
+                                              max_home_m=max_home_m)
                 if geo is None:
                     skipped += 1
                     continue
@@ -1181,6 +1191,25 @@ def _discover_estancos(conn, prop, ai, job_id, summary, http_client, origin,
         category="tobacco", subtype="estanco", meta_key="_estanco",
         harvested=harvested, step_name="estancos", require_address=True,
         schema_v=claude_enrich.ESTANCO_SCHEMA_V, refresh_sector=refresh_sector)
+
+
+def _discover_tobacco_shops(conn, prop, ai, job_id, summary, http_client, origin,
+                            harvested: list[dict], refresh_sector: bool = False) -> None:
+    """Boutiques de tabac SPÉCIALISÉES (V2-89) — passe web RÉGIONALE, seulement quand OSM
+    n'en connaît AUCUNE dans le rayon de la rubrique (le « local manque ») : La Bouffarde
+    (Sion) pour Nendaz. Aucune garde pays : une cave à cigares existe partout. Position
+    acceptée jusqu'à `tobacco_shop_radius_m` du logement (destination, pas dépannage)."""
+    if any(h.get("category") == "tobacco_shop" for h in harvested):
+        return
+    _web_marks_and_creates(
+        conn, prop, ai, job_id, summary, http_client, origin,
+        fact_type=claude_enrich.TOBACCO_SHOP_FACT_TYPE, items_key="shops",
+        fetch=claude_enrich.fetch_tobacco_shops,
+        max_age_days=settings.tobacco_shop_max_age_days,
+        category="tobacco_shop", subtype=None, meta_key="_tobacco_shop",
+        harvested=harvested, step_name="tobacco_shops", require_address=True,
+        schema_v=claude_enrich.TOBACCO_SHOP_SCHEMA_V, refresh_sector=refresh_sector,
+        max_home_m=settings.tobacco_shop_radius_m)
 
 
 def _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client, origin,
@@ -2281,6 +2310,9 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                 if "bar" in wanted_codes:
                     _discover_shisha_bars(conn, prop, ai, job_id, summary, http_client,
                                           origin, all_harvested, refresh_sector)
+                if "tobacco_shop" in wanted_codes:              # V2-89
+                    _discover_tobacco_shops(conn, prop, ai, job_id, summary, http_client,
+                                            origin, all_harvested, refresh_sector)
 
                 # V2-77f — LE RÉCAPITULATIF DOIT DIRE LA BASE. `empty_categories` est
                 # calculé à la fin de la moisson, AVANT les passes web : une rubrique

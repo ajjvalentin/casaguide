@@ -2810,13 +2810,14 @@ def test_tobacco_category_is_seeded_short_radius_and_hosted():
     promettait déjà en toutes lettres (« Distributeur de billets, bureau de poste,
     tabac… »), sans quoi elle ne serait jamais demandée à la moisson."""
     with psycopg.connect(settings.db_dsn) as c:
-        row = c.execute("SELECT chapter, icon, default_radius_m, name_i18n "
+        row = c.execute("SELECT chapter, icon, default_radius_m, name_i18n, max_radius_m "
                         "FROM poi_categories WHERE code = 'tobacco'").fetchone()
         hosted = c.execute("SELECT field_schema->'poi_categories' FROM section_templates "
                            "WHERE code = 'C_shops'").fetchone()[0]
     assert row is not None, "catégorie 'tobacco' absente du seed"
-    chapter, icon, radius, labels = row
-    assert chapter == "C" and icon == "cigarette" and radius == 2000
+    chapter, icon, radius, labels, max_r = row
+    # V2-89 : DÉPANNAGE — rayon court (2,5 km) et AUCUNE escalade (rien si rien de proche).
+    assert chapter == "C" and icon == "cigarette" and radius == 2500 and max_r is None
     # Chaque langue nomme l'institution avec SON mot — jamais un mot étranger.
     assert labels["fr"] == "Tabac" and labels["en"] == "Tobacconist"
     assert labels["es"] == "Estanco"
@@ -4264,3 +4265,102 @@ def test_tobacco_rubric_only_where_a_licensed_network_exists(monkeypatch, http_c
             _cleanup(oid)
     assert "tobacco" not in asked["CH"] and "supermarket" in asked["CH"]
     assert "tobacco" in asked["ES"]
+
+
+# ── V2-89 : dépannage tabac ≠ boutique spécialisée ─────────────────────────────
+
+def test_tobacco_split_between_quick_stop_and_specialist_shop():
+    """Un même `shop=tobacco` relève du DÉPANNAGE ou du SPÉCIALISÉ selon le pays et le nom :
+    l'estanco espagnol = dépannage ; La Cava La Cubana (Adeje) = spécialisé ; La Bouffarde
+    (Sion) = spécialisé ; un CBD n'est ni l'un ni l'autre ; la cigarette électronique est
+    spécialisée (sous-type `vape`, rangée en dernier)."""
+    from enrich import overpass as o
+    m = o.category_matches
+    estanco = {"shop": "tobacco", "name": "Estanco nº 3"}
+    cava = {"shop": "tobacco", "name": "La Cava La Cubana"}
+    bouffarde = {"shop": "tobacco", "name": "La Bouffarde"}
+    cbd = {"shop": "tobacco", "name": "Sweet spot", "description": "CBD"}
+    vape = {"shop": "e-cigarette", "name": "Vapoteur"}
+    assert m("tobacco", estanco, "ES") and not m("tobacco_shop", estanco, "ES")
+    assert m("tobacco_shop", cava, "ES") and not m("tobacco", cava, "ES")
+    assert m("tobacco_shop", bouffarde, "CH")
+    assert not m("tobacco_shop", cbd, "CH") and not m("tobacco", cbd, "CH")
+    assert m("tobacco_shop", vape, "CH") and o._norm_subtype(vape) == "vape"
+    assert o.NEAREST_BY_TRAVEL["tobacco"] == 4 and o.NEAREST_BY_TRAVEL["tobacco_shop"] == 4
+
+
+def test_sells_tobacco_chip_only_when_sure():
+    """La puce « vend du tabac » : OSM `tobacco=yes`, ou enseigne de la table du pays.
+    Coop / Denner / Volg / k kiosk OUI ; Migros NON ; Coop City / Coop Vitality NON ;
+    aucune table → rien deviné."""
+    from enrich import overpass as o
+    for n in ("Coop", "Coop Pronto", "Denner", "Volg", "k kiosk", "migrolino"):
+        assert o.sells_tobacco({"name": n}, "CH"), n
+    for n in ("Migros", "Coop City", "Coop Vitality", "Lidl"):
+        assert not o.sells_tobacco({"name": n}, "CH"), n
+    assert not o.sells_tobacco({"name": "Coop"}, "DE")              # pas de table DE
+    assert o.sells_tobacco({"name": "Spar", "sells_tobacco_tag": True}, "DE")   # OSM le dit
+    assert o.tobacco_country_has_rubric("ES") and not o.tobacco_country_has_rubric("CH")
+
+
+def test_specialist_shop_found_by_web_is_placed_regionally(monkeypatch):
+    """Nendaz → La Bouffarde (Sion) : OSM n'a aucune boutique spécialisée dans le rayon, la
+    passe web RÉGIONALE la trouve ; à ~17 km du logement elle est ACCEPTÉE (rayon de
+    destination 30 km — le garde des commerces de village l'aurait rejetée à 10 km).
+    Quand OSM en connaît déjà une, aucun appel web."""
+    from enrich import claude_enrich as ce
+    calls = []
+
+    def fake_fetch(city, cc, ai, today=None):
+        calls.append(city)
+        return {ce.TOBACCO_SHOP_FACT_TYPE: {"shops": [{
+            "name": "La Bouffarde", "place_address": "Rue de Lausanne 12, 1950 Sion",
+            "phone": "+41 27 322 00 00", "website": "", "source_url": "https://ex.test/b",
+            "verified_on": "2026-10-07"}], "raw": 1, "v": ce.TOBACCO_SHOP_SCHEMA_V}}, \
+            {"attempts": [], "cost_cts": 0.0}
+    monkeypatch.setattr(ce, "fetch_tobacco_shops", fake_fetch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "nominatim" in url and "street=" in url:
+            return httpx.Response(200, json=[{
+                "lat": str(PROP_LAT + 0.15), "lon": str(PROP_LON), "category": "shop",
+                "type": "tobacco", "place_rank": 30, "display_name": "x",
+                "address": {"town": "Sion"}}])     # la boutique est À SION, pas au village
+        if "overpass" in url:
+            return httpx.Response(200, json={"elements": []})
+        return _mock_handler(request)
+
+    oid, (pid,) = _guest_props(1)
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            r = pipeline.run(pid, use_claude=True, trigger="guest", http_client=client,
+                             only_categories={"tobacco_shop"},
+                             anthropic_client=FakeAnthropic())
+        with db.connect() as conn:
+            rows = conn.execute("SELECT name, drive_min FROM pois WHERE property_id=%s "
+                                "AND category_code='tobacco_shop'", (pid,)).fetchall()
+            st, _ = db.job_steps_and_costs(conn, r["job_id"])
+        assert [x["name"] for x in rows] == ["La Bouffarde"] and calls
+        assert st["tobacco_shops"]["created"] == 1
+    finally:
+        _cleanup(oid)
+    # OSM en connaît une → la passe ne part pas.
+    calls.clear()
+    pipeline._discover_tobacco_shops(None, {"country_code": "CH", "city": "Nendaz"}, None,
+                                     "job", {}, None, (0, 0),
+                                     [{"category": "tobacco_shop", "name": "X"}])
+    assert calls == []
+
+
+
+def test_specialist_cap_keeps_cigar_shops_before_nearer_vape_shops():
+    """Nendaz réel : deux vapoteries plus proches (22-23 min) ne doivent pas évincer les
+    caves à cigares (La Bouffarde 24 min, Une envie de cigare 39 min) du plafond de 4."""
+    ps = [{"name": "High Creek", "subtype": "vape", "drive_min": 22},
+          {"name": "Bar à clopes", "subtype": "vape", "drive_min": 23},
+          {"name": "Vape 3", "subtype": "vape", "drive_min": 25},
+          {"name": "La Bouffarde", "subtype": None, "drive_min": 24},
+          {"name": "Une envie de cigare", "subtype": "cigar", "drive_min": 39}]
+    kept = [p["name"] for p in pipeline._cap_by_travel("tobacco_shop", ps)]
+    assert kept == ["Une envie de cigare", "La Bouffarde", "High Creek", "Bar à clopes"]

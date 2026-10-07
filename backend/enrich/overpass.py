@@ -94,6 +94,10 @@ CATEGORY_TAGS: dict[str, list[tuple[str, str]]] = {
     # tabac français. Les formes COMPOSÉES (kiosque/supérette qui VEND du tabac) sont
     # dans `CATEGORY_TAG_COMBOS` ci-dessous : une paire simple ne peut pas les dire.
     "tobacco":         [("shop", "tobacco")],
+    # V2-89 : boutique SPÉCIALISÉE (destination) — cave à cigares, tabac de référence,
+    # fournitures chicha, cigarette électronique. Le partage avec le DÉPANNAGE `tobacco`
+    # se fait par pays et par nom dans `category_matches`.
+    "tobacco_shop":    [("shop", "tobacco"), ("shop", "e-cigarette")],
     "mall":            [("shop", "mall")],
     "laundry":         [("shop", "laundry"), ("shop", "dry_cleaning")],
     "restaurant":      [("amenity", "restaurant")],
@@ -214,7 +218,46 @@ _TOBACCONIST_RE = re.compile(
 # distances (dans le pipeline). Un aéroport de vacances utile est l'un des rares
 # hubs les plus proches — pas les 8 aérodromes du rayon (benchmark : 7 aéroports,
 # dont Ostende à 132 min). NULL/absent = pas de cap dédié (plafond général de 8).
-NEAREST_BY_TRAVEL: dict[str, int] = {"airport": 3}
+NEAREST_BY_TRAVEL: dict[str, int] = {"airport": 3,
+                                     # V2-89 : dépannage et boutique spécialisée — 4 au plus.
+                                     "tobacco": 4, "tobacco_shop": 4}
+
+# V2-88/89 — pays à RÉSEAU LICENCIÉ du tabac (estanco ES, tabaccheria IT, bureau de tabac
+# FR, tabacaria PT, Trafik AT). SOURCE UNIQUE (réexportée par `claude_enrich`) : la rubrique
+# « Tabac » (dépannage) n'existe que là ; ailleurs, la puce « vend du tabac » la remplace.
+TOBACCO_LICENSED_COUNTRIES = frozenset({"ES", "IT", "FR", "PT", "AT"})
+# V2-89 — ce qui fait une boutique SPÉCIALISÉE dans un pays à monopole (où un `shop=tobacco`
+# ordinaire est le dépannage, l'estanco) : cigares, chicha (tabac, charbon).
+_SPECIALIST_RE = re.compile(
+    r"cigar|habano|\bpuros?\b|humidor|\bcava\b|casa del|chicha|shisha|narguil|narghil|"
+    r"cachimba|hookah|pipe", re.IGNORECASE)
+# V2-89 — enseignes qui VENDENT DU TABAC à coup sûr, PAR PAYS sans réseau licencié : la
+# puce « vend du tabac » n'est posée que sur elles (ou sur `tobacco=yes` d'OSM). Jamais
+# deviné : Migros (CH) n'en vend pas — absente de la table. Exclut les déclinaisons sans
+# rayon tabac (Coop City, Coop Bau+Hobby, Coop Vitality = pharmacie, restaurants).
+TOBACCO_SELLING_BRANDS: dict[str, re.Pattern] = {
+    "CH": re.compile(r"^(coop(\s+pronto)?|denner|volg|k\s?kiosk|avec\.?|migrolino)\b"
+                     r"(?!.*\b(city|bau|hobby|vitality|restaurant|mineral)\b)", re.IGNORECASE),
+}
+
+
+def tobacco_country_has_rubric(country_code: str | None) -> bool:
+    """La rubrique « Tabac » (DÉPANNAGE dédié) existe-t-elle dans ce pays (V2-88/89) ? Oui
+    seulement là où un RÉSEAU LICENCIÉ existe. Ailleurs, la puce « vend du tabac » la
+    remplace. Point de décision UNIQUE (moisson, assemblage, rendu). PURE."""
+    return (country_code or "").upper() in TOBACCO_LICENSED_COUNTRIES
+
+
+def sells_tobacco(poi: dict, country_code: str | None) -> bool:
+    """Le commerce vend-il du tabac, À COUP SÛR (V2-89) ? Oui si OSM le dit (`tobacco=yes`,
+    capté à la moisson) ou si l'enseigne figure dans la table du pays. Jamais deviné. PURE."""
+    if poi.get("sells_tobacco_tag") or (poi.get("completion_meta") or {}).get("_sells_tobacco"):
+        return True
+    rx = TOBACCO_SELLING_BRANDS.get((country_code or "").upper())
+    return bool(rx and rx.search((poi.get("name") or "").strip()))
+
+
+_CBD_RE = re.compile(r"\bcbd\b|cannabis|\bhemp\b|\bchanvre\b", re.IGNORECASE)
 
 
 # ── V2-44 volet 3 : minimum de résultats ET plafond de pertinence PAR catégorie ──
@@ -510,6 +553,19 @@ def category_matches(category: str, tags: dict, country_code: str | None = None)
         return False
     if category == "airport" and not _is_public_airport(tags):
         return False
+    # V2-89 — DÉPANNAGE / SPÉCIALISÉ : un même `shop=tobacco` relève de l'un ou de l'autre.
+    licensed = (country_code or "").upper() in TOBACCO_LICENSED_COUNTRIES
+    name = tags.get("name") or ""
+    said = " ".join(tags.get(k) or "" for k in ("name", "description", "website",
+                                                 "contact:website"))
+    if category == "tobacco" and _SPECIALIST_RE.search(name) \
+            and not _TOBACCONIST_RE.search(name):
+        return False          # la cave à cigares n'est pas un dépannage → `tobacco_shop`
+    if category == "tobacco_shop":
+        if _CBD_RE.search(said):
+            return False      # CBD/chanvre : ni dépannage ni boutique de tabac
+        if licensed and tags.get("shop") == "tobacco" and not _SPECIALIST_RE.search(name):
+            return False      # pays à monopole : l'estanco ordinaire reste le dépannage
     return True
 
 
@@ -961,6 +1017,10 @@ def _element_to_poi(el: dict, lat0: float, lon0: float,
     acc = _access_from(tags)
     if acc:
         meta["_access"] = acc
+    # V2-89 : OSM dit explicitement que le commerce VEND DU TABAC (`tobacco=yes|retail`) —
+    # source SÛRE de la puce « vend du tabac » (pays sans rubrique tabac dédiée).
+    if (tags.get("tobacco") or "").strip().lower() in ("yes", "retail", "only"):
+        meta["_sells_tobacco"] = True
     if meta:
         poi["completion_meta"] = meta
     return poi
@@ -1068,6 +1128,8 @@ def _norm_subtype(tags: dict) -> str | None:
     # (estanco : timbres, tickets, recharges) d'une cave à cigares touristique — seul le
     # NOM parle, et encore : « Radikas » ne dit rien. On n'étiquette donc QUE ce qui est
     # lisible, et la passe web V2-77b confirme/promeut ensuite les vrais estancos.
+    if tags.get("shop") == "e-cigarette":
+        return "vape"                       # V2-89 : boutique spécialisée, rangée en dernier
     if tags.get("shop") == "tobacco":
         name = tags.get("name") or ""
         if _TOBACCONIST_RE.search(name):

@@ -28,6 +28,8 @@ import unicodedata
 import urllib.parse as _url
 from typing import Any
 
+from enrich import overpass as _overpass                 # V2-89 : règles tabac par pays
+
 from . import i18n as _i18n_mod
 from .assets import versioned
 from .poi_icons import category_icon_svg, category_rank
@@ -117,6 +119,11 @@ _UI7: dict[str, dict[str, str]] = {
         "de": "Wir haben in der Nähe weder eine kartierte Apotheke noch ein Krankenhaus gefunden — die Notrufnummern unten gelten weiterhin.",
         "nl": "We hebben in de buurt geen gekarteerde apotheek of ziekenhuis gevonden — de alarmnummers hieronder blijven geldig.",
         "sq": "Nuk gjetëm as farmaci as spital të hartografuar në afërsi — numrat e urgjencës më poshtë mbeten të vlefshëm."},
+    # V2-89 : puce « vend du tabac » — dans les pays SANS rubrique tabac (CH, DE…), le
+    # dépannage se lit sur le commerce lui-même, posée seulement quand c'est SÛR.
+    "sells_tobacco": {"fr": "Vend du tabac", "en": "Sells tobacco", "es": "Vende tabaco",
+                      "it": "Vende tabacchi", "de": "Verkauft Tabak", "nl": "Verkoopt tabak",
+                      "sq": "Shet duhan"},
     # V2-73g : lien de la popup d'activité vers la fiche du POI apparié (cohérence interne).
     "see_in_guide": {"fr": "Voir dans le guide", "en": "See in the guide",
                      "es": "Ver en la guía", "it": "Vedi nella guida",
@@ -574,6 +581,10 @@ _SUBTYPE_LABELS: dict[str, dict[str, str]] = {
     "cigar": {"fr": "Cave à cigares", "en": "Cigar shop", "es": "Casa de puros",
               "it": "Sigareria", "de": "Zigarrenladen", "nl": "Sigarenwinkel",
               "sq": "Dyqan purosh"},
+    # V2-89 : boutique spécialisée de cigarette électronique (rangée après cigares/chicha).
+    "vape": {"fr": "Cigarette électronique", "en": "E-cigarettes", "es": "Cigarrillo electrónico",
+             "it": "Sigaretta elettronica", "de": "E-Zigaretten", "nl": "E-sigaretten",
+             "sq": "Cigare elektronike"},
     "soccer": {"fr": "Football", "en": "Football", "es": "Fútbol", "it": "Calcio",
                "de": "Fußball", "nl": "Voetbal", "sq": "Futboll"},
     "tennis": {"fr": "Tennis", "en": "Tennis", "es": "Tenis", "it": "Tennis",
@@ -1482,7 +1493,7 @@ def _itinerary_links(lat: Any, lon: Any, lang: str = "fr") -> str:
 
 
 def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
-                 home_city: str = "") -> str:
+                 home_city: str = "", country_code: str | None = None) -> str:
     """Rend les POI d'un chapitre en blocs `.cat` (un par catégorie). `tab_hash`
     (V2-12 : « autour », « logement »…) préfixe l'`id` d'ancre de chaque bloc
     (`id="autour/{code}"`) → cible des tuiles de la grille de services et des
@@ -1502,6 +1513,12 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # sont triés lundi→dimanche (jour absent en dernier), puis par distance.
             lst.sort(key=lambda p: (
                 p.get("weekday") if p.get("weekday") is not None else 8,
+                _shown_minutes(p)))
+        elif code == "tobacco_shop":
+            # V2-89 — la boutique SPÉCIALISÉE : cigares d'abord, puis chicha, puis tabac de
+            # référence, la cigarette électronique en dernier ; à rang égal, le plus proche.
+            lst.sort(key=lambda p: (
+                {"cigar": 0, "shisha": 1, "vape": 3}.get((p.get("subtype") or "").lower(), 2),
                 _shown_minutes(p)))
         elif code == "tobacco":
             # V2-77b — ce qu'on cherche sous cette rubrique, c'est l'ESTANCO (timbres,
@@ -1558,7 +1575,9 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
             # équipements : on n'invente pas une phrase de nature pour un bar).
             is_shisha_spot = subtype == "shisha" and code in ("bar", "cafe", "restaurant")
             # V2-77b : la puce du tabac DIT lequel des deux on a sous les yeux.
-            is_tobacco_kind = code == "tobacco" and subtype in ("estanco", "cigar")
+            is_tobacco_kind = ((code == "tobacco" and subtype in ("estanco", "cigar"))
+                               or (code == "tobacco_shop"
+                                   and subtype in ("cigar", "shisha", "vape")))
             # V2-71b : repli FACTUEL quand un équipement n'a AUCUNE description — une phrase
             # de nature (sous-type + accès), rendue à la place de la description. Elle
             # subsume la puce → on ne montre PAS la puce dans ce cas (jamais deux fois).
@@ -1567,6 +1586,14 @@ def _render_pois(pois: list[dict], lang: str = "fr", tab_hash: str = "",
                            if subtype and (is_shisha_spot or is_tobacco_kind
                                            or (is_equip and not fallback))
                            else "")
+            # V2-89 — DÉPANNAGE TABAC dans un pays SANS rubrique tabac (CH, DE…) : la puce
+            # « vend du tabac » sur le commerce, posée seulement quand c'est SÛR (OSM
+            # `tobacco=yes`, ou enseigne de la table du pays — jamais Migros).
+            if (code not in ("tobacco", "tobacco_shop")
+                    and not _overpass.tobacco_country_has_rubric(country_code)
+                    and _overpass.sells_tobacco(p, country_code)):
+                subtype_tag += (f'<span class="cuisine-tag">'
+                                f'{_esc(_t7(lang, "sells_tobacco"))}</span>')
             # Commune / localité (V2-38) : discrète, à côté du nom (« · Vétroz »), même
             # séparateur/ton muet que la mention d'horaires. Anti-bruit ASSUMÉ : affichée
             # UNIQUEMENT si elle DIFFÈRE de la commune du logement (comparaison normalisée
@@ -2565,7 +2592,8 @@ def _render_guide_impl(prop: dict, sections: list[dict], pois: list[dict],
         if poi_tab == "around":
             around_card_pois.extend(chapter_card_pois)
         pois_html = _render_pois(chapter_card_pois, lang, tab_hash=_TAB_HASH[poi_tab],
-                                 home_city=prop.get("city") or "")
+                                 home_city=prop.get("city") or "",
+                                 country_code=prop.get("country_code"))
         for tab in tab_order:
             inner = list(sec_by_tab.get(tab, []))
             if tab == poi_tab and pois_html:

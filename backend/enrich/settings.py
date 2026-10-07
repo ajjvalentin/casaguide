@@ -306,6 +306,12 @@ class Settings:
     # (six lounges connus à Adeje, trois rendus). Le ratissage par quartier multiplie les
     # requêtes, et 10-12 candidats avec site+téléphone+adresse allongent la réponse.
     shisha_max_searches: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_SEARCHES", "8"))
+    # V2-89 — boutiques de tabac SPÉCIALISÉES (cave à cigares, chicha) : passe web RÉGIONALE
+    # (~30 km), seulement si OSM n'en a aucune dans le rayon. Mémoire de secteur 90 j.
+    tobacco_shop_max_searches: int = int(os.getenv("CASAGUIDE_TOBACCO_SHOP_MAX_SEARCHES", "6"))
+    tobacco_shop_max_tokens: int = int(os.getenv("CASAGUIDE_TOBACCO_SHOP_MAX_TOKENS", "4000"))
+    tobacco_shop_max_age_days: int = int(os.getenv("CASAGUIDE_TOBACCO_SHOP_MAX_AGE_DAYS", "90"))
+    tobacco_shop_radius_m: int = int(os.getenv("CASAGUIDE_TOBACCO_SHOP_RADIUS_M", "30000"))
     shisha_max_tokens: int = int(os.getenv("CASAGUIDE_SHISHA_MAX_TOKENS", "6000"))
     # Cibles ENRICHIES par catégorie pour un guide voyageur (un touriste veut du
     # choix) : proximité (socle OSM/Overture) + picks éditoriaux. Jamais en dur

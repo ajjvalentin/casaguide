@@ -66,7 +66,13 @@ INSERT INTO poi_categories (code, chapter, name_i18n, icon, map_color, default_r
 -- pas où les trouver. Rayon COURT (2 km, comme la boulangerie) : on n'envoie personne
 -- à 20 km acheter un timbre. Chaque langue nomme l'institution avec SON mot (« Estanco »
 -- en espagnol, « Tabaccheria » en italien via l'overlay) — jamais un mot étranger.
-('tobacco',        'C', '{"fr":"Tabac","en":"Tobacconist","es":"Estanco"}',                                'cigarette',       '#2E7D32', 2000,  25000),
+-- V2-89 : « Tabac » = DÉPANNAGE (estanco/kiosque proche) — rayon court, AUCUNE escalade
+-- (max NULL) : rien si rien n'est proche. N'existe que dans les pays à réseau licencié
+-- (V2-88). La destination spécialisée (cave à cigares…) est une rubrique à part, ci-dessous.
+('tobacco',        'C', '{"fr":"Tabac","en":"Tobacconist","es":"Estanco"}',                                'cigarette',       '#2E7D32', 2500,  NULL),
+-- V2-89 : boutique SPÉCIALISÉE (cave à cigares, tabac de référence, fournitures chicha) —
+-- une DESTINATION, rayon large assumé, distance en voiture. Sept langues dans le seed.
+('tobacco_shop',   'C', '{"fr":"Cave à cigares / Tabac spécialisé","en":"Cigar & specialist tobacco shop","es":"Tienda de puros / Tabaco especializado","it":"Tabaccheria specializzata / Sigari","de":"Zigarren- & Tabakfachgeschäft","nl":"Sigarenwinkel / Tabaksspeciaalzaak","sq":"Dyqan purosh / Duhan i specializuar"}', 'cigarette', '#6D4C41', 25000, NULL),
 ('mall',           'C', '{"fr":"Centre commercial","en":"Shopping mall","es":"Centro comercial"}',          'shopping-bag',    '#2E7D32', 15000, 25000),
 ('laundry',        'C', '{"fr":"Laverie","en":"Laundry","es":"Lavandería"}',                                'shirt',           '#2E7D32', 5000,  25000),
 -- D — Urgences & santé
@@ -113,7 +119,7 @@ ON CONFLICT (code) DO UPDATE SET
 -- voiture même à 400 m) ; 'walking' = à pied tant que raisonnable (plage) ;
 -- NULL = comportement historique (à pied si ≤ 30 min, sinon voiture).
 UPDATE poi_categories SET travel_mode = 'driving'
-  WHERE code IN ('fuel', 'charging_station');
+  WHERE code IN ('fuel', 'charging_station', 'tobacco_shop');
 UPDATE poi_categories SET travel_mode = 'walking'
   WHERE code = 'beach';
 
@@ -275,7 +281,7 @@ VALUES
 ('C_shops', 'C', 240, 'banknote',
  '{"fr":"Services de proximité","en":"Nearby services","es":"Servicios cercanos"}',
  '{"fr":"Distributeur de billets, bureau de poste, tabac…"}',
- '{"poi_categories":["atm","post_office","tobacco"]}', TRUE, FALSE),
+ '{"poi_categories":["atm","post_office","tobacco","tobacco_shop"]}', TRUE, FALSE),
 
 ('C_malls', 'C', 250, 'shopping-bag',
  '{"fr":"Centres commerciaux","en":"Shopping malls","es":"Centros comerciales"}',

@@ -2043,3 +2043,36 @@ def test_lists_are_sorted_on_the_displayed_time():
     order = [n for n in "ABCDE" if f">{n}<" in html]
     pos = {n: html.index(f">{n}<") for n in order}
     assert sorted(order, key=pos.get) == ["E", "B", "D", "C", "A"]   # 8 à pied, puis 16, 21, 23, 30
+
+
+# ── V2-89 : puce « vend du tabac » et rubrique spécialisée ─────────────────────
+
+def test_sells_tobacco_chip_in_countries_without_tobacco_rubric():
+    """Montreux (CH) : la Coop porte « Vend du tabac », la Migros non. En Espagne (rubrique
+    estanco), aucune puce : le dépannage a sa propre rubrique."""
+    def shop(name):
+        return {"name": name, "category_code": "supermarket", "chapter": "C",
+                "category_name": {"fr": "Supermarché"}, "lat": 46.43, "lon": 6.91,
+                "walk_min": 5, "drive_min": 2}
+    html_ch = guide_page._render_pois([shop("Coop"), shop("Migros")], "fr",
+                                      country_code="CH")
+    coop = html_ch[html_ch.index(">Coop<"):html_ch.index(">Migros<")]
+    migros = html_ch[html_ch.index(">Migros<"):]
+    assert "Vend du tabac" in coop and "Vend du tabac" not in migros
+    assert "Sells tobacco" in guide_page._render_pois([shop("Coop")], "en", country_code="CH")
+    assert "tabac" not in guide_page._render_pois([shop("Coop")], "fr",
+                                                  country_code="ES").lower()
+
+
+def test_specialist_shops_rank_cigars_first_and_vape_last():
+    def ts(name, sub, drive):
+        return {"name": name, "category_code": "tobacco_shop", "chapter": "C",
+                "category_name": {"fr": "Cave à cigares / Tabac spécialisé"},
+                "lat": 46.2, "lon": 7.3, "walk_min": 200, "drive_min": drive,
+                "subtype": sub, "travel_mode": "driving"}
+    html = guide_page._render_pois([ts("Vapoteur", "vape", 5), ts("Tabac du Coin", None, 8),
+                                    ts("La Bouffarde", "cigar", 20)], "fr")
+    order = sorted(["Vapoteur", "Tabac du Coin", "La Bouffarde"], key=lambda n: html.index(f">{n}<"))
+    assert order == ["La Bouffarde", "Tabac du Coin", "Vapoteur"]
+    assert "Cave à cigares" in html and "Cigarette électronique" in html
+    assert "20</b><span>min en voiture" in html          # destination : en voiture
