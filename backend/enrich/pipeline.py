@@ -1570,7 +1570,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
             categories = db.load_categories(conn)
             wanted = [c for c in categories
                       if (not only_categories or c["code"] in only_categories)
-                      and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
+                      and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES
+                      # V2-88 : pas de rubrique tabac hors pays à réseau licencié.
+                      and (c["code"] != "tobacco"
+                           or claude_enrich.tobacco_rubric_applies(prop.get("country_code")))]
             grouped, failed_categories, harvest = overpass.fetch_grouped(
                 wanted, origin[0], origin[1], client=http_client,
                 # Nom local pour le chauffeur (V2-66) : langue du pays → capture du
@@ -2392,7 +2395,9 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
             origin = (prop["lat"], prop["lon"])
             all_cats = db.load_categories(conn)
             wanted = [c for c in all_cats if c["code"] in categories
-                      and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES]
+                      and c["code"] not in overpass.CLAUDE_ONLY_CATEGORIES
+                      and (c["code"] != "tobacco"     # V2-88
+                           or claude_enrich.tobacco_rubric_applies(prop.get("country_code")))]
             grouped, failed, _harvest = overpass.fetch_grouped(
                 wanted, origin[0], origin[1], client=http_client,
                 country_lang=overpass.country_language(prop.get("country_code")),

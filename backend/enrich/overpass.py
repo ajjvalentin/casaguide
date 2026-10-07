@@ -445,9 +445,10 @@ def _is_disqualified(category: str, tags: dict) -> bool:
 # sans l'étiquette). Le sélecteur mondial (kiosque + tabac=oui) les écartait tous, et le
 # guide proposait des « tabacs » à 26-43 min. Ailleurs (Espagne…), un kiosque à journaux ne
 # vend PAS de tabac : la règle reste par pays, dans une table — jamais globale.
-COUNTRY_EXTRA_TAGS: dict[str, dict[str, list[tuple[str, str]]]] = {
-    "CH": {"tobacco": [("shop", "kiosk")]},
-}
+# V2-88 : l'entrée CH (kiosque = tabac) est RETIRÉE — en Suisse la rubrique tabac n'existe
+# plus du tout (`claude_enrich.tobacco_rubric_applies`), le kiosque n'a plus à y entrer. Le
+# MÉCANISME reste : une règle de catégorie propre à un pays s'ajoute ici, jamais en global.
+COUNTRY_EXTRA_TAGS: dict[str, dict[str, list[tuple[str, str]]]] = {}
 
 
 def _extra_tags(category: str, country_code: str | None) -> list[tuple[str, str]]:

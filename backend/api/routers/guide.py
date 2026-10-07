@@ -25,6 +25,8 @@ from fastapi import (APIRouter, BackgroundTasks, HTTPException, Request,
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from enrich import claude_enrich
+
 from .. import (assets, care, crypto, emails, guide_page, media_files, og_image,
                 plans, repo, storage, wifi)
 from ..config import settings
@@ -150,6 +152,11 @@ def _assemble_guide(conn, prop: dict, lang: str | None, *, media_base: str):
     pid = str(prop["id"])
     sections = repo.guide_sections(conn, pid)
     pois = repo.guide_pois(conn, pid)
+    # V2-88 : un guide VOYAGEUR n'affiche pas de rubrique tabac hors pays à réseau
+    # licencié (fiches antérieures comprises). Guide propriétaire : sa curation prime.
+    if prop.get("guest_guide") and not claude_enrich.tobacco_rubric_applies(
+            prop.get("country_code")):
+        pois = [p for p in pois if p.get("category_code") != "tobacco"]
     area_facts = repo.guide_area_facts(conn, prop["country_code"], prop["city"])
 
     # Registre des langues (V2-21a) : carte code→nom natif des langues PUBLIÉES,

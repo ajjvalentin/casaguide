@@ -4171,17 +4171,20 @@ def test_pipeline_step_says_where_overture_was_read_and_flags_stale(property_id,
 
 # ── V2-87 : tabac suisse (kiosques), vapotage/CBD, lieux fermés ───────────────
 
-def test_swiss_kiosk_counts_as_tobacco_only_in_switzerland():
-    """En Suisse le tabac s'achète au kiosque, tagué `shop=kiosk` SANS `tobacco=yes`
-    (relevé Nendaz : « k kiosk », « Kiosque ») : c'est un tabac. En Espagne, un kiosque à
-    journaux n'en vend pas : il ne l'est pas. Le sélecteur Overpass suit le pays."""
+def test_country_extra_tags_mechanism_is_per_country():
+    """Mécanisme V2-87 conservé (règle de catégorie PROPRE À UN PAYS, jamais globale) ; son
+    entrée CH (kiosque = tabac) est retirée par V2-88 — plus de rubrique tabac en Suisse."""
     from enrich import overpass as o
-    kiosk = {"shop": "kiosk", "name": "k kiosk", "brand": "k kiosk"}
-    assert o.category_matches("tobacco", kiosk, "CH")
-    assert not o.category_matches("tobacco", kiosk, "ES")
-    assert not o.category_matches("tobacco", kiosk)
-    assert '"shop"="kiosk"' in o._selectors_for("tobacco", "CH")
-    assert '"shop"="kiosk"' not in o._selectors_for("tobacco", "ES")
+    kiosk = {"shop": "kiosk", "name": "k kiosk"}
+    assert o.COUNTRY_EXTRA_TAGS == {}
+    assert not o.category_matches("tobacco", kiosk, "CH")
+    o.COUNTRY_EXTRA_TAGS["XX"] = {"tobacco": [("shop", "kiosk")]}
+    try:
+        assert o.category_matches("tobacco", kiosk, "XX")
+        assert not o.category_matches("tobacco", kiosk, "ES")
+        assert '"shop"="kiosk"' in o._selectors_for("tobacco", "XX")
+    finally:
+        del o.COUNTRY_EXTRA_TAGS["XX"]
 
 
 def test_cbd_vape_shop_is_not_a_tobacconist_even_if_only_its_site_says_so():
@@ -4211,3 +4214,53 @@ def test_osm_closed_tags_are_honoured():
     assert not o.is_closed({"end_date": "2027"}, today)
     assert not o.is_closed({"opening_hours": "Mo-Fr 08:00-18:00"}, today)
     assert not o.is_closed({}, today)
+
+
+
+# ── V2-88 : la Coop de Nendaz, et pas de rubrique tabac hors réseau licencié ───
+
+def test_neighbouring_brands_are_never_merged_by_distance_alone():
+    """Haute-Nendaz (coordonnées OSM réelles) : Coop et Migros à 124 m, Volg et PAM tout
+    près — quatre magasins distincts. Avant V2-88, la seule proximité (≤ 150 m) les
+    fusionnait et la Coop disparaissait. Un terminal d'aéroport (lieu COMPOSÉ) reste fusionné."""
+    from enrich import dedup
+    pts = [("Coop", 46.1824, 7.2906), ("Migros", 46.1820, 7.2921),
+           ("Volg", 46.1869, 7.2974), ("PAM", 46.1814, 7.2944)]
+    c = [{"name": n, "lat": y, "lon": x, "category": "supermarket", "source_ref": n}
+         for n, y, x in pts]
+    out, merged = dedup.deduplicate(c)
+    assert [p["name"] for p in out] == ["Coop", "Migros", "Volg", "PAM"] and merged == 0
+    hub = [{"name": "Aeropuerto de Alicante-Elche", "lat": 38.28, "lon": -0.56,
+            "category": "airport", "source_ref": "a"},
+           {"name": "Terminal T1", "lat": 38.2801, "lon": -0.5601,
+            "category": "airport", "source_ref": "b"}]
+    assert len(dedup.deduplicate(hub)[0]) == 1
+
+
+def test_tobacco_rubric_only_where_a_licensed_network_exists(monkeypatch, http_client):
+    """La rubrique tabac n'existe que dans les pays à réseau licencié : en Suisse elle
+    n'est même pas MOISSONNÉE (les cigarettes s'y vendent au supermarché et au kiosque)."""
+    from enrich import claude_enrich as ce, overpass as ovp
+    for cc in ("ES", "IT", "FR", "PT", "AT"):
+        assert ce.tobacco_rubric_applies(cc), cc
+    for cc in ("CH", "DE", "NL", "GB", "ID", "", None):
+        assert not ce.tobacco_rubric_applies(cc), cc
+    asked = {}
+    real = ovp.fetch_grouped
+
+    def spy(categories, *a, **kw):
+        asked[kw.get("country_code")] = {c["code"] for c in categories}
+        return real(categories, *a, **kw)
+    monkeypatch.setattr(ovp, "fetch_grouped", spy)
+    for cc, city in (("CH", "Nendaz"), ("ES", "Orihuela Costa")):
+        oid, (pid,) = _guest_props(1, city=city)
+        try:
+            with psycopg.connect(settings.db_dsn) as conn:
+                conn.execute("UPDATE properties SET country_code=%s WHERE id=%s", (cc, pid))
+                conn.commit()
+            pipeline.run(pid, use_claude=False, only_categories={"tobacco", "supermarket"},
+                         http_client=http_client)
+        finally:
+            _cleanup(oid)
+    assert "tobacco" not in asked["CH"] and "supermarket" in asked["CH"]
+    assert "tobacco" in asked["ES"]

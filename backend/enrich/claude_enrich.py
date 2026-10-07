@@ -1517,6 +1517,17 @@ _LOCAL_COMMERCE_LABELS = {"hospital": "hôpital / clinique avec accueil des urge
 TOBACCO_LICENSED_COUNTRIES = frozenset({"ES", "IT", "FR", "PT", "AT"})
 
 
+def tobacco_rubric_applies(country_code: str | None) -> bool:
+    """La rubrique « tabac » a-t-elle un sens dans ce pays (V2-88) ? OUI là où un RÉSEAU
+    LICENCIÉ existe (estanco, tabaccheria, bureau de tabac, tabacaria, Trafik) — c'est là
+    qu'on achète cigarettes, timbres, tickets. NON ailleurs (CH, DE, NL, GB…) : les
+    cigarettes s'y vendent au supermarché et au kiosque, et une rubrique séparée proposait
+    à Nendaz trois « tabacs » à 24-30 min dans la plaine — trompeuse. Une puce « vend du
+    tabac » sur les supermarchés serait FAUSSE (Migros n'en vend pas, Coop oui) : la
+    rubrique est donc simplement absente. Point de décision UNIQUE (moisson + guide). PURE."""
+    return (country_code or "").upper() in TOBACCO_LICENSED_COUNTRIES
+
+
 def local_commerce_categories_for(country_code: str | None) -> tuple[str, ...]:
     """Catégories éligibles à la DÉCOUVERTE WEB du VIDE local (V2-74), pour ce pays.
 

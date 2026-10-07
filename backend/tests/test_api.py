@@ -4775,3 +4775,37 @@ def test_health_503_when_database_unreachable(client, monkeypatch):
     assert "database" in body["reason"]        # cause en clair
     assert "connection refused" not in body["reason"]  # jamais le détail brut/DSN
     assert body.get("version") and "T" in body.get("time", "")
+
+
+def test_guest_guide_hides_tobacco_rubric_outside_licensed_countries(client):
+    """V2-88 — un guide VOYAGEUR suisse dont la base porte déjà un « tabac » publié (avant
+    V2-88) ne l'affiche plus, ni en HTML ni en /data ; un guide espagnol garde son estanco."""
+    from api import repo
+    from enrich import db as edb
+    made = []
+    try:
+        for cc, city, name in (("CH", "Nendaz", "Aux Arcanes"), ("ES", "Orihuela Costa", "Estanco nº 3")):
+            with edb.connect() as conn:
+                prop = repo.create_guest_property(conn, name=f"G {city}", city=city,
+                                                  country_code=cc, lat=46.18, lon=7.29)
+                pid = str(prop["id"]); made.append(pid)
+                conn.execute(
+                    """INSERT INTO pois (property_id, category_code, name, geom, source,
+                                         source_ref, status)
+                       VALUES (%s,'tobacco',%s,ST_SetSRID(ST_MakePoint(7.30,46.21),4326),
+                               'osm',%s,'approved')""", (pid, name, f"node/{uuid.uuid4().int % 10**9}"))
+                edb.publish_property(conn, pid)
+                conn.commit()
+                token = conn.execute("SELECT guide_token FROM properties WHERE id=%s",
+                                     (pid,)).fetchone()["guide_token"]
+            html = client.get(f"/g/{token}").text
+            data = client.get(f"/g/{token}/data").json()
+            names = {p["name"] for p in data["pois"]}
+            if cc == "CH":
+                assert name not in html and name not in names
+            else:
+                assert name in html and name in names
+    finally:
+        with psycopg.connect(settings.db_dsn) as conn:
+            conn.execute("DELETE FROM properties WHERE id = ANY(%s)", (made,))
+            conn.commit()

@@ -42,6 +42,15 @@ from .overpass import haversine_m
 # ── Seuils calibrés (V2-40) ──────────────────────────────────────────────────
 NAME_SIM_THRESHOLD = 0.70   # Dice trigrammes ∈ [0,1] : au-delà = même lieu
 DUP_DIST_M = 150.0          # deux points à moins de 150 m = même lieu
+# V2-88 — en deçà de cette similarité de noms, deux lieux proches sont DEUX lieux (enseignes
+# voisines), jamais fusionnés par la seule distance. Calibrage : enseignes distinctes 0,00 ;
+# doublons de géométrie réels 0,37-0,63.
+DISTINCT_NAMES_DICE = 0.25
+# Lieux COMPOSÉS de parties aux noms différents (terminal d'aéroport, quai de gare, bâtiment
+# d'hôpital, secteur de plage) : la proximité seule y signale bien un doublon. Catégorie
+# inconnue (fiche existante sans catégorie) : on suit la catégorie de l'autre fiche.
+MULTIPART_CATEGORIES = frozenset({"airport", "train_station", "bus_station", "hospital",
+                                  "beach", "sight", "mall", "family_activity", "parking"})
 
 # Champs dont la présence fait le « mieux renseigné » (survivant d'un doublon).
 _SCORE_FIELDS = ("phone", "website", "opening_hours", "cuisine", "locality")
@@ -98,7 +107,22 @@ def _same_place(a: dict, b: dict) -> bool:
     if name_similar(a.get("name"), b.get("name")):
         return True
     d = _distance_m(a, b)
-    return d is not None and d <= DUP_DIST_M
+    if d is None or d > DUP_DIST_M:
+        return False
+    # V2-88 — la proximité seule ne suffit plus : il faut que les noms aient QUELQUE CHOSE
+    # en commun. Les doublons de géométrie d'un même lieu se ressemblent toujours un peu
+    # (« Aeropuerto … (ALC) » / « Aeropuerto Miguel Hernández » 0,37 ; gare bilingue 0,63) ;
+    # deux enseignes voisines, jamais (Coop / Migros à 124 m au centre de Haute-Nendaz :
+    # 0,00 — la Coop disparaissait du guide). Un nom absent laisse la proximité trancher.
+    # Exception : les lieux COMPOSÉS (aéroport, gare, hôpital, plage, site…) ont des parties
+    # aux noms sans rapport (« Terminal T1 » à 15 m de l'aéroport) — là, la proximité suffit.
+    cat = a.get("category") or b.get("category")
+    if cat in MULTIPART_CATEGORIES:
+        return True
+    na, nb = _norm(a.get("name")), _norm(b.get("name"))
+    if na and nb and _dice(na, nb) < DISTINCT_NAMES_DICE:
+        return False
+    return True
 
 
 def _nonempty(v) -> bool:

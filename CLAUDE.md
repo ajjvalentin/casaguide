@@ -1533,17 +1533,27 @@ exposé, peer auth).
   temps **AFFICHÉ** (`guide_page._shown_minutes`, même calcul que `_fmt_dist`), jamais sur
   `dist_walk_m` — en montagne trajets piéton et routier divergent (Nendaz : « 16, 21, 30,
   23, 30 »). (2) Ce qu'une catégorie recouvre dépend du PAYS : `overpass.COUNTRY_EXTRA_TAGS`
-  (CH : `shop=kiosk` = tabac — les kiosques suisses ne portent pas `tobacco=yes`) ;
+  (mécanisme ; son entrée CH « kiosque = tabac » a été RETIRÉE par V2-88) ;
   `fetch_grouped(country_code=…)` → `_selectors_for` + `category_matches(…, country_code)`.
-  Jamais une règle globale (un kiosque espagnol ne vend pas de tabac). La découverte web du
-  VIDE local inclut le tabac PARTOUT (`local_commerce_categories_for`) ; la passe estancos
-  (fausse plénitude) reste bornée aux pays licenciés. (3) `overpass.is_closed` écarte un
+  Jamais une règle globale. **V2-88 : pas de rubrique tabac hors pays à réseau licencié**
+  (`claude_enrich.tobacco_rubric_applies` — ES/IT/FR/PT/AT ; ni moissonnée ni affichée
+  dans un guide voyageur ailleurs ; la curation d'un guide propriétaire prime). (3) `overpass.is_closed` écarte un
   lieu que OSM dit fermé (`opening_hours=closed|off`, `disused|abandoned|closed=yes`,
   `shop=vacant`, date de fin passée) ; le filtre vapotage/CBD du tabac lit aussi
   `description` et le site (Sweet spot, Conthey : `description=CBD`, sweetspot-vape.com,
   rien dans le nom). LIMITE : Sweet spot ne portait AUCUNE étiquette de fermeture ; son
   domaine ne résout plus (DNS) — signal de fermeture non exploité à ce jour (piste : vérifier
   la résolution du site à la moisson, sans le supprimer sur ce seul indice).
+- **Dédup : la proximité seule ne fusionne plus deux enseignes (V2-88)** : `dedup._same_place`
+  fusionnait tout couple d'une catégorie à ≤ 150 m — Coop et Migros (124 m, centre de
+  Haute-Nendaz) devenaient un seul lieu, et la Coop disparaissait du guide. Désormais, hors
+  lieux COMPOSÉS (`MULTIPART_CATEGORIES` : aéroport, gare, hôpital, plage, site… — « Terminal
+  T1 » à 15 m de l'aéroport reste fusionné), la seule distance ne fusionne que si les noms se
+  ressemblent un peu (Dice ≥ `DISTINCT_NAMES_DICE` 0,25 ; enseignes distinctes 0,00, doublons
+  de géométrie réels 0,37-0,63). **Distances en montagne** : vol d'oiseau ≠ route — *Aux
+  Arcanes* est à 3,8 km à vol d'oiseau de Haute-Nendaz mais à 14,8 km / 20 min par la route,
+  dans la plaine (Conthey). Ne jamais rapporter une distance à vol d'oiseau comme une
+  proximité (erreur commise dans le rapport V2-87, corrigée en V2-88).
 - Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
   _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
   en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`
