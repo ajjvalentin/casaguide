@@ -1377,6 +1377,37 @@ def _cap_guest_sorties(pois: list[dict], target: int) -> list[dict]:
     return ed + rest[:max(0, target - len(ed))]
 
 
+def _fill_market_twin(conn, twin: dict, mk: dict) -> None:
+    """Un marché web qui DOUBLE un marché existant ne crée rien : il COMPLÈTE le survivant
+    (jour, précision horaire) là où il manque — le survivant garde ce qu'il a (V2-90)."""
+    if twin.get("id") is not None:
+        db.fill_market_poi(conn, twin["id"], weekday=mk.get("weekday"),
+                           weekday_note=mk.get("weekday_note"))
+
+
+def _normalize_market_pois(conn, property_id: str, prop: dict,
+                           http_client: httpx.Client | None) -> None:
+    """Complète les POI `market` du logement (V2-90), sans rien écraser : (1) le JOUR, lu
+    dans des horaires OSM qui n'en nomment qu'un (`single_weekday_from_hours`) ; (2) la
+    COMMUNE, par géocodage INVERSE du point (file Nominatim partagée, V2-79b) — les marchés
+    web et OSM n'en portaient pas, et « Marché hebdomadaire » (Martigny, 40 min) s'affichait
+    sans dire où. Best-effort : un géocodage raté laisse simplement la commune vide."""
+    for m in db.existing_market_pois(conn, property_id):
+        wd = (claude_enrich.single_weekday_from_hours(m.get("opening_hours"))
+              if m.get("weekday") is None else None)
+        loc = None
+        if not m.get("locality") and m.get("lat") is not None:
+            try:
+                addr = geocode.reverse(m["lat"], m["lon"], prop.get("country_code"),
+                                       client=http_client) or {}
+                loc = (addr.get("city") or addr.get("town") or addr.get("village")
+                       or addr.get("municipality"))
+            except Exception:  # noqa: BLE001 — la commune est un plus, jamais bloquant
+                log.info("Commune du marché « %s » introuvable", m.get("name"), exc_info=True)
+        if wd or loc:
+            db.fill_market_poi(conn, m["id"], weekday=wd, locality=loc)
+
+
 def _resolve_market_position(market: dict, prop: dict,
                              http_client: httpx.Client | None
                              ) -> tuple[float | None, float | None]:
@@ -2169,6 +2200,11 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                         fact = db.get_area_fact(conn, prop["country_code"], prop["city"],
                                                 claude_enrich.MARKET_FACT_TYPE) or {}
                         discovered = fact.get("markets") or []
+                        # V2-90 : les marchés DÉJÀ là (OSM `amenity=marketplace` compris)
+                        # reçoivent leur jour (lu dans les horaires) et leur commune AVANT
+                        # la comparaison — sans jour, « Marché de la vieille ville » (OSM,
+                        # « Fr 08:00-14:00 ») ne se reconnaissait pas dans son jumeau web.
+                        _normalize_market_pois(conn, property_id, prop, http_client)
                         existing = [dict(r) for r in
                                     db.existing_market_pois(conn, property_id)]
                         m_created = m_dup = m_nopos = 0
@@ -2178,8 +2214,10 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             if db.poi_source_ref_exists(conn, property_id, ref):
                                 continue  # déjà matérialisé (idempotent, pas de géocodage)
                             # Pré-dédup par NOM (avant tout géocodage).
-                            if claude_enrich.market_matches_existing(
-                                    mk["name"], mk["weekday"], None, None, existing):
+                            twin = claude_enrich.market_matches_existing(
+                                mk["name"], mk["weekday"], None, None, existing)
+                            if twin:
+                                _fill_market_twin(conn, twin, mk)       # V2-90
                                 m_dup += 1
                                 continue
                             lat, lon = _resolve_market_position(mk, prop, http_client)
@@ -2188,9 +2226,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                                 log.warning("Marché « %s » sauté : position non fiable",
                                             mk["name"])
                                 continue
-                            # Dédup par POSITION (même jour + même place).
-                            if claude_enrich.market_matches_existing(
-                                    mk["name"], mk["weekday"], lat, lon, existing):
+                            # Dédup par POSITION (même jour, même place, ou cœur de nom
+                            # commun à moins de 3 km — V2-90).
+                            twin = claude_enrich.market_matches_existing(
+                                mk["name"], mk["weekday"], lat, lon, existing)
+                            if twin:
+                                _fill_market_twin(conn, twin, mk)       # V2-90
                                 m_dup += 1
                                 continue
                             poi = {"name": mk["name"], "lat": lat, "lon": lon,
@@ -2205,6 +2246,9 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
                             m_created += db.insert_market_poi(conn, property_id, poi)
                             existing.append({"name": mk["name"], "weekday": mk["weekday"],
                                              "lat": lat, "lon": lon})
+                        # V2-90 : chaque marché créé porte sa COMMUNE (affichée si elle
+                        # diffère de celle du guide — acquis V2-38).
+                        _normalize_market_pois(conn, property_id, prop, http_client)
                         summary["markets_created"] = m_created
                         db.job_step(conn, job_id, "markets",
                                     {"ok": True,

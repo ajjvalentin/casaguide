@@ -1276,6 +1276,10 @@ MARKET_MAX_DIST_M = 25000
 _MARKET_NAME_SOFT = 0.6    # similarité de nom (trigrammes) « proche »
 _MARKET_NAME_HARD = 0.82   # « quasi-identique » (dédoublonne même jour inconnu)
 _MARKET_SAME_SPOT_M = 250  # deux marchés à moins de 250 m = la même place
+# V2-90 : deux marchés au même CŒUR de nom sont le même s'ils ont lieu le même jour OU à
+# moins de 3 km l'un de l'autre (« Marché de la Vieille Ville de Sion » / « Marché de la
+# vieille ville » : 7 km du logement, même point).
+_MARKET_NEAR_M = 3000
 
 _MARKET_PROMPT = """\
 Tu prépares la liste des MARCHÉS HEBDOMADAIRES (mercadillos, rastros, marchés de
@@ -1685,6 +1689,16 @@ _MARKET_STOPWORDS = {
     "mercadillo", "mercado", "market", "rastro", "marche", "marché", "feira",
     "wochenmarkt", "markt", "de", "del", "la", "el", "los", "las", "du", "des",
     "le", "of", "the",
+    # V2-90 : ce qui ne DISTINGUE pas un marché — sa périodicité et son jour (le jour se
+    # compare à part, champ `weekday`) : « Marché Hebdomadaire du jeudi matin » = le
+    # « Marché hebdomadaire » du jeudi.
+    "hebdomadaire", "weekly", "semanal", "settimanale", "woechentlicher", "wochentlicher",
+    "matin", "morning", "manana", "mattina", "soir", "evening",
+    "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo",
+    "montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag", "sonntag",
+    "lunedi", "martedi", "mercoledi", "giovedi", "venerdi", "sabato", "domenica",
 }
 
 
@@ -1720,14 +1734,46 @@ def market_matches_existing(name: str, weekday: int | None,
     Règle (seuils motivés) : **même jour** + (nom proche OU même place ≤ 250 m) →
     doublon ; **ou** nom quasi-identique seul (variante d'orthographe). `lat/lon`
     peuvent être None (pré-contrôle par le nom, avant tout géocodage)."""
+    core = _norm_market_name(name)
     for ex in existing:
-        sim = _dice(_norm_market_name(name), _norm_market_name(ex.get("name", "")))
+        ex_core = _norm_market_name(ex.get("name", ""))
+        # Deux cœurs VIDES ne sont pas « identiques » : ils ne disent rien (V2-90).
+        sim = _dice(core, ex_core) if (core and ex_core) else 0.0
+        both_days = weekday is not None and ex.get("weekday") is not None
+        if both_days and ex.get("weekday") != weekday:
+            continue        # V2-07 : même place, jours DIFFÉRENTS = deux marchés distincts
         if sim >= _MARKET_NAME_HARD:
             return ex                                    # nom quasi-identique
         same_day = weekday is not None and ex.get("weekday") == weekday
-        close = (lat is not None and lon is not None
-                 and ex.get("lat") is not None and ex.get("lon") is not None
-                 and haversine_m(lat, lon, ex["lat"], ex["lon"]) <= _MARKET_SAME_SPOT_M)
-        if same_day and (sim >= _MARKET_NAME_SOFT or close):
+        dist = (haversine_m(lat, lon, ex["lat"], ex["lon"])
+                if (lat is not None and lon is not None
+                    and ex.get("lat") is not None and ex.get("lon") is not None) else None)
+        spot = dist is not None and dist <= _MARKET_SAME_SPOT_M
+        near = dist is not None and dist <= _MARKET_NEAR_M
+        if same_day and (sim >= _MARKET_NAME_SOFT or spot):
+            return ex
+        # V2-90 — CŒUR DE NOM : l'un CONTIENT l'autre (« vieille ville » ⊂ « vieille ville
+        # sion » — la commune en plus ne fait pas un autre marché) ou ils se ressemblent :
+        # même marché s'il a lieu le même jour OU à moins de 3 km. Un cœur VIDE (« Marché
+        # hebdomadaire ») ne dit rien du lieu : il exige les DEUX (même jour ET proche).
+        a, b = set(core.split()), set(ex_core.split())
+        if a and b and (a <= b or b <= a or sim >= _MARKET_NAME_SOFT):
+            if same_day or near:
+                return ex
+        elif (not a or not b) and same_day and near:
             return ex
     return None
+
+
+_OH_DAYS = {"mo": 1, "tu": 2, "we": 3, "th": 4, "fr": 5, "sa": 6, "su": 7}
+
+
+def single_weekday_from_hours(opening_hours: str | None) -> int | None:
+    """Jour UNIQUE d'un marché d'après ses horaires OSM (V2-90) : « Fr 08:00-14:00 » → 5.
+    None dès que les horaires nomment plusieurs jours, une plage (« Mo-Sa ») ou rien de
+    lisible — on ne devine jamais un jour de marché. PURE."""
+    oh = (opening_hours or "").strip()
+    if not oh or re.search(r"\b(?:Mo|Tu|We|Th|Fr|Sa|Su)\s*-\s*(?:Mo|Tu|We|Th|Fr|Sa|Su)\b", oh):
+        return None
+    days = {_OH_DAYS[d.lower()] for d in re.findall(r"\b(Mo|Tu|We|Th|Fr|Sa|Su)\b", oh)}
+    return days.pop() if len(days) == 1 else None

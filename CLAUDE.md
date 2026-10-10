@@ -1571,6 +1571,16 @@ exposé, peer auth).
   (`fetch_tobacco_shops`, mémoire de secteur 90 j) seulement si OSM n'en connaît AUCUNE ; le
   garde de géocodage accepte alors jusqu'à `tobacco_shop_radius_m` (30 km) au lieu des 10 km
   des commerces de village (`_geocode_local_commerce(max_home_m=…)`).
+- **Marchés : jumeau OSM/web et commune (V2-90)** : un marché OSM (`amenity=marketplace`)
+  n'a ni `weekday` ni commune — l'upsert générique ne les écrit pas. La passe marchés les
+  NORMALISE (`pipeline._normalize_market_pois`, avant la dédup ET après les créations) : jour
+  lu dans des horaires qui n'en nomment qu'UN (`claude_enrich.single_weekday_from_hours`,
+  « Fr 08:00-14:00 » → 5 ; jamais deviné d'une plage), commune par géocodage INVERSE du point
+  (file Nominatim partagée). `market_matches_existing` : cœur de nom (périodicité, jours,
+  matin/soir retirés — `_MARKET_STOPWORDS`) ; l'un CONTIENT l'autre ou se ressemblent → même
+  marché si même jour OU < 3 km (`_MARKET_NEAR_M`) ; cœur vide → même jour ET proche ; deux
+  jours CONNUS différents → jamais fusionnés (acquis V2-07). Un doublon web COMPLÈTE le
+  survivant (`db.fill_market_poi`, COALESCE — jour, précision, commune), jamais d'écrasement.
 - Restaurants++ (M-16) : le tag OSM `cuisine` est récolté par `overpass.
   _element_to_poi` et **normalisé** par `_norm_cuisine` (premier terme avant `;`,
   en minuscules → `italian`, `seafood`…), stocké en colonne `pois.cuisine`

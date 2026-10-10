@@ -4364,3 +4364,68 @@ def test_specialist_cap_keeps_cigar_shops_before_nearer_vape_shops():
           {"name": "Une envie de cigare", "subtype": "cigar", "drive_min": 39}]
     kept = [p["name"] for p in pipeline._cap_by_travel("tobacco_shop", ps)]
     assert kept == ["Une envie de cigare", "La Bouffarde", "High Creek", "Bar à clopes"]
+
+
+# ── V2-90 : marchés — doublon OSM/web et commune ───────────────────────────────
+
+def test_osm_market_and_its_web_twin_make_one_market_with_its_town(property_id):
+    """Nendaz (guide 7494599b) : OSM porte « Marché de la vieille ville » (Sion, horaires
+    « Fr 08:00-14:00 », SANS jour ni commune) ; le web rend « Marché de la Vieille Ville de
+    Sion » (vendredi). Avant V2-90 : deux marchés au même point. Désormais UN seul — l'OSM,
+    qui reçoit son jour (lu dans ses horaires) et sa commune (géocodage inverse) ; un vrai
+    nouveau marché (Martigny, jeudi) est créé AVEC sa commune."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/reverse" in url:
+            lat = float(dict(urllib.parse.parse_qsl(request.url.query.decode()))["lat"])
+            town = "Martigny" if lat < 46.15 else "Sion"
+            return httpx.Response(200, json={"address": {"town": town}})
+        return _mock_handler(request)
+
+    with psycopg.connect(settings.db_dsn) as conn:
+        conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom, opening_hours,
+                                 source, source_ref, status)
+               VALUES (%s, 'market', 'Marché de la vieille ville',
+                       ST_SetSRID(ST_MakePoint(7.3598, 46.2316), 4326), 'Fr 08:00-14:00',
+                       'osm', 'node/9001', 'suggested')""", (property_id,))
+        conn.commit()
+    discovery = [
+        {"name": "Marché de la Vieille Ville de Sion", "weekday": 5, "hours": "8h–14h",
+         "address": "Grand-Pont, 1950 Sion", "lat": 46.2318, "lon": 7.3601,
+         "source_url": "https://x", "verified_on": "2026-10-10"},
+        {"name": "Marché Hebdomadaire du jeudi matin", "weekday": 4,
+         "address": "Place Centrale, 1920 Martigny", "lat": 46.1020, "lon": 7.0720,
+         "source_url": "https://y", "verified_on": "2026-10-10"},
+    ]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        settings.politeness_delay_s = 0
+        r = pipeline.run(property_id, use_claude=True, only_categories={"supermarket"},
+                         http_client=client, anthropic_client=FakeAnthropic(markets=discovery))
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        mk = {m["name"]: m for m in conn.execute(
+            "SELECT name, weekday, locality, source FROM pois WHERE property_id=%s "
+            "AND category_code='market'", (property_id,))}
+    assert set(mk) == {"Marché de la vieille ville", "Marché Hebdomadaire du jeudi matin"}
+    osm = mk["Marché de la vieille ville"]
+    assert osm["source"] == "osm" and osm["weekday"] == 5 and osm["locality"] == "Sion"
+    assert mk["Marché Hebdomadaire du jeudi matin"]["locality"] == "Martigny"
+    assert r["markets_created"] == 1
+
+
+def test_market_twin_rules():
+    """Cœur de nom (périodicité, jour, articles retirés) : même marché si l'un contient
+    l'autre et (même jour OU < 3 km) ; deux jours CONNUS différents = deux marchés (V2-07)."""
+    from enrich import claude_enrich as ce
+    m = ce.market_matches_existing
+    osm_sion = [{"name": "Marché de la vieille ville", "weekday": None,
+                 "lat": 46.2316, "lon": 7.3598}]
+    assert m("Marché de la Vieille Ville de Sion", 5, 46.2318, 7.3601, osm_sion)
+    assert not m("Marché de la Vieille Ville de Sion", 5, 46.40, 7.60, osm_sion)  # 30 km
+    jeudi = [{"name": "Marché hebdomadaire", "weekday": 4, "lat": 46.10, "lon": 7.07}]
+    assert m("Marché Hebdomadaire du jeudi matin", 4, 46.101, 7.071, jeudi)
+    assert not m("Marché du jeudi", 4, 46.40, 7.60, jeudi)          # cœur vide, loin
+    assert not m("Marché hebdomadaire", 6, 46.10, 7.07, jeudi)      # samedi ≠ jeudi
+    assert ce.single_weekday_from_hours("Fr 08:00-14:00") == 5
+    assert ce.single_weekday_from_hours("Mo-Sa 08:00-12:00") is None
+    assert ce.single_weekday_from_hours("Tu,Sa 07:00-13:00") is None

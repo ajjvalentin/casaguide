@@ -518,10 +518,25 @@ def existing_market_pois(conn, property_id: str) -> list[dict]:
     un marché déjà présent (`edited` du propriétaire) n'est jamais recréé, un
     `rejected` ne ressuscite jamais. Position en lat/lon pour le rapprochement."""
     return conn.execute(
-        """SELECT name, weekday, ST_Y(geom) AS lat, ST_X(geom) AS lon, status
+        """SELECT id, name, weekday, weekday_note, locality, opening_hours,
+                  ST_Y(geom) AS lat, ST_X(geom) AS lon, status
            FROM pois WHERE property_id = %s AND category_code = 'market'""",
         (property_id,),
     ).fetchall()
+
+
+def fill_market_poi(conn, poi_id, *, weekday: int | None = None,
+                    weekday_note: str | None = None, locality: str | None = None) -> None:
+    """COMPLÈTE un POI `market` existant (V2-90) — jour, précision horaire, commune —
+    UNIQUEMENT là où ils manquent (COALESCE) : rien d'écrit par le propriétaire ou une
+    passe précédente n'est jamais écrasé (esprit de l'invariant 1, comme la complétion des
+    fiches de service V2-07 volet 2)."""
+    conn.execute(
+        """UPDATE pois SET weekday = COALESCE(weekday, %s),
+                          weekday_note = COALESCE(NULLIF(weekday_note, ''), %s),
+                          locality = COALESCE(NULLIF(locality, ''), %s)
+           WHERE id = %s AND category_code = 'market'""",
+        (weekday, weekday_note, locality, poi_id))
 
 
 def insert_market_poi(conn, property_id: str, market: dict) -> int:
