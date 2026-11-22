@@ -22,13 +22,14 @@ import re
 import sys
 import time
 import unicodedata
+import uuid
 from typing import Callable
 
 import anthropic
 import httpx
 
 from . import claude_enrich, db, dedup, distance, fusion, geocode, judge, overpass, overture
-from . import sector
+from . import journal, sector
 from .settings import settings
 
 log = logging.getLogger("casaguide.pipeline")
@@ -1579,8 +1580,12 @@ def run(property_id: str, *, use_claude: bool = True, trigger: str = "manual",
         else:
             db.job_mark_running(conn, job_id)
         conn.commit()
+        # Journal V2-92 : une exécution = un lot, auteur `system`, rattachée au job.
+        # Lié à la CONNEXION (reposé à chaque transaction : le pipeline valide ~30 fois).
+        batch_id = str(uuid.uuid4())
+        journal.bind(conn, "system", batch_id=batch_id, job_id=job_id)
         _progress(f"▶ Enrichissement {prop.get('name') or property_id} "
-                  f"({prop['city']}, {prop['country_code']}) — job {job_id}")
+                  f"({prop['city']}, {prop['country_code']}) — job {job_id}, lot {batch_id}")
 
         try:
             # ── 1. Géocodage ────────────────────────────────────────────────
@@ -2461,6 +2466,8 @@ def _retry_failed(property_id: str, job_id: str, categories: set[str], attempt: 
     merged_dups = 0
     resolved: list[str] = []
     with db.connect() as conn:
+        # Journal V2-92 : chaque passe de reprise est sa propre exécution → son lot.
+        journal.bind(conn, "system", batch_id=str(uuid.uuid4()), job_id=job_id)
         prop = db.load_property(conn, property_id)
         try:
             if prop["lat"] is None:  # jamais en pratique (geocode fait au 1er run)

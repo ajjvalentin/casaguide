@@ -15,11 +15,14 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from .journal import JournalConnection, acting
 from .settings import settings
 
 
 def connect() -> psycopg.Connection:
-    return psycopg.connect(settings.db_dsn, row_factory=dict_row)
+    """Connexion du projet. `JournalConnection` (V2-92) : identique à une connexion
+    psycopg tant qu'aucun auteur n'y est lié (`journal.bind`, pipeline)."""
+    return JournalConnection.connect(settings.db_dsn, row_factory=dict_row)
 
 
 # ── Lectures ─────────────────────────────────────────────────────────────────
@@ -350,16 +353,17 @@ def apply_judge_verdict(conn, poi_id: str, status: str, judge_meta: dict) -> int
     nouveau champ de schéma. N'agit QUE sur un POI encore `suggested` (idempotent, ne
     touche jamais une fiche déjà arbitrée). Provenance (V2-91) : `status_by='judge'`,
     `status_at=now()`."""
-    cur = conn.execute(
-        """UPDATE pois
-           SET status = %s,
-               completion_meta = COALESCE(completion_meta, '{}'::jsonb) || %s,
-               status_by = 'judge', status_at = now(),
-               updated_at = now()
-           WHERE id = %s AND status = 'suggested'""",
-        (status, json.dumps({"_judge": judge_meta}), poi_id),
-    )
-    return cur.rowcount
+    with acting(conn, "judge"):   # journal V2-92 : auteur `judge`
+        cur = conn.execute(
+            """UPDATE pois
+               SET status = %s,
+                   completion_meta = COALESCE(completion_meta, '{}'::jsonb) || %s,
+                   status_by = 'judge', status_at = now(),
+                   updated_at = now()
+               WHERE id = %s AND status = 'suggested'""",
+            (status, json.dumps({"_judge": judge_meta}), poi_id),
+        )
+        return cur.rowcount
 
 
 def publish_property(conn, property_id: str) -> None:

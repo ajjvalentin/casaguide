@@ -166,3 +166,73 @@ panne** — et, la plupart du temps, le watchdog l'aura déjà relancé.
 | Watchdog a redémarré (email reçu) | `journalctl -u casaguide-watchdog -n 50` puis `journalctl -u casaguide -n 100` |
 | `/health` = 503 « database » | `systemctl status postgresql` ; `journalctl -u postgresql -n 50` |
 | Caddy muet | `systemctl status caddy` ; `journalctl -u caddy -n 50` |
+
+---
+
+## 4. Journal des modifications (V2-92)
+
+Chaque modification du contenu visible d'un guide est **datée, rattachée à sa source
+et réversible** : table `content_changes` (migration 043), écrite par le déclencheur
+PostgreSQL `trg_pois_journal` — jamais par le code applicatif, si bien qu'aucun chemin
+d'écriture sur `pois` ne peut y échapper.
+
+### Ce qui est tracé
+
+| Événement | Ligne | Condition |
+|---|---|---|
+| Changement de statut | `status` (`{status, status_by, status_at}` avant/après) | toujours |
+| Champ modifié | `update`, une ligne par champ, `old_value`/`new_value` | fiche retenue (`approved`/`edited`) avant OU après, valeur réellement changée |
+| Création | `create` + instantané complet | fiche née retenue (lieu saisi à la main) |
+| Suppression | `delete` + instantané complet (de quoi la recréer) | fiche retenue |
+| Annulation | `revert`, `reverts_id` = la ligne annulée | toujours |
+
+Champs suivis : ceux de `enrich.locks.LOCKABLE_FIELDS` (éditables + `geom`, noté
+`{"lat","lon"}`). **Pas** tracés : distances, `fetched_at`, `updated_at`,
+`completion_meta`, `human_fields`, `status_by`, `status_at`. Une fiche `suggested`
+rafraîchie à chaque moisson n'écrit **rien**. Hors périmètre : traductions
+(dérivées), sections (écrites par le seul propriétaire), `area_facts` (V2-93) et
+**jamais** `property_secrets`. Supprimer un logement supprime son journal.
+
+### Les quatre auteurs (`actor`)
+
+Le journal établit **qui** a écrit — y compris à des fins fiscales : le contenu est
+modifié par le système ou par le propriétaire, jamais par l'exploitant de sa propre
+initiative.
+
+| Auteur | Qui | Posé par |
+|---|---|---|
+| `system` | le pipeline, les tâches automatiques (défaut si rien n'est déclaré) | `journal.bind` (pipeline : + `job_id`, un `batch_id` par exécution) |
+| `judge` | le juge IA (offre Guide Voyageur) | `db.apply_judge_verdict` |
+| `owner` | le propriétaire (édition, création, Approuver/Rejeter) | `repo.edit_poi`, `create_manual_poi`, `set_poi_status` |
+| `support` | l'exploitant, **à la demande expresse d'un propriétaire** | `ops/revert_changes.py` |
+
+L'auteur est une variable de **transaction** (`holaguia.actor`, `holaguia.batch_id`,
+`holaguia.job_id`) — jamais de session.
+
+### Consulter
+
+```sql
+SELECT id, created_at, action, field, old_value, new_value, actor, batch_id
+FROM content_changes WHERE property_id = '<uuid>' ORDER BY id DESC LIMIT 50;
+```
+
+Côté propriétaire : `GET /api/properties/{id}/changes?poi_id=&limit=&before_id=`.
+L'identifiant du lot d'une exécution du pipeline figure dans la ligne de progression
+`▶ Enrichissement … — job <uuid>, lot <uuid>`.
+
+### Annuler
+
+```bash
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/revert_changes.py --batch <uuid> --dry-run
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/revert_changes.py --batch <uuid>
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/revert_changes.py --change <id>
+```
+
+`--dry-run` joue exactement la même logique puis ROLLBACK : le plan affiché est celui
+qui serait appliqué. Règles : seules les lignes `system`/`judge` s'annulent (une saisie
+`owner` est refusée) ; **rien n'est restauré** si la valeur a changé depuis
+(`value_changed`) ou si le champ est passé dans `human_fields` (`human_locked`) ; une
+ligne ne s'annule qu'une fois (`already_reverted`, garanti par un index unique) ; un
+lot s'annule du plus récent au plus ancien, en entier, conflits compris. Annuler une
+suppression recrée la fiche avec son identifiant d'origine. Code de sortie 4 s'il
+reste des conflits ou refus.

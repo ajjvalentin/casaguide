@@ -530,6 +530,15 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
     l'état réel : rend sans ligne, `is_visible=FALSE` masque) ; front `guide-anchor-offset`
     (scroll-margin) et `guide-fact-filter` (mode filtré, retour, non-régression V2-12,
     recherche, deep-link).
+22. **Toute écriture sur une fiche retenue est journalisée par le déclencheur ;
+    l'auteur est déclaré par transaction (V2-92, migration 043).** `trg_pois_journal`
+    écrit `content_changes` (statut toujours ; champs de `locks.LOCKABLE_FIELDS` si la
+    fiche est retenue avant ou après ; création/suppression d'une fiche retenue) — le
+    code n'écrit JAMAIS le journal lui-même. L'auteur (`system` par défaut, `judge`,
+    `owner`, `support`) passe par `enrich.journal` (`declare`/`acting`/`bind`) en
+    variables de TRANSACTION, jamais de session. Retour arrière sûr :
+    `journal.revert_change`/`revert_batch`, `ops/revert_changes.py` (auteur `support`).
+    Détail : `docs/ops.md` § 4. Couvert par `test_journal.py` et `test_api.py`.
 
 ## Commandes
 
@@ -577,6 +586,7 @@ psql -d casaguide -f db/migrations/039_property_demo.sql # guide de DÉMONSTRATI
 psql -d casaguide -f db/migrations/040_editorial_pick_name_local.sql # nom local (écriture d'origine) d'un pick éditorial (V2-66b cas a)
 psql -d casaguide -f db/migrations/041_poi_subtype.sql # sous-type sport/loisir d'un POI (puce de discipline + prompt de description) (V2-71)
 psql -d casaguide -f db/migrations/042_poi_provenance.sql # provenance par champ : pois.human_fields + status_by/status_at + reprise de l'existant (V2-91)
+psql -d casaguide -f db/migrations/043_content_changes.sql # journal daté des modifications (content_changes + déclencheur trg_pois_journal) (V2-92)
 
 # Backend
 cd backend

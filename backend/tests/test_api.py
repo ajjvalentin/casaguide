@@ -5005,3 +5005,95 @@ def test_poi_provenance_constraints(client):
             with pytest.raises(psycopg.errors.CheckViolation):
                 conn.execute(bad, (poi_id,))
             conn.rollback()
+
+
+# ── Journal des modifications (V2-92) ────────────────────────────────────────
+
+def _journal(pid: str) -> list[dict]:
+    with _dbdict() as conn:
+        return conn.execute("SELECT * FROM content_changes WHERE property_id = %s "
+                            "ORDER BY id", (pid,)).fetchall()
+
+
+def test_owner_paths_are_journaled_as_owner(client):
+    """V2-92 test 1 : création manuelle (`create` + instantané), Approuver/Rejeter
+    (`status`) et édition (`update` par champ + `status`) → auteur `owner`."""
+    owner = register(client)
+    h = owner["headers"]
+    pid = make_property(client, h)["id"]
+    created = client.post(f"/api/properties/{pid}/pois", headers=h,
+                          json={"category_code": "restaurant", "name": "El Meson",
+                                "lat": 37.929, "lon": -0.747}).json()
+    sugg = _insert_raw_poi(pid, name="Suggéré")
+    client.post(f"/api/properties/{pid}/pois/{sugg}/approve", headers=h)
+    form = {"name": "El Mesón", "phone": "+34 966 00 00 00"}
+    client.patch(f"/api/properties/{pid}/pois/{created['id']}", headers=h, json=form)
+
+    rows = _journal(pid)
+    assert {r["actor"] for r in rows} == {"owner"}
+    create = next(r for r in rows if r["action"] == "create")
+    assert str(create["entity_id"]) == created["id"]
+    assert create["new_value"]["name"] == "El Meson"
+    assert create["new_value"]["geom"] == {"lat": 37.929, "lon": -0.747}
+    approve = next(r for r in rows if str(r["entity_id"]) == sugg)
+    assert approve["action"] == "status" and approve["new_value"]["status"] == "approved"
+    edits = {r["field"]: r for r in rows
+             if str(r["entity_id"]) == created["id"] and r["action"] != "create"}
+    assert set(edits) == {"name", "phone", "status"}
+    assert (edits["name"]["old_value"], edits["name"]["new_value"]) == ("El Meson", "El Mesón")
+    assert edits["status"]["new_value"]["status"] == "edited"
+
+
+def test_owner_actor_never_leaks_to_next_request_on_same_connection(client):
+    """V2-92 test 12 : deux « requêtes » successives sur la MÊME connexion — la
+    première déclare `owner` (édition), la seconde n'en déclare aucun → `system`.
+    La variable est de TRANSACTION : elle meurt au commit de la première."""
+    owner = register(client)
+    pid = make_property(client, owner["headers"])["id"]
+    poi = _insert_raw_poi(pid, status="approved", phone="+34 1")
+    from enrich import db as enrich_db  # noqa: PLC0415
+    with enrich_db.connect() as conn:
+        repo.edit_poi(conn, pid, poi, {"phone": "+34 2"})     # requête 1 (owner)
+        conn.commit()
+        conn.execute("UPDATE pois SET website = 'https://x.example' WHERE id = %s",
+                     (poi,))                                   # requête 2 (rien déclaré)
+        conn.commit()
+        # Cas nu : `declare` sans restauration (pas de `acting`) — seule la portée
+        # TRANSACTION protège la requête suivante.
+        from enrich import journal  # noqa: PLC0415
+        journal.declare(conn, "owner")
+        conn.execute("UPDATE pois SET address = 'Calle 9' WHERE id = %s", (poi,))
+        conn.commit()
+        conn.execute("UPDATE pois SET locality = 'Torrevieja' WHERE id = %s", (poi,))
+        conn.commit()
+    rows = {r["field"]: r["actor"] for r in _journal(pid) if r["action"] == "update"}
+    assert rows == {"phone": "owner", "website": "system",
+                    "address": "owner", "locality": "system"}
+
+
+def test_changes_endpoint_owner_only_filtered_paginated(client):
+    """V2-92 § 6 : GET /changes — propriétaire seul (404 sinon), plus récentes
+    d'abord, filtre par fiche, pagination par curseur `before_id`."""
+    owner = register(client)
+    h = owner["headers"]
+    pid = make_property(client, h)["id"]
+    a = _insert_raw_poi(pid, name="A")
+    b = _insert_raw_poi(pid, name="B")
+    for poi, verb in ((a, "approve"), (b, "approve"), (a, "reject")):
+        assert client.post(f"/api/properties/{pid}/pois/{poi}/{verb}",
+                           headers=h).status_code == 200
+    r = client.get(f"/api/properties/{pid}/changes", headers=h)
+    assert r.status_code == 200, r.text
+    allrows = r.json()
+    assert len(allrows) == 3
+    assert [x["id"] for x in allrows] == sorted((x["id"] for x in allrows), reverse=True)
+    only_a = client.get(f"/api/properties/{pid}/changes?poi_id={a}", headers=h).json()
+    assert {x["entity_id"] for x in only_a} == {a} and len(only_a) == 2
+    page1 = client.get(f"/api/properties/{pid}/changes?limit=2", headers=h).json()
+    page2 = client.get(f"/api/properties/{pid}/changes?limit=2&before_id={page1[-1]['id']}",
+                       headers=h).json()
+    assert [x["id"] for x in page1 + page2] == [x["id"] for x in allrows]
+    intruder = register(client)
+    assert client.get(f"/api/properties/{pid}/changes",
+                      headers=intruder["headers"]).status_code == 404
+    assert client.get(f"/api/properties/{pid}/changes").status_code == 401

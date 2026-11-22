@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from enrich.journal import acting
 from enrich.locks import EDITABLE_FIELDS
 
 # Colonnes publiques d'un logement (jamais de secrets ici)
@@ -1089,22 +1090,23 @@ def create_manual_poi(conn, property_id: str, data: dict) -> dict | None:
     Provenance (V2-91) : tout champ éditable FOURNI (non NULL) + `geom` est saisi par
     l'humain → `human_fields` ; `status_by='owner'`, `status_at=now()`."""
     human = [f for f in _POI_EDITABLE if data.get(f) is not None] + ["geom"]
-    row = conn.execute(
-        """INSERT INTO pois (property_id, category_code, name, geom, address,
-               locality, phone, website, opening_hours, cuisine, weekday, weekday_note,
-               description_md, owner_comment,
-               dist_walk_m, walk_min, dist_drive_m, drive_min,
-               source, status, fetched_at, human_fields, status_by, status_at)
-           VALUES (%(pid)s, %(category_code)s, %(name)s,
-               ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
-               %(address)s, %(locality)s, %(phone)s, %(website)s, %(opening_hours)s,
-               %(cuisine)s, %(weekday)s, %(weekday_note)s,
-               %(description_md)s, %(owner_comment)s,
-               %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
-               'owner', 'approved', now(), %(human_fields)s, 'owner', now())
-           RETURNING id""",
-        {"pid": property_id, **data, "human_fields": human},
-    ).fetchone()
+    with acting(conn, "owner"):   # journal V2-92 : saisie du propriétaire
+        row = conn.execute(
+            """INSERT INTO pois (property_id, category_code, name, geom, address,
+                   locality, phone, website, opening_hours, cuisine, weekday, weekday_note,
+                   description_md, owner_comment,
+                   dist_walk_m, walk_min, dist_drive_m, drive_min,
+                   source, status, fetched_at, human_fields, status_by, status_at)
+               VALUES (%(pid)s, %(category_code)s, %(name)s,
+                   ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
+                   %(address)s, %(locality)s, %(phone)s, %(website)s, %(opening_hours)s,
+                   %(cuisine)s, %(weekday)s, %(weekday_note)s,
+                   %(description_md)s, %(owner_comment)s,
+                   %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
+                   'owner', 'approved', now(), %(human_fields)s, 'owner', now())
+               RETURNING id""",
+            {"pid": property_id, **data, "human_fields": human},
+        ).fetchone()
     return get_poi_full(conn, property_id, str(row["id"])) if row else None
 
 
@@ -1226,15 +1228,16 @@ def set_poi_status(conn, property_id: str, poi_id: str, status: str) -> dict | N
     """Statut posé par le PROPRIÉTAIRE (Approuver/Rejeter/annulation M-23).
     Provenance (V2-91) : `status_by='owner'`, `status_at=now()` ; un retour à
     'suggested' remet `status_by` à NULL (personne n'a statué). `human_fields`
-    n'est pas touché : statuer n'est pas saisir une valeur."""
-    return conn.execute(
-        "UPDATE pois SET status = %(st)s, "
-        "status_by = CASE WHEN %(st)s = 'suggested' THEN NULL ELSE 'owner' END, "
-        "status_at = now() "
-        "WHERE id = %(id)s AND property_id = %(pid)s "
-        "RETURNING id, status",
-        {"st": status, "id": poi_id, "pid": property_id},
-    ).fetchone()
+    n'est pas touché : statuer n'est pas saisir une valeur. Journal (V2-92) : `owner`."""
+    with acting(conn, "owner"):
+        return conn.execute(
+            "UPDATE pois SET status = %(st)s, "
+            "status_by = CASE WHEN %(st)s = 'suggested' THEN NULL ELSE 'owner' END, "
+            "status_at = now() "
+            "WHERE id = %(id)s AND property_id = %(pid)s "
+            "RETURNING id, status",
+            {"st": status, "id": poi_id, "pid": property_id},
+        ).fetchone()
 
 
 # Source unique : `enrich.locks.EDITABLE_FIELDS` (aussi la liste des noms admis dans
@@ -1267,12 +1270,13 @@ def edit_poi(conn, property_id: str, poi_id: str, fields: dict) -> dict | None:
             "human_fields = ARRAY(SELECT DISTINCT f FROM unnest("
             f"pois.human_fields || ARRAY[{', '.join(changed)}]::text[]) AS f "
             "WHERE f IS NOT NULL ORDER BY f)")
-    row = conn.execute(
-        f"UPDATE pois SET {', '.join(sets)} "
-        "WHERE id = %(id)s AND property_id = %(pid)s "
-        "RETURNING id, status",
-        params,
-    ).fetchone()
+    with acting(conn, "owner"):   # journal V2-92 : saisie du propriétaire
+        row = conn.execute(
+            f"UPDATE pois SET {', '.join(sets)} "
+            "WHERE id = %(id)s AND property_id = %(pid)s "
+            "RETURNING id, status",
+            params,
+        ).fetchone()
     # Le texte éditorial du POI a changé → ses traductions sont périmées (M-09).
     if row:
         conn.execute(
@@ -1280,6 +1284,29 @@ def edit_poi(conn, property_id: str, poi_id: str, fields: dict) -> dict | None:
             (poi_id,),
         )
     return row
+
+
+# ── Journal des modifications (V2-92) ────────────────────────────────────────
+
+def list_content_changes(conn, property_id: str, *, poi_id: str | None = None,
+                         limit: int = 50, before_id: int | None = None) -> list[dict]:
+    """Dernières lignes du journal d'un logement, de la plus récente à la plus
+    ancienne. Pagination par curseur (`before_id` = plus petit id déjà reçu),
+    filtre facultatif par fiche. Données owner-side (jamais de secret : le journal
+    ne couvre que `pois`)."""
+    q = ("SELECT id, entity, entity_id, action, field, old_value, new_value, actor, "
+         "source, source_ref, job_id, batch_id, reverts_id, created_at "
+         "FROM content_changes WHERE property_id = %s")
+    params: list[Any] = [property_id]
+    if poi_id:
+        q += " AND entity_id = %s"
+        params.append(poi_id)
+    if before_id is not None:
+        q += " AND id < %s"
+        params.append(before_id)
+    q += " ORDER BY id DESC LIMIT %s"
+    params.append(limit)
+    return conn.execute(q, params).fetchall()
 
 
 # ── Jobs d'enrichissement ────────────────────────────────────────────────────
