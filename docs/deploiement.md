@@ -274,6 +274,41 @@ une commande `paid`/`generating` est considérée orpheline. C'est bien au-delà
 étape de génération (battement de cœur `updated_at` à chaque étape) → jamais de reprise
 d'une commande réellement en cours.
 
+### 1.15 Revérification nocturne des lieux (V2-93)
+
+Timer systemd **chaque nuit à 02:15 heure de Madrid** (`ops/refresh_pois.py`) : il
+revérifie auprès de leur source d'origine les lieux retenus des guides **publiés**
+(jamais un guide voyageur ni la démonstration) et reporte `phone` / `website` /
+`opening_hours` **sans jamais écraser une saisie du propriétaire**. Seuls les logements
+dus (contrôle de plus de `CASAGUIDE_REFRESH_MAX_AGE_DAYS`, 7 j) sont traités. Aucun appel
+IA ; un appel Overpass par paquet de `CASAGUIDE_REFRESH_BATCH_SIZE` (100) identifiants ;
+Overture lu dans le cache de zone local uniquement. Détail et lecture du bilan :
+`docs/ops.md` § 5.
+
+⚠ **`deploy.sh` installe et ACTIVE ce timer automatiquement** (`sync_units`, comme tout
+`ops/*.timer`) et applique la migration 044 : le premier passage a lieu la nuit qui suit
+le déploiement et **modifie des guides publiés** (journalisé, annulable par lot). Pour
+mesurer avant d'activer, lancer d'abord un passage à blanc sur le serveur :
+
+```bash
+sudo -u casaguide /opt/casaguide/.venv/bin/python \
+    /opt/casaguide/ops/refresh_pois.py --dry-run --max-properties 3
+```
+
+Installation manuelle (provisionnement initial ou sans sudo non-interactif) :
+
+```bash
+sudo cp /opt/casaguide/ops/casaguide-refresh-pois.service /etc/systemd/system/
+sudo cp /opt/casaguide/ops/casaguide-refresh-pois.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now casaguide-refresh-pois.timer
+sudo systemctl list-timers casaguide-refresh-pois.timer --no-pager  # colonne heure = Madrid
+```
+
+⚠ **Fuseau EXPLICITE** : `OnCalendar=*-*-* 02:15:00 Europe/Madrid` — ne jamais retirer
+le suffixe (sans lui, l'heure est celle du serveur, souvent UTC). Vérifier ensuite
+`journalctl -u casaguide-refresh-pois`.
+
 ---
 
 ## 2. Déploiement courant (à chaque mise à jour)

@@ -1,0 +1,21 @@
+# Revérification nocturne des lieux des guides auprès de leur source — V2-93
+# Déclenchée par casaguide-refresh-pois.timer (chaque nuit, 02:15 Europe/Madrid).
+# Installation :
+#   sudo cp /opt/casaguide/ops/casaguide-refresh-pois.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now casaguide-refresh-pois.timer
+#   (vérifier : systemctl list-timers casaguide-refresh-pois.timer ; test à blanc :
+#    sudo -u casaguide /opt/casaguide/.venv/bin/python \
+#        /opt/casaguide/ops/refresh_pois.py --dry-run --max-properties 1)
+[Unit]
+Description=Revérification des lieux des guides Holaguia auprès de leur source
+After=postgresql.service network-online.target
+Wants=postgresql.service network-online.target
+
+[Service]
+Type=oneshot
+User=casaguide
+Group=casaguide
+# EnvironmentFile facultatif : le script charge aussi backend/.env lui-même (OPS-1).
+EnvironmentFile=-/opt/casaguide/backend/.env
+WorkingDirectory=/opt/casaguide/backend
+ExecStart=/opt/casaguide/.venv/bin/python /opt/casaguide/ops/refresh_pois.py

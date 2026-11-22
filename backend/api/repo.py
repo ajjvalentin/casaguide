@@ -1245,31 +1245,61 @@ def set_poi_status(conn, property_id: str, poi_id: str, status: str) -> dict | N
 _POI_EDITABLE = EDITABLE_FIELDS
 
 
+# Champs qu'un propriétaire ne peut pas vider (NOT NULL en base).
+_POI_NOT_EMPTY = ("name", "category_code")
+
+
+class PoiEditError(ValueError):
+    """Édition refusée (champ obligatoire vidé) — l'API répond 422."""
+
+
+def _norm_edit_value(v: Any) -> Any:
+    """Une chaîne vide ou blanche envoyée explicitement vaut NULL (champ vidé)."""
+    if isinstance(v, str) and not v.strip():
+        return None
+    return v
+
+
 def edit_poi(conn, property_id: str, poi_id: str, fields: dict) -> dict | None:
-    """Applique les champs édités et force le statut 'edited' (choix propriétaire).
+    """Applique l'édition du propriétaire. Seuls comptent les champs PRÉSENTS dans
+    `fields` (le routeur passe `exclude_unset`) ; un champ absent n'est pas touché.
 
-    Provenance (V2-91) : seul un champ dont la valeur CHANGE réellement
-    (`IS DISTINCT FROM` la valeur en base — le formulaire renvoie tous les champs)
-    rejoint `human_fields` (cumul, sans doublon) ; `status_by='owner'`,
-    `status_at=now()`. Dans un UPDATE, le membre droit lit l'ANCIENNE ligne : la
-    comparaison porte bien sur la valeur d'avant l'édition.
+    - **Champ vidé (V2-93)** : une valeur vide envoyée explicitement (None ou chaîne
+      vide/blanche, normalisée en NULL) EFFACE le champ et le VERROUILLE
+      (`human_fields`) — le système ne le remplira plus. Seulement si la valeur change
+      réellement : NULL → NULL (le formulaire renvoie un champ jamais rempli) n'est pas
+      un changement et ne verrouille rien.
+    - **Sans changement (V2-93)** : si aucun champ ne change, RIEN n'est écrit — la
+      fiche garde son statut, `status_by`, `status_at` ; aucune ligne de journal ;
+      aucune traduction marquée périmée.
+    - **Avec changement** : seuls les champs modifiés sont écrits et rejoignent
+      `human_fields` (cumul, sans doublon) ; statut 'edited', `status_by='owner'`,
+      `status_at=now()` ; traductions marquées périmées (M-09). Journal (V2-92) :
+      auteur `owner`.
+    - `name` / `category_code` ne peuvent pas être vidés → `PoiEditError`.
 
-    Limite connue (V2-91, à trancher avant V2-93) : un champ envoyé à None est
-    ignoré — le propriétaire ne peut pas vider une valeur."""
+    Renvoie `{id, status}`, ou None si la fiche n'existe pas pour ce logement."""
+    wanted = {k: _norm_edit_value(fields[k]) for k in _POI_EDITABLE if k in fields}
+    for k in _POI_NOT_EMPTY:
+        if k in wanted and wanted[k] is None:
+            raise PoiEditError(f"Le champ « {k} » ne peut pas être vidé.")
+    cols = ", ".join(_POI_EDITABLE)
+    cur = conn.execute(
+        f"SELECT id, status, {cols} FROM pois WHERE id = %s AND property_id = %s "
+        "FOR UPDATE", (poi_id, property_id)).fetchone()
+    if cur is None:
+        return None
+    changed = {k: v for k, v in wanted.items() if v != cur[k]}
+    if not changed:
+        return {"id": cur["id"], "status": cur["status"]}
     sets = ["status = 'edited'", "status_by = 'owner'", "status_at = now()"]
-    params: dict[str, Any] = {"id": poi_id, "pid": property_id}
-    changed = []
-    for key in _POI_EDITABLE:
-        if key in fields and fields[key] is not None:
-            sets.append(f"{key} = %({key})s")
-            params[key] = fields[key]
-            changed.append(f"CASE WHEN pois.{key} IS DISTINCT FROM %({key})s "
-                           f"THEN '{key}' END")
-    if changed:
-        sets.append(
-            "human_fields = ARRAY(SELECT DISTINCT f FROM unnest("
-            f"pois.human_fields || ARRAY[{', '.join(changed)}]::text[]) AS f "
-            "WHERE f IS NOT NULL ORDER BY f)")
+    params: dict[str, Any] = {"id": poi_id, "pid": property_id,
+                              "changed": sorted(changed)}
+    for key, val in changed.items():   # noms issus de _POI_EDITABLE (code-contrôlés)
+        sets.append(f"{key} = %({key})s")
+        params[key] = val
+    sets.append("human_fields = ARRAY(SELECT DISTINCT f FROM unnest("
+                "pois.human_fields || %(changed)s::text[]) AS f ORDER BY f)")
     with acting(conn, "owner"):   # journal V2-92 : saisie du propriétaire
         row = conn.execute(
             f"UPDATE pois SET {', '.join(sets)} "
@@ -1277,7 +1307,7 @@ def edit_poi(conn, property_id: str, poi_id: str, fields: dict) -> dict | None:
             "RETURNING id, status",
             params,
         ).fetchone()
-    # Le texte éditorial du POI a changé → ses traductions sont périmées (M-09).
+    # Le contenu du POI a changé → ses traductions sont périmées (M-09).
     if row:
         conn.execute(
             "UPDATE poi_translations SET is_stale = TRUE WHERE poi_id = %s",
@@ -1328,13 +1358,14 @@ def count_jobs_current_month(conn, property_id: str) -> int:
     Les jobs en échec ne comptent pas (`status <> 'failed'`) : une tentative
     qui n'a rien produit — clé IA invalide, serveurs OSM indisponibles… — ne
     doit pas consommer le quota du propriétaire (M-01). Les jobs de traduction
-    (trigger='translate', M-09) ne sont pas des enrichissements : hors quota."""
+    (trigger='translate', M-09) ne sont pas des enrichissements : hors quota. Pas plus
+    que la revérification nocturne (trigger='refresh', V2-93), lancée par le système."""
     return conn.execute(
         """SELECT count(*) AS n FROM enrichment_jobs
            WHERE property_id = %s
              AND created_at >= date_trunc('month', now())
              AND status <> 'failed'
-             AND trigger <> 'translate'""",
+             AND trigger NOT IN ('translate', 'refresh')""",
         (property_id,),
     ).fetchone()["n"]
 
@@ -1342,14 +1373,14 @@ def count_jobs_current_month(conn, property_id: str) -> int:
 def count_owner_jobs_current_month(conn, owner_id: str) -> int:
     """Total des enrichissements du mois calendaire pour TOUS les logements du
     propriétaire (jauge « Mon abonnement », V2-05a). Même règle que le quota :
-    hors jobs `failed` et hors traductions."""
+    hors jobs `failed`, hors traductions et hors revérifications (V2-93)."""
     return conn.execute(
         """SELECT count(*) AS n FROM enrichment_jobs j
            JOIN properties p ON p.id = j.property_id
            WHERE p.owner_id = %s
              AND j.created_at >= date_trunc('month', now())
              AND j.status <> 'failed'
-             AND j.trigger <> 'translate'""",
+             AND j.trigger NOT IN ('translate', 'refresh')""",
         (owner_id,),
     ).fetchone()["n"]
 

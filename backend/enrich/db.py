@@ -5,7 +5,9 @@ Toutes les écritures sont idempotentes :
                  (nécessite la migration 001, index unique partiel)
   - area_facts : ON CONFLICT (country_code, admin_area, fact_type) -> mise à jour
 Un POI déjà 'approved'/'edited'/'rejected' par le propriétaire n'est jamais
-écrasé par un nouvel enrichissement (respect du workflow §5.1 étape 5).
+écrasé par un nouvel enrichissement (respect du workflow §5.1 étape 5) — sauf, sur une
+fiche RETENUE, les trois champs simples `phone`/`website`/`opening_hours`, qui suivent
+la source selon le verrou par champ (V2-93, `locks.plan_refresh`).
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from . import locks
 from .journal import JournalConnection, acting
 from .settings import settings
 
@@ -79,10 +82,18 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
     upsert pour une fiche retenue (self-assignment `= pois.x`).
 
     Structure : plus de `WHERE pois.status = 'suggested'` global (il empêchait la
-    branche retenue) ; chaque champ est gardé par un `CASE` sur le statut — seule
-    `locality` a une branche « retenue » non triviale (fill-NULL-only)."""
+    branche retenue) ; chaque champ est gardé par un `CASE` sur le statut.
+
+    **V2-93 — les trois champs simples d'une fiche retenue suivent la source.**
+    `phone`, `website`, `opening_hours` d'une fiche `approved`/`edited` reçoivent la
+    valeur de la SOURCE D'ORIGINE (`locks.source_values_of` : jamais un comblement
+    Overture/éditorial/fusion) selon EXACTEMENT la règle de `locks.plan_refresh` —
+    champ hors `human_fields`, valeur source non vide (`~ '\\S'`), sinon inchangé.
+    Parité SQL ↔ Python prouvée par test sur la même matrice de cas. Une fiche
+    `rejected` reste entièrement intouchée ; tout le reste d'une fiche retenue aussi."""
     n = 0
     for p in pois:
+        sv = locks.source_values_of(p)
         conn.execute(
             """INSERT INTO pois (property_id, category_code, name, geom, address,
                                  locality, phone, website, opening_hours, cuisine, subtype,
@@ -109,13 +120,28 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                        ELSE COALESCE(pois.locality, EXCLUDED.locality)
                    END,
                    -- Tout le reste : rafraîchi UNIQUEMENT pour les suggested
-                   -- (invariant 1) ; self-assignment (no-op) pour approved/edited.
+                   -- (invariant 1) ; self-assignment (no-op) pour approved/edited —
+                   -- SAUF phone/website/opening_hours d'une fiche retenue (V2-93) :
+                   -- valeur de la source d'origine si le champ n'est pas verrouillé
+                   -- et que la source parle (règle de locks.plan_refresh).
                    name = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.name ELSE pois.name END,
                    geom = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.geom ELSE pois.geom END,
                    address = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.address ELSE pois.address END,
-                   phone = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.phone ELSE pois.phone END,
-                   website = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.website ELSE pois.website END,
-                   opening_hours = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.opening_hours ELSE pois.opening_hours END,
+                   phone = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.phone
+                       WHEN pois.status IN ('approved', 'edited')
+                            AND NOT ('phone' = ANY (pois.human_fields))
+                            AND %(sv_phone)s::text ~ '\\S' THEN %(sv_phone)s::text
+                       ELSE pois.phone END,
+                   website = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.website
+                       WHEN pois.status IN ('approved', 'edited')
+                            AND NOT ('website' = ANY (pois.human_fields))
+                            AND %(sv_website)s::text ~ '\\S' THEN %(sv_website)s::text
+                       ELSE pois.website END,
+                   opening_hours = CASE WHEN pois.status = 'suggested' THEN EXCLUDED.opening_hours
+                       WHEN pois.status IN ('approved', 'edited')
+                            AND NOT ('opening_hours' = ANY (pois.human_fields))
+                            AND %(sv_opening_hours)s::text ~ '\\S' THEN %(sv_opening_hours)s::text
+                       ELSE pois.opening_hours END,
                    cuisine = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.cuisine, pois.cuisine) ELSE pois.cuisine END,
                    subtype = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.subtype, pois.subtype) ELSE pois.subtype END,
                    description_md = CASE WHEN pois.status = 'suggested' THEN COALESCE(EXCLUDED.description_md, pois.description_md) ELSE pois.description_md END,
@@ -162,6 +188,7 @@ def upsert_pois(conn, property_id: str, category: str, pois: list[dict]) -> int:
                 "meta": json.dumps(p["completion_meta"]) if p.get("completion_meta")
                         else None,
                 "source": p["source"], "source_ref": p["source_ref"],
+                **{f"sv_{f}": sv[f] for f in locks.REFRESH_FIELDS},
             },
         )
         n += 1

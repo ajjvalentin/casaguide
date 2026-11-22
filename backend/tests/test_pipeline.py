@@ -1264,9 +1264,14 @@ def test_retained_fiche_gains_null_locality_but_all_else_untouched(property_id,
                                                                    http_client):
     """V2-38bis (le CŒUR) : une fiche RETENUE (approved) à locality NULL — cas d'une
     fiche arbitrée avant V2-38 — GAGNE sa commune au re-run (le guide n'affiche que les
-    retenues : sinon elle resterait NULL à jamais). MAIS tout son contenu propriétaire
-    reste STRICTEMENT hors upsert (invariant 1), y compris un champ (website) que OSM
-    fournit et qui serait écrasé sans le garde-fou."""
+    retenues : sinon elle resterait NULL à jamais). Son contenu propriétaire reste hors
+    upsert (nom, description, coup de cœur, catégorie, statut).
+
+    ADAPTÉ en V2-93 (verrou par champ, remplace l'invariant 1 « fiche gelée ») : les
+    trois champs simples suivent désormais la source d'origine. `website`, NON
+    verrouillé et fourni par OSM, prend la valeur d'OSM ; `phone`, dont OSM ne dit rien,
+    est conservé (une source muette n'efface jamais) ; un `website` VERROUILLÉ
+    (`human_fields`) n'est jamais écrasé."""
     pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
                  http_client=http_client, anthropic_client=FakeAnthropic())
     with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
@@ -1291,13 +1296,22 @@ def test_retained_fiche_gains_null_locality_but_all_else_untouched(property_id,
             "name, category_code FROM pois WHERE id=%s", (pid_poi,)).fetchone()
     assert got["locality"] == "Torrevieja"          # NULL comblée depuis OSM — LE FIX
     assert got["status"] == "approved"              # statut inchangé
-    # Tout le reste STRICTEMENT intact (le contenu d'une fiche retenue n'est jamais
-    # réenrichi) — website prouve la garde : sans elle, OSM l'écraserait.
-    assert got["website"] == "https://chez-nous.example"
+    assert got["website"] == "https://lamarejada.example"   # V2-93 : suit la source
+    assert got["phone"] == "+34 111 222 333"        # OSM muet : conservé
     assert got["description_md"] == "Cuisine de la mer, vue sur le port."
-    assert got["phone"] == "+34 111 222 333"
     assert got["owner_comment"] == "Notre cantine !"
     assert got["name"] == "La Marejada" and got["category_code"] == "restaurant"
+
+    # Le propriétaire saisit SON site (verrou) : le re-run ne l'écrase plus.
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        conn.execute("UPDATE pois SET website='https://chez-nous.example', "
+                     "human_fields=ARRAY['website'] WHERE id=%s", (pid_poi,))
+        conn.commit()
+    pipeline.run(property_id, use_claude=False, only_categories={"restaurant"},
+                 http_client=http_client, anthropic_client=FakeAnthropic())
+    with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
+        got = conn.execute("SELECT website FROM pois WHERE id=%s", (pid_poi,)).fetchone()
+    assert got["website"] == "https://chez-nous.example"
 
 
 def test_upsert_merges_completion_meta_and_fills_retained(property_id):
@@ -1859,18 +1873,32 @@ def test_retry_gives_up_after_max_attempts(property_id):
         assert job["status"] == "done"          # terminé normalement malgré l'échec
 
 
-def test_retry_preserves_arbitrated_pois(property_id):
-    """Invariant 1 : un POI arbitré n'est jamais écrasé par un retry."""
+def test_retry_preserves_arbitrated_pois(property_id, monkeypatch):
+    """Un retry ne défait jamais un arbitrage. ADAPTÉ en V2-93 (le verrou par champ
+    remplace l'invariant 1 « fiche gelée ») : il prouve désormais que le CHOIX du
+    propriétaire (statut) et tout champ VERROUILLÉ (`human_fields`) survivent à un
+    retry, et que le contenu hors champs simples (nom) reste intouché."""
+    # Le retry renvoie un téléphone, un site ET des horaires DIFFÉRENTS : sans le
+    # verrou, les deux premiers seraient écrasés ; les horaires (non verrouillés)
+    # suivent la source — preuve que la règle s'applique bien sur ce chemin.
+    monkeypatch.setitem(AIRPORT_EL, "tags", {**AIRPORT_EL["tags"],
+                                             "phone": "+34 966 91 90 00",
+                                             "website": "https://aena.example",
+                                             "opening_hours": "24/7"})
     orig = _no_mirrors()
     try:
-        # POI aéroport DÉJÀ approuvé (même source_ref que renverra le retry).
+        # POI aéroport DÉJÀ approuvé (même source_ref que renverra le retry), avec un
+        # téléphone et un site saisis par le propriétaire (verrouillés).
         with psycopg.connect(settings.db_dsn) as conn:
             conn.execute(
                 """INSERT INTO pois (property_id, category_code, name, geom,
-                       source, source_ref, status)
+                       source, source_ref, status, status_by, phone, website,
+                       human_fields)
                    VALUES (%s,'airport','Mon aéroport à moi',
                        ST_SetSRID(ST_MakePoint(-0.5581,38.2822),4326),
-                       'osm','node/999','approved')""", (property_id,))
+                       'osm','node/999','approved','owner','+34 000 000 000',
+                       'https://mon-aeroport.example', ARRAY['phone','website'])""",
+                (property_id,))
             conn.commit()
         flaky = FlakyOverpass(fail_airport_times=1)
         with httpx.Client(transport=httpx.MockTransport(flaky.handler)) as client:
@@ -1883,11 +1911,17 @@ def test_retry_preserves_arbitrated_pois(property_id):
 
     with psycopg.connect(settings.db_dsn, row_factory=psycopg.rows.dict_row) as conn:
         rows = conn.execute(
-            "SELECT name, status FROM pois WHERE property_id=%s AND category_code='airport'",
-            (property_id,)).fetchall()
+            "SELECT name, status, status_by, phone, website, opening_hours, "
+            "human_fields FROM pois "
+            "WHERE property_id=%s AND category_code='airport'", (property_id,)).fetchall()
     assert len(rows) == 1                         # aucun doublon
-    assert rows[0]["status"] == "approved"        # choix conservé (invariant 1)
+    assert rows[0]["status"] == "approved"        # choix du propriétaire conservé
+    assert rows[0]["status_by"] == "owner"
     assert rows[0]["name"] == "Mon aéroport à moi"  # non écrasé par le retry
+    assert rows[0]["phone"] == "+34 000 000 000"    # champs verrouillés intacts
+    assert rows[0]["website"] == "https://mon-aeroport.example"
+    assert rows[0]["human_fields"] == ["phone", "website"]
+    assert rows[0]["opening_hours"] == "24/7"       # non verrouillé : suit la source
 
 
 # ── V2-07 volet 1 : livraison de repas par zone (mutualisation & rejet) ───────

@@ -188,9 +188,11 @@ d'écriture sur `pois` ne peut y échapper.
 
 Champs suivis : ceux de `enrich.locks.LOCKABLE_FIELDS` (éditables + `geom`, noté
 `{"lat","lon"}`). **Pas** tracés : distances, `fetched_at`, `updated_at`,
-`completion_meta`, `human_fields`, `status_by`, `status_at`. Une fiche `suggested`
+`completion_meta`, `human_fields`, `status_by`, `status_at`, ni les colonnes
+de contrôle `last_checked_at` / `source_state` / `source_state_since` (V2-93, bruit). Une fiche `suggested`
 rafraîchie à chaque moisson n'écrit **rien**. Hors périmètre : traductions
-(dérivées), sections (écrites par le seul propriétaire), `area_facts` (V2-93) et
+(dérivées), sections (écrites par le seul propriétaire), `area_facts` (mission à
+venir : leur rafraîchissement passe par des appels IA) et
 **jamais** `property_secrets`. Supprimer un logement supprime son journal.
 
 ### Les quatre auteurs (`actor`)
@@ -236,3 +238,96 @@ ligne ne s'annule qu'une fois (`already_reverted`, garanti par un index unique) 
 lot s'annule du plus récent au plus ancien, en entier, conflits compris. Annuler une
 suppression recrée la fiche avec son identifiant d'origine. Code de sortie 4 s'il
 reste des conflits ou refus.
+
+---
+
+## 5. Revérification nocturne des lieux (V2-93)
+
+Un horaire corrigé dans OpenStreetMap atteint désormais un guide publié. Chaque nuit
+(`casaguide-refresh-pois.timer`, 02:15 Europe/Madrid), `ops/refresh_pois.py` relit
+chaque lieu retenu **auprès de sa source d'origine, par identifiant**, et reporte les
+trois champs simples. Aucun appel IA (aucune ligne `api_costs`).
+
+### Ce qui est revérifié
+
+| | Périmètre |
+|---|---|
+| Logements | `status='published'`, hors `guest_guide` (instantané acheté à vie) et hors `demo` |
+| Fiches | `approved` / `edited`, `source` = `osm` ou `overture`, `source_ref` non NULL |
+| Champs | `phone`, `website`, `opening_hours` — rien d'autre (nom, adresse, position, description, coup de cœur intouchés) |
+| Non revérifiables | fiches `web`, `claude`, `owner` (aucun identifiant à réinterroger) : comptées, jamais touchées |
+
+Un logement est **dû** quand une de ses fiches n'a jamais été contrôlée ou l'a été il y
+a plus de `CASAGUIDE_REFRESH_MAX_AGE_DAYS` (7 j) : le timer tourne chaque nuit mais ne
+traite que les dus, la charge s'étale d'elle-même.
+
+**Sources.** OSM : Overpass `node(id:…)`/`way(id:…)`/`relation(id:…)`, paquets de
+`CASAGUIDE_REFRESH_BATCH_SIZE` (100 — un logement typique de ~125 fiches en deux
+requêtes ; une requête par identifiant ne coûte presque rien au serveur, la borne tient
+à la taille de la réponse et au coût d'un paquet perdu), miroirs et backoff habituels.
+Une réponse 200 est **refusée** (miroir suivant, puis échec du logement s'il n'y en a
+aucune d'utilisable) si elle porte une erreur d'exécution (`remark` : résultat partiel)
+ou si les données du miroir ont plus de `CASAGUIDE_REFRESH_MAX_SOURCE_LAG_HOURS` (48 h)
+de retard (`osm3s.timestamp_osm_base`) : un miroir périmé fait passer un lieu récent
+pour disparu et un lieu supprimé pour présent — constaté le 22/11/2026 sur un des
+miroirs publics. Overture : relu
+par identifiant GERS **dans le cache de zone local uniquement** — hors zone en cache,
+la fiche est « non contrôlée » (jamais de lecture S3).
+
+### La règle de report (`enrich/locks.plan_refresh`)
+
+Pour chaque champ : verrouillé par un humain (`human_fields`) ⇒ rien ; source muette ⇒
+rien (une source muette n'efface jamais) ; valeur identique ⇒ rien ; sinon ⇒ la valeur
+de la source. Un téléphone venu d'Overture ou de la complétion web sur une fiche OSM est
+remplacé si OSM en donne un aujourd'hui, conservé si OSM reste muet. **Même règle** au
+ré-enrichissement à la demande (`db.upsert_pois`). Un champ **vidé** par le propriétaire
+est verrouillé : le système ne le remplit plus.
+
+### Lieu fermé ou disparu
+
+**Constaté, jamais retiré** : `pois.source_state` = `closed` (OSM `is_closed` : fermé,
+désaffecté, date de fin passée…) ou `missing` (l'élément n'existe plus) ;
+`source_state_since` = depuis quand ; la fiche reste `approved` et servie. Aucun champ
+n'est reporté depuis un élément fermé ou disparu. Le retrait passe par le juge et le
+propriétaire (V2-94).
+
+```sql
+SELECT name, source_ref, source_state, source_state_since FROM pois
+WHERE property_id = '<uuid>' AND source_state IN ('closed', 'missing');
+```
+
+### Lire un passage
+
+Un job `enrichment_jobs` par logement (`trigger='refresh'`, **hors quota** du
+propriétaire) ; bilan dans `steps.refresh` : `checked`, `modified` (fiches),
+`modified_by_field`, `closed`, `missing`, `locked_skipped` (la source dit autre chose mais
+le champ est verrouillé), `not_recheckable`, `not_checked` (Overture hors cache). Chaque
+modification est une ligne `update` du journal (§ 4), auteur `system`, avec le lot et
+le job du passage. `last_checked_at` est posé sur toute fiche contrôlée ; une écriture
+qui ne change que ces colonnes ne bouge pas `updated_at`.
+
+```bash
+# Passage à blanc (lectures réseau réelles, AUCUNE écriture, bilan identique) :
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/refresh_pois.py --dry-run --max-properties 3
+# Un logement, à la main (quel que soit l'âge de ses contrôles) :
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/refresh_pois.py --property <uuid>
+```
+
+**Échec.** Un échec réseau sur un logement n'arrête pas les suivants : son job passe
+`failed` avec la cause, rien n'est écrit sur ses fiches (`last_checked_at` non posé), il
+est repris la nuit suivante. Code de sortie 1 s'il y a eu au moins un échec (visible
+dans `systemctl status casaguide-refresh-pois`).
+
+### Annuler un passage — et pourquoi la valeur revient
+
+```bash
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/revert_changes.py --batch <lot> --dry-run
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/revert_changes.py --batch <lot>
+```
+
+Le retour arrière restaure l'ancienne valeur, **mais le passage suivant la remodifie** :
+c'est attendu, la source dit toujours la nouvelle valeur et le champ n'est pas
+verrouillé. Pour figer l'ancienne valeur, c'est au **propriétaire** de la saisir (son
+édition verrouille le champ). Un retour arrière sert donc à réparer une erreur
+ponctuelle (source vandalisée, bug), pas à refuser durablement une donnée de la source.
+

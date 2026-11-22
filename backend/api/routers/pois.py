@@ -106,11 +106,17 @@ def set_poi_status(poi_id: str, payload: PoiStatusIn, conn: Conn, prop: OwnedPro
 def edit_poi(poi_id: str, payload: PoiEditIn, conn: Conn, prop: OwnedProperty):
     """Édite un POI (catégorie, nom, description, commentaire…) et le passe en
     'edited'. La requalification de catégorie (V2-37 volet 2) est validée contre
-    poi_categories (422 si inconnue)."""
+    poi_categories (422 si inconnue). V2-93 : un enregistrement sans aucun
+    changement laisse la fiche telle quelle (statut compris) ; un champ envoyé vide
+    l'efface et le verrouille ; vider le nom ou la catégorie → 422."""
     _require_poi(conn, str(prop["id"]), poi_id)
     if (payload.category_code is not None
             and not repo.poi_category_exists(conn, payload.category_code)):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=f"Catégorie inconnue : {payload.category_code}")
-    return repo.edit_poi(conn, str(prop["id"]), poi_id,
-                         payload.model_dump(exclude_unset=True))
+    try:
+        return repo.edit_poi(conn, str(prop["id"]), poi_id,
+                             payload.model_dump(exclude_unset=True))
+    except repo.PoiEditError as exc:   # nom / catégorie vidés (V2-93)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=str(exc)) from exc

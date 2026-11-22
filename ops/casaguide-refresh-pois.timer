@@ -1,0 +1,20 @@
+# Déclencheur nocturne de la revérification des lieux Holaguia — V2-93
+# Chaque nuit à 02:15 heure de Madrid : seuls les logements DUS (contrôle de plus de
+# CASAGUIDE_REFRESH_MAX_AGE_DAYS, 7 j) sont traités, la charge s'étale d'elle-même.
+# Hors de la sauvegarde nocturne (03:30) et des heures où les miroirs Overpass publics
+# sont les plus sollicités.
+#
+# FUSEAU EXPLICITE (piège) : `OnCalendar` sans suffixe est en heure LOCALE du
+# serveur — un VPS en UTC déclencherait à 02:15 UTC. Le suffixe de fuseau (systemd
+# ≥ v240) fixe l'heure à Europe/Madrid quel que soit le fuseau du serveur, DST
+# comprise. Ne jamais retirer ce suffixe.
+[Unit]
+Description=Revérification des lieux Holaguia (chaque nuit, 02:15 Europe/Madrid)
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 Europe/Madrid
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

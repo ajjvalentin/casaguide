@@ -209,6 +209,24 @@ class Settings:
         str(Path(__file__).resolve().parents[2] / "ops" / "overture_zones.json"))
     overture_cache_max_age_days: int = int(
         os.getenv("CASAGUIDE_OVERTURE_CACHE_MAX_AGE_DAYS", "60"))
+    # ── Revérification planifiée des lieux (V2-93, ops/refresh_pois.py) ──
+    # Âge maximal d'un contrôle : un logement est « dû » dès qu'une de ses fiches
+    # revérifiables n'a pas été contrôlée depuis ce délai (le timer tourne chaque nuit,
+    # la charge s'étale d'elle-même).
+    refresh_max_age_days: int = int(os.getenv("CASAGUIDE_REFRESH_MAX_AGE_DAYS", "7"))
+    # Taille des paquets d'identifiants par requête Overpass. Une requête par id est
+    # quasi gratuite côté serveur (accès indexé, pas de recherche spatiale) : la borne
+    # tient à la TAILLE de la réponse et au coût d'un paquet perdu (un échec réseau fait
+    # rejouer tout le logement la nuit suivante). 100 = un logement typique (~125 fiches
+    # retenues) en 2 requêtes, réponse de quelques dizaines de Ko.
+    refresh_batch_size: int = int(os.getenv("CASAGUIDE_REFRESH_BATCH_SIZE", "100"))
+    refresh_overpass_timeout_s: int = int(
+        os.getenv("CASAGUIDE_REFRESH_OVERPASS_TIMEOUT", "25"))
+    # Retard maximal admis des données d'un miroir Overpass (`osm3s.timestamp_osm_base`)
+    # pour la revérification : au-delà, la réponse est refusée (miroir suivant). Un
+    # miroir à jour a quelques minutes de retard.
+    refresh_max_source_lag_hours: float = float(
+        os.getenv("CASAGUIDE_REFRESH_MAX_SOURCE_LAG_HOURS", "48"))
     # Contrainte MÉMOIRE (VPS 3,8 Go de RAM) : DuckDB plafonné, débordement EN FLUX sur
     # disque (`temp_directory`), parallélisme borné, ordre d'insertion non préservé (permet
     # au COPY de streamer au lieu de tout tamponner). Jamais de chargement intégral en RAM.

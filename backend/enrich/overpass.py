@@ -796,7 +796,8 @@ def _build_query(selectors: list[str], lat: float, lon: float, radius_m: int,
 
 
 def _post_overpass(client: httpx.Client, query: str,
-                   timeout_s: int | None = None) -> list[dict]:
+                   timeout_s: int | None = None, *, raw: bool = False,
+                   accept: "Callable[[dict], str | None] | None" = None):
     """POST vers Overpass avec bascule sur les miroirs ET backoff sur 406/429.
 
     **Correctif OPS-4 (12/08).** Reproduit : la MÊME requête (celle que ce code
@@ -830,7 +831,18 @@ def _post_overpass(client: httpx.Client, query: str,
                             url, attempt, exc)
                 continue  # miroir suivant
             if resp.status_code == 200:
-                return resp.json().get("elements", [])
+                data = resp.json()
+                # `accept` (V2-93) : refus d'une réponse 200 inutilisable (miroir aux
+                # données périmées, erreur d'exécution) → traité comme transitoire :
+                # miroir suivant, puis nouvelle passe.
+                refusal = accept(data) if accept else None
+                if refusal:
+                    last_error = OverpassError(url, 200, refusal)
+                    log.warning("Overpass %s : réponse refusée (essai %d) : %s",
+                                url, attempt, refusal)
+                    continue
+                # `raw` (V2-93) : le document entier (métadonnées `osm3s`, `remark`).
+                return data if raw else data.get("elements", [])
             body = (resp.text or "").strip()
             last_error = OverpassError(url, resp.status_code, body)
             # Journal COMPLET côté logs (le corps explique le refus) ; tronqué
@@ -842,6 +854,101 @@ def _post_overpass(client: httpx.Client, query: str,
         if attempt < settings.overpass_max_attempts:
             time.sleep(settings.overpass_backoff_s * attempt)  # backoff croissant
     raise last_error or RuntimeError("Aucun serveur Overpass joignable")
+
+
+# ── Revérification par identifiant (V2-93) ───────────────────────────────────
+
+_REF_RE = re.compile(r"^(node|way|relation)/(\d+)$")
+
+
+def _build_ids_query(refs: list[str], timeout_s: int) -> str:
+    """Requête par identifiants : `node(id:1,2);way(id:3);…;out center tags;`."""
+    by_type: dict[str, list[str]] = {}
+    for r in refs:
+        m = _REF_RE.match(r)
+        if m:
+            by_type.setdefault(m.group(1), []).append(m.group(2))
+    clauses = "".join(f"{t}(id:{','.join(ids)});" for t, ids in by_type.items())
+    return f"[out:json][timeout:{timeout_s}];({clauses});out center tags;"
+
+
+def _source_entry(el: dict) -> dict:
+    """État et champs reportables d'un élément, normalisés EXACTEMENT comme à la
+    moisson (`_element_to_poi`). Un élément sans nom ou sans position reste un
+    élément existant : on le normalise avec des valeurs de remplissage."""
+    tags = el.get("tags") or {}
+    probe = dict(el)
+    if not tags.get("name"):
+        probe["tags"] = {**tags, "name": "_"}
+    if probe.get("lat") is None and not (probe.get("center") or {}).get("lat"):
+        probe["lat"], probe["lon"] = 0.0, 0.0
+    p = _element_to_poi(probe, 0.0, 0.0) or {}
+    return {"state": "closed" if is_closed(tags) else "ok",
+            "phone": p.get("phone"), "website": p.get("website"),
+            "opening_hours": p.get("opening_hours")}
+
+
+def _refresh_refusal(data: dict, now: "datetime.datetime | None" = None) -> str | None:
+    """Motif de refus d'une réponse 200 pour la revérification, ou None si utilisable.
+
+    - erreur d'exécution (`remark`) : le résultat est PARTIEL ;
+    - données du miroir plus vieilles que `refresh_max_source_lag_hours` (ou date
+      illisible) : un miroir périmé fait passer un lieu récent pour disparu et un lieu
+      supprimé pour présent (constaté le 22/11/2026 : une réponse sans un nœud créé le
+      30/06 mais avec un nœud supprimé le 04/08)."""
+    import datetime as _dtm   # noqa: PLC0415
+    remark = (data.get("remark") or "").strip()
+    if remark and ("error" in remark.lower() or "timed out" in remark.lower()):
+        return f"résultat partiel ({_short(remark, 80)})"
+    stamp = (data.get("osm3s") or {}).get("timestamp_osm_base") or ""
+    try:
+        base = _dtm.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return "date des données du miroir illisible"
+    now = now or _dtm.datetime.now(_dtm.timezone.utc)
+    lag_h = (now - base).total_seconds() / 3600
+    if lag_h > settings.refresh_max_source_lag_hours:
+        return f"données du miroir périmées ({stamp}, {lag_h:.0f} h de retard)"
+    return None
+
+
+def fetch_by_refs(refs: list[str], *, client: httpx.Client | None = None,
+                  batch_size: int | None = None) -> dict[str, dict]:
+    """Interroge Overpass PAR IDENTIFIANT (`node/123`, `way/45`, `relation/6`), par
+    paquets de `batch_size` (défaut `settings.refresh_batch_size`). Renvoie, par
+    `source_ref` demandé : `{state, phone, website, opening_hours}` avec `state` =
+    `ok` | `closed` (`is_closed`) | `missing` (l'élément n'existe plus).
+
+    Réutilise `_post_overpass` (miroirs, backoff). Une réponse 200 inutilisable
+    (`_refresh_refusal` : résultat partiel, miroir périmé) est refusée et le miroir
+    suivant interrogé. LÈVE si un paquet échoue partout : jamais de « disparu » sur une
+    réponse douteuse. Un `source_ref` de forme inconnue est ignoré (absent du
+    résultat)."""
+    valid = [r for r in dict.fromkeys(refs) if _REF_RE.match(r or "")]
+    size = max(1, batch_size or settings.refresh_batch_size)
+    own = client is None
+    client = client or httpx.Client(timeout=settings.overpass_timeout_s + 10)
+    out: dict[str, dict] = {}
+    try:
+        for i in range(0, len(valid), size):
+            chunk = valid[i:i + size]
+            if i:
+                time.sleep(settings.politeness_delay_s)   # politesse entre paquets
+            timeout_s = settings.refresh_overpass_timeout_s
+            data = _post_overpass(client, _build_ids_query(chunk, timeout_s),
+                                  timeout_s=timeout_s, raw=True,
+                                  accept=_refresh_refusal)
+            seen: dict[str, dict] = {}
+            for el in data.get("elements", []):
+                ref = f'{el.get("type")}/{el.get("id")}'
+                seen[ref] = _source_entry(el)
+            for ref in chunk:
+                out[ref] = seen.get(ref) or {"state": "missing", "phone": None,
+                                             "website": None, "opening_hours": None}
+    finally:
+        if own:
+            client.close()
+    return out
 
 
 # Nom local pour montrer au chauffeur (V2-66) : langue « du pays » (tag `name:<lang>`)
@@ -1012,6 +1119,10 @@ def _element_to_poi(el: dict, lat0: float, lon0: float,
         "crow_m": haversine_m(lat0, lon0, float(lat), float(lon)),
         "_tags": tags,
     }
+    # V2-93 : ce que OSM dit LUI-MÊME des trois champs reportables, avant tout
+    # comblement (Overture, mémoire éditoriale, fusion de doublons) — en mémoire, jamais
+    # stocké ; `locks.source_values_of` le lit à l'upsert d'une fiche retenue.
+    poi["source_values"] = {f: poi[f] for f in ("phone", "website", "opening_hours")}
     # Nom/adresse locaux (V2-66) + accès (V2-71b) : stockés en completion_meta.
     meta = dict(_local_name_meta(tags, name, country_lang))
     acc = _access_from(tags)

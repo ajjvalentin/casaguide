@@ -550,6 +550,12 @@ CREATE TABLE pois (
     status_by      TEXT CONSTRAINT pois_status_by_check
                    CHECK (status_by IN ('owner', 'judge')),   -- NULL = suggested (personne n'a statué)
     status_at      TIMESTAMPTZ,                    -- date de la dernière décision de statut
+    -- Revérification planifiée (V2-93, migration 044) : dernier contrôle par identifiant
+    -- auprès de la source (fetched_at = date de moisson) et ce que la source en dit.
+    last_checked_at    TIMESTAMPTZ,
+    source_state       TEXT CONSTRAINT pois_source_state_check
+                       CHECK (source_state IN ('ok', 'closed', 'missing')),  -- NULL = jamais contrôlé
+    source_state_since TIMESTAMPTZ,                -- depuis quand la source est dans cet état
     sort_order     INT NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -557,6 +563,9 @@ CREATE TABLE pois (
 CREATE INDEX idx_pois_property        ON pois(property_id);
 CREATE INDEX idx_pois_property_status ON pois(property_id, status);
 CREATE INDEX idx_pois_geom            ON pois USING GIST(geom);
+CREATE INDEX idx_pois_refresh_due     ON pois(property_id, last_checked_at)
+    WHERE status IN ('approved', 'edited') AND source IN ('osm', 'overture')
+      AND source_ref IS NOT NULL;
 
 -- Traductions des descriptions de POI
 CREATE TABLE poi_translations (
@@ -667,6 +676,21 @@ BEGIN
        FOR EACH ROW EXECUTE FUNCTION set_updated_at()', t, t);
   END LOOP;
 END $$;
+
+-- V2-93 (migration 044) : sur `pois`, `updated_at` reste la date de la dernière
+-- modification RÉELLE : une écriture dont SEULES les colonnes de contrôle changent de
+-- valeur (revérification sans changement) ne le bouge pas. Toute autre écriture le pose,
+-- comme avant (y compris une écriture qui ne change aucune valeur).
+DROP TRIGGER IF EXISTS trg_pois_updated ON pois;
+CREATE TRIGGER trg_pois_updated BEFORE UPDATE ON pois
+    FOR EACH ROW
+    WHEN ((to_jsonb(OLD) - ARRAY['last_checked_at', 'source_state', 'source_state_since'])
+              IS DISTINCT FROM
+          (to_jsonb(NEW) - ARRAY['last_checked_at', 'source_state', 'source_state_since'])
+          OR (OLD.last_checked_at, OLD.source_state, OLD.source_state_since)
+              IS NOT DISTINCT FROM
+             (NEW.last_checked_at, NEW.source_state, NEW.source_state_since))
+    EXECUTE FUNCTION set_updated_at();
 
 -- Exemple de requête clé (guide voyageur) : POI approuvés triés par distance
 -- SELECT p.*, ST_Distance(p.geom::geography, pr.geom::geography) AS dist_m

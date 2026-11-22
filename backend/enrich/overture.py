@@ -463,3 +463,45 @@ def _rows_to_places(rows: list[tuple]) -> list[dict]:
             "source_ref": f"gers:{gers}" if gers else None,
         })
     return out
+
+
+# ── V2-93 : revérification par identifiant GERS, cache local SEULEMENT ─────────
+
+def fetch_cached_by_gers(refs: list[str], lat: float, lon: float, *,
+                         connect: Callable = _duckdb_connect,
+                         zones: list[dict] | None = None,
+                         cache_dir: str | Path | None = None,
+                         radius_m: int | None = None) -> dict[str, dict] | None:
+    """Relit des lieux Overture par identifiant GERS (`gers:<id>`) dans le cache de la
+    zone qui couvre le logement (même bbox que la moisson). JAMAIS de lecture S3 : hors
+    zone en cache → None (fiches « non contrôlées »). Renvoie, par `source_ref` :
+    `{state, phone, website, opening_hours}` — `state` = `ok` ou `missing` (Overture
+    ne dit pas « fermé »), `opening_hours` toujours None (Overture n'en porte pas :
+    source muette, rien n'est effacé). Normalisation identique à la moisson
+    (`phones[1]`, `websites[1]`, vide → None)."""
+    from .settings import settings   # noqa: PLC0415
+    ids = [r[5:] for r in dict.fromkeys(refs) if (r or "").startswith("gers:")]
+    hit = find_cached_zone(_bbox(lat, lon, radius_m or settings.overture_bbox_max_radius_m),
+                           zones=zones, cache_dir=cache_dir)
+    if hit is None:
+        return None
+    if not ids:
+        return {}
+    pq, _ = _cache_paths(hit[0]["id"], cache_dir)
+    con = connect()
+    try:
+        rows = con.execute(
+            f"SELECT id, phones[1], websites[1] FROM read_parquet('{pq}') "
+            "WHERE id IN (SELECT unnest(?::VARCHAR[]))", [ids]).fetchall()
+    finally:
+        con.close()
+    found = {gid: (phone or None, website or None) for gid, phone, website in rows}
+    out: dict[str, dict] = {}
+    for gid in ids:
+        if gid in found:
+            out[f"gers:{gid}"] = {"state": "ok", "phone": found[gid][0],
+                                  "website": found[gid][1], "opening_hours": None}
+        else:
+            out[f"gers:{gid}"] = {"state": "missing", "phone": None, "website": None,
+                                  "opening_hours": None}
+    return out

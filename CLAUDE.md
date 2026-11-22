@@ -156,21 +156,16 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
 
 ## Invariants à ne jamais casser (couverts par les tests)
 
-1. Un POI `approved` / `edited` / `rejected` par le propriétaire n'est
-   **jamais** écrasé par un ré-enrichissement. **UNE exception nommée et étroite
-   (V2-38bis)** : la seule colonne de **métadonnée** `locality` est **complétée si
-   NULL** quel que soit le statut, depuis la **même source OSM** (même `source_ref`) —
-   `COALESCE(pois.locality, EXCLUDED.locality)` pour une fiche retenue interdit par
-   construction tout écrasement (une localité saisie/éditée survit) ; **aucun autre
-   champ** d'une fiche retenue n'est touché. Raison : le guide n'affiche que les fiches
-   retenues, qui resteraient `locality=NULL` à jamais sinon (`enrich/db.upsert_pois`).
-   **Note du 22/11/2026 (V2-91) — remplacement annoncé.** Cet invariant (verrou à la
-   FICHE) sera remplacé en **V2-93** par un **verrou au CHAMP** : un champ saisi ou
-   modifié par un humain n'est jamais touché, les autres suivent la source. V2-91 n'en
-   pose que la provenance (`pois.human_fields`, `status_by`, `status_at` — migration 042 ;
-   règle pure `enrich/locks.system_may_write`, sans appelant) : **l'invariant ci-dessus
-   reste vrai et en vigueur** jusqu'à V2-93. Réf. : brief « Mission V2-91 — Provenance
-   et verrou par champ » (22/11/2026).
+1. Le système n'écrase jamais un champ saisi par un humain (`human_fields`). Sur une
+   fiche retenue, seuls `phone`, `website` et `opening_hours` suivent la source ;
+   tout autre champ est intouché. Une fiche rejetée est intouchée. **Exception nommée
+   (V2-38bis)** : la métadonnée `locality` d'une fiche retenue est **complétée si
+   NULL** depuis la même source (`COALESCE(pois.locality, EXCLUDED.locality)`, jamais
+   un écrasement). Règle unique `enrich/locks.plan_refresh` (V2-93), appliquée par la
+   revérification nocturne (`enrich/refresh.py`, `ops/refresh_pois.py`) ET par
+   `db.upsert_pois` (parité SQL ↔ Python prouvée par test) ; une source muette
+   n'efface rien ; un champ vidé par le propriétaire est verrouillé. Détail :
+   `docs/ops.md` § 5.
 2. Relancer le pipeline est **idempotent** (aucun doublon de POI).
 3. Toute réponse IA est du **JSON strict validé** avant insertion ; sinon le
    job passe en `failed` sans rien corrompre.
@@ -587,6 +582,7 @@ psql -d casaguide -f db/migrations/040_editorial_pick_name_local.sql # nom local
 psql -d casaguide -f db/migrations/041_poi_subtype.sql # sous-type sport/loisir d'un POI (puce de discipline + prompt de description) (V2-71)
 psql -d casaguide -f db/migrations/042_poi_provenance.sql # provenance par champ : pois.human_fields + status_by/status_at + reprise de l'existant (V2-91)
 psql -d casaguide -f db/migrations/043_content_changes.sql # journal daté des modifications (content_changes + déclencheur trg_pois_journal) (V2-92)
+psql -d casaguide -f db/migrations/044_poi_source_check.sql # revérification planifiée : pois.last_checked_at / source_state / source_state_since (V2-93)
 
 # Backend
 cd backend
@@ -1326,7 +1322,8 @@ exposé, peer auth).
     (même `job_id`, quota inchangé) ; chaque passage est journalisé dans
     `enrichment_jobs.steps` sous `retry_1`, `retry_2`… Le job reste `done` (les
     retries ne changent jamais son statut) et **aucun POI arbitré n'est touché**
-    (l'upsert ne réécrit que `status='suggested'`, invariant 1). `sleep`
+    (l'upsert ne réécrit que `status='suggested'`, hors les trois champs simples non
+    verrouillés d'une fiche retenue — invariant 1, V2-93). `sleep`
     injectable pour les tests. NB : la tâche de fond `run_with_retries` bloque un
     thread du threadpool jusqu'à ~9 min ; elle ne survit pas à un redémarrage
     d'uvicorn (best-effort, comme tout `BackgroundTasks`).
