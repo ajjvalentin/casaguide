@@ -539,6 +539,17 @@ CREATE TABLE pois (
     -- Workflow de validation (§5.1 étape 5)
     status         TEXT NOT NULL DEFAULT 'suggested',
                    -- suggested | approved | edited | rejected
+    -- Provenance par champ (V2-91, migration 042) : colonnes dont la valeur courante
+    -- vient d'un humain (noms admis = enrich.locks.LOCKABLE_FIELDS) ; qui a statué et quand.
+    human_fields   TEXT[] NOT NULL DEFAULT '{}'
+                   CONSTRAINT pois_human_fields_check
+                   CHECK (human_fields <@ ARRAY['category_code', 'name', 'address', 'locality',
+                                                'phone', 'website', 'opening_hours', 'cuisine',
+                                                'weekday', 'weekday_note', 'description_md',
+                                                'owner_comment', 'geom']::text[]),
+    status_by      TEXT CONSTRAINT pois_status_by_check
+                   CHECK (status_by IN ('owner', 'judge')),   -- NULL = suggested (personne n'a statué)
+    status_at      TIMESTAMPTZ,                    -- date de la dernière décision de statut
     sort_order     INT NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()

@@ -4809,3 +4809,199 @@ def test_guest_guide_hides_tobacco_rubric_outside_licensed_countries(client):
         with psycopg.connect(settings.db_dsn) as conn:
             conn.execute("DELETE FROM properties WHERE id = ANY(%s)", (made,))
             conn.commit()
+
+
+# ── Provenance par champ (V2-91) ─────────────────────────────────────────────
+
+_MIGRATION_042 = (Path(__file__).resolve().parents[2]
+                  / "db" / "migrations" / "042_poi_provenance.sql")
+
+
+def _poi_row(poi_id: str) -> dict:
+    with _dbdict() as conn:
+        return conn.execute(
+            "SELECT status, human_fields, status_by, status_at, updated_at "
+            "FROM pois WHERE id = %s", (poi_id,)).fetchone()
+
+
+def _insert_raw_poi(pid: str, *, source="osm", status="suggested", **cols) -> str:
+    """POI inséré à la main, provenance aux valeurs par défaut (= état d'avant 042)."""
+    base = {"category_code": "restaurant", "name": "Bar Central"}
+    base.update(cols)
+    names = ", ".join(base)
+    ph = ", ".join(f"%({k})s" for k in base)
+    with _dbdict() as conn:
+        poi_id = str(conn.execute(
+            f"""INSERT INTO pois (property_id, geom, source, status, {names})
+                VALUES (%(pid)s, ST_SetSRID(ST_MakePoint(-0.74, 37.9), 4326),
+                        %(source)s, %(status)s, {ph}) RETURNING id""",
+            {"pid": pid, "source": source, "status": status, **base},
+        ).fetchone()["id"])
+        conn.commit()
+    return poi_id
+
+
+def test_edit_poi_locks_only_really_changed_fields_and_accumulates(client):
+    """V2-91 tests 1 & 2 : le formulaire renvoie TOUS les champs, un seul diffère →
+    un seul champ dans `human_fields` ; une seconde édition cumule, sans doublon ;
+    `status_by='owner'` et `status_at` posés."""
+    owner = register(client)
+    pid = make_property(client, owner["headers"])["id"]
+    poi_id = _insert_raw_poi(pid, address="Calle Mayor 3", phone="+34 965 00 00 00",
+                             website="https://bar.example", opening_hours="Mo-Su 08:00-23:00")
+    current = next(p for p in client.get(f"/api/properties/{pid}/pois",
+                                         headers=owner["headers"]).json()
+                   if p["id"] == poi_id)
+    assert current["human_fields"] == [] and current["status_by"] is None
+    form = {k: current[k] for k in repo._POI_EDITABLE}
+    form["phone"] = "+34 965 11 11 11"
+    r = client.patch(f"/api/properties/{pid}/pois/{poi_id}",
+                     headers=owner["headers"], json=form)
+    assert r.status_code == 200, r.text
+    row = _poi_row(poi_id)
+    assert row["status"] == "edited" and row["human_fields"] == ["phone"]
+    assert row["status_by"] == "owner" and row["status_at"] is not None
+
+    # Seconde édition : phone renvoyé à l'identique + website changé → cumul, sans doublon.
+    form["website"] = "https://bar-central.example"
+    r = client.patch(f"/api/properties/{pid}/pois/{poi_id}",
+                     headers=owner["headers"], json=form)
+    assert r.status_code == 200, r.text
+    assert sorted(_poi_row(poi_id)["human_fields"]) == ["phone", "website"]
+    # Re-changer un champ déjà verrouillé ne le duplique pas.
+    form["phone"] = "+34 965 22 22 22"
+    client.patch(f"/api/properties/{pid}/pois/{poi_id}", headers=owner["headers"], json=form)
+    assert sorted(_poi_row(poi_id)["human_fields"]) == ["phone", "website"]
+    # Exposé dans la liste des fiches (§5 du brief).
+    got = next(p for p in client.get(f"/api/properties/{pid}/pois",
+                                     headers=owner["headers"]).json() if p["id"] == poi_id)
+    assert sorted(got["human_fields"]) == ["phone", "website"] and got["status_by"] == "owner"
+
+
+def test_create_manual_poi_locks_provided_fields_and_geom(client):
+    """V2-91 test 3 : création manuelle → tous les champs FOURNIS + `geom`
+    verrouillés (un champ laissé vide n'est pas « saisi ») ; status_by='owner'."""
+    owner = register(client)
+    pid = make_property(client, owner["headers"])["id"]
+    r = client.post(f"/api/properties/{pid}/pois", headers=owner["headers"],
+                    json={"category_code": "restaurant", "name": "El Meson",
+                          "lat": 37.929, "lon": -0.747, "phone": "+34 966 00 00 00",
+                          "owner_comment": "Notre cantine"})
+    assert r.status_code == 201, r.text
+    poi = r.json()
+    assert sorted(poi["human_fields"]) == sorted(
+        ["category_code", "name", "phone", "owner_comment", "geom"])
+    assert poi["status_by"] == "owner"
+    assert _poi_row(poi["id"])["status_at"] is not None
+
+
+def test_status_by_tracks_owner_judge_and_reset_on_suggested(client):
+    """V2-91 test 4 : Approuver/Rejeter → 'owner' ; juge → 'judge' ; retour à
+    'suggested' → NULL. Statuer ne verrouille aucun champ."""
+    from enrich import db as enrich_db  # noqa: PLC0415
+    owner = register(client)
+    pid = make_property(client, owner["headers"])["id"]
+    a = _insert_raw_poi(pid, name="A")
+    b = _insert_raw_poi(pid, name="B")
+    h = owner["headers"]
+    assert client.post(f"/api/properties/{pid}/pois/{a}/approve", headers=h).status_code == 200
+    row = _poi_row(a)
+    assert (row["status"], row["status_by"], row["human_fields"]) == ("approved", "owner", [])
+    assert row["status_at"] is not None
+    client.post(f"/api/properties/{pid}/pois/{a}/reject", headers=h)
+    assert _poi_row(a)["status_by"] == "owner"
+    back = client.post(f"/api/properties/{pid}/pois/{a}/status", headers=h,
+                       json={"status": "suggested"})
+    assert back.json()["status"] == "suggested"
+    assert _poi_row(a)["status_by"] is None
+
+    with _dbdict() as conn:
+        assert enrich_db.apply_judge_verdict(conn, b, "rejected", {"verdict": "reject"}) == 1
+        conn.commit()
+    row = _poi_row(b)
+    assert (row["status"], row["status_by"]) == ("rejected", "judge")
+    assert row["status_at"] is not None and row["human_fields"] == []
+
+
+def test_migration_042_backfills_provenance_and_is_replayable(client):
+    """V2-91 test 6 (volet synthétique — le volet « état antérieur réel » est joué
+    sur une copie de la base, cf. rapport) : chaque ligne du tableau de reprise, puis
+    rejeu sans effet — y compris sur une provenance posée par le code après la 042."""
+    owner = register(client)
+    h = owner["headers"]
+    pid = make_property(client, h)["id"]
+    gpid = make_property(client, h, name="Guide voyageur")["id"]
+    with _dbdict() as conn:
+        conn.execute("UPDATE properties SET guest_guide = TRUE WHERE id = %s", (gpid,))
+        conn.commit()
+    full = {"address": "Calle 1", "phone": "+34 1", "website": None}
+    owner_poi = _insert_raw_poi(pid, source="owner", status="approved", **full)
+    edited = _insert_raw_poi(pid, status="edited", **full)
+    appr_guest = _insert_raw_poi(gpid, status="approved")
+    rej_guest = _insert_raw_poi(gpid, status="rejected")
+    appr_other = _insert_raw_poi(pid, status="approved")
+    rej_other = _insert_raw_poi(pid, status="rejected")
+    sugg = _insert_raw_poi(pid)
+    owner_sugg = _insert_raw_poi(pid, source="owner", status="suggested")
+    # Une provenance POSÉE PAR LE CODE après la 042 : le rejeu ne doit pas l'écraser.
+    by_code = _insert_raw_poi(pid, status="edited", phone="+34 9")
+    with _dbdict() as conn:
+        conn.execute("UPDATE pois SET human_fields = '{phone}', status_by = 'owner', "
+                     "status_at = now() WHERE id = %s", (by_code,))
+        conn.commit()
+    before = {i: _poi_row(i) for i in (owner_poi, edited, appr_guest, appr_other, by_code)}
+    sql = _MIGRATION_042.read_text()
+
+    def snapshot():
+        return {i: _poi_row(i) for i in (owner_poi, edited, appr_guest, rej_guest,
+                                         appr_other, rej_other, sugg, owner_sugg, by_code)}
+
+    with _dbdict() as conn:
+        conn.execute(sql); conn.commit()
+    s1 = snapshot()
+    with _dbdict() as conn:
+        conn.execute(sql); conn.commit()
+    s2 = snapshot()
+
+    assert sorted(s1[owner_poi]["human_fields"]) == sorted(
+        ["category_code", "name", "address", "phone", "geom"])
+    assert s1[owner_poi]["status_by"] == "owner"
+    assert sorted(s1[edited]["human_fields"]) == sorted(
+        ["category_code", "name", "address", "phone"])
+    assert s1[edited]["status_by"] == "owner"
+    for i in (appr_guest, rej_guest):
+        assert (s1[i]["human_fields"], s1[i]["status_by"]) == ([], "judge")
+    for i in (appr_other, rej_other):
+        assert (s1[i]["human_fields"], s1[i]["status_by"]) == ([], "owner")
+    assert (s1[sugg]["human_fields"], s1[sugg]["status_by"], s1[sugg]["status_at"]) \
+        == ([], None, None)
+    # Saisie propriétaire revenue à 'suggested' : champs humains, mais personne n'a statué.
+    assert "geom" in s1[owner_sugg]["human_fields"] and s1[owner_sugg]["status_by"] is None
+    # status_at = updated_at d'avant ; updated_at non réécrit par la reprise.
+    for i in (owner_poi, edited, appr_guest, appr_other):
+        assert s1[i]["status_at"] == before[i]["updated_at"]
+        assert s1[i]["updated_at"] == before[i]["updated_at"]
+    assert s1[by_code]["human_fields"] == ["phone"]
+    assert s1[by_code]["status_at"] == before[by_code]["status_at"]
+    assert s2 == s1
+
+
+def test_poi_provenance_constraints(client):
+    """Les CHECK de la 042 : `status_by` ∈ {owner, judge, NULL} ; `human_fields` ⊂
+    LOCKABLE_FIELDS — et la liste SQL est EXACTEMENT celle de `enrich.locks`."""
+    from enrich.locks import LOCKABLE_FIELDS  # noqa: PLC0415
+    import re  # noqa: PLC0415
+    sql = _MIGRATION_042.read_text()
+    m = re.search(r"human_fields <@ ARRAY\[(.*?)\]::text\[\]", sql, re.S)
+    assert m and tuple(re.findall(r"'(\w+)'", m.group(1))) == LOCKABLE_FIELDS
+    schema = (Path(__file__).resolve().parents[2] / "db" / "schema.sql").read_text()
+    m = re.search(r"human_fields <@ ARRAY\[(.*?)\]::text\[\]", schema, re.S)
+    assert m and tuple(re.findall(r"'(\w+)'", m.group(1))) == LOCKABLE_FIELDS
+    owner = register(client)
+    poi_id = _insert_raw_poi(make_property(client, owner["headers"])["id"])
+    with _dbdict() as conn:
+        for bad in ("UPDATE pois SET status_by = 'robot' WHERE id = %s",
+                    "UPDATE pois SET human_fields = '{status}' WHERE id = %s"):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute(bad, (poi_id,))
+            conn.rollback()

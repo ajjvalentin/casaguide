@@ -348,11 +348,13 @@ def apply_judge_verdict(conn, poi_id: str, status: str, judge_meta: dict) -> int
     fixe `status` ('approved' ou 'rejected') et TRACE le motif dans
     `completion_meta._judge` (verdict, confiance, motif, seuil) — patron V2-07, aucun
     nouveau champ de schéma. N'agit QUE sur un POI encore `suggested` (idempotent, ne
-    touche jamais une fiche déjà arbitrée)."""
+    touche jamais une fiche déjà arbitrée). Provenance (V2-91) : `status_by='judge'`,
+    `status_at=now()`."""
     cur = conn.execute(
         """UPDATE pois
            SET status = %s,
                completion_meta = COALESCE(completion_meta, '{}'::jsonb) || %s,
+               status_by = 'judge', status_at = now(),
                updated_at = now()
            WHERE id = %s AND status = 'suggested'""",
         (status, json.dumps({"_judge": judge_meta}), poi_id),

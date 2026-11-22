@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from enrich.locks import EDITABLE_FIELDS
+
 # Colonnes publiques d'un logement (jamais de secrets ici)
 _PROP_COLS = """
     id, name, address_line1, address_line2, postal_code, city, region,
@@ -1044,7 +1046,8 @@ _POI_SELECT = (
     "p.weekday, p.weekday_note, p.description_md, "
     "p.owner_comment, p.price_level, "
     "p.dist_walk_m, p.walk_min, p.dist_drive_m, p.drive_min, "
-    "p.source, p.source_ref, p.status, p.fetched_at "
+    "p.source, p.source_ref, p.status, p.fetched_at, "
+    "p.human_fields, p.status_by "
     "FROM pois p JOIN poi_categories c ON c.code = p.category_code "
     "WHERE p.property_id = %s")
 
@@ -1081,22 +1084,26 @@ def create_manual_poi(conn, property_id: str, data: dict) -> dict | None:
     """Crée un POI saisi par le propriétaire (M-22) : source='owner',
     status='approved' (arbitrage explicite → jamais écrasé, invariant 1),
     sans `source_ref` (hors upsert d'enrichissement). Les distances déjà
-    calculées sont passées dans `data` (dist_*_m / *_min)."""
+    calculées sont passées dans `data` (dist_*_m / *_min).
+
+    Provenance (V2-91) : tout champ éditable FOURNI (non NULL) + `geom` est saisi par
+    l'humain → `human_fields` ; `status_by='owner'`, `status_at=now()`."""
+    human = [f for f in _POI_EDITABLE if data.get(f) is not None] + ["geom"]
     row = conn.execute(
         """INSERT INTO pois (property_id, category_code, name, geom, address,
                locality, phone, website, opening_hours, cuisine, weekday, weekday_note,
                description_md, owner_comment,
                dist_walk_m, walk_min, dist_drive_m, drive_min,
-               source, status, fetched_at)
+               source, status, fetched_at, human_fields, status_by, status_at)
            VALUES (%(pid)s, %(category_code)s, %(name)s,
                ST_SetSRID(ST_MakePoint(%(lon)s, %(lat)s), 4326),
                %(address)s, %(locality)s, %(phone)s, %(website)s, %(opening_hours)s,
                %(cuisine)s, %(weekday)s, %(weekday_note)s,
                %(description_md)s, %(owner_comment)s,
                %(dist_walk_m)s, %(walk_min)s, %(dist_drive_m)s, %(drive_min)s,
-               'owner', 'approved', now())
+               'owner', 'approved', now(), %(human_fields)s, 'owner', now())
            RETURNING id""",
-        {"pid": property_id, **data},
+        {"pid": property_id, **data, "human_fields": human},
     ).fetchone()
     return get_poi_full(conn, property_id, str(row["id"])) if row else None
 
@@ -1216,29 +1223,53 @@ def get_poi(conn, property_id: str, poi_id: str) -> dict | None:
 
 
 def set_poi_status(conn, property_id: str, poi_id: str, status: str) -> dict | None:
+    """Statut posé par le PROPRIÉTAIRE (Approuver/Rejeter/annulation M-23).
+    Provenance (V2-91) : `status_by='owner'`, `status_at=now()` ; un retour à
+    'suggested' remet `status_by` à NULL (personne n'a statué). `human_fields`
+    n'est pas touché : statuer n'est pas saisir une valeur."""
     return conn.execute(
-        "UPDATE pois SET status = %s WHERE id = %s AND property_id = %s "
+        "UPDATE pois SET status = %(st)s, "
+        "status_by = CASE WHEN %(st)s = 'suggested' THEN NULL ELSE 'owner' END, "
+        "status_at = now() "
+        "WHERE id = %(id)s AND property_id = %(pid)s "
         "RETURNING id, status",
-        (status, poi_id, property_id),
+        {"st": status, "id": poi_id, "pid": property_id},
     ).fetchone()
 
 
-_POI_EDITABLE = ("category_code", "name", "address", "locality", "phone", "website",
-                 "opening_hours", "cuisine", "weekday", "weekday_note",
-                 "description_md", "owner_comment")
+# Source unique : `enrich.locks.EDITABLE_FIELDS` (aussi la liste des noms admis dans
+# `pois.human_fields`, avec `geom`).
+_POI_EDITABLE = EDITABLE_FIELDS
 
 
 def edit_poi(conn, property_id: str, poi_id: str, fields: dict) -> dict | None:
-    """Applique les champs édités et force le statut 'edited' (choix propriétaire)."""
-    sets, params = ["status = 'edited'"], []
+    """Applique les champs édités et force le statut 'edited' (choix propriétaire).
+
+    Provenance (V2-91) : seul un champ dont la valeur CHANGE réellement
+    (`IS DISTINCT FROM` la valeur en base — le formulaire renvoie tous les champs)
+    rejoint `human_fields` (cumul, sans doublon) ; `status_by='owner'`,
+    `status_at=now()`. Dans un UPDATE, le membre droit lit l'ANCIENNE ligne : la
+    comparaison porte bien sur la valeur d'avant l'édition.
+
+    Limite connue (V2-91, à trancher avant V2-93) : un champ envoyé à None est
+    ignoré — le propriétaire ne peut pas vider une valeur."""
+    sets = ["status = 'edited'", "status_by = 'owner'", "status_at = now()"]
+    params: dict[str, Any] = {"id": poi_id, "pid": property_id}
+    changed = []
     for key in _POI_EDITABLE:
         if key in fields and fields[key] is not None:
-            sets.append(f"{key} = %s")
-            params.append(fields[key])
-    params.extend([poi_id, property_id])
+            sets.append(f"{key} = %({key})s")
+            params[key] = fields[key]
+            changed.append(f"CASE WHEN pois.{key} IS DISTINCT FROM %({key})s "
+                           f"THEN '{key}' END")
+    if changed:
+        sets.append(
+            "human_fields = ARRAY(SELECT DISTINCT f FROM unnest("
+            f"pois.human_fields || ARRAY[{', '.join(changed)}]::text[]) AS f "
+            "WHERE f IS NOT NULL ORDER BY f)")
     row = conn.execute(
         f"UPDATE pois SET {', '.join(sets)} "
-        "WHERE id = %s AND property_id = %s "
+        "WHERE id = %(id)s AND property_id = %(pid)s "
         "RETURNING id, status",
         params,
     ).fetchone()

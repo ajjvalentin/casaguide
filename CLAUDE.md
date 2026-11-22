@@ -164,6 +164,13 @@ patron des secrets). NULL = pas de surcharge → code du logement (zéro backfil
    construction tout écrasement (une localité saisie/éditée survit) ; **aucun autre
    champ** d'une fiche retenue n'est touché. Raison : le guide n'affiche que les fiches
    retenues, qui resteraient `locality=NULL` à jamais sinon (`enrich/db.upsert_pois`).
+   **Note du 22/11/2026 (V2-91) — remplacement annoncé.** Cet invariant (verrou à la
+   FICHE) sera remplacé en **V2-93** par un **verrou au CHAMP** : un champ saisi ou
+   modifié par un humain n'est jamais touché, les autres suivent la source. V2-91 n'en
+   pose que la provenance (`pois.human_fields`, `status_by`, `status_at` — migration 042 ;
+   règle pure `enrich/locks.system_may_write`, sans appelant) : **l'invariant ci-dessus
+   reste vrai et en vigueur** jusqu'à V2-93. Réf. : brief « Mission V2-91 — Provenance
+   et verrou par champ » (22/11/2026).
 2. Relancer le pipeline est **idempotent** (aucun doublon de POI).
 3. Toute réponse IA est du **JSON strict validé** avant insertion ; sinon le
    job passe en `failed` sans rien corrompre.
@@ -569,6 +576,7 @@ psql -d casaguide -f db/migrations/038_editorial_picks.sql # mémoire de secteur
 psql -d casaguide -f db/migrations/039_property_demo.sql # guide de DÉMONSTRATION vivant de la vitrine (V2-58)
 psql -d casaguide -f db/migrations/040_editorial_pick_name_local.sql # nom local (écriture d'origine) d'un pick éditorial (V2-66b cas a)
 psql -d casaguide -f db/migrations/041_poi_subtype.sql # sous-type sport/loisir d'un POI (puce de discipline + prompt de description) (V2-71)
+psql -d casaguide -f db/migrations/042_poi_provenance.sql # provenance par champ : pois.human_fields + status_by/status_at + reprise de l'existant (V2-91)
 
 # Backend
 cd backend
