@@ -367,8 +367,9 @@ publics refusent. Les `429 rate_limited` / `concurrency_limit` et `503 server_bu
 transitoires : `Retry-After` est respecté (plafond `CASAGUIDE_OVERPASS_RETRY_AFTER_MAX`,
 120 s).
 
-**Comparer les deux serveurs** (lecture seule, ~6 requêtes de quota) :
-`ops/overpass_compare.py --property <uuid>` — voir `docs/ops.md` § 5.
+**Recette de l'instance à clé contre nos données** (lecture seule, ~15 requêtes de
+quota par logement) : `ops/overpass_compare.py --all --include-guest` ; réponse réelle à
+une clé refusée : `--check-auth` — voir `docs/ops.md` § 5.
 
 ---
 

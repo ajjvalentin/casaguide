@@ -38,7 +38,7 @@ import re
 import time
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -58,6 +58,58 @@ _sleep = time.sleep   # injectable (tests : aucun vrai sommeil)
 # date des données de la dernière réponse 200 (`osm3s.timestamp_osm_base`).
 request_count = 0
 last_osm_base: str | None = None
+
+
+# ── Observation d'un passage de recette (V2-93c) ─────────────────────────────
+
+@dataclass
+class Probe:
+    """Observation d'un passage de recette (`ops/overpass_compare.py`, V2-93c).
+
+    Sous `observe(probe)`, `_post_overpass` rapporte CHAQUE réponse à `on_event` (dict :
+    `query`, `url` masquée, `status` — 0 pour une erreur réseau —, `stage`, `data` = le
+    document JSON d'un 200, `error` = corps/détail masqué sinon) et tient le plafond
+    `budget` AVANT tout envoi : plafond atteint ⇒ `OverpassBudgetExhausted`, aucune
+    requête de plus, `exhausted` passe à vrai (les fonctions « best-effort » avalent
+    l'exception ; l'appelant lit ce drapeau). Hors `observe`, rien ne change."""
+    on_event: "Callable[[dict], None] | None" = None
+    budget: int | None = None
+    sent: int = 0
+    exhausted: bool = False
+    events: list = field(default_factory=list, repr=False)
+
+
+_probe: contextvars.ContextVar["Probe | None"] = contextvars.ContextVar(
+    "overpass_probe", default=None)
+_stage: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "overpass_stage", default=None)
+
+
+@contextlib.contextmanager
+def observe(probe: "Probe"):
+    """Active `probe` pour les requêtes envoyées dans ce contexte (V2-93c)."""
+    token = _probe.set(probe)
+    try:
+        yield probe
+    finally:
+        _probe.reset(token)
+
+
+@contextlib.contextmanager
+def _in_stage(name: str):
+    """Étiquette des requêtes émises dans ce bloc (« départ », « escalade »)."""
+    token = _stage.set(name)
+    try:
+        yield
+    finally:
+        _stage.reset(token)
+
+
+def _notify(query: str, url: str, status: int, *, data=None, error: str | None = None):
+    probe = _probe.get()
+    if probe is not None and probe.on_event is not None:
+        probe.on_event({"query": query, "url": mask_url(url), "status": status,
+                        "stage": _stage.get(), "data": data, "error": error})
 
 
 # ── Serveur interrogé, clé et masquage (V2-93b) ──────────────────────────────
@@ -85,7 +137,7 @@ _server_override: contextvars.ContextVar[Server | None] = contextvars.ContextVar
 
 
 def current_server() -> Server:
-    """Serveur actif : la surcharge `use_server` (outil de comparaison), sinon la
+    """Serveur actif : la surcharge `use_server` (recette, `--check-auth`), sinon la
     configuration. Clé présente ⇒ `OVERPASS_URL` SEUL ; clé absente ⇒ URL + miroirs."""
     srv = _server_override.get()
     if srv is not None:
@@ -211,6 +263,15 @@ class OverpassAuthError(OverpassAccountError):
 
 class OverpassQuotaExceeded(OverpassAccountError):
     """429 `quota_exceeded` : quota mensuel du compte épuisé."""
+
+
+class OverpassBudgetExhausted(OverpassError):
+    """Plafond de requêtes d'un passage de recette atteint (`Probe.budget`, V2-93c) :
+    la requête N'EST PAS envoyée."""
+
+    def __init__(self, url: str, budget: int):
+        super().__init__(url, 0, "", f"plafond de {budget} requête(s) atteint : "
+                                     "requête non envoyée")
 
 
 class OverpassNetworkError(OverpassError, httpx.TransportError):
@@ -1079,16 +1140,24 @@ def _post_overpass(client: httpx.Client, query: str,
     if timeout_s is not None:
         post_kwargs["timeout"] = timeout_s + 5  # marge au-dessus du [timeout:] serveur
     last_error: Exception | None = None
+    probe = _probe.get()
     for attempt in range(1, pol.attempts + 1):
         retry_after: float | None = None
         for url in srv.urls:
             shown = mask_url(url)
+            if probe is not None and probe.budget is not None \
+                    and probe.sent >= probe.budget:
+                probe.exhausted = True       # V2-93c : plafond tenu AVANT l'envoi
+                raise OverpassBudgetExhausted(url, probe.budget)
             try:
                 request_count += 1
+                if probe is not None:
+                    probe.sent += 1
                 resp = client.post(url, data={"data": query}, headers=headers, **post_kwargs)
             except httpx.HTTPError as exc:
                 detail = scrub(f"{type(exc).__name__}: {exc}")
                 last_error = OverpassNetworkError(url, detail)
+                _notify(query, url, 0, error=detail)
                 log.warning("Overpass %s : erreur réseau (essai %d) : %s",
                             shown, attempt, detail)
                 continue  # miroir suivant
@@ -1096,6 +1165,7 @@ def _post_overpass(client: httpx.Client, query: str,
                 data = resp.json()
                 last_osm_base = ((data.get("osm3s") or {}).get("timestamp_osm_base")
                                  if isinstance(data, dict) else None)
+                _notify(query, url, 200, data=data)
                 # `accept` (V2-93) : refus d'une réponse 200 inutilisable (miroir aux
                 # données périmées, erreur d'exécution) → traité comme transitoire :
                 # miroir suivant, puis nouvelle passe.
@@ -1108,6 +1178,7 @@ def _post_overpass(client: httpx.Client, query: str,
                 # `raw` (V2-93) : le document entier (métadonnées `osm3s`, `remark`).
                 return data if raw else data.get("elements", [])
             body = scrub((resp.text or "").strip())
+            _notify(query, url, resp.status_code, error=body[:500])
             # Journal COMPLET côté logs (le corps explique le refus) ; tronqué
             # PROPREMENT côté `steps` par l'appelant via `str(OverpassError)`.
             log.warning("Overpass %s : HTTP %d (essai %d) — corps :\n%s",
@@ -1187,20 +1258,15 @@ def _refresh_refusal(data: dict, now: "datetime.datetime | None" = None) -> str 
     return None
 
 
-def fetch_by_refs(refs: list[str], *, client: httpx.Client | None = None,
-                  batch_size: int | None = None, policy: RetryPolicy | None = None,
-                  sleep: "Callable[[float], None] | None" = None) -> dict[str, dict]:
-    """Interroge Overpass PAR IDENTIFIANT (`node/123`, `way/45`, `relation/6`), par
-    paquets de `batch_size` (défaut `settings.refresh_batch_size`). Renvoie, par
-    `source_ref` demandé : `{state, phone, website, opening_hours}` avec `state` =
-    `ok` | `closed` (`is_closed`) | `missing` (l'élément n'existe plus).
-
-    Réutilise `_post_overpass` (miroirs, backoff). Une réponse 200 inutilisable
-    (`_refresh_refusal` : résultat partiel, miroir périmé) est refusée et le miroir
-    suivant interrogé. LÈVE si un paquet échoue partout : jamais de « disparu » sur une
-    réponse douteuse. Un `source_ref` de forme inconnue est ignoré (absent du
-    résultat). `policy` / `sleep` : transmis à `_post_overpass` (la revérification
-    passe `refresh_policy()`, V2-93b)."""
+def fetch_elements_by_refs(refs: list[str], *, client: httpx.Client | None = None,
+                           batch_size: int | None = None,
+                           policy: RetryPolicy | None = None,
+                           sleep: "Callable[[float], None] | None" = None
+                           ) -> dict[str, dict]:
+    """Éléments OSM BRUTS (étiquettes `tags`, position `lat`/`lon` ou `center`) par
+    identifiant, par paquets de `batch_size`. Un identifiant ABSENT du résultat n'existe
+    plus. Mêmes garanties que `fetch_by_refs` (réponse douteuse refusée, LÈVE si un
+    paquet échoue partout). Sert la revérification et la recette (V2-93c)."""
     valid = [r for r in dict.fromkeys(refs) if _REF_RE.match(r or "")]
     sleep = sleep or _sleep
     size = max(1, batch_size or settings.refresh_batch_size)
@@ -1216,17 +1282,38 @@ def fetch_by_refs(refs: list[str], *, client: httpx.Client | None = None,
             data = _post_overpass(client, _build_ids_query(chunk, timeout_s),
                                   timeout_s=timeout_s, raw=True,
                                   accept=_refresh_refusal, policy=policy, sleep=sleep)
-            seen: dict[str, dict] = {}
+            wanted = set(chunk)
             for el in data.get("elements", []):
                 ref = f'{el.get("type")}/{el.get("id")}'
-                seen[ref] = _source_entry(el)
-            for ref in chunk:
-                out[ref] = seen.get(ref) or {"state": "missing", "phone": None,
-                                             "website": None, "opening_hours": None}
+                if ref in wanted:
+                    out[ref] = el
     finally:
         if own:
             client.close()
     return out
+
+
+def fetch_by_refs(refs: list[str], *, client: httpx.Client | None = None,
+                  batch_size: int | None = None, policy: RetryPolicy | None = None,
+                  sleep: "Callable[[float], None] | None" = None) -> dict[str, dict]:
+    """Interroge Overpass PAR IDENTIFIANT (`node/123`, `way/45`, `relation/6`), par
+    paquets de `batch_size` (défaut `settings.refresh_batch_size`). Renvoie, par
+    `source_ref` demandé : `{state, phone, website, opening_hours}` avec `state` =
+    `ok` | `closed` (`is_closed`) | `missing` (l'élément n'existe plus).
+
+    Réutilise `_post_overpass` (miroirs, backoff). Une réponse 200 inutilisable
+    (`_refresh_refusal` : résultat partiel, miroir périmé) est refusée et le miroir
+    suivant interrogé. LÈVE si un paquet échoue partout : jamais de « disparu » sur une
+    réponse douteuse. Un `source_ref` de forme inconnue est ignoré (absent du
+    résultat). `policy` / `sleep` : transmis à `_post_overpass` (la revérification
+    passe `refresh_policy()`, V2-93b)."""
+    valid = [r for r in dict.fromkeys(refs) if _REF_RE.match(r or "")]
+    elements = fetch_elements_by_refs(valid, client=client, batch_size=batch_size,
+                                      policy=policy, sleep=sleep)
+    return {ref: (_source_entry(elements[ref]) if ref in elements
+                  else {"state": "missing", "phone": None, "website": None,
+                        "opening_hours": None})
+            for ref in valid}
 
 
 # Nom local pour montrer au chauffeur (V2-66) : langue « du pays » (tag `name:<lang>`)
@@ -1857,8 +1944,9 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
         # les rétrécir imposerait une escalade inutile pour un lieu jamais proche.
         start_of = {c: (pref_of[c] if pref_of[c] >= settings.overpass_far_bucket_m
                         else min(pref_of[c], _DENSE_START_M)) for c in codes}
-        m1, failures, generic = _run_buckets(client, codes, start_of, lat, lon,
-                                             country_lang, country_code)
+        with _in_stage("départ"):
+            m1, failures, generic = _run_buckets(client, codes, start_of, lat, lon,
+                                                 country_lang, country_code)
         # `dropped_of` par catégorie (V2-68) : l'escalade REMPLACE le résultat d'une
         # catégorie → son compte de réductions doit remplacer, jamais s'additionner
         # (sinon double comptage des mêmes fiches re-moissonnées).
@@ -1885,8 +1973,9 @@ def fetch_grouped(categories: list[dict], lat: float, lon: float,
                      and len(results[c]) < target_for(c).min_results]
         if deficient:
             esc_of = {c: max_of[c] for c in deficient}
-            m2, f2, _g2 = _run_buckets(client, deficient, esc_of, lat, lon,
-                                       country_lang, country_code)
+            with _in_stage("escalade"):
+                m2, f2, _g2 = _run_buckets(client, deficient, esc_of, lat, lon,
+                                           country_lang, country_code)
             # `_g2` (génériques du 2e palier) NON additionné : ce sont en quasi-totalité
             # les mêmes éléments re-moissonnés qu'en passe 1 (déjà comptés) — l'ajouter
             # double-compterait. Le stat reste la mesure de la passe comprehensive (1).

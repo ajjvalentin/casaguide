@@ -336,30 +336,75 @@ refus **du compte** (`quota_exceeded`, 401, 403 — voir `docs/deploiement.md` �
 tenté » (aucun job, aucune écriture), le bilan dit « Passage ARRÊTÉ … », code de sortie 1.
 Le bilan final donne aussi le **nombre de requêtes Overpass envoyées** (suivi du quota).
 
-### Comparer serveur public et instance à clé — `ops/overpass_compare.py`
+### Recette de l'instance à clé — `ops/overpass_compare.py`
 
-Le moteur d'overpass.ch est une **réécriture compatible** d'Overpass, pas l'original :
-cet outil vérifie que nos requêtes y donnent les mêmes résultats. **Lecture seule**
-(transaction `read_only`, aucun job, aucune écriture). Pour un logement, il rejoue la
-moisson (`fetch_grouped`, catégories et rayons du logement) et la revérification par
-identifiant (`fetch_by_refs` sur ses fiches OSM retenues) contre le serveur public
-(`--public-url`, défaut overpass-api.de, sans miroir) et l'instance à clé, puis imprime :
-catégories identiques, éléments présents d'un seul côté (lesquels), valeurs `phone` /
-`website` / `opening_hours` / état divergentes (lesquelles), date des données
-(`timestamp_osm_base`) et durée de chaque côté, requêtes envoyées.
+Le moteur d'overpass.ch est une **réécriture compatible** d'Overpass, pas l'original.
+La référence est **notre base** : les fiches OSM retenues ont été récoltées pendant des
+mois sur les serveurs d'origine ; l'instance à clé doit les retrouver. Seule l'instance à
+clé est interrogée (sans clé configurée : refus, code 2, aucune requête). **Lecture
+seule** : transaction `read_only` annulée avant tout appel réseau, aucun job, aucune
+écriture.
 
 ```bash
+# recette de production (tous les logements publiés hors démonstration)
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/overpass_compare.py --all \
+    --include-guest --json /tmp/recette_overpass.json
+# un logement
 /opt/casaguide/.venv/bin/python /opt/casaguide/ops/overpass_compare.py --property <uuid>
-/opt/casaguide/.venv/bin/python /opt/casaguide/ops/overpass_compare.py --property <uuid> \
-    --public-url https://overpass.kumi.systems/api/interpreter
+# réponse réelle du fournisseur à une clé refusée (1 requête, clé factice fixe)
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/overpass_compare.py --check-auth
 ```
 
-Si le serveur public ne répond pas (cas fréquent), le bilan le dit et donne l'instance à
-clé seule. Coût : ~6 requêtes sur le quota (4 paliers de moisson + 2 paquets
-d'identifiants pour ~125 fiches). Lire une divergence : comparer d'abord les dates des
-données (un miroir en retard explique un lieu « disparu » ou « présent » à tort — constat
-V2-93) ; un doute sur un élément se tranche sur l'API OSM principale
-(`https://api.openstreetmap.org/api/0.6/node/<id>/history` : `410` = supprimé).
+Options : `--include-guest` ajoute les guides voyageur (plus de zones géographiques) ;
+`--max-requests N` plafonne le passage (défaut 2000 ; atteint ⇒ arrêt propre, bilan
+marqué **PARTIEL**, logements restants « non traité ») ; `--json <fichier>` écrit le
+bilan détaillé (chaque requête, sa date de données, chaque fiche manquée) en plus du
+résumé.
+
+**Rappel.** Pour chaque catégorie qui a des fiches retenues `source='osm'`, la requête
+de moisson est rejouée telle que le pipeline la construit aujourd'hui (mêmes sélecteurs,
+y compris ceux du pays, même palier, même délai). Règle des rayons, le pipeline étant
+adaptatif : une fiche située dans le rayon de **départ** de sa catégorie
+(`min(préférence, 5 km)` ; la préférence entière pour l'aéroport, palier lointain) est
+attendue dans la requête de départ ; au-delà, dans la requête d'**escalade** (rayon
+maximal du seed). Le rappel se mesure sur les **éléments bruts** rendus par le serveur,
+avant plafonds, dédoublonnage et minimums : une fiche écartée par une règle de sélection
+n'est jamais comptée comme une faute du moteur. Chaque fiche non retrouvée est
+réinterrogée par identifiant et classée :
+
+| Classe | Critère | Lecture |
+| --- | --- | --- |
+| `supprime` | l'élément n'existe plus | OSM a changé ; moteur hors de cause |
+| `ferme` | étiquettes de fermeture (`is_closed`) | idem |
+| `requalifie` | existe, mais ne correspond plus à la catégorie | étiquettes modifiées dans OSM |
+| `hors_rayon` | correspond, mais plus loin que le rayon interrogé | position OSM ou paramètres changés |
+| `inexplique` | existe, correspond, dans le rayon, absent de la réponse | **moteur suspect** |
+
+Chaque `inexplique` est imprimé avec son identifiant, son nom, sa catégorie, sa distance
+et le **texte exact** de la requête qui aurait dû le rendre : la rejouer à la main, puis
+trancher sur l'API OSM principale
+(`https://api.openstreetmap.org/api/0.6/<type>/<id>/history`). Les autres classes se
+vérifient de la même façon (`410` = supprimé ; l'historique montre la version qui a
+changé les étiquettes).
+
+**Couverture.** Chaque forme de requête de `enrich/overpass.py` est appelée comme le
+pipeline l'appelle : `fetch_grouped` (paliers de départ, palier lointain, escalade),
+`fetch_category`, `fetch_named_sorties`, `fetch_natural_places`, `nearby_neighborhoods`,
+`fetch_by_refs`. Pour chaque requête : statut HTTP (essais compris), `remark` d'erreur ou
+de délai dépassé, `osm3s.timestamp_osm_base` présent et lisible, nombre d'éléments. Un
+zéro là où le logement a des fiches de cette provenance est une anomalie. « Formes non
+couvertes » nomme une forme qu'aucun logement du passage n'a exercée (l'escalade ne
+part qu'en zone peu dense).
+
+**Consommation et fraîcheur.** Par logement et au total : requêtes (moisson /
+revérification), durée, date des données de chaque réponse (détail dans le JSON) et
+retard maximal sur l'heure courante. Ordre de grandeur mesuré : ~15 requêtes par
+logement de 125 fiches (rappel ~4, couverture ~11).
+
+**Code de sortie** : 0 recette complète sans anomalie ; 1 au moins un `inexplique`, une
+forme en anomalie, une fiche non classée, ou bilan partiel ; 2 refus (pas de clé,
+logement introuvable, rien à tester). La clé n'est jamais imprimée (sortie et JSON
+passent par le masquage).
 
 ### Annuler un passage — et pourquoi la valeur revient
 
