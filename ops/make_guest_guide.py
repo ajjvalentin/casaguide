@@ -64,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     opsenv.load_env(args.env_file)
     if args.dsn:
         os.environ["CASAGUIDE_DB"] = args.dsn  # avant l'import des modules enrich/api
+    opsenv.log_overpass_mode(log)                 # V2-93b : mode Overpass actif
 
     # Import TARDIF (après chargement .env et override du DSN).
     from api import guest_guides  # noqa: PLC0415

@@ -309,6 +309,67 @@ sudo systemctl list-timers casaguide-refresh-pois.timer --no-pager  # colonne he
 le suffixe (sans lui, l'heure est celle du serveur, souvent UTC). Vérifier ensuite
 `journalctl -u casaguide-refresh-pois`.
 
+### 1.16 Overpass : instance à clé (V2-93b)
+
+Les serveurs Overpass publics sont **saturés** (passage à blanc du 23/11 : 2 logements sur
+3 en échec) et leur règle d'usage renvoie l'**usage commercial** vers un serveur payant ou
+auto-hébergé. La production interroge donc l'instance à clé **overpass.ch** (compte
+Holaquetal Immo, S.L.U.), pour toute la moisson **et** la revérification.
+
+**Poser la clé** (geste d'André, sur le serveur) — la clé est un **secret** : uniquement
+dans `backend/.env` (`600`, hors dépôt), jamais dans git, jamais dans une URL :
+
+```bash
+sudo -u casaguide nano /opt/casaguide/backend/.env
+#   CASAGUIDE_OVERPASS_API_KEY=<clé du compte overpass.ch>
+#   OVERPASS_URL=https://api.overpass.ch/v1/interpreter   # facultatif : défaut avec clé
+sudo systemctl restart casaguide      # l'API relit le .env au démarrage
+```
+
+Le timer de revérification et les scripts `ops/` relisent `backend/.env` à chaque
+lancement : rien à redémarrer pour eux.
+
+**Règles** : clé présente ⇒ **un seul serveur** (`OVERPASS_URL`, défaut l'instance
+overpass.ch), clé envoyée dans l'en-tête `X-API-Key`, **miroirs publics ignorés** (aucun
+repli silencieux vers un serveur public). Clé absente ⇒ serveurs publics + miroirs
+(développement). Ne **jamais** utiliser la forme « clé dans le chemin »
+(`/v1/<clé>/interpreter`) que le fournisseur accepte : elle finirait dans les journaux
+(le code masque ce segment par défense, mais ne s'y fiez pas).
+
+**Vérifier le mode actif** — une ligne au démarrage de l'API et de chaque script `ops/`
+concerné (jamais la clé) :
+
+```bash
+journalctl -u casaguide -n 200 --no-pager | grep "Overpass :"
+#   Overpass : instance à clé (https://api.overpass.ch/v1/interpreter)   ← attendu en prod
+#   Overpass : serveurs publics (… + 3 miroir(s))                          ← clé absente
+sudo -u casaguide /opt/casaguide/.venv/bin/python \
+    /opt/casaguide/ops/refresh_pois.py --dry-run --max-properties 1
+#   · Overpass : instance à clé (…) puis « N requête(s) Overpass envoyée(s) »
+```
+
+**Erreurs du compte** (aucune nouvelle tentative, message en clair, jamais la clé) :
+
+| Message | Cause | Que faire |
+|---|---|---|
+| `HTTP 401 unauthorized … clé refusée` | clé absente, inconnue ou révoquée | vérifier `CASAGUIDE_OVERPASS_API_KEY` dans `.env`, redémarrer |
+| `HTTP 403 plan_without_overpass` | la formule n'inclut pas Overpass | vérifier l'abonnement overpass.ch |
+| `HTTP 403 forbidden_referer` | restriction de la clé | revoir les restrictions de la clé chez le fournisseur |
+| `HTTP 429 quota_exceeded … quota mensuel épuisé` | quota du mois consommé | voir ci-dessous |
+
+**Sur `quota_exceeded`** : la revérification de nuit **s'arrête** au premier logement en
+refus (les suivants sont listés « non tenté », code de sortie 1) — rien n'est écrit, ils
+seront repris quand le quota reviendra. Les enrichissements interactifs échouent palier
+par palier (catégories `failed`, ré-enrichissables). Options : attendre le
+renouvellement mensuel, ou passer à une formule supérieure chez overpass.ch. **Ne pas**
+retirer la clé pour « repasser en public » : c'est précisément l'usage que les serveurs
+publics refusent. Les `429 rate_limited` / `concurrency_limit` et `503 server_busy` sont
+transitoires : `Retry-After` est respecté (plafond `CASAGUIDE_OVERPASS_RETRY_AFTER_MAX`,
+120 s).
+
+**Comparer les deux serveurs** (lecture seule, ~6 requêtes de quota) :
+`ops/overpass_compare.py --property <uuid>` — voir `docs/ops.md` § 5.
+
 ---
 
 ## 2. Déploiement courant (à chaque mise à jour)

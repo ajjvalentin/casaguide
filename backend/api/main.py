@@ -43,6 +43,11 @@ async def lifespan(app: FastAPI):
             "\n".join(f"  {name}=$(openssl rand -hex 32)" for name in missing),
         )
 
+    # Overpass (V2-93b) : quel mode est actif — instance à clé (production) ou
+    # serveurs publics (développement). Jamais la clé, URL masquée.
+    from enrich import overpass as _overpass   # noqa: PLC0415
+    log.info("%s", _overpass.describe_mode())
+
     # Emails transactionnels (V2-08) : sans SMTP, repli ConsoleMailer (les emails
     # de réinitialisation / vérification sont journalisés, jamais envoyés).
     if not settings.smtp_configured:

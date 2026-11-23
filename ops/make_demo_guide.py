@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     opsenv.load_env(args.env_file)
     if args.dsn:
         os.environ["CASAGUIDE_DB"] = args.dsn
+    opsenv.log_overpass_mode(log)                 # V2-93b : mode Overpass actif
 
     from enrich import db, pipeline, translate  # noqa: PLC0415
     from api import repo  # noqa: PLC0415

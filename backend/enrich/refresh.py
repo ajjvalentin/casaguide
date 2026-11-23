@@ -23,10 +23,17 @@ n'est pas un horaire), et la fiche reste servie dans le guide (retrait : V2-94).
 Les deux fetchers sont injectables (tests sans réseau) :
   osm_fetch(refs) -> {ref: {state, phone, website, opening_hours}}
   overture_fetch(refs, lat, lon) -> même forme, ou None (hors zone en cache).
+
+Nouvelles tentatives (V2-93b) : la revérification n'est pas pressée — politique
+`overpass.refresh_policy()` (4 passes, 30/60/120 s, `Retry-After` prioritaire) et pause
+`refresh_property_pause_s` entre deux logements (attentes injectables, `sleep`). Un refus
+du COMPTE Overpass (`OverpassAccountError` : quota épuisé, 401, 403) ARRÊTE le passage :
+les logements restants ne sont pas tentés (ils échoueraient tous) et le bilan le dit.
 """
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -44,8 +51,11 @@ OsmFetch = Callable[[list[str]], dict[str, dict]]
 OvertureFetch = Callable[[list[str], float, float], "dict[str, dict] | None"]
 
 
+_sleep = time.sleep   # injectable (tests : aucun vrai sommeil)
+
+
 def _default_osm_fetch(refs: list[str]) -> dict[str, dict]:
-    return overpass.fetch_by_refs(refs)
+    return overpass.fetch_by_refs(refs, policy=overpass.refresh_policy())
 
 
 def _default_overture_fetch(refs: list[str], lat: float, lon: float):
@@ -111,6 +121,10 @@ class PropertyReport:
     not_recheckable: int = 0                            # web / claude / owner
     not_checked: int = 0                                # Overture hors zone en cache
     changes: list[dict] = field(default_factory=list)   # détail (rapport, dry-run)
+    # V2-93b : échec dû au COMPTE Overpass (quota, 401, 403) → le passage s'arrête.
+    fatal: bool = False
+    # V2-93b : logement NON TENTÉ (passage arrêté avant lui) — aucune écriture, aucun job.
+    skipped: bool = False
 
     def steps(self) -> dict[str, Any]:
         return {"checked": self.checked, "modified": self.modified,
@@ -214,7 +228,8 @@ def refresh_property(conn, property_id: str, *, osm_fetch: OsmFetch | None = Non
             conn.commit()
     except Exception as exc:  # noqa: BLE001 — un logement n'arrête pas les suivants
         rep.ok = False
-        rep.error = overpass._short(f"{type(exc).__name__}: {exc}")
+        rep.error = overpass._short(overpass.scrub(f"{type(exc).__name__}: {exc}"))
+        rep.fatal = isinstance(exc, overpass.OverpassAccountError)
         log.warning("Revérification de %s en échec : %s", property_id, rep.error)
         conn.rollback()
         if not dry_run:
@@ -232,12 +247,33 @@ def refresh_property(conn, property_id: str, *, osm_fetch: OsmFetch | None = Non
 def run(conn, *, property_id: str | None = None, max_properties: int | None = None,
         dry_run: bool = False, osm_fetch: OsmFetch | None = None,
         overture_fetch: OvertureFetch | None = None,
-        max_age_days: int | None = None) -> list[PropertyReport]:
+        max_age_days: int | None = None,
+        sleep: "Callable[[float], None] | None" = None) -> list[PropertyReport]:
     """Revérifie tous les logements dus (ou `property_id`), dans la limite de
-    `max_properties`. Chaque logement est indépendant (échec isolé)."""
+    `max_properties`. Chaque logement est indépendant (échec isolé), avec une pause
+    `refresh_property_pause_s` entre deux logements (transaction fermée pendant
+    l'attente). Exception (V2-93b) : un refus du COMPTE Overpass (quota, 401, 403)
+    arrête le passage — les logements restants sont rendus `skipped` (non tentés,
+    aucune écriture)."""
+    sleep = sleep or _sleep
     ids = due_properties(conn, max_age_days=max_age_days, property_id=property_id,
                          limit=max_properties)
     conn.commit()
-    return [refresh_property(conn, pid, osm_fetch=osm_fetch,
-                             overture_fetch=overture_fetch, dry_run=dry_run)
-            for pid in ids]
+    reports: list[PropertyReport] = []
+    stop: PropertyReport | None = None
+    for n, pid in enumerate(ids):
+        if stop is not None:
+            reports.append(PropertyReport(
+                pid, ok=False, skipped=True,
+                error=f"non tenté : passage arrêté après le refus du compte Overpass "
+                      f"sur {stop.property_id}"))
+            continue
+        if n and settings.refresh_property_pause_s > 0:
+            sleep(settings.refresh_property_pause_s)   # politesse entre logements
+        rep = refresh_property(conn, pid, osm_fetch=osm_fetch,
+                               overture_fetch=overture_fetch, dry_run=dry_run)
+        reports.append(rep)
+        if rep.fatal:
+            stop = rep
+            log.error("Revérification arrêtée : %s", rep.error)
+    return reports

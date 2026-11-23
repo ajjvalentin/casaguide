@@ -77,3 +77,15 @@ def load_env(env_file: str | os.PathLike | None = None, *,
         if override or key not in os.environ:
             os.environ[key] = val
     return path
+
+
+def log_overpass_mode(logger) -> None:
+    """Journalise le mode Overpass actif (V2-93b) : « instance à clé » ou « serveurs
+    publics », URL masquée, JAMAIS la clé. À appeler APRÈS `load_env` (et après toute
+    surcharge d'environnement) : l'import d'`enrich` fige la configuration."""
+    import sys as _sys
+    backend = str(Path(__file__).resolve().parents[1] / "backend")
+    if backend not in _sys.path:
+        _sys.path.insert(0, backend)
+    from enrich import overpass   # noqa: PLC0415
+    logger.info("· %s", overpass.describe_mode())

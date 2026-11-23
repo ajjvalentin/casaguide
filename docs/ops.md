@@ -318,6 +318,49 @@ qui ne change que ces colonnes ne bouge pas `updated_at`.
 est repris la nuit suivante. Code de sortie 1 s'il y a eu au moins un échec (visible
 dans `systemctl status casaguide-refresh-pois`).
 
+**Nouvelles tentatives polies (V2-93b).** La nuit, personne n'attend : la revérification
+a sa propre politique, distincte de la moisson interactive (qui garde 2 passes et 2 s / 4 s,
+un propriétaire attend devant son écran) :
+
+| Réglage | Défaut | Rôle |
+|---|---|---|
+| `CASAGUIDE_REFRESH_OVERPASS_ATTEMPTS` | 4 | tentatives par requête |
+| `CASAGUIDE_REFRESH_OVERPASS_BACKOFF` | 30 s | attente de base, **doublée** à chaque échec : 30, 60, 120 s |
+| `CASAGUIDE_REFRESH_PROPERTY_PAUSE` | 5 s | pause entre deux logements |
+| `CASAGUIDE_OVERPASS_RETRY_AFTER_MAX` | 120 s | plafond de `Retry-After` (prioritaire sur l'attente croissante) |
+
+Toutes ces attentes se font **transaction fermée** (acquis V2-93). Un échec transitoire
+épuisé (503, 504, réseau) reste **isolé** : le logement suivant est tenté. En revanche un
+refus **du compte** (`quota_exceeded`, 401, 403 — voir `docs/deploiement.md` § 1.16)
+**arrête le passage** : les logements restants échoueraient tous, ils sont listés « non
+tenté » (aucun job, aucune écriture), le bilan dit « Passage ARRÊTÉ … », code de sortie 1.
+Le bilan final donne aussi le **nombre de requêtes Overpass envoyées** (suivi du quota).
+
+### Comparer serveur public et instance à clé — `ops/overpass_compare.py`
+
+Le moteur d'overpass.ch est une **réécriture compatible** d'Overpass, pas l'original :
+cet outil vérifie que nos requêtes y donnent les mêmes résultats. **Lecture seule**
+(transaction `read_only`, aucun job, aucune écriture). Pour un logement, il rejoue la
+moisson (`fetch_grouped`, catégories et rayons du logement) et la revérification par
+identifiant (`fetch_by_refs` sur ses fiches OSM retenues) contre le serveur public
+(`--public-url`, défaut overpass-api.de, sans miroir) et l'instance à clé, puis imprime :
+catégories identiques, éléments présents d'un seul côté (lesquels), valeurs `phone` /
+`website` / `opening_hours` / état divergentes (lesquelles), date des données
+(`timestamp_osm_base`) et durée de chaque côté, requêtes envoyées.
+
+```bash
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/overpass_compare.py --property <uuid>
+/opt/casaguide/.venv/bin/python /opt/casaguide/ops/overpass_compare.py --property <uuid> \
+    --public-url https://overpass.kumi.systems/api/interpreter
+```
+
+Si le serveur public ne répond pas (cas fréquent), le bilan le dit et donne l'instance à
+clé seule. Coût : ~6 requêtes sur le quota (4 paliers de moisson + 2 paquets
+d'identifiants pour ~125 fiches). Lire une divergence : comparer d'abord les dates des
+données (un miroir en retard explique un lieu « disparu » ou « présent » à tort — constat
+V2-93) ; un doute sur un élément se tranche sur l'API OSM principale
+(`https://api.openstreetmap.org/api/0.6/node/<id>/history` : `410` = supprimé).
+
 ### Annuler un passage — et pourquoi la valeur revient
 
 ```bash

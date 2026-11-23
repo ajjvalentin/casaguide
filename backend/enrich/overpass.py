@@ -28,11 +28,16 @@ Claude (recherche web) : food_delivery, babysitter.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import email.utils
+import json
 import logging
 import math
 import re
 import time
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -44,18 +49,257 @@ log = logging.getLogger("casaguide.overpass")
 # Codes HTTP transitoires : on réessaie (miroir suivant puis backoff). Le 406 en
 # fait partie : overpass-api.de le renvoie par intermittence sous charge (voir
 # `_post_overpass`). Un 400 (requête invalide) n'y est PAS : insister est inutile.
+# 401/403 et `429 quota_exceeded` (V2-93b) non plus : ce sont des refus du COMPTE.
 _RETRYABLE_STATUS = frozenset({406, 408, 425, 429, 500, 502, 503, 504})
+
+_sleep = time.sleep   # injectable (tests : aucun vrai sommeil)
+
+# Compteur de requêtes envoyées par ce processus (outils ops/ : budget du quota) et
+# date des données de la dernière réponse 200 (`osm3s.timestamp_osm_base`).
+request_count = 0
+last_osm_base: str | None = None
+
+
+# ── Serveur interrogé, clé et masquage (V2-93b) ──────────────────────────────
+
+@dataclass(frozen=True)
+class Server:
+    """Cible des requêtes : `url` principale, `api_key` (instance à clé, en-tête
+    `X-API-Key`) et `mirrors` (serveurs publics seulement : vide dès qu'il y a une
+    clé — aucun repli silencieux vers un serveur public)."""
+    url: str
+    api_key: str = ""
+    mirrors: tuple = ()
+
+    def __repr__(self) -> str:          # jamais la clé, jamais un segment secret
+        return (f"Server(url={mask_url(self.url)!r}, keyed={bool(self.api_key)}, "
+                f"mirrors={len(self.mirrors)})")
+
+    @property
+    def urls(self) -> tuple:
+        return (self.url, *self.mirrors)
+
+
+_server_override: contextvars.ContextVar[Server | None] = contextvars.ContextVar(
+    "overpass_server", default=None)
+
+
+def current_server() -> Server:
+    """Serveur actif : la surcharge `use_server` (outil de comparaison), sinon la
+    configuration. Clé présente ⇒ `OVERPASS_URL` SEUL ; clé absente ⇒ URL + miroirs."""
+    srv = _server_override.get()
+    if srv is not None:
+        return srv
+    key = settings.overpass_api_key or ""
+    return Server(settings.overpass_url, key,
+                  () if key else tuple(settings.overpass_mirrors))
+
+
+@contextlib.contextmanager
+def use_server(url: str, api_key: str = "", mirrors: tuple = ()):
+    """Interroge temporairement un AUTRE serveur (`ops/overpass_compare.py`). Avec une
+    clé, les miroirs sont ignorés (même règle que la configuration)."""
+    token = _server_override.set(
+        Server(url, api_key or "", () if api_key else tuple(mirrors)))
+    try:
+        yield
+    finally:
+        _server_override.reset(token)
+
+
+# Segment de chemin qui ressemble à une clé : `/v1/<clé>/interpreter` (le fournisseur
+# accepte la clé dans le chemin ; on ne le fait pas, mais une URL mal recopiée dans
+# `OVERPASS_URL` ne doit jamais fuiter dans un message).
+_KEY_SEGMENT_RE = re.compile(r"(/v1/)[^/\s?#\"']+(/interpreter)")
+
+
+def mask_url(url: str) -> str:
+    """URL affichable : sans identifiants (`user:pass@`), sans requête (`?key=`), sans
+    fragment, segment `/v1/<clé>/interpreter` remplacé par `/v1/***/interpreter`."""
+    url = url or ""
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        scheme, rest = "", url
+    rest = rest.split("#", 1)[0].split("?", 1)[0]
+    netloc, slash, path = rest.partition("/")
+    netloc = netloc.rsplit("@", 1)[-1]
+    out = f"{scheme}{sep}{netloc}{slash}{path}"
+    return _KEY_SEGMENT_RE.sub(r"\1***\2", out)
+
+
+def _secrets() -> list[str]:
+    keys = {settings.overpass_api_key or ""}
+    srv = _server_override.get()
+    if srv is not None:
+        keys.add(srv.api_key or "")
+    return sorted((k for k in keys if len(k) >= 6), key=len, reverse=True)
+
+
+def scrub(text: str) -> str:
+    """Retire tout secret Overpass d'un texte destiné à un journal, une exception,
+    `enrichment_jobs` ou une sortie de script : la clé elle-même, les URL configurées
+    (remplacées par leur forme masquée) et tout segment `/v1/<…>/interpreter`."""
+    text = "" if text is None else str(text)
+    for url in {*current_server().urls, settings.overpass_url,
+                *settings.overpass_mirrors}:
+        if url and url != mask_url(url):
+            text = text.replace(url, mask_url(url))
+    for key in _secrets():
+        text = text.replace(key, "***")
+    return _KEY_SEGMENT_RE.sub(r"\1***\2", text)
+
+
+class _ScrubFilter(logging.Filter):
+    """Filtre posé sur les journaux de httpx/httpcore : en INFO, httpx écrit l'URL de
+    chaque requête (« HTTP Request: POST https://… »). Sans ce filtre, une clé collée
+    dans `OVERPASS_URL` sortirait dans la console des scripts ops/."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 — un journal mal formé reste un journal
+            return True
+        clean = scrub(msg)
+        if clean != msg:
+            record.msg, record.args = clean, ()
+        return True
+
+
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).addFilter(_ScrubFilter())
+
+
+def describe_mode(server: Server | None = None) -> str:
+    """Ligne de démarrage : quel mode Overpass est actif (jamais la clé, URL masquée)."""
+    srv = server or current_server()
+    if srv.api_key:
+        return f"Overpass : instance à clé ({mask_url(srv.url)})"
+    return (f"Overpass : serveurs publics ({mask_url(srv.url)} + "
+            f"{len(srv.mirrors)} miroir(s))")
+
+
+def _host(url: str) -> str:
+    return mask_url(url).split("//", 1)[-1].split("/", 1)[0]
 
 
 class OverpassError(RuntimeError):
     """Refus HTTP d'un serveur Overpass. `str()` reste COURT (journal `steps` :
     « HTTP 406 de overpass-api.de ») ; le CORPS complet de la réponse (Overpass y
-    explique parfois son refus) est journalisé à part par `_post_overpass`."""
+    explique parfois son refus) est journalisé à part par `_post_overpass`. URL et
+    corps sont conservés MASQUÉS (V2-93b) : jamais la clé."""
 
-    def __init__(self, url: str, status: int, body: str):
-        self.url, self.status, self.body = url, status, body
-        host = url.split("//", 1)[-1].split("/", 1)[0]
-        super().__init__(f"HTTP {status} de {host}")
+    def __init__(self, url: str, status: int, body: str, message: str | None = None):
+        self.url, self.status, self.body = mask_url(url), status, scrub(body)
+        super().__init__(scrub(message) if message
+                         else f"HTTP {status} de {_host(url)}")
+
+
+class OverpassAccountError(OverpassError):
+    """Refus lié au COMPTE de l'instance à clé (clé, formule, quota) : AUCUNE nouvelle
+    tentative ; la revérification arrête son passage (les logements suivants
+    échoueraient tous)."""
+
+    def __init__(self, url: str, status: int, body: str, code: str | None, hint: str):
+        self.code = code
+        label = f"HTTP {status}" + (f" {code}" if code else "")
+        super().__init__(url, status, body, f"{label} de {_host(url)} : {hint}")
+
+
+class OverpassAuthError(OverpassAccountError):
+    """401 / 403 : clé absente, inconnue, révoquée, formule sans Overpass, référent."""
+
+
+class OverpassQuotaExceeded(OverpassAccountError):
+    """429 `quota_exceeded` : quota mensuel du compte épuisé."""
+
+
+class OverpassNetworkError(OverpassError, httpx.TransportError):
+    """Erreur réseau (connexion, délai) vers un serveur Overpass, message MASQUÉ.
+    Reste un `httpx.HTTPError` pour les appelants qui l'attrapent sous ce nom."""
+
+    def __init__(self, url: str, detail: str):
+        OverpassError.__init__(self, url, 0, "",
+                               f"erreur réseau vers {_host(url)} : {detail}")
+
+
+def _service_error_code(resp: httpx.Response) -> str | None:
+    """Code d'erreur du service à clé (`{"error": …, "message": …}`), ou None."""
+    try:
+        doc = json.loads(resp.text or "")
+    except ValueError:
+        return None
+    code = doc.get("error") if isinstance(doc, dict) else None
+    return code if isinstance(code, str) and len(code) <= 64 else None
+
+
+def _account_error(url: str, resp: httpx.Response, body: str,
+                   keyed: bool) -> OverpassAccountError | None:
+    status = resp.status_code
+    code = _service_error_code(resp)
+    if status == 401:
+        hint = ("clé refusée (absente, inconnue ou révoquée) : vérifier "
+                "CASAGUIDE_OVERPASS_API_KEY" if keyed else "accès refusé par le serveur")
+        return OverpassAuthError(url, status, body, code, hint)
+    if status == 403:
+        hint = {"plan_without_overpass": "la formule du compte n'inclut pas Overpass : "
+                                         "vérifier l'abonnement",
+                "forbidden_referer": "référent refusé : vérifier les restrictions de "
+                                     "la clé"}.get(code or "")
+        hint = hint or ("accès interdit : vérifier la clé et la formule" if keyed
+                        else "accès interdit par le serveur")
+        return OverpassAuthError(url, status, body, code, hint)
+    if status == 429 and code == "quota_exceeded":
+        return OverpassQuotaExceeded(
+            url, status, body, code, "quota mensuel épuisé — aucune nouvelle tentative ; "
+            "attendre le renouvellement ou changer de formule")
+    return None
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    """`Retry-After` en secondes (nombre ou date HTTP), ou None si absent/illisible."""
+    raw = (resp.headers.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    import datetime as _dtm   # noqa: PLC0415
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=_dtm.timezone.utc)
+    return max(0.0, (when - _dtm.datetime.now(_dtm.timezone.utc)).total_seconds())
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Nombre de passes et attente entre passes. Linéaire (`backoff × n° de passe`,
+    moisson interactive historique) ou doublée à chaque échec (revérification).
+    `Retry-After` fourni par le serveur est prioritaire, plafonné par
+    `overpass_retry_after_max_s`."""
+    attempts: int
+    backoff_s: float
+    exponential: bool = False
+
+    def wait(self, attempt: int, retry_after: float | None = None) -> float:
+        if retry_after is not None:
+            return min(retry_after, settings.overpass_retry_after_max_s)
+        factor = 2 ** (attempt - 1) if self.exponential else attempt
+        return self.backoff_s * factor
+
+
+def interactive_policy() -> RetryPolicy:
+    """Moisson interactive (un propriétaire attend) : réglages courts."""
+    return RetryPolicy(max(1, settings.overpass_max_attempts), settings.overpass_backoff_s)
+
+
+def refresh_policy() -> RetryPolicy:
+    """Revérification de nuit : 4 passes, 30 → 60 → 120 s (V2-93b)."""
+    return RetryPolicy(max(1, settings.refresh_overpass_attempts),
+                       settings.refresh_overpass_backoff_s, exponential=True)
 
 
 def _short(msg: str, limit: int = 160) -> str:
@@ -797,7 +1041,9 @@ def _build_query(selectors: list[str], lat: float, lon: float, radius_m: int,
 
 def _post_overpass(client: httpx.Client, query: str,
                    timeout_s: int | None = None, *, raw: bool = False,
-                   accept: "Callable[[dict], str | None] | None" = None):
+                   accept: "Callable[[dict], str | None] | None" = None,
+                   policy: RetryPolicy | None = None,
+                   sleep: "Callable[[float], None] | None" = None):
     """POST vers Overpass avec bascule sur les miroirs ET backoff sur 406/429.
 
     **Correctif OPS-4 (12/08).** Reproduit : la MÊME requête (celle que ce code
@@ -814,24 +1060,42 @@ def _post_overpass(client: httpx.Client, query: str,
     CORPS COMPLET (il explique parfois le refus), on passe au miroir suivant, puis on
     RÉESSAIE la liste avec un backoff croissant. Un 4xx non transitoire (400 :
     requête invalide) lève tout de suite. `timeout_s` (M-18) surcharge le timeout HTTP
-    (palier aéroport). L'exception levée reste COURTE pour `steps` (corps déjà logué)."""
+    (palier aéroport). L'exception levée reste COURTE pour `steps` (corps déjà logué).
+
+    **V2-93b.** Serveur : `current_server()` — avec une clé, `OVERPASS_URL` SEUL, clé
+    dans l'en-tête `X-API-Key` (jamais dans l'URL). `Retry-After` (429/503) attendu
+    avant la passe suivante, plafonné. 401/403 → `OverpassAuthError`, `429
+    quota_exceeded` → `OverpassQuotaExceeded` : AUCUNE nouvelle tentative. `policy`
+    (défaut `interactive_policy()`) règle passes et attentes ; `sleep` est injectable.
+    Tout ce qui sort (journal, exception) est MASQUÉ (`scrub`)."""
+    global request_count, last_osm_base
+    srv = current_server()
+    pol = policy or interactive_policy()
+    sleep = sleep or _sleep
     headers = {"User-Agent": settings.user_agent, "Accept": "*/*"}
+    if srv.api_key:
+        headers["X-API-Key"] = srv.api_key
     post_kwargs: dict = {}
     if timeout_s is not None:
         post_kwargs["timeout"] = timeout_s + 5  # marge au-dessus du [timeout:] serveur
-    urls = (settings.overpass_url, *settings.overpass_mirrors)
     last_error: Exception | None = None
-    for attempt in range(1, settings.overpass_max_attempts + 1):
-        for url in urls:
+    for attempt in range(1, pol.attempts + 1):
+        retry_after: float | None = None
+        for url in srv.urls:
+            shown = mask_url(url)
             try:
+                request_count += 1
                 resp = client.post(url, data={"data": query}, headers=headers, **post_kwargs)
             except httpx.HTTPError as exc:
-                last_error = exc
+                detail = scrub(f"{type(exc).__name__}: {exc}")
+                last_error = OverpassNetworkError(url, detail)
                 log.warning("Overpass %s : erreur réseau (essai %d) : %s",
-                            url, attempt, exc)
+                            shown, attempt, detail)
                 continue  # miroir suivant
             if resp.status_code == 200:
                 data = resp.json()
+                last_osm_base = ((data.get("osm3s") or {}).get("timestamp_osm_base")
+                                 if isinstance(data, dict) else None)
                 # `accept` (V2-93) : refus d'une réponse 200 inutilisable (miroir aux
                 # données périmées, erreur d'exécution) → traité comme transitoire :
                 # miroir suivant, puis nouvelle passe.
@@ -839,20 +1103,31 @@ def _post_overpass(client: httpx.Client, query: str,
                 if refusal:
                     last_error = OverpassError(url, 200, refusal)
                     log.warning("Overpass %s : réponse refusée (essai %d) : %s",
-                                url, attempt, refusal)
+                                shown, attempt, scrub(refusal))
                     continue
                 # `raw` (V2-93) : le document entier (métadonnées `osm3s`, `remark`).
                 return data if raw else data.get("elements", [])
-            body = (resp.text or "").strip()
-            last_error = OverpassError(url, resp.status_code, body)
+            body = scrub((resp.text or "").strip())
             # Journal COMPLET côté logs (le corps explique le refus) ; tronqué
             # PROPREMENT côté `steps` par l'appelant via `str(OverpassError)`.
             log.warning("Overpass %s : HTTP %d (essai %d) — corps :\n%s",
-                        url, resp.status_code, attempt, body[:2000])
+                        shown, resp.status_code, attempt, body[:2000])
+            account = _account_error(url, resp, body, bool(srv.api_key))
+            if account is not None:
+                raise account   # clé, formule, quota : réessayer ne changerait rien
+            last_error = OverpassError(url, resp.status_code, body)
             if resp.status_code not in _RETRYABLE_STATUS:
                 raise last_error  # 400… : insister sur les miroirs ne sert à rien
-        if attempt < settings.overpass_max_attempts:
-            time.sleep(settings.overpass_backoff_s * attempt)  # backoff croissant
+            if resp.status_code in (429, 503):
+                ra = _retry_after(resp)
+                if ra is not None:
+                    retry_after = ra if retry_after is None else max(retry_after, ra)
+        if attempt < pol.attempts:
+            wait = pol.wait(attempt, retry_after)
+            if wait > 0:
+                log.info("Overpass : nouvelle tentative dans %.0f s (essai %d/%d)",
+                         wait, attempt + 1, pol.attempts)
+            sleep(wait)
     raise last_error or RuntimeError("Aucun serveur Overpass joignable")
 
 
@@ -913,7 +1188,8 @@ def _refresh_refusal(data: dict, now: "datetime.datetime | None" = None) -> str 
 
 
 def fetch_by_refs(refs: list[str], *, client: httpx.Client | None = None,
-                  batch_size: int | None = None) -> dict[str, dict]:
+                  batch_size: int | None = None, policy: RetryPolicy | None = None,
+                  sleep: "Callable[[float], None] | None" = None) -> dict[str, dict]:
     """Interroge Overpass PAR IDENTIFIANT (`node/123`, `way/45`, `relation/6`), par
     paquets de `batch_size` (défaut `settings.refresh_batch_size`). Renvoie, par
     `source_ref` demandé : `{state, phone, website, opening_hours}` avec `state` =
@@ -923,8 +1199,10 @@ def fetch_by_refs(refs: list[str], *, client: httpx.Client | None = None,
     (`_refresh_refusal` : résultat partiel, miroir périmé) est refusée et le miroir
     suivant interrogé. LÈVE si un paquet échoue partout : jamais de « disparu » sur une
     réponse douteuse. Un `source_ref` de forme inconnue est ignoré (absent du
-    résultat)."""
+    résultat). `policy` / `sleep` : transmis à `_post_overpass` (la revérification
+    passe `refresh_policy()`, V2-93b)."""
     valid = [r for r in dict.fromkeys(refs) if _REF_RE.match(r or "")]
+    sleep = sleep or _sleep
     size = max(1, batch_size or settings.refresh_batch_size)
     own = client is None
     client = client or httpx.Client(timeout=settings.overpass_timeout_s + 10)
@@ -933,11 +1211,11 @@ def fetch_by_refs(refs: list[str], *, client: httpx.Client | None = None,
         for i in range(0, len(valid), size):
             chunk = valid[i:i + size]
             if i:
-                time.sleep(settings.politeness_delay_s)   # politesse entre paquets
+                sleep(settings.politeness_delay_s)   # politesse entre paquets
             timeout_s = settings.refresh_overpass_timeout_s
             data = _post_overpass(client, _build_ids_query(chunk, timeout_s),
                                   timeout_s=timeout_s, raw=True,
-                                  accept=_refresh_refusal)
+                                  accept=_refresh_refusal, policy=policy, sleep=sleep)
             seen: dict[str, dict] = {}
             for el in data.get("elements", []):
                 ref = f'{el.get("type")}/{el.get("id")}'

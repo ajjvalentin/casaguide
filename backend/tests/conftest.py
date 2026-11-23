@@ -37,3 +37,18 @@ def _nominatim_no_wait():
         yield
     finally:
         settings.nominatim_min_interval_s, settings.nominatim_backoff_s = prev
+
+
+@pytest.fixture(autouse=True)
+def _overpass_public_by_default():
+    """V2-93b : une clé Overpass posée dans le `.env` local (instance payante) ne doit
+    NI changer le mode des tests hérités (serveur + miroirs) NI partir vers le service
+    réel. Les tests du mode à clé la posent eux-mêmes (clé sentinelle)."""
+    prev = (settings.overpass_api_key, settings.overpass_url)
+    settings.overpass_api_key = ""
+    if "overpass.ch" in (settings.overpass_url or ""):
+        settings.overpass_url = "https://overpass.kumi.systems/api/interpreter"
+    try:
+        yield
+    finally:
+        settings.overpass_api_key, settings.overpass_url = prev

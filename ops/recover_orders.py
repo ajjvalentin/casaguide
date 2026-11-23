@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     loaded = opsenv.load_env(args.env_file)
     if loaded:
         log.info("· configuration chargée depuis %s", loaded)
+    opsenv.log_overpass_mode(log)                 # V2-93b : mode Overpass actif
 
     # Imports api APRÈS chargement du .env (api.config lit l'env à l'import).
     from api import guest_guides, repo

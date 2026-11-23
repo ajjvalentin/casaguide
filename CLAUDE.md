@@ -965,6 +965,19 @@ exposé, peer auth).
   `curl -sS -o /dev/null -w "%{http_code}\n" -A "$CASAGUIDE_UA" -H "Accept: application/json" --data-urlencode 'data=[out:json][timeout:15];(nwr["amenity"="pharmacy"](around:2000,37.9262,-0.7233););out center tags;' https://overpass-api.de/api/interpreter`
   (répéter ~10×) → des 406 ; remplacer `-H "Accept: application/json"` par
   `-H "Accept: */*"` → plus de 406.
+- **Overpass : instance à clé, jamais les serveurs publics en production (V2-93b)** :
+  les serveurs publics sont **saturés** (passage à blanc du 23/11 : 2 logements sur 3 en
+  échec ; overpass-api.de et kumi.systems encore hors service lors de la validation) et
+  leur règle d'usage **exclut l'usage commercial** ; un **miroir peut être périmé** (V2-93 :
+  lieu supprimé le 04/08 encore servi). Production = instance **overpass.ch** :
+  `CASAGUIDE_OVERPASS_API_KEY` (secret, `backend/.env` seul) ⇒ `OVERPASS_URL` **seul**,
+  miroirs ignorés, aucun repli public. La clé part dans l'en-tête **`X-API-Key`, jamais
+  dans l'URL** ; tout ce qui sort (journaux httpx compris, exceptions, `enrichment_jobs`,
+  sortie ops/) passe par `overpass.scrub`/`mask_url` ; `Settings.overpass_api_key` est
+  `repr=False`. 401/403/`429 quota_exceeded` = refus du COMPTE (`OverpassAccountError`) :
+  aucune nouvelle tentative, la revérification arrête son passage. La suite de tests
+  **neutralise la clé** du `.env` local (`conftest._overpass_public_by_default`) : un test
+  du mode à clé pose sa propre clé sentinelle. Runbook : `docs/deploiement.md` § 1.16.
 - **Pipeline OBSERVABLE & sortie propre (OPS-4)** : (Pièce 2) `enrichment_jobs.steps`
   est le **journal de vérité** — chaque étape IA y figure avec `ok`/erreur + compteurs
   + coût : `area_facts`, `food_delivery` (`platforms`), `describe_pois` (`described`),

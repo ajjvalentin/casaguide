@@ -26,6 +26,11 @@ def _parse_targets(spec: str) -> dict:
     return out
 
 
+# Overpass à clé (V2-93b). Lu une fois ici : le défaut de `overpass_url` en dépend.
+_OVERPASS_API_KEY = (os.getenv("CASAGUIDE_OVERPASS_API_KEY") or "").strip()
+OVERPASS_KEYED_DEFAULT_URL = "https://api.overpass.ch/v1/interpreter"
+
+
 @dataclass
 class Settings:
     # Base de données — sans utilisateur explicite : psycopg prend l'utilisateur
@@ -46,7 +51,20 @@ class Settings:
     # l'en-tête `Accept: application/json` (négociation Apache), pas d'un blocage des
     # clients automatisés — corrigé dans overpass.py (Accept: */*). On garde plusieurs
     # serveurs (bascule + backoff) pour la charge/les pannes ponctuelles.
-    overpass_url: str = os.getenv("OVERPASS_URL", "https://overpass.kumi.systems/api/interpreter")
+    #
+    # V2-93b — INSTANCE À CLÉ (usage commercial). Les serveurs publics sont saturés et
+    # leur règle d'usage renvoie l'usage commercial vers un serveur payant : avec
+    # `CASAGUIDE_OVERPASS_API_KEY` (secret, `backend/.env` UNIQUEMENT), un SEUL serveur
+    # est interrogé (`OVERPASS_URL`, défaut l'instance overpass.ch), clé dans l'en-tête
+    # `X-API-Key` (jamais dans l'URL), miroirs publics IGNORÉS (aucun repli silencieux).
+    # Sans clé : comportement historique (serveur public + miroirs). Le défaut d'URL
+    # suit la clé : une clé posée sans `OVERPASS_URL` ne part JAMAIS vers un serveur
+    # public.
+    # `repr=False` : `repr(settings)` ne doit JAMAIS montrer la clé.
+    overpass_api_key: str = field(default=_OVERPASS_API_KEY, repr=False)
+    overpass_url: str = os.getenv("OVERPASS_URL") or (
+        OVERPASS_KEYED_DEFAULT_URL if _OVERPASS_API_KEY
+        else "https://overpass.kumi.systems/api/interpreter")
     overpass_mirrors: tuple = (
         "https://overpass.private.coffee/api/interpreter",
         "https://z.overpass-api.de/api/interpreter",
@@ -61,6 +79,9 @@ class Settings:
     # d'overpass-api.de sous charge est ainsi rattrapé sans faire échouer le palier.
     overpass_max_attempts: int = int(os.getenv("CASAGUIDE_OVERPASS_ATTEMPTS", "2"))
     overpass_backoff_s: float = float(os.getenv("CASAGUIDE_OVERPASS_BACKOFF", "2.0"))
+    # `Retry-After` (429/503) respecté avant la tentative suivante, PLAFONNÉ (V2-93b).
+    overpass_retry_after_max_s: float = float(
+        os.getenv("CASAGUIDE_OVERPASS_RETRY_AFTER_MAX", "120"))
     politeness_delay_s: float = float(os.getenv("CASAGUIDE_DELAY", "1.0"))
     # Nominatim (V2-79b) : FILE D'ATTENTE partagée par le processus — au plus une requête
     # par intervalle (politique d'usage OSM : 1 req/s ; un peu de marge), et sur 429/503
@@ -222,6 +243,16 @@ class Settings:
     refresh_batch_size: int = int(os.getenv("CASAGUIDE_REFRESH_BATCH_SIZE", "100"))
     refresh_overpass_timeout_s: int = int(
         os.getenv("CASAGUIDE_REFRESH_OVERPASS_TIMEOUT", "25"))
+    # Nouvelles tentatives PROPRES à la revérification (V2-93b) : la nuit, personne
+    # n'attend — on insiste longtemps et poliment, au lieu des réglages courts de la
+    # moisson interactive (`overpass_max_attempts` / `overpass_backoff_s`). Attente
+    # doublée à chaque échec (30, 60, 120 s), `Retry-After` prioritaire s'il est fourni ;
+    # pause entre deux logements.
+    refresh_overpass_attempts: int = int(os.getenv("CASAGUIDE_REFRESH_OVERPASS_ATTEMPTS", "4"))
+    refresh_overpass_backoff_s: float = float(
+        os.getenv("CASAGUIDE_REFRESH_OVERPASS_BACKOFF", "30"))
+    refresh_property_pause_s: float = float(
+        os.getenv("CASAGUIDE_REFRESH_PROPERTY_PAUSE", "5"))
     # Retard maximal admis des données d'un miroir Overpass (`osm3s.timestamp_osm_base`)
     # pour la revérification : au-delà, la réponse est refusée (miroir suivant). Un
     # miroir à jour a quelques minutes de retard.
